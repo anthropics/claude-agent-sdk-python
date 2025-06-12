@@ -22,7 +22,10 @@ class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
     def __init__(
-        self, prompt: str, options: ClaudeCodeOptions, cli_path: str | Path | None = None
+        self,
+        prompt: str,
+        options: ClaudeCodeOptions,
+        cli_path: str | Path | None = None,
     ):
         self._prompt = prompt
         self._options = options

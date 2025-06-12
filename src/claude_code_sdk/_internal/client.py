@@ -48,9 +48,7 @@ class InternalClient:
         match data["type"]:
             case "user":
                 # Extract just the content from the nested structure
-                return UserMessage(
-                    content=data["message"]["content"]
-                )
+                return UserMessage(content=data["message"]["content"])
 
             case "assistant":
                 # Parse content blocks
@@ -60,24 +58,28 @@ class InternalClient:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))
                         case "tool_use":
-                            content_blocks.append(ToolUseBlock(
-                                id=block["id"],
-                                name=block["name"],
-                                input=block["input"]
-                            ))
+                            content_blocks.append(
+                                ToolUseBlock(
+                                    id=block["id"],
+                                    name=block["name"],
+                                    input=block["input"],
+                                )
+                            )
                         case "tool_result":
-                            content_blocks.append(ToolResultBlock(
-                                tool_use_id=block["tool_use_id"],
-                                content=block.get("content"),
-                                is_error=block.get("is_error")
-                            ))
+                            content_blocks.append(
+                                ToolResultBlock(
+                                    tool_use_id=block["tool_use_id"],
+                                    content=block.get("content"),
+                                    is_error=block.get("is_error"),
+                                )
+                            )
 
                 return AssistantMessage(content=content_blocks)
 
             case "system":
                 return SystemMessage(
                     subtype=data["subtype"],
-                    data=data  # Pass through all data
+                    data=data,  # Pass through all data
                 )
 
             case "result":
@@ -92,7 +94,7 @@ class InternalClient:
                     session_id=data["session_id"],
                     total_cost_usd=data["total_cost"],
                     usage=data.get("usage"),
-                    result=data.get("result")
+                    result=data.get("result"),
                 )
 
             case _:

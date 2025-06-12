@@ -23,8 +23,11 @@ class TestIntegration:
 
     def test_simple_query_response(self):
         """Test a simple query with text response."""
+
         async def _test():
-            with patch("claude_code_sdk._internal.client.SubprocessCLITransport") as mock_transport_class:
+            with patch(
+                "claude_code_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -71,12 +74,15 @@ class TestIntegration:
                 assert messages[1].cost_usd == 0.001
                 assert messages[1].session_id == "test-session"
 
-
         anyio.run(_test)
+
     def test_query_with_tool_use(self):
         """Test query that uses tools."""
+
         async def _test():
-            with patch("claude_code_sdk._internal.client.SubprocessCLITransport") as mock_transport_class:
+            with patch(
+                "claude_code_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -135,25 +141,31 @@ class TestIntegration:
                 assert messages[0].content[1].name == "Read"
                 assert messages[0].content[1].input["file_path"] == "/test.txt"
 
-
         anyio.run(_test)
+
     def test_cli_not_found(self):
         """Test handling when CLI is not found."""
+
         async def _test():
-            with patch("shutil.which", return_value=None), patch(
-                "pathlib.Path.exists", return_value=False
-            ), pytest.raises(CLINotFoundError) as exc_info:
+            with (
+                patch("shutil.which", return_value=None),
+                patch("pathlib.Path.exists", return_value=False),
+                pytest.raises(CLINotFoundError) as exc_info,
+            ):
                 async for _ in query(prompt="test"):
                     pass
 
             assert "Claude Code requires Node.js" in str(exc_info.value)
 
-
         anyio.run(_test)
+
     def test_continuation_option(self):
         """Test query with continue_conversation option."""
+
         async def _test():
-            with patch("claude_code_sdk._internal.client.SubprocessCLITransport") as mock_transport_class:
+            with patch(
+                "claude_code_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -179,13 +191,14 @@ class TestIntegration:
                 # Run query with continuation
                 messages = []
                 async for msg in query(
-                    prompt="Continue", options=ClaudeCodeOptions(continue_conversation=True)
+                    prompt="Continue",
+                    options=ClaudeCodeOptions(continue_conversation=True),
                 ):
                     messages.append(msg)
 
                 # Verify transport was created with continuation option
                 mock_transport_class.assert_called_once()
                 call_kwargs = mock_transport_class.call_args.kwargs
-                assert call_kwargs['options'].continue_conversation is True
+                assert call_kwargs["options"].continue_conversation is True
 
         anyio.run(_test)

@@ -13,6 +13,7 @@ PermissionMode = Literal["default", "acceptEdits", "bypassPermissions"]
 # MCP Server config
 class McpServerConfig(TypedDict):
     """MCP server configuration."""
+
     transport: list[str]
     env: NotRequired[dict[str, Any]]
 
@@ -21,12 +22,14 @@ class McpServerConfig(TypedDict):
 @dataclass
 class TextBlock:
     """Text content block."""
+
     text: str
 
 
 @dataclass
 class ToolUseBlock:
     """Tool use content block."""
+
     id: str
     name: str
     input: dict[str, Any]
@@ -35,6 +38,7 @@ class ToolUseBlock:
 @dataclass
 class ToolResultBlock:
     """Tool result content block."""
+
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
@@ -47,18 +51,21 @@ ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
 @dataclass
 class UserMessage:
     """User message."""
+
     content: str
 
 
 @dataclass
 class AssistantMessage:
     """Assistant message with content blocks."""
+
     content: list[ContentBlock]
 
 
 @dataclass
 class SystemMessage:
     """System message with metadata."""
+
     subtype: str
     data: dict[str, Any]
 
@@ -66,6 +73,7 @@ class SystemMessage:
 @dataclass
 class ResultMessage:
     """Result message with cost and usage information."""
+
     subtype: str
     cost_usd: float
     duration_ms: int
@@ -84,6 +92,7 @@ Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage
 @dataclass
 class ClaudeCodeOptions:
     """Query options for Claude SDK."""
+
     allowed_tools: list[str] = field(default_factory=list)
     max_thinking_tokens: int = 8000
     system_prompt: str | None = None

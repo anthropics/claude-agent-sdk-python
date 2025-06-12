@@ -16,12 +16,12 @@ class TestSubprocessCLITransport:
         """Test CLI not found error."""
         from claude_code_sdk._errors import CLINotFoundError
 
-        with patch("shutil.which", return_value=None), patch(
-            "pathlib.Path.exists", return_value=False
-        ), pytest.raises(CLINotFoundError) as exc_info:
-            SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions()
-            )
+        with (
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(CLINotFoundError) as exc_info,
+        ):
+            SubprocessCLITransport(prompt="test", options=ClaudeCodeOptions())
 
         assert "Claude Code requires Node.js" in str(exc_info.value)
 
@@ -43,7 +43,9 @@ class TestSubprocessCLITransport:
         from pathlib import Path
 
         transport = SubprocessCLITransport(
-            prompt="Hello", options=ClaudeCodeOptions(), cli_path=Path("/usr/bin/claude")
+            prompt="Hello",
+            options=ClaudeCodeOptions(),
+            cli_path=Path("/usr/bin/claude"),
         )
 
         assert transport._cli_path == "/usr/bin/claude"
@@ -92,6 +94,7 @@ class TestSubprocessCLITransport:
 
     def test_connect_disconnect(self):
         """Test connect and disconnect lifecycle."""
+
         async def _test():
             with patch("anyio.open_process") as mock_exec:
                 mock_process = MagicMock()
@@ -103,7 +106,9 @@ class TestSubprocessCLITransport:
                 mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(
-                    prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                    prompt="test",
+                    options=ClaudeCodeOptions(),
+                    cli_path="/usr/bin/claude",
                 )
 
                 await transport.connect()

@@ -26,9 +26,7 @@ class TestMessageTypes:
     def test_tool_use_block(self):
         """Test creating a ToolUseBlock."""
         block = ToolUseBlock(
-            id="tool-123",
-            name="Read",
-            input={"file_path": "/test.txt"}
+            id="tool-123", name="Read", input={"file_path": "/test.txt"}
         )
         assert block.id == "tool-123"
         assert block.name == "Read"
@@ -37,9 +35,7 @@ class TestMessageTypes:
     def test_tool_result_block(self):
         """Test creating a ToolResultBlock."""
         block = ToolResultBlock(
-            tool_use_id="tool-123",
-            content="File contents here",
-            is_error=False
+            tool_use_id="tool-123", content="File contents here", is_error=False
         )
         assert block.tool_use_id == "tool-123"
         assert block.content == "File contents here"
@@ -55,7 +51,7 @@ class TestMessageTypes:
             is_error=False,
             num_turns=1,
             session_id="session-123",
-            total_cost_usd=0.01
+            total_cost_usd=0.01,
         )
         assert msg.subtype == "success"
         assert msg.cost_usd == 0.01
@@ -78,8 +74,7 @@ class TestOptions:
     def test_claude_code_options_with_tools(self):
         """Test Options with built-in tools."""
         options = ClaudeCodeOptions(
-            allowed_tools=["Read", "Write", "Edit"],
-            disallowed_tools=["Bash"]
+            allowed_tools=["Read", "Write", "Edit"], disallowed_tools=["Bash"]
         )
         assert options.allowed_tools == ["Read", "Write", "Edit"]
         assert options.disallowed_tools == ["Bash"]
@@ -93,25 +88,21 @@ class TestOptions:
         """Test Options with system prompt."""
         options = ClaudeCodeOptions(
             system_prompt="You are a helpful assistant.",
-            append_system_prompt="Be concise."
+            append_system_prompt="Be concise.",
         )
         assert options.system_prompt == "You are a helpful assistant."
         assert options.append_system_prompt == "Be concise."
 
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""
-        options = ClaudeCodeOptions(
-            continue_conversation=True,
-            resume="session-123"
-        )
+        options = ClaudeCodeOptions(continue_conversation=True, resume="session-123")
         assert options.continue_conversation is True
         assert options.resume == "session-123"
 
     def test_claude_code_options_with_model_specification(self):
         """Test Options with model specification."""
         options = ClaudeCodeOptions(
-            model="claude-3-5-sonnet-20241022",
-            permission_prompt_tool_name="CustomTool"
+            model="claude-3-5-sonnet-20241022", permission_prompt_tool_name="CustomTool"
         )
         assert options.model == "claude-3-5-sonnet-20241022"
         assert options.permission_prompt_tool_name == "CustomTool"

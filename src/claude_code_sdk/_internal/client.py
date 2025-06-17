@@ -47,11 +47,9 @@ class InternalClient:
 
         match data["type"]:
             case "user":
-                # Extract just the content from the nested structure
                 return UserMessage(content=data["message"]["content"])
 
             case "assistant":
-                # Parse content blocks
                 content_blocks: list[ContentBlock] = []
                 for block in data["message"]["content"]:
                     match block["type"]:
@@ -79,20 +77,18 @@ class InternalClient:
             case "system":
                 return SystemMessage(
                     subtype=data["subtype"],
-                    data=data,  # Pass through all data
+                    data=data,
                 )
 
             case "result":
-                # Map total_cost to total_cost_usd for consistency
                 return ResultMessage(
                     subtype=data["subtype"],
-                    cost_usd=data["cost_usd"],
                     duration_ms=data["duration_ms"],
                     duration_api_ms=data["duration_api_ms"],
                     is_error=data["is_error"],
                     num_turns=data["num_turns"],
                     session_id=data["session_id"],
-                    total_cost_usd=data["total_cost"],
+                    total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),
                 )

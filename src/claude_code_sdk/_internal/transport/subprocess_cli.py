@@ -190,7 +190,11 @@ class SubprocessCLITransport(Transport):
 
                     try:
                         data = json.loads(line_str)
-                        yield data
+                        try:
+                            yield data
+                        except GeneratorExit:
+                            # Handle generator cleanup gracefully
+                            return
                     except json.JSONDecodeError as e:
                         if line_str.startswith("{") or line_str.startswith("["):
                             raise SDKJSONDecodeError(line_str, e) from e
@@ -198,8 +202,6 @@ class SubprocessCLITransport(Transport):
 
             except anyio.ClosedResourceError:
                 pass
-            finally:
-                tg.cancel_scope.cancel()
 
         await self._process.wait()
         if self._process.returncode is not None and self._process.returncode != 0:

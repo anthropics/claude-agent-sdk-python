@@ -43,13 +43,12 @@ class TestIntegration:
                     yield {
                         "type": "result",
                         "subtype": "success",
-                        "cost_usd": 0.001,
                         "duration_ms": 1000,
                         "duration_api_ms": 800,
                         "is_error": False,
                         "num_turns": 1,
                         "session_id": "test-session",
-                        "total_cost": 0.001,
+                        "total_cost_usd": 0.001,
                     }
 
                 mock_transport.receive_messages = mock_receive
@@ -71,7 +70,7 @@ class TestIntegration:
 
                 # Check result message
                 assert isinstance(messages[1], ResultMessage)
-                assert messages[1].cost_usd == 0.001
+                assert messages[1].total_cost_usd == 0.001
                 assert messages[1].session_id == "test-session"
 
         anyio.run(_test)
@@ -109,13 +108,12 @@ class TestIntegration:
                     yield {
                         "type": "result",
                         "subtype": "success",
-                        "cost_usd": 0.002,
                         "duration_ms": 1500,
                         "duration_api_ms": 1200,
                         "is_error": False,
                         "num_turns": 1,
                         "session_id": "test-session-2",
-                        "total_cost": 0.002,
+                        "total_cost_usd": 0.002,
                     }
 
                 mock_transport.receive_messages = mock_receive

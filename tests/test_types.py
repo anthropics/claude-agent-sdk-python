@@ -45,7 +45,6 @@ class TestMessageTypes:
         """Test creating a ResultMessage."""
         msg = ResultMessage(
             subtype="success",
-            cost_usd=0.01,
             duration_ms=1500,
             duration_api_ms=1200,
             is_error=False,
@@ -54,7 +53,7 @@ class TestMessageTypes:
             total_cost_usd=0.01,
         )
         assert msg.subtype == "success"
-        assert msg.cost_usd == 0.01
+        assert msg.total_cost_usd == 0.01
         assert msg.session_id == "session-123"
 
 

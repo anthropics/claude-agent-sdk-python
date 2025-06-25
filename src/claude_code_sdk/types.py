@@ -11,11 +11,32 @@ PermissionMode = Literal["default", "acceptEdits", "bypassPermissions"]
 
 
 # MCP Server config
-class McpServerConfig(TypedDict):
-    """MCP server configuration."""
+class McpStdioServerConfig(TypedDict):
+    """MCP stdio server configuration."""
 
-    transport: list[str]
-    env: NotRequired[dict[str, Any]]
+    type: NotRequired[Literal["stdio"]]  # Optional for backwards compatibility
+    command: str
+    args: NotRequired[list[str]]
+    env: NotRequired[dict[str, str]]
+
+
+class McpSSEServerConfig(TypedDict):
+    """MCP SSE server configuration."""
+
+    type: Literal["sse"]
+    url: str
+    headers: NotRequired[dict[str, str]]
+
+
+class McpHttpServerConfig(TypedDict):
+    """MCP HTTP server configuration."""
+
+    type: Literal["http"]
+    url: str
+    headers: NotRequired[dict[str, str]]
+
+
+McpServerConfig = McpStdioServerConfig | McpSSEServerConfig | McpHttpServerConfig
 
 
 # Content block types

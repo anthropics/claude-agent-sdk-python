@@ -132,3 +132,21 @@ class TestSubprocessCLITransport:
         # So we just verify the transport can be created and basic structure is correct
         assert transport._prompt == "test"
         assert transport._cli_path == "/usr/bin/claude"
+
+    def test_connect_with_nonexistent_cwd(self):
+        """Test that connect raises CLIConnectionError when cwd doesn't exist."""
+        from claude_code_sdk._errors import CLIConnectionError
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeCodeOptions(cwd="/this/directory/does/not/exist"),
+                cli_path="/usr/bin/claude",
+            )
+
+            with pytest.raises(CLIConnectionError) as exc_info:
+                await transport.connect()
+
+            assert "/this/directory/does/not/exist" in str(exc_info.value)
+
+        anyio.run(_test)

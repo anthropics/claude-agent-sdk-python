@@ -188,17 +188,25 @@ class SubprocessCLITransport(Transport):
                     if not line_str:
                         continue
 
-                    try:
-                        data = json.loads(line_str)
+                    # Split on newlines in case multiple JSON objects are buffered together
+                    json_lines = line_str.split("\n")
+
+                    for json_line in json_lines:
+                        json_line = json_line.strip()
+                        if not json_line:
+                            continue
+
                         try:
-                            yield data
-                        except GeneratorExit:
-                            # Handle generator cleanup gracefully
-                            return
-                    except json.JSONDecodeError as e:
-                        if line_str.startswith("{") or line_str.startswith("["):
-                            raise SDKJSONDecodeError(line_str, e) from e
-                        continue
+                            data = json.loads(json_line)
+                            try:
+                                yield data
+                            except GeneratorExit:
+                                # Handle generator cleanup gracefully
+                                return
+                        except json.JSONDecodeError as e:
+                            if json_line.startswith("{") or json_line.startswith("["):
+                                raise SDKJSONDecodeError(json_line, e) from e
+                            continue
 
             except anyio.ClosedResourceError:
                 pass

@@ -1,0 +1,59 @@
+name: Create Release Tag
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  create-tag:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Extract version from branch name
+      id: extract_version
+      run: |
+        BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+        VERSION="${BRANCH_NAME#release/v}"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Create and push tag
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Create annotated tag
+        git tag -a "v${{ steps.extract_version.outputs.version }}" \
+          -m "Release v${{ steps.extract_version.outputs.version }}"
+        
+        # Push tag
+        git push origin "v${{ steps.extract_version.outputs.version }}"
+    
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.extract_version.outputs.version }}
+        release_name: Release v${{ steps.extract_version.outputs.version }}
+        body: |
+          ## Release v${{ steps.extract_version.outputs.version }}
+          
+          Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ steps.extract_version.outputs.version }}/
+          
+          ### Installation
+          ```bash
+          pip install claude-code-sdk==${{ steps.extract_version.outputs.version }}
+          ```
+          
+          ### What's Changed
+          See the [full changelog](https://github.com/${{ github.repository }}/compare/v${{ steps.extract_version.outputs.version }}...v${{ steps.extract_version.outputs.version }})
+        draft: false
+        prerelease: false

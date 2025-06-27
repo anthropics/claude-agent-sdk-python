@@ -38,19 +38,18 @@ class TestSubprocessBuffering:
         In some environments, stdout buffering can cause multiple distinct JSON
         objects to be delivered as a single line with embedded newlines.
         """
+
         async def _test() -> None:
             # Two valid JSON objects separated by a newline character
             json_obj1 = {"type": "message", "id": "msg1", "content": "First message"}
             json_obj2 = {"type": "result", "id": "res1", "status": "completed"}
 
             # Simulate buffered output where both objects appear on one line
-            buffered_line = json.dumps(json_obj1) + '\n' + json.dumps(json_obj2)
+            buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             # Create transport
             transport = SubprocessCLITransport(
-                prompt="test",
-                options=ClaudeCodeOptions(),
-                cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
             )
 
             # Mock the process and streams
@@ -81,17 +80,16 @@ class TestSubprocessBuffering:
 
     def test_json_with_embedded_newlines(self) -> None:
         """Test parsing JSON objects that contain newline characters in string values."""
+
         async def _test() -> None:
             # JSON objects with newlines in string values
             json_obj1 = {"type": "message", "content": "Line 1\nLine 2\nLine 3"}
             json_obj2 = {"type": "result", "data": "Some\nMultiline\nContent"}
 
-            buffered_line = json.dumps(json_obj1) + '\n' + json.dumps(json_obj2)
+            buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test",
-                options=ClaudeCodeOptions(),
-                cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -113,17 +111,16 @@ class TestSubprocessBuffering:
 
     def test_multiple_newlines_between_objects(self) -> None:
         """Test parsing with multiple newlines between JSON objects."""
+
         async def _test() -> None:
             json_obj1 = {"type": "message", "id": "msg1"}
             json_obj2 = {"type": "result", "id": "res1"}
 
             # Multiple newlines between objects
-            buffered_line = json.dumps(json_obj1) + '\n\n\n' + json.dumps(json_obj2)
+            buffered_line = json.dumps(json_obj1) + "\n\n\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test",
-                options=ClaudeCodeOptions(),
-                cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()

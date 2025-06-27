@@ -121,7 +121,7 @@ See [src/claude_code_sdk/_errors.py](src/claude_code_sdk/_errors.py) for all err
 
 ## Available Tools
 
-See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/security#tools-available-to-claude) for a complete list of available tools.
+See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude) for a complete list of available tools.
 
 ## Examples
 

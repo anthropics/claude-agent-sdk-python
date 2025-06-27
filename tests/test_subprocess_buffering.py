@@ -85,26 +85,26 @@ class TestSubprocessBuffering:
             # JSON objects with newlines in string values
             json_obj1 = {"type": "message", "content": "Line 1\nLine 2\nLine 3"}
             json_obj2 = {"type": "result", "data": "Some\nMultiline\nContent"}
-            
+
             buffered_line = json.dumps(json_obj1) + '\n' + json.dumps(json_obj2)
-            
+
             transport = SubprocessCLITransport(
                 prompt="test",
                 options=ClaudeCodeOptions(),
                 cli_path="/usr/bin/claude"
             )
-            
+
             mock_process = MagicMock()
             mock_process.returncode = None
             mock_process.wait = AsyncMock(return_value=None)
             transport._process = mock_process
             transport._stdout_stream = MockTextReceiveStream([buffered_line])
             transport._stderr_stream = MockTextReceiveStream([])
-            
+
             messages: list[Any] = []
             async for msg in transport.receive_messages():
                 messages.append(msg)
-            
+
             assert len(messages) == 2
             assert messages[0]["content"] == "Line 1\nLine 2\nLine 3"
             assert messages[1]["data"] == "Some\nMultiline\nContent"
@@ -116,27 +116,27 @@ class TestSubprocessBuffering:
         async def _test() -> None:
             json_obj1 = {"type": "message", "id": "msg1"}
             json_obj2 = {"type": "result", "id": "res1"}
-            
+
             # Multiple newlines between objects
             buffered_line = json.dumps(json_obj1) + '\n\n\n' + json.dumps(json_obj2)
-            
+
             transport = SubprocessCLITransport(
                 prompt="test",
                 options=ClaudeCodeOptions(),
                 cli_path="/usr/bin/claude"
             )
-            
+
             mock_process = MagicMock()
             mock_process.returncode = None
             mock_process.wait = AsyncMock(return_value=None)
             transport._process = mock_process
             transport._stdout_stream = MockTextReceiveStream([buffered_line])
             transport._stderr_stream = MockTextReceiveStream([])
-            
+
             messages: list[Any] = []
             async for msg in transport.receive_messages():
                 messages.append(msg)
-            
+
             assert len(messages) == 2
             assert messages[0]["id"] == "msg1"
             assert messages[1]["id"] == "res1"

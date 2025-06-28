@@ -26,7 +26,7 @@ from .types import (
     UserMessage,
 )
 
-__version__ = "0.0.10"
+__version__ = "0.0.13"
 
 __all__ = [
     # Main function

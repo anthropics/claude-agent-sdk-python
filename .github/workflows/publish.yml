@@ -65,9 +65,14 @@ jobs:
   publish:
     needs: [test, lint]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     
     steps:
     - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -109,3 +114,40 @@ jobs:
         twine upload dist/*
         echo "Package published to PyPI"
         echo "Install with: pip install claude-code-sdk==${{ github.event.inputs.version }}"
+    
+    - name: Create version update PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Create a new branch for the version update
+        BRANCH_NAME="release/v${{ github.event.inputs.version }}"
+        git checkout -b "$BRANCH_NAME"
+        
+        # Configure git
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Commit the version changes
+        git add pyproject.toml src/claude_code_sdk/__init__.py
+        git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+        
+        # Push the branch
+        git push origin "$BRANCH_NAME"
+        
+        # Create PR using GitHub CLI (gh)
+        gh pr create \
+          --title "chore: bump version to ${{ github.event.inputs.version }}" \
+          --body "This PR updates the version to ${{ github.event.inputs.version }} after publishing to PyPI.
+          
+          ## Changes
+          - Updated version in \`pyproject.toml\`
+          - Updated version in \`src/claude_code_sdk/__init__.py\`
+          
+          ## Release Information
+          - Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ github.event.inputs.version }}/
+          - Install with: \`pip install claude-code-sdk==${{ github.event.inputs.version }}\`
+          
+          ## Next Steps
+          After merging this PR, a release tag will be created automatically." \
+          --base main \
+          --head "$BRANCH_NAME"

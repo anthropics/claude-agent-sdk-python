@@ -24,6 +24,11 @@ jobs:
         VERSION="${BRANCH_NAME#release/v}"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
     
+    - name: Get previous release tag
+      id: previous_tag
+      run: |
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+        echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
     - name: Create and push tag
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -54,6 +59,6 @@ jobs:
           ```
           
           ### What's Changed
-          See the [full changelog](https://github.com/${{ github.repository }}/compare/v${{ steps.extract_version.outputs.version }}...v${{ steps.extract_version.outputs.version }})
+          See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ steps.previous_tag.outputs.previous_tag }}...v${{ steps.extract_version.outputs.version }})
         draft: false
         prerelease: false

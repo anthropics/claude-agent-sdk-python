@@ -29,6 +29,7 @@ jobs:
       run: |
         PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
         echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+
     - name: Create and push tag
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"

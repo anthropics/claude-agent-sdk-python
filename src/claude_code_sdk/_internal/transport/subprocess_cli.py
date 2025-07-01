@@ -17,6 +17,8 @@ from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ...types import ClaudeCodeOptions
 from . import Transport
 
+_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+
 
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
@@ -182,6 +184,9 @@ class SubprocessCLITransport(Transport):
         async with anyio.create_task_group() as tg:
             tg.start_soon(read_stderr)
 
+            # Buffer for incomplete JSON
+            json_buffer = ""
+
             try:
                 async for line in self._stdout_stream:
                     line_str = line.strip()
@@ -196,16 +201,27 @@ class SubprocessCLITransport(Transport):
                         if not json_line:
                             continue
 
+                        # Add to buffer
+                        json_buffer += json_line
+
+                        # Check buffer size
+                        if len(json_buffer) > _MAX_BUFFER_SIZE:
+                            json_buffer = ""  # Clear buffer to prevent repeated errors
+                            raise SDKJSONDecodeError(
+                                f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
+                                None
+                            )
+
                         try:
-                            data = json.loads(json_line)
+                            data = json.loads(json_buffer)
+                            json_buffer = ""  # Clear buffer on successful parse
                             try:
                                 yield data
                             except GeneratorExit:
                                 # Handle generator cleanup gracefully
                                 return
-                        except json.JSONDecodeError as e:
-                            if json_line.startswith("{") or json_line.startswith("["):
-                                raise SDKJSONDecodeError(json_line, e) from e
+                        except json.JSONDecodeError:
+                            # Continue accumulating in buffer
                             continue
 
             except anyio.ClosedResourceError:

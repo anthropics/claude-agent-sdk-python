@@ -155,9 +155,14 @@ class TestSubprocessBuffering:
                 "message": {
                     "content": [
                         {"type": "text", "text": "x" * 1000},
-                        {"type": "tool_use", "id": "tool_123", "name": "Read", "input": {"file_path": "/test.txt"}}
+                        {
+                            "type": "tool_use",
+                            "id": "tool_123",
+                            "name": "Read",
+                            "input": {"file_path": "/test.txt"},
+                        },
                     ]
-                }
+                },
             }
 
             complete_json = json.dumps(json_obj)
@@ -203,17 +208,20 @@ class TestSubprocessBuffering:
                         {
                             "tool_use_id": "toolu_016fed1NhiaMLqnEvrj5NUaj",
                             "type": "tool_result",
-                            "content": json.dumps(large_data)
+                            "content": json.dumps(large_data),
                         }
-                    ]
-                }
+                    ],
+                },
             }
 
             complete_json = json.dumps(json_obj)
 
             # Split into chunks simulating 64KB buffer limit
             chunk_size = 64 * 1024  # 64KB
-            chunks = [complete_json[i:i+chunk_size] for i in range(0, len(complete_json), chunk_size)]
+            chunks = [
+                complete_json[i : i + chunk_size]
+                for i in range(0, len(complete_json), chunk_size)
+            ]
 
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
@@ -232,7 +240,10 @@ class TestSubprocessBuffering:
 
             assert len(messages) == 1
             assert messages[0]["type"] == "user"
-            assert messages[0]["message"]["content"][0]["tool_use_id"] == "toolu_016fed1NhiaMLqnEvrj5NUaj"
+            assert (
+                messages[0]["message"]["content"][0]["tool_use_id"]
+                == "toolu_016fed1NhiaMLqnEvrj5NUaj"
+            )
 
         anyio.run(_test)
 
@@ -276,7 +287,7 @@ class TestSubprocessBuffering:
             # Second: large JSON split across reads
             large_msg = {
                 "type": "assistant",
-                "message": {"content": [{"type": "text", "text": "y" * 5000}]}
+                "message": {"content": [{"type": "text", "text": "y" * 5000}]},
             }
             large_json = json.dumps(large_msg)
 
@@ -288,7 +299,9 @@ class TestSubprocessBuffering:
                 msg1 + "\n",
                 large_json[:1000],  # First part of large message
                 large_json[1000:3000],  # Middle part
-                large_json[3000:] + "\n" + msg3  # End of large message + complete message
+                large_json[3000:]
+                + "\n"
+                + msg3,  # End of large message + complete message
             ]
 
             transport = SubprocessCLITransport(

@@ -199,6 +199,7 @@ class SubprocessCLITransport(Transport):
                         if not json_line:
                             continue
 
+                        # Keep accumulating partial JSON until we can parse it
                         json_buffer += json_line
 
                         if len(json_buffer) > _MAX_BUFFER_SIZE:

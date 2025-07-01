@@ -171,7 +171,7 @@ class SubprocessCLITransport(Transport):
             raise CLIConnectionError("Not connected")
 
         json_buffer = ""
-        
+
         # Process stdout messages first
         try:
             async for line in self._stdout_stream:

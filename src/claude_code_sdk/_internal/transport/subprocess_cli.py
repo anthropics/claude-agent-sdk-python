@@ -170,57 +170,53 @@ class SubprocessCLITransport(Transport):
         if not self._process or not self._stdout_stream:
             raise CLIConnectionError("Not connected")
 
-        stderr_lines = []
+        json_buffer = ""
+        
+        # Process stdout messages first
+        try:
+            async for line in self._stdout_stream:
+                line_str = line.strip()
+                if not line_str:
+                    continue
 
-        async def read_stderr() -> None:
-            """Read stderr in background."""
-            if self._stderr_stream:
-                try:
-                    async for line in self._stderr_stream:
-                        stderr_lines.append(line.strip())
-                except anyio.ClosedResourceError:
-                    pass
+                json_lines = line_str.split("\n")
 
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(read_stderr)
-
-            json_buffer = ""
-
-            try:
-                async for line in self._stdout_stream:
-                    line_str = line.strip()
-                    if not line_str:
+                for json_line in json_lines:
+                    json_line = json_line.strip()
+                    if not json_line:
                         continue
 
-                    json_lines = line_str.split("\n")
+                    # Keep accumulating partial JSON until we can parse it
+                    json_buffer += json_line
 
-                    for json_line in json_lines:
-                        json_line = json_line.strip()
-                        if not json_line:
-                            continue
+                    if len(json_buffer) > _MAX_BUFFER_SIZE:
+                        json_buffer = ""
+                        raise SDKJSONDecodeError(
+                            f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
+                            ValueError(
+                                f"Buffer size {len(json_buffer)} exceeds limit {_MAX_BUFFER_SIZE}"
+                            ),
+                        )
 
-                        # Keep accumulating partial JSON until we can parse it
-                        json_buffer += json_line
-
-                        if len(json_buffer) > _MAX_BUFFER_SIZE:
-                            json_buffer = ""
-                            raise SDKJSONDecodeError(
-                                f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
-                                ValueError(
-                                    f"Buffer size {len(json_buffer)} exceeds limit {_MAX_BUFFER_SIZE}"
-                                ),
-                            )
-
+                    try:
+                        data = json.loads(json_buffer)
+                        json_buffer = ""
                         try:
-                            data = json.loads(json_buffer)
-                            json_buffer = ""
-                            try:
-                                yield data
-                            except GeneratorExit:
-                                return
-                        except json.JSONDecodeError:
-                            continue
+                            yield data
+                        except GeneratorExit:
+                            return
+                    except json.JSONDecodeError:
+                        continue
 
+        except anyio.ClosedResourceError:
+            pass
+
+        # Read stderr after stdout completes (no concurrent task group)
+        stderr_lines = []
+        if self._stderr_stream:
+            try:
+                async for line in self._stderr_stream:
+                    stderr_lines.append(line.strip())
             except anyio.ClosedResourceError:
                 pass
 

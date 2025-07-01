@@ -174,8 +174,8 @@ class SubprocessCLITransport(Transport):
             raise CLIConnectionError("Not connected")
 
         # Safety constants
-        MAX_STDERR_SIZE = 10 * 1024 * 1024  # 10MB
-        STDERR_TIMEOUT = 30.0  # 30 seconds
+        max_stderr_size = 10 * 1024 * 1024  # 10MB
+        stderr_timeout = 30.0  # 30 seconds
 
         json_buffer = ""
 
@@ -228,13 +228,13 @@ class SubprocessCLITransport(Transport):
         if self._stderr_stream:
             try:
                 # Use timeout to prevent hanging
-                with anyio.fail_after(STDERR_TIMEOUT):
+                with anyio.fail_after(stderr_timeout):
                     async for line in self._stderr_stream:
                         line_text = line.strip()
                         line_size = len(line_text)
 
                         # Enforce memory limit
-                        if stderr_size + line_size > MAX_STDERR_SIZE:
+                        if stderr_size + line_size > max_stderr_size:
                             stderr_lines.append(
                                 f"[stderr truncated after {stderr_size} bytes]"
                             )
@@ -248,7 +248,7 @@ class SubprocessCLITransport(Transport):
 
             except TimeoutError:
                 stderr_lines.append(
-                    f"[stderr collection timed out after {STDERR_TIMEOUT}s]"
+                    f"[stderr collection timed out after {stderr_timeout}s]"
                 )
             except anyio.ClosedResourceError:
                 pass
@@ -262,7 +262,7 @@ class SubprocessCLITransport(Transport):
         stderr_output = "\n".join(stderr_lines) if stderr_lines else ""
 
         # Use exit code for error detection, not string matching
-        if returncode != 0:
+        if returncode is not None and returncode != 0:
             raise ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,

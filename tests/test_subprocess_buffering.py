@@ -45,34 +45,27 @@ class TestSubprocessBuffering:
         """
 
         async def _test() -> None:
-            # Two valid JSON objects separated by a newline character
             json_obj1 = {"type": "message", "id": "msg1", "content": "First message"}
             json_obj2 = {"type": "result", "id": "res1", "status": "completed"}
 
-            # Simulate buffered output where both objects appear on one line
             buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
-            # Create transport
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
             )
 
-            # Mock the process and streams
             mock_process = MagicMock()
             mock_process.returncode = None
             mock_process.wait = AsyncMock(return_value=None)
             transport._process = mock_process
 
-            # Create mock stream that returns the buffered line
             transport._stdout_stream = MockTextReceiveStream([buffered_line])  # type: ignore[assignment]
             transport._stderr_stream = MockTextReceiveStream([])  # type: ignore[assignment]
 
-            # Collect all messages
             messages: list[Any] = []
             async for msg in transport.receive_messages():
                 messages.append(msg)
 
-            # Verify both JSON objects were successfully parsed
             assert len(messages) == 2
             assert messages[0]["type"] == "message"
             assert messages[0]["id"] == "msg1"
@@ -87,7 +80,6 @@ class TestSubprocessBuffering:
         """Test parsing JSON objects that contain newline characters in string values."""
 
         async def _test() -> None:
-            # JSON objects with newlines in string values
             json_obj1 = {"type": "message", "content": "Line 1\nLine 2\nLine 3"}
             json_obj2 = {"type": "result", "data": "Some\nMultiline\nContent"}
 
@@ -121,7 +113,6 @@ class TestSubprocessBuffering:
             json_obj1 = {"type": "message", "id": "msg1"}
             json_obj2 = {"type": "result", "id": "res1"}
 
-            # Multiple newlines between objects
             buffered_line = json.dumps(json_obj1) + "\n\n\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
@@ -149,7 +140,6 @@ class TestSubprocessBuffering:
         """Test parsing when a single JSON object is split across multiple stream reads."""
 
         async def _test() -> None:
-            # Large JSON object that simulates being split
             json_obj = {
                 "type": "assistant",
                 "message": {
@@ -167,7 +157,6 @@ class TestSubprocessBuffering:
 
             complete_json = json.dumps(json_obj)
 
-            # Split at arbitrary points to simulate stream chunking
             part1 = complete_json[:100]
             part2 = complete_json[100:250]
             part3 = complete_json[250:]
@@ -187,7 +176,6 @@ class TestSubprocessBuffering:
             async for msg in transport.receive_messages():
                 messages.append(msg)
 
-            # Should reconstruct the complete JSON
             assert len(messages) == 1
             assert messages[0]["type"] == "assistant"
             assert len(messages[0]["message"]["content"]) == 2
@@ -198,7 +186,6 @@ class TestSubprocessBuffering:
         """Test parsing a large minified JSON (simulating the reported issue)."""
 
         async def _test() -> None:
-            # Create a large minified JSON similar to what caused the issue
             large_data = {"data": [{"id": i, "value": "x" * 100} for i in range(1000)]}
             json_obj = {
                 "type": "user",
@@ -216,8 +203,7 @@ class TestSubprocessBuffering:
 
             complete_json = json.dumps(json_obj)
 
-            # Split into chunks simulating 64KB buffer limit
-            chunk_size = 64 * 1024  # 64KB
+            chunk_size = 64 * 1024
             chunks = [
                 complete_json[i : i + chunk_size]
                 for i in range(0, len(complete_json), chunk_size)
@@ -251,7 +237,6 @@ class TestSubprocessBuffering:
         """Test that exceeding buffer size raises an appropriate error."""
 
         async def _test() -> None:
-            # Create incomplete JSON larger than buffer limit
             huge_incomplete = '{"data": "' + "x" * (_MAX_BUFFER_SIZE + 1000)
 
             transport = SubprocessCLITransport(
@@ -270,7 +255,6 @@ class TestSubprocessBuffering:
                 async for msg in transport.receive_messages():
                     messages.append(msg)
 
-            # The exception is wrapped in ExceptionGroup by anyio
             assert len(exc_info.value.exceptions) == 1
             assert isinstance(exc_info.value.exceptions[0], CLIJSONDecodeError)
             assert "exceeded maximum buffer size" in str(exc_info.value.exceptions[0])
@@ -281,27 +265,21 @@ class TestSubprocessBuffering:
         """Test handling a mix of complete and split JSON messages."""
 
         async def _test() -> None:
-            # First: complete JSON
             msg1 = json.dumps({"type": "system", "subtype": "start"})
 
-            # Second: large JSON split across reads
             large_msg = {
                 "type": "assistant",
                 "message": {"content": [{"type": "text", "text": "y" * 5000}]},
             }
             large_json = json.dumps(large_msg)
 
-            # Third: another complete JSON
             msg3 = json.dumps({"type": "system", "subtype": "end"})
 
-            # Simulate streaming with mixed complete and partial messages
             lines = [
                 msg1 + "\n",
-                large_json[:1000],  # First part of large message
-                large_json[1000:3000],  # Middle part
-                large_json[3000:]
-                + "\n"
-                + msg3,  # End of large message + complete message
+                large_json[:1000],
+                large_json[1000:3000],
+                large_json[3000:] + "\n" + msg3,
             ]
 
             transport = SubprocessCLITransport(

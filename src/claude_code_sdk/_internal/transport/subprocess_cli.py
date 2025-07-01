@@ -184,7 +184,6 @@ class SubprocessCLITransport(Transport):
         async with anyio.create_task_group() as tg:
             tg.start_soon(read_stderr)
 
-            # Buffer for incomplete JSON
             json_buffer = ""
 
             try:
@@ -193,7 +192,6 @@ class SubprocessCLITransport(Transport):
                     if not line_str:
                         continue
 
-                    # Split on newlines in case multiple JSON objects are buffered together
                     json_lines = line_str.split("\n")
 
                     for json_line in json_lines:
@@ -201,12 +199,10 @@ class SubprocessCLITransport(Transport):
                         if not json_line:
                             continue
 
-                        # Add to buffer
                         json_buffer += json_line
 
-                        # Check buffer size
                         if len(json_buffer) > _MAX_BUFFER_SIZE:
-                            json_buffer = ""  # Clear buffer to prevent repeated errors
+                            json_buffer = ""
                             raise SDKJSONDecodeError(
                                 f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
                                 ValueError(
@@ -216,14 +212,12 @@ class SubprocessCLITransport(Transport):
 
                         try:
                             data = json.loads(json_buffer)
-                            json_buffer = ""  # Clear buffer on successful parse
+                            json_buffer = ""
                             try:
                                 yield data
                             except GeneratorExit:
-                                # Handle generator cleanup gracefully
                                 return
                         except json.JSONDecodeError:
-                            # Continue accumulating in buffer
                             continue
 
             except anyio.ClosedResourceError:

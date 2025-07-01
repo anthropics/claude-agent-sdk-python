@@ -17,6 +17,8 @@ from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ...types import ClaudeCodeOptions
 from . import Transport
 
+_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+
 
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
@@ -182,13 +184,14 @@ class SubprocessCLITransport(Transport):
         async with anyio.create_task_group() as tg:
             tg.start_soon(read_stderr)
 
+            json_buffer = ""
+
             try:
                 async for line in self._stdout_stream:
                     line_str = line.strip()
                     if not line_str:
                         continue
 
-                    # Split on newlines in case multiple JSON objects are buffered together
                     json_lines = line_str.split("\n")
 
                     for json_line in json_lines:
@@ -196,16 +199,26 @@ class SubprocessCLITransport(Transport):
                         if not json_line:
                             continue
 
+                        # Keep accumulating partial JSON until we can parse it
+                        json_buffer += json_line
+
+                        if len(json_buffer) > _MAX_BUFFER_SIZE:
+                            json_buffer = ""
+                            raise SDKJSONDecodeError(
+                                f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
+                                ValueError(
+                                    f"Buffer size {len(json_buffer)} exceeds limit {_MAX_BUFFER_SIZE}"
+                                ),
+                            )
+
                         try:
-                            data = json.loads(json_line)
+                            data = json.loads(json_buffer)
+                            json_buffer = ""
                             try:
                                 yield data
                             except GeneratorExit:
-                                # Handle generator cleanup gracefully
                                 return
-                        except json.JSONDecodeError as e:
-                            if json_line.startswith("{") or json_line.startswith("["):
-                                raise SDKJSONDecodeError(json_line, e) from e
+                        except json.JSONDecodeError:
                             continue
 
             except anyio.ClosedResourceError:

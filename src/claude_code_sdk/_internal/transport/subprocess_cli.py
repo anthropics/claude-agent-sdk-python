@@ -141,6 +141,11 @@ class SubprocessCLITransport(Transport):
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
 
         except FileNotFoundError as e:
+            # Check if the error comes from the working directory or the CLI
+            if self._cwd and not Path(self._cwd).exists():
+                raise CLIConnectionError(
+                    f"Working directory does not exist: {self._cwd}"
+                ) from e
             raise CLINotFoundError(f"Claude Code not found at: {self._cli_path}") from e
         except Exception as e:
             raise CLIConnectionError(f"Failed to start Claude Code: {e}") from e

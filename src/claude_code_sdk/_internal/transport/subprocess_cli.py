@@ -4,14 +4,14 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, AsyncIterable
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any
+from typing import Any, Union
 
 import anyio
 from anyio.abc import Process
-from anyio.streams.text import TextReceiveStream
+from anyio.streams.text import TextReceiveStream, TextSendStream
 
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
@@ -28,17 +28,21 @@ class SubprocessCLITransport(Transport):
 
     def __init__(
         self,
-        prompt: str,
+        prompt: Union[str, AsyncIterable[dict[str, Any]]],
         options: ClaudeCodeOptions,
         cli_path: str | Path | None = None,
     ):
         self._prompt = prompt
+        self._is_streaming = not isinstance(prompt, str)
         self._options = options
         self._cli_path = str(cli_path) if cli_path else self._find_cli()
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
+        self._stdin_stream: TextSendStream | None = None
+        self._pending_control_responses: dict[str, Any] = {}
+        self._request_counter = 0
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -116,7 +120,14 @@ class SubprocessCLITransport(Transport):
                 ["--mcp-config", json.dumps({"mcpServers": self._options.mcp_servers})]
             )
 
-        cmd.extend(["--print", self._prompt])
+        # Add prompt handling based on mode
+        if self._is_streaming:
+            # Streaming mode: use --input-format stream-json
+            cmd.extend(["--input-format", "stream-json"])
+        else:
+            # String mode: use --print with the prompt
+            cmd.extend(["--print", self._prompt])
+        
         return cmd
 
     async def connect(self) -> None:
@@ -126,9 +137,10 @@ class SubprocessCLITransport(Transport):
 
         cmd = self._build_command()
         try:
+            # Enable stdin pipe for both modes (but we'll close it for string mode)
             self._process = await anyio.open_process(
                 cmd,
-                stdin=None,
+                stdin=PIPE,
                 stdout=PIPE,
                 stderr=PIPE,
                 cwd=self._cwd,
@@ -139,6 +151,18 @@ class SubprocessCLITransport(Transport):
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
             if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
+            
+            # Handle stdin based on mode
+            if self._is_streaming:
+                # Streaming mode: keep stdin open and start streaming task
+                if self._process.stdin:
+                    self._stdin_stream = TextSendStream(self._process.stdin)
+                    # Start streaming messages to stdin
+                    anyio.start_soon(self._stream_to_stdin)
+            else:
+                # String mode: close stdin immediately (backward compatible)
+                if self._process.stdin:
+                    await self._process.stdin.aclose()
 
         except FileNotFoundError as e:
             # Check if the error comes from the working directory or the CLI
@@ -169,9 +193,31 @@ class SubprocessCLITransport(Transport):
         self._process = None
         self._stdout_stream = None
         self._stderr_stream = None
+        self._stdin_stream = None
 
     async def send_request(self, messages: list[Any], options: dict[str, Any]) -> None:
         """Not used for CLI transport - args passed via command line."""
+
+    async def _stream_to_stdin(self) -> None:
+        """Stream messages to stdin for streaming mode."""
+        if not self._stdin_stream or not isinstance(self._prompt, AsyncIterable):
+            return
+        
+        try:
+            async for message in self._prompt:
+                if not self._stdin_stream:
+                    break
+                await self._stdin_stream.send(json.dumps(message) + "\n")
+            
+            # Close stdin when done
+            if self._stdin_stream:
+                await self._stdin_stream.aclose()
+                self._stdin_stream = None
+        except Exception as e:
+            logger.debug(f"Error streaming to stdin: {e}")
+            if self._stdin_stream:
+                await self._stdin_stream.aclose()
+                self._stdin_stream = None
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive messages from CLI."""
@@ -213,6 +259,15 @@ class SubprocessCLITransport(Transport):
                     try:
                         data = json.loads(json_buffer)
                         json_buffer = ""
+                        
+                        # Handle control responses separately
+                        if data.get("type") == "control_response":
+                            request_id = data.get("response", {}).get("request_id")
+                            if request_id and request_id in self._pending_control_responses:
+                                # Store the response for the pending request
+                                self._pending_control_responses[request_id] = data.get("response", {})
+                            continue
+                        
                         try:
                             yield data
                         except GeneratorExit:
@@ -280,3 +335,47 @@ class SubprocessCLITransport(Transport):
     def is_connected(self) -> bool:
         """Check if subprocess is running."""
         return self._process is not None and self._process.returncode is None
+    
+    async def interrupt(self) -> None:
+        """Send interrupt control request (only works in streaming mode)."""
+        if not self._is_streaming:
+            raise CLIConnectionError("Interrupt requires streaming mode (AsyncIterable prompt)")
+        
+        if not self._stdin_stream:
+            raise CLIConnectionError("Not connected or stdin not available")
+        
+        await self._send_control_request({"subtype": "interrupt"})
+    
+    async def _send_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send a control request and wait for response."""
+        if not self._stdin_stream:
+            raise CLIConnectionError("Stdin not available")
+        
+        # Generate unique request ID
+        self._request_counter += 1
+        request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
+        
+        # Build control request
+        control_request = {
+            "type": "control_request",
+            "request_id": request_id,
+            "request": request
+        }
+        
+        # Send request
+        await self._stdin_stream.send(json.dumps(control_request) + "\n")
+        
+        # Wait for response with timeout
+        try:
+            with anyio.fail_after(30.0):  # 30 second timeout
+                while request_id not in self._pending_control_responses:
+                    await anyio.sleep(0.1)
+                
+                response = self._pending_control_responses.pop(request_id)
+                
+                if response.get("subtype") == "error":
+                    raise CLIConnectionError(f"Control request failed: {response.get('error')}")
+                
+                return response
+        except TimeoutError:
+            raise CLIConnectionError("Control request timed out") from None

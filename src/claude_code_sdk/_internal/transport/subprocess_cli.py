@@ -157,8 +157,9 @@ class SubprocessCLITransport(Transport):
                 # Streaming mode: keep stdin open and start streaming task
                 if self._process.stdin:
                     self._stdin_stream = TextSendStream(self._process.stdin)
-                    # Start streaming messages to stdin
-                    anyio.start_soon(self._stream_to_stdin)
+                    # Start streaming messages to stdin in background
+                    import asyncio
+                    asyncio.create_task(self._stream_to_stdin())
             else:
                 # String mode: close stdin immediately (backward compatible)
                 if self._process.stdin:
@@ -209,10 +210,8 @@ class SubprocessCLITransport(Transport):
                     break
                 await self._stdin_stream.send(json.dumps(message) + "\n")
             
-            # Close stdin when done
-            if self._stdin_stream:
-                await self._stdin_stream.aclose()
-                self._stdin_stream = None
+            # Signal EOF but keep the stream open for control messages
+            # This matches the TypeScript implementation which calls stdin.end()
         except Exception as e:
             logger.debug(f"Error streaming to stdin: {e}")
             if self._stdin_stream:

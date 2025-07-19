@@ -279,10 +279,11 @@ class SubprocessCLITransport(Transport):
 
                         # Handle control responses separately
                         if data.get("type") == "control_response":
-                            request_id = data.get("response", {}).get("request_id")
-                            if request_id and request_id in self._pending_control_responses:
+                            response = data.get("response", {})
+                            request_id = response.get("request_id")
+                            if request_id:
                                 # Store the response for the pending request
-                                self._pending_control_responses[request_id] = data.get("response", {})
+                                self._pending_control_responses[request_id] = response
                             continue
 
                         try:

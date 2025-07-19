@@ -13,6 +13,7 @@ from claude_code_sdk import (
     AssistantMessage,
     ClaudeCodeOptions,
     ClaudeSDKClient,
+    CLIConnectionError,
     ResultMessage,
     TextBlock,
 )
@@ -27,18 +28,13 @@ async def example_basic_streaming():
         await client.send_message("What is 2+2?")
 
         # Receive complete response using the helper method
-        messages, result = await client.receive_response()
-
-        # Extract text from assistant's response
-        for msg in messages:
+        async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(f"Claude: {block.text}")
-
-        # Print cost if available
-        if result and result.total_cost_usd:
-            print(f"Cost: ${result.total_cost_usd:.4f}")
+            elif isinstance(msg, ResultMessage) and msg.total_cost_usd:
+                print(f"Cost: ${msg.total_cost_usd:.4f}")
 
     print("Session ended\n")
 
@@ -52,32 +48,22 @@ async def example_multi_turn_conversation():
         print("User: What's the capital of France?")
         await client.send_message("What's the capital of France?")
 
-        messages, _ = await client.receive_response()
-
         # Extract and print response
-        for msg in messages:
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"Claude: {block.text}")
+        async for msg in client.receive_response():
+            content_blocks = getattr(msg, 'content', [])
+            for block in content_blocks:
+                if isinstance(block, TextBlock):
+                    print(f"{block.text}")
 
         # Second turn - follow-up
         print("\nUser: What's the population of that city?")
         await client.send_message("What's the population of that city?")
 
-        messages, _ = await client.receive_response()
-
-        for msg in messages:
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"Claude: {block.text}")
-
-        for msg in messages:
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"Claude: {block.text}")
+        async for msg in client.receive_response():
+            content_blocks = getattr(msg, 'content', [])
+            for block in content_blocks:
+                if isinstance(block, TextBlock):
+                    print(f"{block.text}")
 
     print("\nConversation ended\n")
 
@@ -102,7 +88,7 @@ async def example_concurrent_responses():
         questions = [
             "What is 2 + 2?",
             "What is the square root of 144?",
-            "What is 15% of 80?",
+            "What is 10% of 80?",
         ]
 
         for question in questions:
@@ -168,9 +154,7 @@ async def example_with_interrupt():
         await client.send_message("Never mind, just tell me a quick joke")
 
         # Get the joke
-        messages, result = await client.receive_response()
-
-        for msg in messages:
+        async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
@@ -233,10 +217,8 @@ async def example_with_options():
             "Create a simple hello.txt file with a greeting message"
         )
 
-        messages, result = await client.receive_response()
-
         tool_uses = []
-        for msg in messages:
+        async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
@@ -257,48 +239,34 @@ async def example_error_handling():
     client = ClaudeSDKClient()
 
     try:
-        # Connect with custom stream
-        async def message_stream():
-            yield {
-                "type": "user",
-                "message": {"role": "user", "content": "Hello"},
-                "parent_tool_use_id": None,
-                "session_id": "error-demo",
-            }
+        await client.connect()
 
-        await client.connect(message_stream())
+        # Send a message that will take time to process
+        await client.send_message("Run a bash sleep command for 60 seconds")
 
-        # Create a background task to consume messages (required for interrupt to work)
-        consume_task = None
-
-        async def consume_messages():
-            """Background message consumer."""
-            async for msg in client.receive_messages():
-                if isinstance(msg, AssistantMessage):
-                    print("Received response from Claude")
-
-        # Receive messages with timeout
+        # Try to receive response with a short timeout
         try:
-            # Start consuming messages in background
-            consume_task = asyncio.create_task(consume_messages())
-
-            # Wait for response with timeout
-            await asyncio.wait_for(consume_task, timeout=30.0)
+            messages = []
+            async with asyncio.timeout(10.0):
+                async for msg in client.receive_response():
+                    messages.append(msg)
+                    if isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, TextBlock):
+                                print(f"Claude: {block.text[:50]}...")
+                    elif isinstance(msg, ResultMessage):
+                        print("Received complete response")
+                        break
 
         except asyncio.TimeoutError:
-            print("Response timeout - sending interrupt")
-            # Note: interrupt requires active message consumption
-            # Since we're already consuming in the background task, interrupt will work
-            await client.interrupt()
+            print("\nResponse timeout after 10 seconds - demonstrating graceful handling")
+            print(f"Received {len(messages)} messages before timeout")
 
-            # Cancel the consume task
-            if consume_task:
-                consume_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await consume_task
+    except CLIConnectionError as e:
+        print(f"Connection error: {e}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Unexpected error: {e}")
 
     finally:
         # Always disconnect

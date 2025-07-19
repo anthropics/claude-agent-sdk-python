@@ -146,50 +146,43 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._transport.interrupt()
 
-    async def receive_response(self) -> tuple[list[Message], ResultMessage | None]:
+    async def receive_response(self) -> AsyncIterator[Message]:
         """
-        Receive a complete response from Claude, collecting all messages until ResultMessage.
+        Receive messages from Claude until a ResultMessage is received.
 
-        Compared to receive_messages(), this is a convenience method that
-        handles the common pattern of receiving messages until Claude completes
-        its response. It collects all messages and returns them along with the
-        final ResultMessage.
+        This is an async iterator that yields all messages including the final ResultMessage.
+        It's a convenience method over receive_messages() that automatically stops iteration
+        after receiving a ResultMessage.
 
-        Returns:
-            tuple: A tuple of (messages, result) where:
-                - messages: List of all messages received (UserMessage, AssistantMessage, SystemMessage)
-                - result: The final ResultMessage if received, None if stream ended without result
+        Yields:
+            Message: Each message received (UserMessage, AssistantMessage, SystemMessage, ResultMessage)
 
         Example:
             ```python
             async with ClaudeSDKClient() as client:
-                # First turn
+                # Send message and process response
                 await client.send_message("What's the capital of France?")
-                messages, result = await client.receive_response()
 
-                # Extract assistant's response
-                for msg in messages:
+                async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):
                         for block in msg.content:
                             if isinstance(block, TextBlock):
                                 print(f"Claude: {block.text}")
+                    elif isinstance(msg, ResultMessage):
+                        print(f"Cost: ${msg.total_cost_usd:.4f}")
+            ```
 
-                # Second turn
-                await client.send_message("What's the population?")
-                messages, result = await client.receive_response()
-                # ... process response
+        Note:
+            The iterator will automatically stop after yielding a ResultMessage.
+            If you need to collect all messages into a list, use:
+            ```python
+            messages = [msg async for msg in client.receive_response()]
             ```
         """
-        from .types import ResultMessage
-
-        messages = []
         async for message in self.receive_messages():
-            messages.append(message)
+            yield message
             if isinstance(message, ResultMessage):
-                return messages, message
-
-        # Stream ended without ResultMessage
-        return messages, None
+                return
 
     async def disconnect(self) -> None:
         """Disconnect from Claude."""

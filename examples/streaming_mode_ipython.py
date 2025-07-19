@@ -10,17 +10,18 @@ Each example is self-contained and can be run independently.
 # BASIC STREAMING
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
 
 async with ClaudeSDKClient() as client:
     await client.send_message("What is 2+2?")
-    messages, result = await client.receive_response()
 
-    for msg in messages:
+    async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, TextBlock):
                     print(f"Claude: {block.text}")
+        elif isinstance(msg, ResultMessage) and msg.total_cost_usd:
+            print(f"Cost: ${msg.total_cost_usd:.4f}")
 
 
 # ============================================================================
@@ -31,18 +32,17 @@ import asyncio
 from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
 
 async with ClaudeSDKClient() as client:
-    async def receive_response():
-        messages, _ = await client.receive_response()
-        for msg in messages:
+    async def send_and_receive(prompt):
+        await client.send_message(prompt)
+        async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(f"Claude: {block.text}")
 
-    await client.send_message("Tell me a short joke")
-    await receive_response()
-    await client.send_message("Now tell me a fun fact")
-    await receive_response()
+    await send_and_receive("Tell me a short joke")
+    print("\n---\n")
+    await send_and_receive("Now tell me a fun fact")
 
 
 # ============================================================================
@@ -58,8 +58,7 @@ await client.connect()
 
 # Helper to get response
 async def get_response():
-    messages, result = await client.receive_response()
-    for msg in messages:
+    async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, TextBlock):
@@ -123,9 +122,8 @@ async with ClaudeSDKClient() as client:
     # Send a new message after interrupt
     print("\n--- After interrupt, sending new message ---\n")
     await client.send_message("Just say 'Hello! I was interrupted.'")
-    messages, result = await client.receive_response()
 
-    for msg in messages:
+    async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, TextBlock):
@@ -142,12 +140,41 @@ try:
     async with ClaudeSDKClient() as client:
         await client.send_message("Run a bash sleep command for 60 seconds")
 
-        # Timeout after 30 seconds
-        messages, result = await asyncio.wait_for(
-            client.receive_response(), timeout=20.0
-        )
+        # Timeout after 20 seconds
+        messages = []
+        async with asyncio.timeout(20.0):
+            async for msg in client.receive_response():
+                messages.append(msg)
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            print(f"Claude: {block.text}")
 
 except asyncio.TimeoutError:
-    print("Request timed out")
+    print("Request timed out after 20 seconds")
 except Exception as e:
     print(f"Error: {e}")
+
+
+# ============================================================================
+# COLLECTING ALL MESSAGES INTO A LIST
+# ============================================================================
+
+from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
+
+async with ClaudeSDKClient() as client:
+    await client.send_message("What are the primary colors?")
+
+    # Collect all messages into a list
+    messages = [msg async for msg in client.receive_response()]
+
+    # Process them afterwards
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    print(f"Claude: {block.text}")
+        elif isinstance(msg, ResultMessage):
+            print(f"Total messages: {len(messages)}")
+            if msg.total_cost_usd:
+                print(f"Cost: ${msg.total_cost_usd:.4f}")

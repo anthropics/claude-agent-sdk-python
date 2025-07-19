@@ -161,6 +161,7 @@ class SubprocessCLITransport(Transport):
                     self._stdin_stream = TextSendStream(self._process.stdin)
                     # Start streaming messages to stdin in background
                     import asyncio
+
                     asyncio.create_task(self._stream_to_stdin())
             else:
                 # String mode: close stdin immediately (backward compatible)
@@ -214,7 +215,7 @@ class SubprocessCLITransport(Transport):
                     "type": "user",
                     "message": {"role": "user", "content": str(message)},
                     "parent_tool_use_id": None,
-                    "session_id": options.get("session_id", "default")
+                    "session_id": options.get("session_id", "default"),
                 }
 
             await self._stdin_stream.send(json.dumps(message) + "\n")
@@ -362,7 +363,9 @@ class SubprocessCLITransport(Transport):
     async def interrupt(self) -> None:
         """Send interrupt control request (only works in streaming mode)."""
         if not self._is_streaming:
-            raise CLIConnectionError("Interrupt requires streaming mode (AsyncIterable prompt)")
+            raise CLIConnectionError(
+                "Interrupt requires streaming mode (AsyncIterable prompt)"
+            )
 
         if not self._stdin_stream:
             raise CLIConnectionError("Not connected or stdin not available")
@@ -382,7 +385,7 @@ class SubprocessCLITransport(Transport):
         control_request = {
             "type": "control_request",
             "request_id": request_id,
-            "request": request
+            "request": request,
         }
 
         # Send request
@@ -397,7 +400,9 @@ class SubprocessCLITransport(Transport):
                 response = self._pending_control_responses.pop(request_id)
 
                 if response.get("subtype") == "error":
-                    raise CLIConnectionError(f"Control request failed: {response.get('error')}")
+                    raise CLIConnectionError(
+                        f"Control request failed: {response.get('error')}"
+                    )
 
                 return response
         except TimeoutError:

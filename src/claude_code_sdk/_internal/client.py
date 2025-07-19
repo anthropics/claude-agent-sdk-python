@@ -20,9 +20,7 @@ class InternalClient:
         """Process a query through transport."""
 
         transport = SubprocessCLITransport(
-            prompt=prompt,
-            options=options,
-            close_stdin_after_prompt=True
+            prompt=prompt, options=options, close_stdin_after_prompt=True
         )
 
         try:

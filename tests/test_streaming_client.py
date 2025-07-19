@@ -389,7 +389,8 @@ class TestQueryWithAsyncIterable:
         if response is None:
             response = '{"type": "result", "subtype": "success", "duration_ms": 100, "duration_api_ms": 50, "is_error": false, "num_turns": 1, "session_id": "test", "total_cost_usd": 0.001}'
 
-        script_content = textwrap.dedent("""
+        script_content = textwrap.dedent(
+            """
             #!/usr/bin/env python3
             import sys
             import json
@@ -416,7 +417,8 @@ class TestQueryWithAsyncIterable:
         )
 
         if expected_messages is not None:
-            script_content += textwrap.dedent(f"""
+            script_content += textwrap.dedent(
+                f"""
                 # Verify we got the expected messages
                 assert len(stdin_messages) == {len(expected_messages)}
                 """,
@@ -425,12 +427,14 @@ class TestQueryWithAsyncIterable:
                 script_content += f'''assert '"{msg}"' in stdin_messages[{i}]\n'''
 
         if should_error:
-            script_content += textwrap.dedent("""
+            script_content += textwrap.dedent(
+                """
                 sys.exit(1)
                 """,
             )
         else:
-            script_content += textwrap.dedent(f"""
+            script_content += textwrap.dedent(
+                f"""
                 # Output response
                 print('{response}')
                 """,

@@ -31,6 +31,7 @@ class SubprocessCLITransport(Transport):
         prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeCodeOptions,
         cli_path: str | Path | None = None,
+        close_stdin_after_prompt: bool = False,
     ):
         self._prompt = prompt
         self._is_streaming = not isinstance(prompt, str)
@@ -43,6 +44,7 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._pending_control_responses: dict[str, Any] = {}
         self._request_counter = 0
+        self._close_stdin_after_prompt = close_stdin_after_prompt
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -228,8 +230,11 @@ class SubprocessCLITransport(Transport):
                     break
                 await self._stdin_stream.send(json.dumps(message) + "\n")
 
-            # Don't close stdin - keep it open for send_request
-            # Users can explicitly call disconnect() when done
+            # Close stdin after prompt if requested (e.g., for query() one-shot mode)
+            if self._close_stdin_after_prompt and self._stdin_stream:
+                await self._stdin_stream.aclose()
+                self._stdin_stream = None
+            # Otherwise keep stdin open for send_request (ClaudeSDKClient interactive mode)
         except Exception as e:
             logger.debug(f"Error streaming to stdin: {e}")
             if self._stdin_stream:

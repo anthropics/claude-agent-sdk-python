@@ -200,10 +200,10 @@ class SubprocessCLITransport(Transport):
         """Send additional messages in streaming mode."""
         if not self._is_streaming:
             raise CLIConnectionError("send_request only works in streaming mode")
-        
+
         if not self._stdin_stream:
             raise CLIConnectionError("stdin not available - stream may have ended")
-        
+
         # Send each message as a user message
         for message in messages:
             # Ensure message has required structure
@@ -214,7 +214,7 @@ class SubprocessCLITransport(Transport):
                     "parent_tool_use_id": None,
                     "session_id": options.get("session_id", "default")
                 }
-            
+
             await self._stdin_stream.send(json.dumps(message) + "\n")
 
     async def _stream_to_stdin(self) -> None:

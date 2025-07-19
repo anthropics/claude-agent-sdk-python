@@ -403,30 +403,26 @@ assert '"Second"' in stdin_messages[1]
 # Output a valid result
 print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_api_ms": 50, "is_error": false, "num_turns": 1, "session_id": "test", "total_cost_usd": 0.001}')
 """)
-            
+
             Path(test_script).chmod(0o755)
 
             try:
                 # Mock _find_cli to return python executing our test script
                 with patch.object(
-                    SubprocessCLITransport,
-                    "_find_cli",
-                    return_value=sys.executable
+                    SubprocessCLITransport, "_find_cli", return_value=sys.executable
                 ):
                     # Mock _build_command to add our test script as first argument
                     original_build_command = SubprocessCLITransport._build_command
-                    
+
                     def mock_build_command(self):
                         # Get original command
                         cmd = original_build_command(self)
                         # Replace the CLI path with python + script
                         cmd[0] = test_script
                         return cmd
-                    
+
                     with patch.object(
-                        SubprocessCLITransport,
-                        "_build_command",
-                        mock_build_command
+                        SubprocessCLITransport, "_build_command", mock_build_command
                     ):
                         # Run query with async iterable
                         messages = []

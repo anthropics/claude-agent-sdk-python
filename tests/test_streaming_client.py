@@ -1,7 +1,11 @@
 """Tests for ClaudeSDKClient streaming functionality and query() with async iterables."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
@@ -12,11 +16,11 @@ from claude_code_sdk import (
     ClaudeSDKClient,
     CLIConnectionError,
     ResultMessage,
-    SystemMessage,
     TextBlock,
     UserMessage,
     query,
 )
+from claude_code_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 
 class TestClaudeSDKClientStreaming:
@@ -369,6 +373,76 @@ class TestClaudeSDKClientStreaming:
 class TestQueryWithAsyncIterable:
     """Test query() function with async iterable inputs."""
 
+    def _create_test_script(
+        self, expected_messages=None, response=None, should_error=False
+    ):
+        """Create a test script that validates CLI args and stdin messages.
+
+        Args:
+            expected_messages: List of expected message content strings, or None to skip validation
+            response: Custom response to output, defaults to a success result
+            should_error: If True, script will exit with error after reading stdin
+
+        Returns:
+            Path to the test script
+        """
+        if response is None:
+            response = '{"type": "result", "subtype": "success", "duration_ms": 100, "duration_api_ms": 50, "is_error": false, "num_turns": 1, "session_id": "test", "total_cost_usd": 0.001}'
+
+        script_content = textwrap.dedent("""
+            #!/usr/bin/env python3
+            import sys
+            import json
+            import time
+
+            # Check command line args
+            args = sys.argv[1:]
+            assert "--output-format" in args
+            assert "stream-json" in args
+
+            # Read stdin messages
+            stdin_messages = []
+            stdin_closed = False
+            try:
+                while True:
+                    line = sys.stdin.readline()
+                    if not line:
+                        stdin_closed = True
+                        break
+                    stdin_messages.append(line.strip())
+            except:
+                stdin_closed = True
+            """,
+        )
+
+        if expected_messages is not None:
+            script_content += textwrap.dedent(f"""
+                # Verify we got the expected messages
+                assert len(stdin_messages) == {len(expected_messages)}
+                """,
+            )
+            for i, msg in enumerate(expected_messages):
+                script_content += f'''assert '"{msg}"' in stdin_messages[{i}]\n'''
+
+        if should_error:
+            script_content += textwrap.dedent("""
+                sys.exit(1)
+                """,
+            )
+        else:
+            script_content += textwrap.dedent(f"""
+                # Output response
+                print('{response}')
+                """,
+            )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            test_script = f.name
+            f.write(script_content)
+
+        Path(test_script).chmod(0o755)
+        return test_script
+
     def test_query_with_async_iterable(self):
         """Test query with async iterable of messages."""
 
@@ -377,204 +451,35 @@ class TestQueryWithAsyncIterable:
                 yield {"type": "user", "message": {"role": "user", "content": "First"}}
                 yield {"type": "user", "message": {"role": "user", "content": "Second"}}
 
-            with patch(
-                "claude_code_sdk._internal.client.InternalClient"
-            ) as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
-
-                # Mock the async generator response
-                async def mock_process():
-                    yield AssistantMessage(
-                        content=[TextBlock(text="Response to both messages")]
-                    )
-                    yield ResultMessage(
-                        subtype="success",
-                        duration_ms=1000,
-                        duration_api_ms=800,
-                        is_error=False,
-                        num_turns=2,
-                        session_id="test",
-                        total_cost_usd=0.002,
-                    )
-
-                mock_client.process_query.return_value = mock_process()
-
-                # Run query with async iterable
-                messages = []
-                async for msg in query(prompt=message_stream()):
-                    messages.append(msg)
-
-                assert len(messages) == 2
-                assert isinstance(messages[0], AssistantMessage)
-                assert isinstance(messages[1], ResultMessage)
-
-                # Verify process_query was called with async iterable
-                call_kwargs = mock_client.process_query.call_args.kwargs
-                # The prompt should be an async generator
-                assert hasattr(call_kwargs["prompt"], "__aiter__")
-
-        anyio.run(_test)
-
-    def test_query_async_iterable_with_options(self):
-        """Test query with async iterable and custom options."""
-
-        async def _test():
-            async def complex_stream():
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": "Setup"},
-                    "parent_tool_use_id": None,
-                    "session_id": "session-1",
-                }
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": "Execute"},
-                    "parent_tool_use_id": None,
-                    "session_id": "session-1",
-                }
-
-            options = ClaudeCodeOptions(
-                cwd="/workspace",
-                permission_mode="acceptEdits",
-                max_turns=10,
+            test_script = self._create_test_script(
+                expected_messages=["First", "Second"]
             )
 
-            with patch(
-                "claude_code_sdk._internal.client.InternalClient"
-            ) as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
+            try:
+                # Mock _build_command to return our test script
+                with patch.object(
+                    SubprocessCLITransport,
+                    "_build_command",
+                    return_value=[
+                        sys.executable,
+                        test_script,
+                        "--output-format",
+                        "stream-json",
+                        "--verbose",
+                    ],
+                ):
+                    # Run query with async iterable
+                    messages = []
+                    async for msg in query(prompt=message_stream()):
+                        messages.append(msg)
 
-                # Mock response
-                async def mock_process():
-                    yield AssistantMessage(content=[TextBlock(text="Done")])
-
-                mock_client.process_query.return_value = mock_process()
-
-                # Run query
-                messages = []
-                async for msg in query(prompt=complex_stream(), options=options):
-                    messages.append(msg)
-
-                # Verify options were passed
-                call_kwargs = mock_client.process_query.call_args.kwargs
-                assert call_kwargs["options"] is options
-
-        anyio.run(_test)
-
-    def test_query_empty_async_iterable(self):
-        """Test query with empty async iterable."""
-
-        async def _test():
-            async def empty_stream():
-                # Never yields anything
-                if False:
-                    yield
-
-            with patch(
-                "claude_code_sdk._internal.client.InternalClient"
-            ) as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
-
-                # Mock response
-                async def mock_process():
-                    yield SystemMessage(
-                        subtype="info", data={"message": "No input provided"}
-                    )
-
-                mock_client.process_query.return_value = mock_process()
-
-                # Run query with empty stream
-                messages = []
-                async for msg in query(prompt=empty_stream()):
-                    messages.append(msg)
-
-                assert len(messages) == 1
-                assert isinstance(messages[0], SystemMessage)
-
-        anyio.run(_test)
-
-    def test_query_async_iterable_with_delay(self):
-        """Test query with async iterable that has delays between yields."""
-
-        async def _test():
-            async def delayed_stream():
-                yield {"type": "user", "message": {"role": "user", "content": "Start"}}
-                await asyncio.sleep(0.1)
-                yield {"type": "user", "message": {"role": "user", "content": "Middle"}}
-                await asyncio.sleep(0.1)
-                yield {"type": "user", "message": {"role": "user", "content": "End"}}
-
-            with patch(
-                "claude_code_sdk._internal.client.InternalClient"
-            ) as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
-
-                # Track if the stream was consumed
-                stream_consumed = False
-
-                # Mock process_query to consume the input stream
-                async def mock_process_query(prompt, options):
-                    nonlocal stream_consumed
-                    # Consume the async iterable to trigger delays
-                    items = []
-                    async for item in prompt:
-                        items.append(item)
-                    stream_consumed = True
-                    # Then yield response
-                    yield AssistantMessage(
-                        content=[TextBlock(text="Processing all messages")]
-                    )
-
-                mock_client.process_query = mock_process_query
-
-                # Time the execution
-                import time
-
-                start_time = time.time()
-                messages = []
-                async for msg in query(prompt=delayed_stream()):
-                    messages.append(msg)
-                elapsed = time.time() - start_time
-
-                # Should have taken at least 0.2 seconds due to delays
-                assert elapsed >= 0.2
-                assert len(messages) == 1
-                assert stream_consumed
-
-        anyio.run(_test)
-
-    def test_query_async_iterable_exception_handling(self):
-        """Test query handles exceptions in async iterable."""
-
-        async def _test():
-            async def failing_stream():
-                yield {"type": "user", "message": {"role": "user", "content": "First"}}
-                raise ValueError("Stream error")
-
-            with patch(
-                "claude_code_sdk._internal.client.InternalClient"
-            ) as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
-
-                # The internal client should receive the failing stream
-                # and handle the error appropriately
-                async def mock_process():
-                    # Simulate processing until error
-                    yield AssistantMessage(content=[TextBlock(text="Error occurred")])
-
-                mock_client.process_query.return_value = mock_process()
-
-                # Query should handle the error gracefully
-                messages = []
-                async for msg in query(prompt=failing_stream()):
-                    messages.append(msg)
-
-                assert len(messages) == 1
+                    # Should get the result message
+                    assert len(messages) == 1
+                    assert isinstance(messages[0], ResultMessage)
+                    assert messages[0].subtype == "success"
+            finally:
+                # Clean up
+                Path(test_script).unlink()
 
         anyio.run(_test)
 

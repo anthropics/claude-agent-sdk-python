@@ -4,10 +4,10 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncIterator, AsyncIterable
+from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any, Union
+from typing import Any
 
 import anyio
 from anyio.abc import Process
@@ -28,7 +28,7 @@ class SubprocessCLITransport(Transport):
 
     def __init__(
         self,
-        prompt: Union[str, AsyncIterable[dict[str, Any]]],
+        prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeCodeOptions,
         cli_path: str | Path | None = None,
     ):
@@ -126,8 +126,8 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--input-format", "stream-json"])
         else:
             # String mode: use --print with the prompt
-            cmd.extend(["--print", self._prompt])
-        
+            cmd.extend(["--print", str(self._prompt)])
+
         return cmd
 
     async def connect(self) -> None:
@@ -151,7 +151,7 @@ class SubprocessCLITransport(Transport):
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
             if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-            
+
             # Handle stdin based on mode
             if self._is_streaming:
                 # Streaming mode: keep stdin open and start streaming task
@@ -197,21 +197,39 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream = None
 
     async def send_request(self, messages: list[Any], options: dict[str, Any]) -> None:
-        """Not used for CLI transport - args passed via command line."""
+        """Send additional messages in streaming mode."""
+        if not self._is_streaming:
+            raise CLIConnectionError("send_request only works in streaming mode")
+        
+        if not self._stdin_stream:
+            raise CLIConnectionError("stdin not available - stream may have ended")
+        
+        # Send each message as a user message
+        for message in messages:
+            # Ensure message has required structure
+            if not isinstance(message, dict):
+                message = {
+                    "type": "user",
+                    "message": {"role": "user", "content": str(message)},
+                    "parent_tool_use_id": None,
+                    "session_id": options.get("session_id", "default")
+                }
+            
+            await self._stdin_stream.send(json.dumps(message) + "\n")
 
     async def _stream_to_stdin(self) -> None:
         """Stream messages to stdin for streaming mode."""
         if not self._stdin_stream or not isinstance(self._prompt, AsyncIterable):
             return
-        
+
         try:
             async for message in self._prompt:
                 if not self._stdin_stream:
                     break
                 await self._stdin_stream.send(json.dumps(message) + "\n")
-            
-            # Signal EOF but keep the stream open for control messages
-            # This matches the TypeScript implementation which calls stdin.end()
+
+            # Don't close stdin - keep it open for send_request
+            # Users can explicitly call disconnect() when done
         except Exception as e:
             logger.debug(f"Error streaming to stdin: {e}")
             if self._stdin_stream:
@@ -258,7 +276,7 @@ class SubprocessCLITransport(Transport):
                     try:
                         data = json.loads(json_buffer)
                         json_buffer = ""
-                        
+
                         # Handle control responses separately
                         if data.get("type") == "control_response":
                             request_id = data.get("response", {}).get("request_id")
@@ -266,7 +284,7 @@ class SubprocessCLITransport(Transport):
                                 # Store the response for the pending request
                                 self._pending_control_responses[request_id] = data.get("response", {})
                             continue
-                        
+
                         try:
                             yield data
                         except GeneratorExit:
@@ -334,47 +352,47 @@ class SubprocessCLITransport(Transport):
     def is_connected(self) -> bool:
         """Check if subprocess is running."""
         return self._process is not None and self._process.returncode is None
-    
+
     async def interrupt(self) -> None:
         """Send interrupt control request (only works in streaming mode)."""
         if not self._is_streaming:
             raise CLIConnectionError("Interrupt requires streaming mode (AsyncIterable prompt)")
-        
+
         if not self._stdin_stream:
             raise CLIConnectionError("Not connected or stdin not available")
-        
+
         await self._send_control_request({"subtype": "interrupt"})
-    
+
     async def _send_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Send a control request and wait for response."""
         if not self._stdin_stream:
             raise CLIConnectionError("Stdin not available")
-        
+
         # Generate unique request ID
         self._request_counter += 1
         request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
-        
+
         # Build control request
         control_request = {
             "type": "control_request",
             "request_id": request_id,
             "request": request
         }
-        
+
         # Send request
         await self._stdin_stream.send(json.dumps(control_request) + "\n")
-        
+
         # Wait for response with timeout
         try:
             with anyio.fail_after(30.0):  # 30 second timeout
                 while request_id not in self._pending_control_responses:
                     await anyio.sleep(0.1)
-                
+
                 response = self._pending_control_responses.pop(request_id)
-                
+
                 if response.get("subtype") == "error":
                     raise CLIConnectionError(f"Control request failed: {response.get('error')}")
-                
+
                 return response
         except TimeoutError:
             raise CLIConnectionError("Control request timed out") from None

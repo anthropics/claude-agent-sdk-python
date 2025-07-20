@@ -394,19 +394,13 @@ class SubprocessCLITransport(Transport):
         # Send request
         await self._stdin_stream.send(json.dumps(control_request) + "\n")
 
-        # Wait for response with timeout
-        try:
-            with anyio.fail_after(30.0):  # 30 second timeout
-                while request_id not in self._pending_control_responses:
-                    await anyio.sleep(0.1)
+        # Wait for response
+        while request_id not in self._pending_control_responses:
+            await anyio.sleep(0.1)
 
-                response = self._pending_control_responses.pop(request_id)
+        response = self._pending_control_responses.pop(request_id)
 
-                if response.get("subtype") == "error":
-                    raise CLIConnectionError(
-                        f"Control request failed: {response.get('error')}"
-                    )
+        if response.get("subtype") == "error":
+            raise CLIConnectionError(f"Control request failed: {response.get('error')}")
 
-                return response
-        except TimeoutError:
-            raise CLIConnectionError("Control request timed out") from None
+        return response

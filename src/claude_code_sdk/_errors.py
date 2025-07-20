@@ -1,5 +1,7 @@
 """Error types for Claude SDK."""
 
+from typing import Any
+
 
 class ClaudeSDKError(Exception):
     """Base exception for all Claude SDK errors."""
@@ -49,6 +51,6 @@ class CLIJSONDecodeError(ClaudeSDKError):
 class MessageParseError(ClaudeSDKError):
     """Raised when unable to parse a message from CLI output."""
 
-    def __init__(self, message: str, data: dict | None = None):
+    def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)

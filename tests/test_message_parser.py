@@ -19,7 +19,10 @@ class TestMessageParser:
 
     def test_parse_valid_user_message(self):
         """Test parsing a valid user message."""
-        data = {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+        data = {
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
         message = parse_message(data)
         assert isinstance(message, UserMessage)
 

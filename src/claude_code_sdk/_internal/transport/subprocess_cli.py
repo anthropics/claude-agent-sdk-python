@@ -42,7 +42,7 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream: TextReceiveStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
-        self._pending_control_responses: dict[str, Any] = {}
+        self._pending_control_responses: dict[str, dict[str, Any]] = {}
         self._request_counter = 0
         self._close_stdin_after_prompt = close_stdin_after_prompt
 

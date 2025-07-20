@@ -2,13 +2,14 @@
 
 import os
 from collections.abc import AsyncIterable, AsyncIterator
+from typing import Any
 
 from ._internal.client import InternalClient
 from .types import ClaudeCodeOptions, Message
 
 
 async def query(
-    *, prompt: str | AsyncIterable[dict], options: ClaudeCodeOptions | None = None
+    *, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeCodeOptions | None = None
 ) -> AsyncIterator[Message]:
     """
     Query Claude Code for one-shot or unidirectional streaming interactions.

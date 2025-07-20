@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import AsyncIterable, AsyncIterator
+from typing import Any
 
 from ._errors import CLIConnectionError
 from .types import ClaudeCodeOptions, Message, ResultMessage
@@ -94,19 +95,20 @@ class ClaudeSDKClient:
         if options is None:
             options = ClaudeCodeOptions()
         self.options = options
-        self._transport = None
+        self._transport: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
-    async def connect(self, prompt: str | AsyncIterable[dict] | None = None) -> None:
+    async def connect(self, prompt: str | AsyncIterable[dict[str, Any]] | None = None) -> None:
         """Connect to Claude with a prompt or message stream."""
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Auto-connect with empty async iterable if no prompt is provided
-        async def _empty_stream():
+        async def _empty_stream() -> AsyncIterator[dict[str, Any]]:
             # Never yields, but indicates that this function is an iterator and
             # keeps the connection open.
-            if False:
-                yield
+            # This yield is never reached but makes this an async generator
+            return
+            yield {}  # type: ignore[unreachable]
 
         self._transport = SubprocessCLITransport(
             prompt=_empty_stream() if prompt is None else prompt,
@@ -190,12 +192,12 @@ class ClaudeSDKClient:
             await self._transport.disconnect()
             self._transport = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
         """Exit async context - always disconnects."""
         await self.disconnect()
         return False

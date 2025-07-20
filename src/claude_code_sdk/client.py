@@ -126,9 +126,7 @@ class ClaudeSDKClient:
         from ._internal.message_parser import parse_message
 
         async for data in self._transport.receive_messages():
-            message = parse_message(data)
-            if message:
-                yield message
+            yield parse_message(data)
 
     async def query(
         self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"

@@ -44,3 +44,11 @@ class CLIJSONDecodeError(ClaudeSDKError):
         self.line = line
         self.original_error = original_error
         super().__init__(f"Failed to decode JSON: {line[:100]}...")
+
+
+class MessageParseError(ClaudeSDKError):
+    """Raised when unable to parse a message from CLI output."""
+
+    def __init__(self, message: str, data: dict | None = None):
+        self.data = data
+        super().__init__(message)

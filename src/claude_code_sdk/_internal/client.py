@@ -27,9 +27,7 @@ class InternalClient:
             await transport.connect()
 
             async for data in transport.receive_messages():
-                message = parse_message(data)
-                if message:
-                    yield message
+                yield parse_message(data)
 
         finally:
             await transport.disconnect()

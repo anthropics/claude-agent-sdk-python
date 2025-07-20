@@ -297,8 +297,9 @@ class SubprocessCLITransport(Transport):
                         except GeneratorExit:
                             return
                     except json.JSONDecodeError:
-                        # Don't clear buffer - we might be in the middle of a split JSON message
-                        # The buffer will be cleared when we successfully parse or hit size limit
+                        # We are speculatively decoding the buffer until we get
+                        # a full JSON object. If there is an actual issue, we
+                        # raise an error after _MAX_BUFFER_SIZE.
                         continue
 
         except anyio.ClosedResourceError:

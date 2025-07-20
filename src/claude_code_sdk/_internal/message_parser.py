@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
@@ -18,7 +19,7 @@ from ..types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_message(data: dict[str, Any]) -> Message | None:
+def parse_message(data: dict[str, Any]) -> Message:
     """
     Parse message from CLI output into typed Message objects.
 
@@ -26,25 +27,29 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         data: Raw message dictionary from CLI output
 
     Returns:
-        Parsed Message object or None if type is unrecognized or parsing fails
-    """
-    try:
-        message_type = data.get("type")
-        if not message_type:
-            logger.warning("Message missing 'type' field: %s", data)
-            return None
+        Parsed Message object
 
-    except AttributeError:
-        logger.error("Invalid message data type (expected dict): %s", type(data))
-        return None
+    Raises:
+        MessageParseError: If parsing fails or message type is unrecognized
+    """
+    if not isinstance(data, dict):
+        raise MessageParseError(
+            f"Invalid message data type (expected dict, got {type(data).__name__})",
+            data,
+        )
+
+    message_type = data.get("type")
+    if not message_type:
+        raise MessageParseError("Message missing 'type' field", data)
 
     match message_type:
         case "user":
             try:
                 return UserMessage(content=data["message"]["content"])
             except KeyError as e:
-                logger.error("Missing required field in user message: %s", e)
-                return None
+                raise MessageParseError(
+                    f"Missing required field in user message: {e}", data
+                ) from e
 
         case "assistant":
             try:
@@ -72,8 +77,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
                 return AssistantMessage(content=content_blocks)
             except KeyError as e:
-                logger.error("Missing required field in assistant message: %s", e)
-                return None
+                raise MessageParseError(
+                    f"Missing required field in assistant message: {e}", data
+                ) from e
 
         case "system":
             try:
@@ -82,8 +88,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     data=data,
                 )
             except KeyError as e:
-                logger.error("Missing required field in system message: %s", e)
-                return None
+                raise MessageParseError(
+                    f"Missing required field in system message: {e}", data
+                ) from e
 
         case "result":
             try:
@@ -99,9 +106,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     result=data.get("result"),
                 )
             except KeyError as e:
-                logger.error("Missing required field in result message: %s", e)
-                return None
+                raise MessageParseError(
+                    f"Missing required field in result message: {e}", data
+                ) from e
 
         case _:
-            logger.debug("Unknown message type: %s", message_type)
-            return None
+            raise MessageParseError(f"Unknown message type: {message_type}", data)

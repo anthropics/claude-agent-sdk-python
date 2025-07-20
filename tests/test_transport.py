@@ -103,6 +103,12 @@ class TestSubprocessCLITransport:
                 mock_process.wait = AsyncMock()
                 mock_process.stdout = MagicMock()
                 mock_process.stderr = MagicMock()
+
+                # Mock stdin with aclose method
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
                 mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(

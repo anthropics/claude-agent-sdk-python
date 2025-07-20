@@ -9,7 +9,9 @@ from .types import ClaudeCodeOptions, Message
 
 
 async def query(
-    *, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeCodeOptions | None = None
+    *,
+    prompt: str | AsyncIterable[dict[str, Any]],
+    options: ClaudeCodeOptions | None = None,
 ) -> AsyncIterator[Message]:
     """
     Query Claude Code for one-shot or unidirectional streaming interactions.

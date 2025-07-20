@@ -98,7 +98,9 @@ class ClaudeSDKClient:
         self._transport: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
-    async def connect(self, prompt: str | AsyncIterable[dict[str, Any]] | None = None) -> None:
+    async def connect(
+        self, prompt: str | AsyncIterable[dict[str, Any]] | None = None
+    ) -> None:
         """Connect to Claude with a prompt or message stream."""
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
@@ -128,7 +130,9 @@ class ClaudeSDKClient:
             if message:
                 yield message
 
-    async def query(self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default") -> None:
+    async def query(
+        self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"
+    ) -> None:
         """
         Send a new request in streaming mode.
 

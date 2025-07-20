@@ -3,8 +3,8 @@
 ```bash
 # Lint and style
 # Check for issues and fix automatically
-python -m ruff check src/ test/ --fix
-python -m ruff format src/ test/
+python -m ruff check src/ tests/ --fix
+python -m ruff format src/ tests/
 
 # Typecheck (only done for src/)
 python -m mypy src/

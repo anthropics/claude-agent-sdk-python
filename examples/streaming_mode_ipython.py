@@ -4,6 +4,10 @@ IPython-friendly code snippets for ClaudeSDKClient streaming mode.
 
 These examples are designed to be copy-pasted directly into IPython.
 Each example is self-contained and can be run independently.
+
+The queries are intentionally simplistic. In reality, a query can be a more
+complex task that Claude SDK uses its agentic capabilities and tools (e.g. run
+bash commands, edit files, search the web, fetch web content) to accomplish.
 """
 
 # ============================================================================
@@ -13,15 +17,14 @@ Each example is self-contained and can be run independently.
 from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
 
 async with ClaudeSDKClient() as client:
-    await client.send_message("What is 2+2?")
+    print("User: What is 2+2?")
+    await client.query("What is 2+2?")
 
     async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, TextBlock):
                     print(f"Claude: {block.text}")
-        elif isinstance(msg, ResultMessage) and msg.total_cost_usd:
-            print(f"Cost: ${msg.total_cost_usd:.4f}")
 
 
 # ============================================================================
@@ -33,7 +36,8 @@ from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
 
 async with ClaudeSDKClient() as client:
     async def send_and_receive(prompt):
-        await client.send_message(prompt)
+        print(f"User: {prompt}")
+        await client.query(prompt)
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
@@ -66,10 +70,12 @@ async def get_response():
 
 
 # Use it multiple times
-await client.send_message("What's 2+2?")
+print("User: What's 2+2?")
+await client.query("What's 2+2?")
 await get_response()
 
-await client.send_message("What's 10*10?")
+print("User: What's 10*10?")
+await client.query("What's 10*10?")
 await get_response()
 
 # Don't forget to disconnect when done
@@ -89,7 +95,8 @@ async with ClaudeSDKClient() as client:
     print("\n--- Sending initial message ---\n")
 
     # Send a long-running task
-    await client.send_message("Count from 1 to 100 slowly using bash sleep")
+    print("User: Count from 1 to 100, run bash sleep for 1 second in between")
+    await client.query("Count from 1 to 100, run bash sleep for 1 second in between")
 
     # Create a background task to consume messages
     messages_received = []
@@ -121,7 +128,7 @@ async with ClaudeSDKClient() as client:
 
     # Send a new message after interrupt
     print("\n--- After interrupt, sending new message ---\n")
-    await client.send_message("Just say 'Hello! I was interrupted.'")
+    await client.query("Just say 'Hello! I was interrupted.'")
 
     async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
@@ -138,7 +145,8 @@ from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
 
 try:
     async with ClaudeSDKClient() as client:
-        await client.send_message("Run a bash sleep command for 60 seconds")
+        print("User: Run a bash sleep command for 60 seconds")
+        await client.query("Run a bash sleep command for 60 seconds")
 
         # Timeout after 20 seconds
         messages = []
@@ -157,13 +165,55 @@ except Exception as e:
 
 
 # ============================================================================
+# SENDING ASYNC ITERABLE OF MESSAGES
+# ============================================================================
+
+from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+
+async def message_generator():
+    """Generate multiple messages as an async iterable."""
+    print("User: I have two math questions.")
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": "I have two math questions."},
+        "parent_tool_use_id": None,
+        "session_id": "math-session"
+    }
+    print("User: What is 25 * 4?")
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": "What is 25 * 4?"},
+        "parent_tool_use_id": None,
+        "session_id": "math-session"
+    }
+    print("User: What is 100 / 5?")
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": "What is 100 / 5?"},
+        "parent_tool_use_id": None,
+        "session_id": "math-session"
+    }
+
+async with ClaudeSDKClient() as client:
+    # Send async iterable instead of string
+    await client.query(message_generator())
+
+    async for msg in client.receive_response():
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    print(f"Claude: {block.text}")
+
+
+# ============================================================================
 # COLLECTING ALL MESSAGES INTO A LIST
 # ============================================================================
 
 from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
 
 async with ClaudeSDKClient() as client:
-    await client.send_message("What are the primary colors?")
+    print("User: What are the primary colors?")
+    await client.query("What are the primary colors?")
 
     # Collect all messages into a list
     messages = [msg async for msg in client.receive_response()]
@@ -176,5 +226,3 @@ async with ClaudeSDKClient() as client:
                     print(f"Claude: {block.text}")
         elif isinstance(msg, ResultMessage):
             print(f"Total messages: {len(messages)}")
-            if msg.total_cost_usd:
-                print(f"Cost: ${msg.total_cost_usd:.4f}")

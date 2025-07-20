@@ -116,8 +116,8 @@ class TestClaudeSDKClientStreaming:
 
         anyio.run(_test)
 
-    def test_send_message(self):
-        """Test sending a message."""
+    def test_query(self):
+        """Test sending a query."""
 
         async def _test():
             with patch(
@@ -127,7 +127,7 @@ class TestClaudeSDKClientStreaming:
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
-                    await client.send_message("Test message")
+                    await client.query("Test message")
 
                     # Verify send_request was called with correct format
                     mock_transport.send_request.assert_called_once()
@@ -151,7 +151,7 @@ class TestClaudeSDKClientStreaming:
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
-                    await client.send_message("Test", session_id="custom-session")
+                    await client.query("Test", session_id="custom-session")
 
                     call_args = mock_transport.send_request.call_args
                     messages, options = call_args[0]
@@ -166,7 +166,7 @@ class TestClaudeSDKClientStreaming:
         async def _test():
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
-                await client.send_message("Test")
+                await client.query("Test")
 
         anyio.run(_test)
 
@@ -360,7 +360,7 @@ class TestClaudeSDKClientStreaming:
                     receive_task = asyncio.create_task(get_next_message())
 
                     # Send message while receiving
-                    await client.send_message("Question 1")
+                    await client.query("Question 1")
 
                     # Wait for first message
                     first_msg = await receive_task

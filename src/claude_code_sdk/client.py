@@ -42,7 +42,7 @@ class ClaudeSDKClient:
         # Automatically connects with empty stream for interactive use
         async with ClaudeSDKClient() as client:
             # Send initial message
-            await client.send_message("Let's solve a math problem step by step")
+            await client.query("Let's solve a math problem step by step")
 
             # Receive and process response
             async for message in client.receive_messages():
@@ -50,7 +50,7 @@ class ClaudeSDKClient:
                     break
 
             # Send follow-up based on response
-            await client.send_message("What's 15% of 80?")
+            await client.query("What's 15% of 80?")
 
             # Continue conversation...
         # Automatically disconnects
@@ -60,14 +60,14 @@ class ClaudeSDKClient:
         ```python
         async with ClaudeSDKClient() as client:
             # Start a long task
-            await client.send_message("Count to 1000")
+            await client.query("Count to 1000")
 
             # Interrupt after 2 seconds
             await asyncio.sleep(2)
             await client.interrupt()
 
             # Send new instruction
-            await client.send_message("Never mind, what's 2+2?")
+            await client.query("Never mind, what's 2+2?")
         ```
 
     Example - Manual connection:
@@ -81,7 +81,7 @@ class ClaudeSDKClient:
         await client.connect(message_stream())
 
         # Send additional messages dynamically
-        await client.send_message("What's the weather?")
+        await client.query("What's the weather?")
 
         async for message in client.receive_messages():
             print(message)
@@ -128,9 +128,9 @@ class ClaudeSDKClient:
             if message:
                 yield message
 
-    async def send_message(self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default") -> None:
+    async def query(self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default") -> None:
         """
-        Send a new message in streaming mode.
+        Send a new request in streaming mode.
 
         Args:
             prompt: Either a string message or an async iterable of message dictionaries
@@ -186,7 +186,7 @@ class ClaudeSDKClient:
         Example:
             ```python
             async with ClaudeSDKClient() as client:
-                await client.send_message("What's the capital of France?")
+                await client.query("What's the capital of France?")
 
                 async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):

@@ -296,7 +296,12 @@ class SubprocessCLITransport(Transport):
                             yield data
                         except GeneratorExit:
                             return
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            f"Failed to parse JSON from CLI output: {e}. Buffer content: {json_buffer[:200]}..."
+                        )
+                        # Clear buffer to avoid repeated parse attempts on malformed data
+                        json_buffer = ""
                         continue
 
         except anyio.ClosedResourceError:

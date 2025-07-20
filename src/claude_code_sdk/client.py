@@ -128,19 +128,37 @@ class ClaudeSDKClient:
             if message:
                 yield message
 
-    async def send_message(self, content: str, session_id: str = "default") -> None:
-        """Send a new message in streaming mode."""
+    async def send_message(self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default") -> None:
+        """
+        Send a new message in streaming mode.
+
+        Args:
+            prompt: Either a string message or an async iterable of message dictionaries
+            session_id: Session identifier for the conversation
+        """
         if not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
-        message = {
-            "type": "user",
-            "message": {"role": "user", "content": content},
-            "parent_tool_use_id": None,
-            "session_id": session_id,
-        }
+        # Handle string prompts
+        if isinstance(prompt, str):
+            message = {
+                "type": "user",
+                "message": {"role": "user", "content": prompt},
+                "parent_tool_use_id": None,
+                "session_id": session_id,
+            }
+            await self._transport.send_request([message], {"session_id": session_id})
+        else:
+            # Handle AsyncIterable prompts
+            messages = []
+            async for msg in prompt:
+                # Ensure session_id is set on each message
+                if "session_id" not in msg:
+                    msg["session_id"] = session_id
+                messages.append(msg)
 
-        await self._transport.send_request([message], {"session_id": session_id})
+            if messages:
+                await self._transport.send_request(messages, {"session_id": session_id})
 
     async def interrupt(self) -> None:
         """Send interrupt signal (only works with streaming mode)."""
@@ -150,11 +168,17 @@ class ClaudeSDKClient:
 
     async def receive_response(self) -> AsyncIterator[Message]:
         """
-        Receive messages from Claude until a ResultMessage is received.
+        Receive messages from Claude until and including a ResultMessage.
 
-        This is an async iterator that yields all messages including the final ResultMessage.
-        It's a convenience method over receive_messages() that automatically stops iteration
-        after receiving a ResultMessage.
+        This async iterator yields all messages in sequence and automatically terminates
+        after yielding a ResultMessage (which indicates the response is complete).
+        It's a convenience method over receive_messages() for single-response workflows.
+
+        **Stopping Behavior:**
+        - Yields each message as it's received
+        - Terminates immediately after yielding a ResultMessage
+        - The ResultMessage IS included in the yielded messages
+        - If no ResultMessage is received, the iterator continues indefinitely
 
         Yields:
             Message: Each message received (UserMessage, AssistantMessage, SystemMessage, ResultMessage)
@@ -162,7 +186,6 @@ class ClaudeSDKClient:
         Example:
             ```python
             async with ClaudeSDKClient() as client:
-                # Send message and process response
                 await client.send_message("What's the capital of France?")
 
                 async for msg in client.receive_response():
@@ -172,14 +195,12 @@ class ClaudeSDKClient:
                                 print(f"Claude: {block.text}")
                     elif isinstance(msg, ResultMessage):
                         print(f"Cost: ${msg.total_cost_usd:.4f}")
+                        # Iterator will terminate after this message
             ```
 
         Note:
-            The iterator will automatically stop after yielding a ResultMessage.
-            If you need to collect all messages into a list, use:
-            ```python
-            messages = [msg async for msg in client.receive_response()]
-            ```
+            To collect all messages: `messages = [msg async for msg in client.receive_response()]`
+            The final message in the list will always be a ResultMessage.
         """
         async for message in self.receive_messages():
             yield message

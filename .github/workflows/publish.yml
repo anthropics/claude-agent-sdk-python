@@ -7,12 +7,6 @@ on:
         description: 'Version to publish (e.g., 0.1.0)'
         required: true
         type: string
-      test_pypi:
-        description: 'Publish to Test PyPI first'
-        required: false
-        type: boolean
-        default: true
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -79,11 +73,16 @@ jobs:
       with:
         python-version: '3.12'
     
+    - name: Set version
+      id: version
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
     - name: Update version
       run: |
-        # Update version in pyproject.toml
-        sed -i 's/version = ".*"/version = "${{ github.event.inputs.version }}"/' pyproject.toml
-        sed -i 's/__version__ = ".*"/__version__ = "${{ github.event.inputs.version }}"/' src/claude_code_sdk/__init__.py
+        python scripts/update_version.py "${{ env.VERSION }}"
     
     - name: Install build dependencies
       run: |
@@ -96,16 +95,6 @@ jobs:
     - name: Check package
       run: twine check dist/*
     
-    - name: Publish to Test PyPI
-      if: ${{ github.event.inputs.test_pypi == 'true' }}
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-      run: |
-        twine upload --repository testpypi dist/*
-        echo "Package published to Test PyPI"
-        echo "Install with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ claude-code-sdk==${{ github.event.inputs.version }}"
-    
     - name: Publish to PyPI
       env:
         TWINE_USERNAME: __token__
@@ -113,41 +102,68 @@ jobs:
       run: |
         twine upload dist/*
         echo "Package published to PyPI"
-        echo "Install with: pip install claude-code-sdk==${{ github.event.inputs.version }}"
+        echo "Install with: pip install claude-code-sdk==${{ env.VERSION }}"
     
     - name: Create version update PR
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Create a new branch for the version update
-        BRANCH_NAME="release/v${{ github.event.inputs.version }}"
-        git checkout -b "$BRANCH_NAME"
+        BRANCH_NAME="release/v${{ env.VERSION }}"
+        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
         
-        # Configure git
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
+        # Create branch via API
+        BASE_SHA=$(git rev-parse HEAD)
+        gh api \
+          --method POST \
+          /repos/$GITHUB_REPOSITORY/git/refs \
+          -f ref="refs/heads/$BRANCH_NAME" \
+          -f sha="$BASE_SHA"
         
-        # Commit the version changes
-        git add pyproject.toml src/claude_code_sdk/__init__.py
-        git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+        # Get current SHA values of files
+        echo "Getting SHA for pyproject.toml"
+        PYPROJECT_SHA=$(gh api /repos/$GITHUB_REPOSITORY/contents/pyproject.toml --jq '.sha')
+        echo "Getting SHA for __init__.py"
+        INIT_SHA=$(gh api /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/__init__.py --jq '.sha')
         
-        # Push the branch
-        git push origin "$BRANCH_NAME"
+        # Commit pyproject.toml via GitHub API (this creates signed commits)
+        message="chore: bump version to ${{ env.VERSION }}"
+        base64 -i pyproject.toml > pyproject.toml.b64
+        gh api \
+          --method PUT \
+          /repos/$GITHUB_REPOSITORY/contents/pyproject.toml \
+          -f message="$message" \
+          -F content=@pyproject.toml.b64 \
+          -f sha="$PYPROJECT_SHA" \
+          -f branch="$BRANCH_NAME"
         
-        # Create PR using GitHub CLI (gh)
-        gh pr create \
-          --title "chore: bump version to ${{ github.event.inputs.version }}" \
-          --body "This PR updates the version to ${{ github.event.inputs.version }} after publishing to PyPI.
-          
-          ## Changes
-          - Updated version in \`pyproject.toml\`
-          - Updated version in \`src/claude_code_sdk/__init__.py\`
-          
-          ## Release Information
-          - Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ github.event.inputs.version }}/
-          - Install with: \`pip install claude-code-sdk==${{ github.event.inputs.version }}\`
-          
-          ## Next Steps
-          After merging this PR, a release tag will be created automatically." \
+        # Commit __init__.py via GitHub API
+        base64 -i src/claude_code_sdk/__init__.py > init.py.b64
+        gh api \
+          --method PUT \
+          /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/__init__.py \
+          -f message="$message" \
+          -F content=@init.py.b64 \
+          -f sha="$INIT_SHA" \
+          -f branch="$BRANCH_NAME"
+        
+        # Create PR using GitHub CLI
+        PR_BODY="This PR updates the version to ${{ env.VERSION }} after publishing to PyPI.
+        
+        ## Changes
+        - Updated version in \`pyproject.toml\`
+        - Updated version in \`src/claude_code_sdk/__init__.py\`
+        
+        ## Release Information
+        - Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ env.VERSION }}/
+        - Install with: \`pip install claude-code-sdk==${{ env.VERSION }}\`
+        
+        🤖 Generated by GitHub Actions"
+        
+        PR_URL=$(gh pr create \
+          --title "chore: bump version to ${{ env.VERSION }}" \
+          --body "$PR_BODY" \
           --base main \
-          --head "$BRANCH_NAME"
+          --head "$BRANCH_NAME")
+        
+        echo "PR created: $PR_URL"

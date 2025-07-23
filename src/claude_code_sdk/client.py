@@ -63,7 +63,7 @@ class ClaudeSDKClient:
             await client.query("Count to 1000")
 
             # Interrupt after 2 seconds
-            await asyncio.sleep(2)
+            await anyio.sleep(2)
             await client.interrupt()
 
             # Send new instruction

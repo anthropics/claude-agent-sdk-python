@@ -45,6 +45,7 @@ class SubprocessCLITransport(Transport):
         self._pending_control_responses: dict[str, dict[str, Any]] = {}
         self._request_counter = 0
         self._close_stdin_after_prompt = close_stdin_after_prompt
+        self._task_group: anyio.abc.TaskGroup | None = None
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -160,9 +161,9 @@ class SubprocessCLITransport(Transport):
                 if self._process.stdin:
                     self._stdin_stream = TextSendStream(self._process.stdin)
                     # Start streaming messages to stdin in background
-                    import asyncio
-
-                    asyncio.create_task(self._stream_to_stdin())
+                    self._task_group = anyio.create_task_group()
+                    await self._task_group.__aenter__()
+                    self._task_group.start_soon(self._stream_to_stdin)
             else:
                 # String mode: close stdin immediately (backward compatible)
                 if self._process.stdin:
@@ -182,6 +183,12 @@ class SubprocessCLITransport(Transport):
         """Terminate subprocess."""
         if not self._process:
             return
+
+        # Cancel task group if it exists
+        if self._task_group:
+            self._task_group.cancel_scope.cancel()
+            await self._task_group.__aexit__(None, None, None)
+            self._task_group = None
 
         if self._process.returncode is None:
             try:

@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import shutil
+import tempfile
+from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 from subprocess import PIPE
@@ -46,6 +48,7 @@ class SubprocessCLITransport(Transport):
         self._request_counter = 0
         self._close_stdin_after_prompt = close_stdin_after_prompt
         self._task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_file: Any = None  # tempfile.NamedTemporaryFile
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -143,20 +146,24 @@ class SubprocessCLITransport(Transport):
 
         cmd = self._build_command()
         try:
+            # Create a temp file for stderr to avoid pipe buffer deadlock
+            # We can't use context manager as we need it for the subprocess lifetime
+            self._stderr_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
+                mode="w+", prefix="claude_stderr_", suffix=".log", delete=False
+            )
+
             # Enable stdin pipe for both modes (but we'll close it for string mode)
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
                 stdout=PIPE,
-                stderr=PIPE,
+                stderr=self._stderr_file,
                 cwd=self._cwd,
                 env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "sdk-py"},
             )
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
-            if self._process.stderr:
-                self._stderr_stream = TextReceiveStream(self._process.stderr)
 
             # Handle stdin based on mode
             if self._is_streaming:
@@ -203,6 +210,15 @@ class SubprocessCLITransport(Transport):
                 await self._process.wait()
             except ProcessLookupError:
                 pass
+
+        # Clean up temp file
+        if self._stderr_file:
+            try:
+                self._stderr_file.close()
+                Path(self._stderr_file.name).unlink()
+            except Exception:
+                pass
+            self._stderr_file = None
 
         self._process = None
         self._stdout_stream = None
@@ -256,10 +272,6 @@ class SubprocessCLITransport(Transport):
         """Receive messages from CLI."""
         if not self._process or not self._stdout_stream:
             raise CLIConnectionError("Not connected")
-
-        # Safety constants
-        max_stderr_size = 10 * 1024 * 1024  # 10MB
-        stderr_timeout = 30.0  # 30 seconds
 
         json_buffer = ""
 
@@ -318,36 +330,19 @@ class SubprocessCLITransport(Transport):
             # Client disconnected - still need to clean up
             pass
 
-        # Process stderr with safety limits
-        stderr_lines = []
-        stderr_size = 0
-
-        if self._stderr_stream:
+        # Read stderr from temp file (keep only last N lines for memory efficiency)
+        stderr_lines: deque[str] = deque(maxlen=100)  # Keep last 100 lines
+        if self._stderr_file:
             try:
-                # Use timeout to prevent hanging
-                with anyio.fail_after(stderr_timeout):
-                    async for line in self._stderr_stream:
-                        line_text = line.strip()
-                        line_size = len(line_text)
-
-                        # Enforce memory limit
-                        if stderr_size + line_size > max_stderr_size:
-                            stderr_lines.append(
-                                f"[stderr truncated after {stderr_size} bytes]"
-                            )
-                            # Drain rest of stream without storing
-                            async for _ in self._stderr_stream:
-                                pass
-                            break
-
+                # Flush any pending writes
+                self._stderr_file.flush()
+                # Read from the beginning
+                self._stderr_file.seek(0)
+                for line in self._stderr_file:
+                    line_text = line.strip()
+                    if line_text:
                         stderr_lines.append(line_text)
-                        stderr_size += line_size
-
-            except TimeoutError:
-                stderr_lines.append(
-                    f"[stderr collection timed out after {stderr_timeout}s]"
-                )
-            except anyio.ClosedResourceError:
+            except Exception:
                 pass
 
         # Check process completion and handle errors
@@ -356,7 +351,13 @@ class SubprocessCLITransport(Transport):
         except Exception:
             returncode = -1
 
-        stderr_output = "\n".join(stderr_lines) if stderr_lines else ""
+        # Convert deque to string for error reporting
+        stderr_output = "\n".join(list(stderr_lines)) if stderr_lines else ""
+        if len(stderr_lines) == stderr_lines.maxlen:
+            stderr_output = (
+                f"[stderr truncated, showing last {stderr_lines.maxlen} lines]\n"
+                + stderr_output
+            )
 
         # Use exit code for error detection, not string matching
         if returncode is not None and returncode != 0:

@@ -9,6 +9,7 @@ from claude_code_sdk.types import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
@@ -25,6 +26,108 @@ class TestMessageParser:
         }
         message = parse_message(data)
         assert isinstance(message, UserMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], TextBlock)
+        assert message.content[0].text == "Hello"
+
+    def test_parse_user_message_with_tool_use(self):
+        """Test parsing a user message with tool_use block."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Let me read this file"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool_456",
+                        "name": "Read",
+                        "input": {"file_path": "/example.txt"},
+                    },
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], TextBlock)
+        assert isinstance(message.content[1], ToolUseBlock)
+        assert message.content[1].id == "tool_456"
+        assert message.content[1].name == "Read"
+        assert message.content[1].input == {"file_path": "/example.txt"}
+
+    def test_parse_user_message_with_tool_result(self):
+        """Test parsing a user message with tool_result block."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool_789",
+                        "content": "File contents here",
+                    }
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ToolResultBlock)
+        assert message.content[0].tool_use_id == "tool_789"
+        assert message.content[0].content == "File contents here"
+
+    def test_parse_user_message_with_tool_result_error(self):
+        """Test parsing a user message with error tool_result block."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool_error",
+                        "content": "File not found",
+                        "is_error": True,
+                    }
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ToolResultBlock)
+        assert message.content[0].tool_use_id == "tool_error"
+        assert message.content[0].content == "File not found"
+        assert message.content[0].is_error is True
+
+    def test_parse_user_message_with_mixed_content(self):
+        """Test parsing a user message with mixed content blocks."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Here's what I found:"},
+                    {
+                        "type": "tool_use",
+                        "id": "use_1",
+                        "name": "Search",
+                        "input": {"query": "test"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "use_1",
+                        "content": "Search results",
+                    },
+                    {"type": "text", "text": "What do you think?"},
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 4
+        assert isinstance(message.content[0], TextBlock)
+        assert isinstance(message.content[1], ToolUseBlock)
+        assert isinstance(message.content[2], ToolResultBlock)
+        assert isinstance(message.content[3], TextBlock)
 
     def test_parse_valid_assistant_message(self):
         """Test parsing a valid assistant message."""

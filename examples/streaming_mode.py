@@ -27,6 +27,8 @@ from claude_code_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
     UserMessage,
 )
 
@@ -303,6 +305,50 @@ async def example_async_iterable_prompt():
     print("\n")
 
 
+async def example_bash_command():
+    """Example showing tool use blocks when running bash commands."""
+    print("=== Bash Command Example ===")
+    
+    async with ClaudeSDKClient() as client:
+        print("User: Run a bash echo command")
+        await client.query("Run a bash echo command that says 'Hello from bash!'")
+        
+        # Track all message types received
+        message_types = []
+        
+        async for msg in client.receive_messages():
+            message_types.append(type(msg).__name__)
+            
+            if isinstance(msg, UserMessage):
+                # User messages can contain tool results
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(f"User: {block.text}")
+                    elif isinstance(block, ToolResultBlock):
+                        print(f"Tool Result (id: {block.tool_use_id}): {block.content[:100] if block.content else 'None'}...")
+                        
+            elif isinstance(msg, AssistantMessage):
+                # Assistant messages can contain tool use blocks
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(f"Claude: {block.text}")
+                    elif isinstance(block, ToolUseBlock):
+                        print(f"Tool Use: {block.name} (id: {block.id})")
+                        if block.name == "Bash":
+                            command = block.input.get("command", "")
+                            print(f"  Command: {command}")
+                            
+            elif isinstance(msg, ResultMessage):
+                print("Result ended")
+                if msg.total_cost_usd:
+                    print(f"Cost: ${msg.total_cost_usd:.4f}")
+                break
+        
+        print(f"\nMessage types received: {', '.join(set(message_types))}")
+    
+    print("\n")
+
+
 async def example_error_handling():
     """Demonstrate proper error handling."""
     print("=== Error Handling Example ===")
@@ -359,6 +405,7 @@ async def main():
         "manual_message_handling": example_manual_message_handling,
         "with_options": example_with_options,
         "async_iterable_prompt": example_async_iterable_prompt,
+        "bash_command": example_bash_command,
         "error_handling": example_error_handling,
     }
 

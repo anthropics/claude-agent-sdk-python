@@ -73,7 +73,7 @@ ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
 class UserMessage:
     """User message."""
 
-    content: str
+    content: str | list[ContentBlock]
 
 
 @dataclass

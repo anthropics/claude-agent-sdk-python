@@ -45,6 +45,31 @@ def parse_message(data: dict[str, Any]) -> Message:
     match message_type:
         case "user":
             try:
+                if isinstance(data["message"]["content"], list):
+                    user_content_blocks: list[ContentBlock] = []
+                    for block in data["message"]["content"]:
+                        match block["type"]:
+                            case "text":
+                                user_content_blocks.append(
+                                    TextBlock(text=block["text"])
+                                )
+                            case "tool_use":
+                                user_content_blocks.append(
+                                    ToolUseBlock(
+                                        id=block["id"],
+                                        name=block["name"],
+                                        input=block["input"],
+                                    )
+                                )
+                            case "tool_result":
+                                user_content_blocks.append(
+                                    ToolResultBlock(
+                                        tool_use_id=block["tool_use_id"],
+                                        content=block.get("content"),
+                                        is_error=block.get("is_error"),
+                                    )
+                                )
+                    return UserMessage(content=user_content_blocks)
                 return UserMessage(content=data["message"]["content"])
             except KeyError as e:
                 raise MessageParseError(

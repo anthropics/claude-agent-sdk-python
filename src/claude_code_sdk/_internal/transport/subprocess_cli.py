@@ -118,6 +118,9 @@ class SubprocessCLITransport(Transport):
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
 
+        if self._options.settings:
+            cmd.extend(["--settings", self._options.settings])
+
         if self._options.mcp_servers:
             cmd.extend(
                 ["--mcp-config", json.dumps({"mcpServers": self._options.mcp_servers})]

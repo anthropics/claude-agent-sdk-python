@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.18
+
+- Add `ClaudeCodeOptions.settings` for `--settings`
+
+## 0.0.17
+
+- Remove dependency on asyncio for Trio compatibility
+
 ## 0.0.16
 
 - Introduce ClaudeSDKClient for bidirectional streaming conversation

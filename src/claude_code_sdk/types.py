@@ -127,3 +127,4 @@ class ClaudeCodeOptions:
     model: str | None = None
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
+    settings: str | None = None

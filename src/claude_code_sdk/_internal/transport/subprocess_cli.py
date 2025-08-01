@@ -124,6 +124,11 @@ class SubprocessCLITransport(Transport):
         if self._options.settings:
             cmd.extend(["--settings", self._options.settings])
 
+        if self._options.add_dirs:
+            # Convert all paths to strings and add each directory
+            for directory in self._options.add_dirs:
+                cmd.extend(["--add-dir", str(directory)])
+
         if self._options.mcp_servers:
             cmd.extend(
                 ["--mcp-config", json.dumps({"mcpServers": self._options.mcp_servers})]

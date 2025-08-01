@@ -79,6 +79,24 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_add_dirs(self):
+        """Test building CLI command with add_dirs option."""
+        from pathlib import Path
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeCodeOptions(
+                add_dirs=["/path/to/dir1", Path("/path/to/dir2")]
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        cmd_str = " ".join(cmd)
+
+        # Check that the command string contains the expected --add-dir flags
+        assert "--add-dir /path/to/dir1 --add-dir /path/to/dir2" in cmd_str
+
     def test_session_continuation(self):
         """Test session continuation options."""
         transport = SubprocessCLITransport(

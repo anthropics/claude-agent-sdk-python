@@ -134,6 +134,15 @@ class SubprocessCLITransport(Transport):
                 ["--mcp-config", json.dumps({"mcpServers": self._options.mcp_servers})]
             )
 
+        # Add extra args for future CLI flags
+        for flag, value in self._options.extra_args.items():
+            if value is None:
+                # Boolean flag without value
+                cmd.append(f"--{flag}")
+            else:
+                # Flag with value
+                cmd.extend([f"--{flag}", str(value)])
+
         # Add prompt handling based on mode
         if self._is_streaming:
             # Streaming mode: use --input-format stream-json

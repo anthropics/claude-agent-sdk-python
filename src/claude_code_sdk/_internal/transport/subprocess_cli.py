@@ -130,9 +130,17 @@ class SubprocessCLITransport(Transport):
                 cmd.extend(["--add-dir", str(directory)])
 
         if self._options.mcp_servers:
-            cmd.extend(
-                ["--mcp-config", json.dumps({"mcpServers": self._options.mcp_servers})]
-            )
+            if isinstance(self._options.mcp_servers, dict):
+                # Dict format: serialize to JSON
+                cmd.extend(
+                    [
+                        "--mcp-config",
+                        json.dumps({"mcpServers": self._options.mcp_servers}),
+                    ]
+                )
+            else:
+                # String or Path format: pass directly as file path or JSON string
+                cmd.extend(["--mcp-config", str(self._options.mcp_servers)])
 
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():

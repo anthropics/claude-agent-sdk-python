@@ -117,7 +117,7 @@ class ClaudeCodeOptions:
     max_thinking_tokens: int = 8000
     system_prompt: str | None = None
     append_system_prompt: str | None = None
-    mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
+    mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False
     resume: str | None = None

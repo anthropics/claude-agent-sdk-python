@@ -29,6 +29,16 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@beta
@@ -44,8 +54,12 @@ jobs:
           # Optional: Trigger when specific user is assigned to an issue
           # assignee_trigger: "claude-bot"
           
-          # Optional: Allow Claude to run specific commands
-          # allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*)"
+          # Allow Claude to run linters, typecheckers, and tests
+          allowed_tools: |
+            Bash(python -m ruff check:*)
+            Bash(python -m ruff format:*)
+            Bash(python -m mypy:*)
+            Bash(python -m pytest *)
           
           # Optional: Add custom instructions for Claude to customize its behavior for your project
           # custom_instructions: |

@@ -59,7 +59,7 @@ jobs:
             Bash(python -m ruff check:*)
             Bash(python -m ruff format:*)
             Bash(python -m mypy:*)
-            Bash(python -m pytest *)
+            Bash(python -m pytest:*)
           
           # Optional: Add custom instructions for Claude to customize its behavior for your project
           # custom_instructions: |

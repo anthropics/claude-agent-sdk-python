@@ -99,6 +99,15 @@ class TestOptions:
         options = ClaudeCodeOptions(permission_mode="bypassPermissions")
         assert options.permission_mode == "bypassPermissions"
 
+        options_plan = ClaudeCodeOptions(permission_mode="plan")
+        assert options_plan.permission_mode == "plan"
+
+        options_default = ClaudeCodeOptions(permission_mode="default")
+        assert options_default.permission_mode == "default"
+
+        options_accept = ClaudeCodeOptions(permission_mode="acceptEdits")
+        assert options_accept.permission_mode == "acceptEdits"
+
     def test_claude_code_options_with_system_prompt(self):
         """Test Options with system prompt."""
         options = ClaudeCodeOptions(

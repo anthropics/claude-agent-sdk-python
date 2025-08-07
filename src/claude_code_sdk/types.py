@@ -7,7 +7,7 @@ from typing import Any, Literal, TypedDict
 from typing_extensions import NotRequired  # For Python < 3.11 compatibility
 
 # Permission modes
-PermissionMode = Literal["default", "acceptEdits", "bypassPermissions"]
+PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
 
 # MCP Server config

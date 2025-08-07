@@ -38,6 +38,7 @@ class TestIntegration:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "2 + 2 equals 4"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {
@@ -103,6 +104,7 @@ class TestIntegration:
                                     "input": {"file_path": "/test.txt"},
                                 },
                             ],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {
@@ -179,6 +181,7 @@ class TestIntegration:
                                     "text": "Continuing from previous conversation",
                                 }
                             ],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
 

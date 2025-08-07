@@ -187,6 +187,7 @@ class TestClaudeSDKClientStreaming:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "Hello!"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {
@@ -229,6 +230,7 @@ class TestClaudeSDKClientStreaming:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "Answer"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {
@@ -250,6 +252,7 @@ class TestClaudeSDKClientStreaming:
                                 {"type": "text", "text": "Should not see this"}
                             ],
                         },
+                        "model": "claude-opus-4-1-20250805",
                     }
 
                 mock_transport.receive_messages = mock_receive
@@ -335,6 +338,7 @@ class TestClaudeSDKClientStreaming:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "Response 1"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     await asyncio.sleep(0.1)
@@ -531,6 +535,7 @@ class TestClaudeSDKClientEdgeCases:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "Hello"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {
@@ -538,6 +543,7 @@ class TestClaudeSDKClientEdgeCases:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "World"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {

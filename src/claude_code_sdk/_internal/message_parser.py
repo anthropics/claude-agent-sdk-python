@@ -11,6 +11,7 @@ from ..types import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -52,6 +53,13 @@ def parse_message(data: dict[str, Any]) -> Message:
                             case "text":
                                 user_content_blocks.append(
                                     TextBlock(text=block["text"])
+                                )
+                            case "thinking":
+                                user_content_blocks.append(
+                                    ThinkingBlock(
+                                        thinking=block["thinking"],
+                                        signature=block["signature"],
+                                    )
                                 )
                             case "tool_use":
                                 user_content_blocks.append(
@@ -100,7 +108,9 @@ def parse_message(data: dict[str, Any]) -> Message:
                                 )
                             )
 
-                return AssistantMessage(content=content_blocks)
+                return AssistantMessage(
+                    content=content_blocks, model=data["message"]["model"]
+                )
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data

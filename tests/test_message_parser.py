@@ -142,7 +142,8 @@ class TestMessageParser:
                         "name": "Read",
                         "input": {"file_path": "/test.txt"},
                     },
-                ]
+                ],
+                "model": "claude-opus-4-1-20250805",
             },
         }
         message = parse_message(data)

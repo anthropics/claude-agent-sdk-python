@@ -20,7 +20,9 @@ class TestQueryFunction:
             ) as mock_process:
                 # Mock the async generator
                 async def mock_generator():
-                    yield AssistantMessage(content=[TextBlock(text="4")])
+                    yield AssistantMessage(
+                        content=[TextBlock(text="4")], model="claude-opus-4-1-20250805"
+                    )
 
                 mock_process.return_value = mock_generator()
 
@@ -43,7 +45,10 @@ class TestQueryFunction:
             ) as mock_process:
 
                 async def mock_generator():
-                    yield AssistantMessage(content=[TextBlock(text="Hello!")])
+                    yield AssistantMessage(
+                        content=[TextBlock(text="Hello!")],
+                        model="claude-opus-4-1-20250805",
+                    )
 
                 mock_process.return_value = mock_generator()
 
@@ -83,6 +88,7 @@ class TestQueryFunction:
                         "message": {
                             "role": "assistant",
                             "content": [{"type": "text", "text": "Done"}],
+                            "model": "claude-opus-4-1-20250805",
                         },
                     }
                     yield {

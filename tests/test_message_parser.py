@@ -9,6 +9,7 @@ from claude_code_sdk.types import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -151,6 +152,31 @@ class TestMessageParser:
         assert len(message.content) == 2
         assert isinstance(message.content[0], TextBlock)
         assert isinstance(message.content[1], ToolUseBlock)
+
+    def test_parse_assistant_message_with_thinking(self):
+        """Test parsing an assistant message with thinking block."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I'm thinking about the answer...",
+                        "signature": "sig-123",
+                    },
+                    {"type": "text", "text": "Here's my response"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], ThinkingBlock)
+        assert message.content[0].thinking == "I'm thinking about the answer..."
+        assert message.content[0].signature == "sig-123"
+        assert isinstance(message.content[1], TextBlock)
+        assert message.content[1].text == "Here's my response"
 
     def test_parse_valid_system_message(self):
         """Test parsing a valid system message."""

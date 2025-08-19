@@ -54,13 +54,6 @@ def parse_message(data: dict[str, Any]) -> Message:
                                 user_content_blocks.append(
                                     TextBlock(text=block["text"])
                                 )
-                            case "thinking":
-                                user_content_blocks.append(
-                                    ThinkingBlock(
-                                        thinking=block["thinking"],
-                                        signature=block["signature"],
-                                    )
-                                )
                             case "tool_use":
                                 user_content_blocks.append(
                                     ToolUseBlock(
@@ -91,6 +84,13 @@ def parse_message(data: dict[str, Any]) -> Message:
                     match block["type"]:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))
+                        case "thinking":
+                            content_blocks.append(
+                                ThinkingBlock(
+                                    thinking=block["thinking"],
+                                    signature=block["signature"],
+                                )
+                            )
                         case "tool_use":
                             content_blocks.append(
                                 ToolUseBlock(

@@ -3,8 +3,12 @@
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
-from ..types import ClaudeCodeOptions, Message
+from ..types import (
+    ClaudeCodeOptions,
+    Message,
+)
 from .message_parser import parse_message
+from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
 
@@ -15,19 +19,26 @@ class InternalClient:
         """Initialize the internal client."""
 
     async def process_query(
-        self, prompt: str | AsyncIterable[dict[str, Any]], options: ClaudeCodeOptions
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]],
+        options: ClaudeCodeOptions,
+        transport: Transport | None = None,
     ) -> AsyncIterator[Message]:
         """Process a query through transport."""
 
-        transport = SubprocessCLITransport(
-            prompt=prompt, options=options, close_stdin_after_prompt=True
-        )
+        # Use provided transport or choose one based on configuration
+        if transport is not None:
+            chosen_transport = transport
+        else:
+            chosen_transport = SubprocessCLITransport(
+                prompt=prompt, options=options, close_stdin_after_prompt=True
+            )
 
         try:
-            await transport.connect()
+            await chosen_transport.connect()
 
-            async for data in transport.receive_messages():
+            async for data in chosen_transport.receive_messages():
                 yield parse_message(data)
 
         finally:
-            await transport.disconnect()
+            await chosen_transport.disconnect()

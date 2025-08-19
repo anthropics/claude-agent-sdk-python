@@ -5,6 +5,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
 from ._internal.client import InternalClient
+from ._internal.transport import Transport
 from .types import ClaudeCodeOptions, Message
 
 
@@ -12,6 +13,7 @@ async def query(
     *,
     prompt: str | AsyncIterable[dict[str, Any]],
     options: ClaudeCodeOptions | None = None,
+    transport: Transport | None = None,
 ) -> AsyncIterator[Message]:
     """
     Query Claude Code for one-shot or unidirectional streaming interactions.
@@ -56,6 +58,9 @@ async def query(
                  - 'acceptEdits': Auto-accept file edits
                  - 'bypassPermissions': Allow all tools (use with caution)
                  Set options.cwd for working directory.
+        transport: Optional transport implementation. If provided, this will be used
+                  instead of the default transport selection based on options.
+                  The transport will be automatically configured with the prompt and options.
 
     Yields:
         Messages from the conversation
@@ -90,6 +95,23 @@ async def query(
         async for message in query(prompt=prompts()):
             print(message)
         ```
+
+    Example - With custom transport:
+        ```python
+        from claude_code_sdk import query, Transport
+
+        class MyCustomTransport(Transport):
+            # Implement custom transport logic
+            pass
+
+        transport = MyCustomTransport()
+        async for message in query(
+            prompt="Hello",
+            transport=transport
+        ):
+            print(message)
+        ```
+
     """
     if options is None:
         options = ClaudeCodeOptions()
@@ -98,5 +120,7 @@ async def query(
 
     client = InternalClient()
 
-    async for message in client.process_query(prompt=prompt, options=options):
+    async for message in client.process_query(
+        prompt=prompt, options=options, transport=transport
+    ):
         yield message

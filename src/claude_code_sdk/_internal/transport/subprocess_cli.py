@@ -175,13 +175,20 @@ class SubprocessCLITransport(Transport):
             )
 
             # Enable stdin pipe for both modes (but we'll close it for string mode)
+            # Merge environment variables: system -> user -> SDK required
+            process_env = {
+                **os.environ,
+                **self._options.env,  # User-provided env vars
+                "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+            }
+
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
                 stdout=PIPE,
                 stderr=self._stderr_file,
                 cwd=self._cwd,
-                env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "sdk-py"},
+                env=process_env,
             )
 
             if self._process.stdout:

@@ -188,9 +188,7 @@ async def example_manual_message_handling():
     print("=== Manual Message Handling Example ===")
 
     async with ClaudeSDKClient() as client:
-        await client.query(
-            "List 5 programming languages and their main use cases"
-        )
+        await client.query("List 5 programming languages and their main use cases")
 
         # Manually process messages with custom logic
         languages_found = []
@@ -231,13 +229,14 @@ async def example_with_options():
         allowed_tools=["Read", "Write"],  # Allow file operations
         max_thinking_tokens=10000,
         system_prompt="You are a helpful coding assistant.",
+        env={
+            "ANTHROPIC_MODEL": "claude-3-7-sonnet-20250219",
+        },
     )
 
     async with ClaudeSDKClient(options=options) as client:
         print("User: Create a simple hello.txt file with a greeting message")
-        await client.query(
-            "Create a simple hello.txt file with a greeting message"
-        )
+        await client.query("Create a simple hello.txt file with a greeting message")
 
         tool_uses = []
         async for msg in client.receive_response():
@@ -308,25 +307,27 @@ async def example_async_iterable_prompt():
 async def example_bash_command():
     """Example showing tool use blocks when running bash commands."""
     print("=== Bash Command Example ===")
-    
+
     async with ClaudeSDKClient() as client:
         print("User: Run a bash echo command")
         await client.query("Run a bash echo command that says 'Hello from bash!'")
-        
+
         # Track all message types received
         message_types = []
-        
+
         async for msg in client.receive_messages():
             message_types.append(type(msg).__name__)
-            
+
             if isinstance(msg, UserMessage):
                 # User messages can contain tool results
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(f"User: {block.text}")
                     elif isinstance(block, ToolResultBlock):
-                        print(f"Tool Result (id: {block.tool_use_id}): {block.content[:100] if block.content else 'None'}...")
-                        
+                        print(
+                            f"Tool Result (id: {block.tool_use_id}): {block.content[:100] if block.content else 'None'}..."
+                        )
+
             elif isinstance(msg, AssistantMessage):
                 # Assistant messages can contain tool use blocks
                 for block in msg.content:
@@ -337,15 +338,15 @@ async def example_bash_command():
                         if block.name == "Bash":
                             command = block.input.get("command", "")
                             print(f"  Command: {command}")
-                            
+
             elif isinstance(msg, ResultMessage):
                 print("Result ended")
                 if msg.total_cost_usd:
                     print(f"Cost: ${msg.total_cost_usd:.4f}")
                 break
-        
+
         print(f"\nMessage types received: {', '.join(set(message_types))}")
-    
+
     print("\n")
 
 

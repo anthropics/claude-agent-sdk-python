@@ -157,7 +157,7 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--input-format", "stream-json"])
         else:
             # String mode: use --print with the prompt
-            cmd.extend(["--print", str(self._prompt)])
+            cmd.extend(["--print", "--", str(self._prompt)])
 
         return cmd
 

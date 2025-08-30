@@ -144,21 +144,12 @@ async def example_with_interrupt():
 
         # Create a background task to consume messages
         messages_received = []
-        interrupt_sent = False
 
         async def consume_messages():
             """Consume messages in the background to enable interrupt processing."""
-            async for message in client.receive_messages():
+            async for message in client.receive_response():
                 messages_received.append(message)
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            # Print first few numbers
-                            print(f"Claude: {block.text[:50]}...")
-                elif isinstance(message, ResultMessage):
-                    display_message(message)
-                    if interrupt_sent:
-                        break
+                display_message(message)
 
         # Start consuming messages in the background
         consume_task = asyncio.create_task(consume_messages())
@@ -166,7 +157,6 @@ async def example_with_interrupt():
         # Wait 2 seconds then send interrupt
         await asyncio.sleep(2)
         print("\n[After 2 seconds, sending interrupt...]")
-        interrupt_sent = True
         await client.interrupt()
 
         # Wait for the consume task to finish processing the interrupt

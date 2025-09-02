@@ -33,6 +33,7 @@ env/
 *.swp
 *.swo
 *~
+**/.DS_Store
 
 # Testing
 .tox/

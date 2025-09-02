@@ -3,7 +3,7 @@
 These tests verify end-to-end functionality with mocked CLI responses.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
 import pytest
@@ -52,9 +52,12 @@ class TestIntegration:
                         "total_cost_usd": 0.001,
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
                 mock_transport.connect = AsyncMock()
-                mock_transport.disconnect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
 
                 # Run query
                 messages = []
@@ -118,9 +121,12 @@ class TestIntegration:
                         "total_cost_usd": 0.002,
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
                 mock_transport.connect = AsyncMock()
-                mock_transport.disconnect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
 
                 # Run query with tools enabled
                 messages = []
@@ -185,9 +191,12 @@ class TestIntegration:
                         },
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
                 mock_transport.connect = AsyncMock()
-                mock_transport.disconnect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
 
                 # Run query with continuation
                 messages = []

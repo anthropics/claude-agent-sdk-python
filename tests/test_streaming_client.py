@@ -1,10 +1,11 @@
 """Tests for ClaudeSDKClient streaming functionality and query() with async iterables."""
 
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
 import pytest
@@ -22,6 +23,90 @@ from claude_code_sdk import (
 from claude_code_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 
+def create_mock_transport(with_init_response=True):
+    """Create a properly configured mock transport.
+
+    Args:
+        with_init_response: If True, automatically respond to initialization request
+    """
+    mock_transport = AsyncMock()
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.write = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+
+    # Track written messages to simulate control protocol responses
+    written_messages = []
+
+    async def mock_write(data):
+        written_messages.append(data)
+
+    mock_transport.write.side_effect = mock_write
+
+    # Default read_messages to handle control protocol
+    async def control_protocol_generator():
+        # Wait for initialization request if needed
+        if with_init_response:
+            # Wait a bit for the write to happen
+            await asyncio.sleep(0.01)
+
+            # Check if initialization was requested
+            for msg_str in written_messages:
+                try:
+                    msg = json.loads(msg_str.strip())
+                    if (
+                        msg.get("type") == "control_request"
+                        and msg.get("request", {}).get("subtype") == "initialize"
+                    ):
+                        # Send initialization response
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg.get("request_id"),
+                                "subtype": "success",
+                                "commands": [],
+                                "output_style": "default",
+                            },
+                        }
+                        break
+                except (json.JSONDecodeError, KeyError, AttributeError):
+                    pass
+
+            # Keep checking for other control requests (like interrupt)
+            last_check = len(written_messages)
+            timeout_counter = 0
+            while timeout_counter < 100:  # Avoid infinite loop
+                await asyncio.sleep(0.01)
+                timeout_counter += 1
+
+                # Check for new messages
+                for msg_str in written_messages[last_check:]:
+                    try:
+                        msg = json.loads(msg_str.strip())
+                        if msg.get("type") == "control_request":
+                            subtype = msg.get("request", {}).get("subtype")
+                            if subtype == "interrupt":
+                                # Send interrupt response
+                                yield {
+                                    "type": "control_response",
+                                    "response": {
+                                        "request_id": msg.get("request_id"),
+                                        "subtype": "success",
+                                    },
+                                }
+                                return  # End after interrupt
+                    except (json.JSONDecodeError, KeyError, AttributeError):
+                        pass
+                last_check = len(written_messages)
+
+        # Then end the stream
+        return
+
+    mock_transport.read_messages = control_protocol_generator
+    return mock_transport
+
+
 class TestClaudeSDKClientStreaming:
     """Test ClaudeSDKClient streaming functionality."""
 
@@ -32,7 +117,7 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
@@ -41,7 +126,7 @@ class TestClaudeSDKClientStreaming:
                     assert client._transport is mock_transport
 
                 # Verify disconnect was called on exit
-                mock_transport.disconnect.assert_called_once()
+                mock_transport.close.assert_called_once()
 
         anyio.run(_test)
 
@@ -52,7 +137,7 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 client = ClaudeSDKClient()
@@ -64,7 +149,7 @@ class TestClaudeSDKClientStreaming:
 
                 await client.disconnect()
                 # Verify disconnect was called
-                mock_transport.disconnect.assert_called_once()
+                mock_transport.close.assert_called_once()
                 assert client._transport is None
 
         anyio.run(_test)
@@ -76,7 +161,7 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 client = ClaudeSDKClient()
@@ -95,7 +180,7 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 async def message_stream():
@@ -123,20 +208,30 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
                     await client.query("Test message")
 
-                    # Verify send_request was called with correct format
-                    mock_transport.send_request.assert_called_once()
-                    call_args = mock_transport.send_request.call_args
-                    messages, options = call_args[0]
-                    assert len(messages) == 1
-                    assert messages[0]["type"] == "user"
-                    assert messages[0]["message"]["content"] == "Test message"
-                    assert options["session_id"] == "default"
+                    # Verify write was called with correct format
+                    # Should have at least 2 writes: init request and user message
+                    assert mock_transport.write.call_count >= 2
+
+                    # Find the user message in the write calls
+                    user_msg_found = False
+                    for call in mock_transport.write.call_args_list:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            if msg.get("type") == "user":
+                                assert msg["message"]["content"] == "Test message"
+                                assert msg["session_id"] == "default"
+                                user_msg_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert user_msg_found, "User message not found in write calls"
 
         anyio.run(_test)
 
@@ -147,16 +242,25 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
                     await client.query("Test", session_id="custom-session")
 
-                    call_args = mock_transport.send_request.call_args
-                    messages, options = call_args[0]
-                    assert messages[0]["session_id"] == "custom-session"
-                    assert options["session_id"] == "custom-session"
+                    # Find the user message with custom session ID
+                    session_found = False
+                    for call in mock_transport.write.call_args_list:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            if msg.get("type") == "user":
+                                assert msg["session_id"] == "custom-session"
+                                session_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert session_found, "User message with custom session not found"
 
         anyio.run(_test)
 
@@ -177,11 +281,37 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
-                # Mock the message stream
+                # Mock the message stream with control protocol support
                 async def mock_receive():
+                    # First handle initialization
+                    await asyncio.sleep(0.01)
+                    written = mock_transport.write.call_args_list
+                    for call in written:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            if (
+                                msg.get("type") == "control_request"
+                                and msg.get("request", {}).get("subtype")
+                                == "initialize"
+                            ):
+                                yield {
+                                    "type": "control_response",
+                                    "response": {
+                                        "request_id": msg.get("request_id"),
+                                        "subtype": "success",
+                                        "commands": [],
+                                        "output_style": "default",
+                                    },
+                                }
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+
+                    # Then yield the actual messages
                     yield {
                         "type": "assistant",
                         "message": {
@@ -195,7 +325,7 @@ class TestClaudeSDKClientStreaming:
                         "message": {"role": "user", "content": "Hi there"},
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
 
                 async with ClaudeSDKClient() as client:
                     messages = []
@@ -220,11 +350,37 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
-                # Mock the message stream
+                # Mock the message stream with control protocol support
                 async def mock_receive():
+                    # First handle initialization
+                    await asyncio.sleep(0.01)
+                    written = mock_transport.write.call_args_list
+                    for call in written:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            if (
+                                msg.get("type") == "control_request"
+                                and msg.get("request", {}).get("subtype")
+                                == "initialize"
+                            ):
+                                yield {
+                                    "type": "control_response",
+                                    "response": {
+                                        "request_id": msg.get("request_id"),
+                                        "subtype": "success",
+                                        "commands": [],
+                                        "output_style": "default",
+                                    },
+                                }
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+
+                    # Then yield the actual messages
                     yield {
                         "type": "assistant",
                         "message": {
@@ -255,7 +411,7 @@ class TestClaudeSDKClientStreaming:
                         "model": "claude-opus-4-1-20250805",
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
 
                 async with ClaudeSDKClient() as client:
                     messages = []
@@ -276,12 +432,28 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 async with ClaudeSDKClient() as client:
+                    # Interrupt is now handled via control protocol
                     await client.interrupt()
-                    mock_transport.interrupt.assert_called_once()
+                    # Check that a control request was sent via write
+                    write_calls = mock_transport.write.call_args_list
+                    interrupt_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            if (
+                                msg.get("type") == "control_request"
+                                and msg.get("request", {}).get("subtype") == "interrupt"
+                            ):
+                                interrupt_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert interrupt_found, "Interrupt control request not found"
 
         anyio.run(_test)
 
@@ -308,7 +480,7 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 client = ClaudeSDKClient(options=options)
@@ -327,11 +499,38 @@ class TestClaudeSDKClientStreaming:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
-                # Mock receive to wait then yield messages
+                # Mock receive to wait then yield messages with control protocol support
                 async def mock_receive():
+                    # First handle initialization
+                    await asyncio.sleep(0.01)
+                    written = mock_transport.write.call_args_list
+                    for call in written:
+                        if call:
+                            data = call[0][0]
+                            try:
+                                msg = json.loads(data.strip())
+                                if (
+                                    msg.get("type") == "control_request"
+                                    and msg.get("request", {}).get("subtype")
+                                    == "initialize"
+                                ):
+                                    yield {
+                                        "type": "control_response",
+                                        "response": {
+                                            "request_id": msg.get("request_id"),
+                                            "subtype": "success",
+                                            "commands": [],
+                                            "output_style": "default",
+                                        },
+                                    }
+                                    break
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+
+                    # Then yield the actual messages
                     await asyncio.sleep(0.1)
                     yield {
                         "type": "assistant",
@@ -353,7 +552,7 @@ class TestClaudeSDKClientStreaming:
                         "total_cost_usd": 0.001,
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
 
                 async with ClaudeSDKClient() as client:
                     # Helper to get next message
@@ -397,9 +596,35 @@ while True:
     line = sys.stdin.readline()
     if not line:
         break
-    stdin_messages.append(line.strip())
 
-# Verify we got 2 messages
+    try:
+        msg = json.loads(line.strip())
+        # Handle control requests
+        if msg.get("type") == "control_request":
+            request_id = msg.get("request_id")
+            request = msg.get("request", {})
+
+            # Send control response for initialize
+            if request.get("subtype") == "initialize":
+                response = {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": request_id,
+                        "response": {
+                            "commands": [],
+                            "output_style": "default"
+                        }
+                    }
+                }
+                print(json.dumps(response))
+                sys.stdout.flush()
+        else:
+            stdin_messages.append(line.strip())
+    except:
+        stdin_messages.append(line.strip())
+
+# Verify we got 2 user messages
 assert len(stdin_messages) == 2
 assert '"First"' in stdin_messages[0]
 assert '"Second"' in stdin_messages[1]
@@ -476,8 +701,11 @@ class TestClaudeSDKClientEdgeCases:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
-                mock_transport_class.return_value = mock_transport
+                # Create a new mock transport for each call
+                mock_transport_class.side_effect = [
+                    create_mock_transport(),
+                    create_mock_transport(),
+                ]
 
                 client = ClaudeSDKClient()
                 await client.connect()
@@ -506,7 +734,7 @@ class TestClaudeSDKClientEdgeCases:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
                 with pytest.raises(ValueError):
@@ -514,7 +742,7 @@ class TestClaudeSDKClientEdgeCases:
                         raise ValueError("Test error")
 
                 # Disconnect should still be called
-                mock_transport.disconnect.assert_called_once()
+                mock_transport.close.assert_called_once()
 
         anyio.run(_test)
 
@@ -525,11 +753,38 @@ class TestClaudeSDKClientEdgeCases:
             with patch(
                 "claude_code_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
-                mock_transport = AsyncMock()
+                mock_transport = create_mock_transport()
                 mock_transport_class.return_value = mock_transport
 
-                # Mock the message stream
+                # Mock the message stream with control protocol support
                 async def mock_receive():
+                    # First handle initialization
+                    await asyncio.sleep(0.01)
+                    written = mock_transport.write.call_args_list
+                    for call in written:
+                        if call:
+                            data = call[0][0]
+                            try:
+                                msg = json.loads(data.strip())
+                                if (
+                                    msg.get("type") == "control_request"
+                                    and msg.get("request", {}).get("subtype")
+                                    == "initialize"
+                                ):
+                                    yield {
+                                        "type": "control_response",
+                                        "response": {
+                                            "request_id": msg.get("request_id"),
+                                            "subtype": "success",
+                                            "commands": [],
+                                            "output_style": "default",
+                                        },
+                                    }
+                                    break
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+
+                    # Then yield the actual messages
                     yield {
                         "type": "assistant",
                         "message": {
@@ -557,7 +812,7 @@ class TestClaudeSDKClientEdgeCases:
                         "total_cost_usd": 0.001,
                     }
 
-                mock_transport.receive_messages = mock_receive
+                mock_transport.read_messages = mock_receive
 
                 async with ClaudeSDKClient() as client:
                     # Test list comprehension pattern from docstring

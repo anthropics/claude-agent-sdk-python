@@ -1,5 +1,6 @@
 """Claude SDK Client for interacting with Claude Code."""
 
+import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
@@ -96,12 +97,15 @@ class ClaudeSDKClient:
             options = ClaudeCodeOptions()
         self.options = options
         self._transport: Any | None = None
+        self._query: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
     async def connect(
         self, prompt: str | AsyncIterable[dict[str, Any]] | None = None
     ) -> None:
         """Connect to Claude with a prompt or message stream."""
+
+        from ._internal.query import Query
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Auto-connect with empty async iterable if no prompt is provided
@@ -112,20 +116,38 @@ class ClaudeSDKClient:
             return
             yield {}  # type: ignore[unreachable]
 
+        actual_prompt = _empty_stream() if prompt is None else prompt
+
         self._transport = SubprocessCLITransport(
-            prompt=_empty_stream() if prompt is None else prompt,
+            prompt=actual_prompt,
             options=self.options,
         )
         await self._transport.connect()
 
+        # Create Query to handle control protocol
+        self._query = Query(
+            transport=self._transport,
+            is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
+            can_use_tool=None,  # TODO: Add support for can_use_tool callback
+            hooks=None,  # TODO: Add support for hooks
+        )
+
+        # Start reading messages and initialize
+        await self._query.start()
+        await self._query.initialize()
+
+        # If we have an initial prompt stream, start streaming it
+        if prompt is not None and isinstance(prompt, AsyncIterable) and self._query._tg:
+            self._query._tg.start_soon(self._query.stream_input, prompt)
+
     async def receive_messages(self) -> AsyncIterator[Message]:
         """Receive all messages from Claude."""
-        if not self._transport:
+        if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
         from ._internal.message_parser import parse_message
 
-        async for data in self._transport.receive_messages():
+        async for data in self._query.receive_messages():
             yield parse_message(data)
 
     async def query(
@@ -138,7 +160,7 @@ class ClaudeSDKClient:
             prompt: Either a string message or an async iterable of message dictionaries
             session_id: Session identifier for the conversation
         """
-        if not self._transport:
+        if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
         # Handle string prompts
@@ -149,24 +171,45 @@ class ClaudeSDKClient:
                 "parent_tool_use_id": None,
                 "session_id": session_id,
             }
-            await self._transport.send_request([message], {"session_id": session_id})
+            await self._transport.write(json.dumps(message) + "\n")
         else:
-            # Handle AsyncIterable prompts
-            messages = []
+            # Handle AsyncIterable prompts - stream them
             async for msg in prompt:
                 # Ensure session_id is set on each message
                 if "session_id" not in msg:
                     msg["session_id"] = session_id
-                messages.append(msg)
-
-            if messages:
-                await self._transport.send_request(messages, {"session_id": session_id})
+                await self._transport.write(json.dumps(msg) + "\n")
 
     async def interrupt(self) -> None:
         """Send interrupt signal (only works with streaming mode)."""
-        if not self._transport:
+        if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        await self._transport.interrupt()
+        await self._query.interrupt()
+
+    async def get_server_info(self) -> dict[str, Any] | None:
+        """Get server initialization info including available commands and output styles.
+
+        Returns initialization information from the Claude Code server including:
+        - Available commands (slash commands, system commands, etc.)
+        - Current and available output styles
+        - Server capabilities
+
+        Returns:
+            Dictionary with server info, or None if not in streaming mode
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                info = await client.get_server_info()
+                if info:
+                    print(f"Commands available: {len(info.get('commands', []))}")
+                    print(f"Output style: {info.get('output_style', 'default')}")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        # Return the initialization result that was already obtained during connect
+        return getattr(self._query, "_initialization_result", None)
 
     async def receive_response(self) -> AsyncIterator[Message]:
         """
@@ -211,9 +254,10 @@ class ClaudeSDKClient:
 
     async def disconnect(self) -> None:
         """Disconnect from Claude."""
-        if self._transport:
-            await self._transport.disconnect()
-            self._transport = None
+        if self._query:
+            await self._query.close()
+            self._query = None
+        self._transport = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

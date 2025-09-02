@@ -12,33 +12,56 @@ class Transport(ABC):
     (e.g., remote Claude Code connections). The Claude Code team may change or
     or remove this abstract class in any future release. Custom implementations
     must be updated to match interface changes.
+
+    This is a low-level transport interface that handles raw I/O with the Claude
+    process or service. The Query class builds on top of this to implement the
+    control protocol and message routing.
     """
 
     @abstractmethod
     async def connect(self) -> None:
-        """Initialize connection."""
+        """Connect the transport and prepare for communication.
+
+        For subprocess transports, this starts the process.
+        For network transports, this establishes the connection.
+        """
         pass
 
     @abstractmethod
-    async def disconnect(self) -> None:
-        """Close connection."""
+    async def write(self, data: str) -> None:
+        """Write raw data to the transport.
+
+        Args:
+            data: Raw string data to write (typically JSON + newline)
+        """
         pass
 
     @abstractmethod
-    async def send_request(
-        self, messages: list[dict[str, Any]], options: dict[str, Any]
-    ) -> None:
-        """Send request to Claude."""
+    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        """Read and parse messages from the transport.
+
+        Yields:
+            Parsed JSON messages from the transport
+        """
         pass
 
     @abstractmethod
-    def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
-        """Receive messages from Claude."""
+    async def close(self) -> None:
+        """Close the transport connection and clean up resources."""
         pass
 
     @abstractmethod
-    def is_connected(self) -> bool:
-        """Check if transport is connected."""
+    def is_ready(self) -> bool:
+        """Check if transport is ready for communication.
+
+        Returns:
+            True if transport is ready to send/receive messages
+        """
+        pass
+
+    @abstractmethod
+    async def end_input(self) -> None:
+        """End the input stream (close stdin for process transports)."""
         pass
 
 

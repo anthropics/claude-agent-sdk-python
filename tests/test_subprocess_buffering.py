@@ -63,7 +63,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])  # type: ignore[assignment]
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 2
@@ -97,7 +97,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 2
@@ -127,7 +127,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 2
@@ -173,7 +173,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 1
@@ -221,7 +221,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 1
@@ -252,7 +252,7 @@ class TestSubprocessBuffering:
 
             with pytest.raises(Exception) as exc_info:
                 messages: list[Any] = []
-                async for msg in transport.receive_messages():
+                async for msg in transport.read_messages():
                     messages.append(msg)
 
             assert isinstance(exc_info.value, CLIJSONDecodeError)
@@ -293,7 +293,7 @@ class TestSubprocessBuffering:
             transport._stderr_stream = MockTextReceiveStream([])
 
             messages: list[Any] = []
-            async for msg in transport.receive_messages():
+            async for msg in transport.read_messages():
                 messages.append(msg)
 
             assert len(messages) == 3

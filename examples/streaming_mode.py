@@ -340,6 +340,85 @@ async def example_bash_command():
     print("\n")
 
 
+async def example_control_protocol():
+    """Demonstrate server info and interrupt capabilities."""
+    print("=== Control Protocol Example ===")
+    print("Shows server info retrieval and interrupt capability\n")
+
+    async with ClaudeSDKClient() as client:
+        # 1. Get server initialization info
+        print("1. Getting server info...")
+        server_info = await client.get_server_info()
+
+        if server_info:
+            print("✓ Server info retrieved successfully!")
+            print(f"  - Available commands: {len(server_info.get('commands', []))}")
+            print(f"  - Output style: {server_info.get('output_style', 'unknown')}")
+
+            # Show available output styles if present
+            styles = server_info.get('available_output_styles', [])
+            if styles:
+                print(f"  - Available output styles: {', '.join(styles)}")
+
+            # Show a few example commands
+            commands = server_info.get('commands', [])[:5]
+            if commands:
+                print("  - Example commands:")
+                for cmd in commands:
+                    if isinstance(cmd, dict):
+                        print(f"    • {cmd.get('name', 'unknown')}")
+        else:
+            print("✗ No server info available (may not be in streaming mode)")
+
+        print("\n2. Testing interrupt capability...")
+
+        # Start a long-running task
+        print("User: Count from 1 to 20 slowly")
+        await client.query("Count from 1 to 20 slowly, pausing between each number")
+
+        # Start consuming messages in background to enable interrupt
+        messages = []
+        async def consume():
+            async for msg in client.receive_response():
+                messages.append(msg)
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            # Print first 50 chars to show progress
+                            print(f"Claude: {block.text[:50]}...")
+                            break
+                if isinstance(msg, ResultMessage):
+                    break
+
+        consume_task = asyncio.create_task(consume())
+
+        # Wait a moment then interrupt
+        await asyncio.sleep(2)
+        print("\n[Sending interrupt after 2 seconds...]")
+
+        try:
+            await client.interrupt()
+            print("✓ Interrupt sent successfully")
+        except Exception as e:
+            print(f"✗ Interrupt failed: {e}")
+
+        # Wait for task to complete
+        with contextlib.suppress(asyncio.CancelledError):
+            await consume_task
+
+        # Send new query after interrupt
+        print("\nUser: Just say 'Hello!'")
+        await client.query("Just say 'Hello!'")
+
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(f"Claude: {block.text}")
+
+    print("\n")
+
+
 async def example_error_handling():
     """Demonstrate proper error handling."""
     print("=== Error Handling Example ===")
@@ -350,8 +429,8 @@ async def example_error_handling():
         await client.connect()
 
         # Send a message that will take time to process
-        print("User: Run a bash sleep command for 60 seconds")
-        await client.query("Run a bash sleep command for 60 seconds")
+        print("User: Run a bash sleep command for 60 seconds not in the background")
+        await client.query("Run a bash sleep command for 60 seconds not in the background")
 
         # Try to receive response with a short timeout
         try:
@@ -397,6 +476,7 @@ async def main():
         "with_options": example_with_options,
         "async_iterable_prompt": example_async_iterable_prompt,
         "bash_command": example_bash_command,
+        "control_protocol": example_control_protocol,
         "error_handling": example_error_handling,
     }
 

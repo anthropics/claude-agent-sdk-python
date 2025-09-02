@@ -112,8 +112,8 @@ class TestSubprocessCLITransport:
         assert "--resume" in cmd
         assert "session-123" in cmd
 
-    def test_connect_disconnect(self):
-        """Test connect and disconnect lifecycle."""
+    def test_connect_close(self):
+        """Test connect and close lifecycle."""
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
@@ -139,22 +139,22 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
                 assert transport._process is not None
-                assert transport.is_connected()
+                assert transport.is_ready()
 
-                await transport.disconnect()
+                await transport.close()
                 mock_process.terminate.assert_called_once()
 
         anyio.run(_test)
 
-    def test_receive_messages(self):
-        """Test parsing messages from CLI output."""
-        # This test is simplified to just test the parsing logic
+    def test_read_messages(self):
+        """Test reading messages from CLI output."""
+        # This test is simplified to just test the transport creation
         # The full async stream handling is tested in integration tests
         transport = SubprocessCLITransport(
             prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
         )
 
-        # The actual message parsing is done by the client, not the transport
+        # The transport now just provides raw message reading via read_messages()
         # So we just verify the transport can be created and basic structure is correct
         assert transport._prompt == "test"
         assert transport._cli_path == "/usr/bin/claude"

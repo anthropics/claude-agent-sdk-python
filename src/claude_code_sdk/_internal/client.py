@@ -19,6 +19,22 @@ class InternalClient:
     def __init__(self) -> None:
         """Initialize the internal client."""
 
+    def _convert_hooks_to_internal_format(
+        self, hooks: dict[str, list]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Convert HookMatcher format to internal Query format."""
+        internal_hooks = {}
+        for event, matchers in hooks.items():
+            internal_hooks[event] = []
+            for matcher in matchers:
+                # Convert HookMatcher to internal dict format
+                internal_matcher = {
+                    "matcher": matcher.matcher if hasattr(matcher, 'matcher') else None,
+                    "hooks": matcher.hooks if hasattr(matcher, 'hooks') else []
+                }
+                internal_hooks[event].append(internal_matcher)
+        return internal_hooks
+
     async def process_query(
         self,
         prompt: str | AsyncIterable[dict[str, Any]],
@@ -48,8 +64,8 @@ class InternalClient:
         query = Query(
             transport=chosen_transport,
             is_streaming_mode=is_streaming,
-            can_use_tool=None,  # TODO: Add support for can_use_tool callback
-            hooks=None,  # TODO: Add support for hooks
+            can_use_tool=options.can_use_tool,
+            hooks=self._convert_hooks_to_internal_format(options.hooks) if options.hooks else None,
             sdk_mcp_servers=sdk_mcp_servers,
         )
 

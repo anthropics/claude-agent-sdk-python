@@ -1,16 +1,101 @@
 """Type definitions for Claude SDK."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from typing_extensions import NotRequired  # For Python < 3.11 compatibility
+try:
+    from typing import NotRequired  # Python 3.11+
+except ImportError:
+    from typing_extensions import NotRequired  # For Python < 3.11 compatibility
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
+
+
+# Permission Update types (matching TypeScript SDK)
+PermissionUpdateDestination = Literal[
+    "userSettings",
+    "projectSettings", 
+    "localSettings",
+    "session"
+]
+
+PermissionBehavior = Literal["allow", "deny", "ask"]
+
+@dataclass
+class PermissionRuleValue:
+    """Permission rule value."""
+    toolName: str
+    ruleContent: str | None = None
+
+@dataclass 
+class PermissionUpdate:
+    """Permission update configuration."""
+    type: Literal["addRules", "replaceRules", "removeRules", "setMode", "addDirectories", "removeDirectories"]
+    rules: list[PermissionRuleValue] | None = None
+    behavior: PermissionBehavior | None = None
+    mode: PermissionMode | None = None
+    directories: list[str] | None = None
+    destination: PermissionUpdateDestination | None = None
+
+# Tool callback types
+@dataclass
+class ToolPermissionContext:
+    """Context information for tool permission callbacks."""
+
+    signal: Any | None = None  # Future: abort signal support
+    suggestions: list[PermissionUpdate] = field(default_factory=list)  # Permission suggestions from CLI
+
+
+# Match TypeScript's PermissionResult structure
+@dataclass
+class PermissionResultAllow:
+    """Allow permission result."""
+    behavior: Literal["allow"] = "allow"
+    updatedInput: dict[str, Any] | None = None
+    updatedPermissions: list[PermissionUpdate] | None = None
+
+@dataclass
+class PermissionResultDeny:
+    """Deny permission result."""
+    behavior: Literal["deny"] = "deny" 
+    message: str = ""
+    interrupt: bool = False
+
+PermissionResult = PermissionResultAllow | PermissionResultDeny
+
+CanUseTool = Callable[
+    [str, dict[str, Any], ToolPermissionContext],
+    Awaitable[PermissionResult]
+]
+
+
+# Hook callback types
+@dataclass
+class HookContext:
+    """Context information for hook callbacks."""
+
+    signal: Any | None = None  # Future: abort signal support
+
+
+HookCallback = Callable[
+    [dict[str, Any], str | None, HookContext],  # input, tool_use_id, context
+    Awaitable[dict[str, Any]]  # response data
+]
+
+
+# Hook matcher configuration
+@dataclass
+class HookMatcher:
+    """Hook matcher configuration."""
+
+    matcher: dict[str, Any] | None = None  # Matcher criteria
+    hooks: list[HookCallback] = field(default_factory=list)  # Callbacks to invoke
 
 
 # MCP Server config
@@ -155,6 +240,12 @@ class ClaudeCodeOptions:
         default_factory=dict
     )  # Pass arbitrary CLI flags
 
+    # Tool permission callback
+    can_use_tool: CanUseTool | None = None
+
+    # Hook configurations
+    hooks: dict[str, list[HookMatcher]] | None = None
+
 
 # SDK Control Protocol
 class SDKControlInterruptRequest(TypedDict):
@@ -168,7 +259,6 @@ class SDKControlPermissionRequest(TypedDict):
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None
-
 
 class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]

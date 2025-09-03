@@ -15,10 +15,14 @@ from mcp.types import (
 )
 
 from ..types import (
+    PermissionResult,
+    PermissionResultAllow,
+    PermissionResultDeny,
     SDKControlPermissionRequest,
     SDKControlRequest,
     SDKControlResponse,
     SDKHookCallbackRequest,
+    ToolPermissionContext,
 )
 from .transport import Transport
 
@@ -195,14 +199,33 @@ class Query:
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
 
-                response_data = await self.can_use_tool(
+                context = ToolPermissionContext(
+                    signal=None,  # TODO: Add abort signal support
+                    suggestions=permission_request.get("permission_suggestions", [])
+                )
+
+                response = await self.can_use_tool(
                     permission_request["tool_name"],
                     permission_request["input"],
-                    {
-                        "signal": None,  # TODO: Add abort signal support
-                        "suggestions": permission_request.get("permission_suggestions"),
-                    },
+                    context
                 )
+
+                # Convert PermissionResult to expected dict format
+                if isinstance(response, PermissionResultAllow):
+                    response_data = {
+                        "allow": True
+                    }
+                    if response.updatedInput is not None:
+                        response_data["input"] = response.updatedInput
+                    # TODO: Handle updatedPermissions when control protocol supports it
+                elif isinstance(response, PermissionResultDeny):
+                    response_data = {
+                        "allow": False,
+                        "reason": response.message
+                    }
+                    # TODO: Handle interrupt flag when control protocol supports it
+                else:
+                    raise TypeError(f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}")
 
             elif subtype == "hook_callback":
                 hook_callback_request: SDKHookCallbackRequest = request_data  # type: ignore[assignment]

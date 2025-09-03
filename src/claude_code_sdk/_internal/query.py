@@ -5,9 +5,14 @@ import logging
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
+from mcp.types import (
+    CallToolRequest,
+    CallToolRequestParams,
+    ListToolsRequest,
+)
 
 from ..types import (
     SDKControlPermissionRequest,
@@ -16,6 +21,9 @@ from ..types import (
     SDKHookCallbackRequest,
 )
 from .transport import Transport
+
+if TYPE_CHECKING:
+    from mcp.server import Server as McpServer
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,7 @@ class Query:
         ]
         | None = None,
         hooks: dict[str, list[dict[str, Any]]] | None = None,
+        sdk_mcp_servers: dict[str, "McpServer"] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -48,11 +57,13 @@ class Query:
             is_streaming_mode: Whether using streaming (bidirectional) mode
             can_use_tool: Optional callback for tool permission requests
             hooks: Optional hook configurations
+            sdk_mcp_servers: Optional SDK MCP server instances
         """
         self.transport = transport
         self.is_streaming_mode = is_streaming_mode
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
+        self.sdk_mcp_servers = sdk_mcp_servers or {}
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -207,6 +218,16 @@ class Query:
                     {"signal": None},  # TODO: Add abort signal support
                 )
 
+            elif subtype == "mcp_request":
+                # Handle SDK MCP request
+                server_name = request_data.get("server_name")
+                mcp_message = request_data.get("message")
+
+                if not server_name or not mcp_message:
+                    raise Exception("Missing server_name or message for MCP request")
+
+                response_data = await self._handle_sdk_mcp_request(server_name, mcp_message)
+
             else:
                 raise Exception(f"Unsupported control request subtype: {subtype}")
 
@@ -272,6 +293,106 @@ class Query:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
             raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+
+    async def _handle_sdk_mcp_request(self, server_name: str, message: dict) -> dict:
+        """Handle an MCP request for an SDK server.
+
+        This acts as a bridge between JSONRPC messages from the CLI
+        and the in-process MCP server. Ideally the MCP SDK would provide
+        a method to handle raw JSONRPC, but for now we route manually.
+
+        Args:
+            server_name: Name of the SDK MCP server
+            message: The JSONRPC message
+
+        Returns:
+            The response message
+        """
+        if server_name not in self.sdk_mcp_servers:
+            return {
+                "jsonrpc": "2.0",
+                "id": message.get("id"),
+                "error": {
+                    "code": -32601,
+                    "message": f"Server '{server_name}' not found",
+                },
+            }
+
+        server = self.sdk_mcp_servers[server_name]
+        method = message.get("method")
+        params = message.get("params", {})
+
+        try:
+            # TODO: Python MCP SDK lacks the Transport abstraction that TypeScript has.
+            # TypeScript: server.connect(transport) allows custom transports
+            # Python: server.run(read_stream, write_stream) requires actual streams
+            #
+            # This forces us to manually route methods. When Python MCP adds Transport
+            # support, we can refactor to match the TypeScript approach.
+            if method == "tools/list":
+                request = ListToolsRequest(method=method)
+                handler = server.request_handlers.get(ListToolsRequest)
+                if handler:
+                    result = await handler(request)
+                    # Convert MCP result to JSONRPC response
+                    tools_data = [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "inputSchema": tool.inputSchema.model_dump() if tool.inputSchema else {}
+                        }
+                        for tool in result.root.tools
+                    ]
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "result": {"tools": tools_data}
+                    }
+
+            elif method == "tools/call":
+                request = CallToolRequest(
+                    method=method,
+                    params=CallToolRequestParams(
+                        name=params.get("name"),
+                        arguments=params.get("arguments", {})
+                    )
+                )
+                handler = server.request_handlers.get(CallToolRequest)
+                if handler:
+                    result = await handler(request)
+                    # Convert MCP result to JSONRPC response
+                    content = []
+                    for item in result.root.content:
+                        if hasattr(item, 'text'):
+                            content.append({"type": "text", "text": item.text})
+                        elif hasattr(item, 'data') and hasattr(item, 'mimeType'):
+                            content.append({"type": "image", "data": item.data, "mimeType": item.mimeType})
+
+                    response_data = {"content": content}
+                    if hasattr(result.root, 'is_error') and result.root.is_error:
+                        response_data["is_error"] = True
+
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "result": response_data
+                    }
+
+            # Add more methods here as MCP SDK adds them (resources, prompts, etc.)
+            # This is the limitation Ashwin pointed out - we have to manually update
+
+            return {
+                "jsonrpc": "2.0",
+                "id": message.get("id"),
+                "error": {"code": -32601, "message": f"Method '{method}' not found"},
+            }
+
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": message.get("id"),
+                "error": {"code": -32603, "message": str(e)},
+            }
 
     async def interrupt(self) -> None:
         """Send interrupt control request."""

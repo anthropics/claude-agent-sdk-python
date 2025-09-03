@@ -128,13 +128,21 @@ class SubprocessCLITransport(Transport):
 
         if self._options.mcp_servers:
             if isinstance(self._options.mcp_servers, dict):
-                # Dict format: serialize to JSON
-                cmd.extend(
-                    [
-                        "--mcp-config",
-                        json.dumps({"mcpServers": self._options.mcp_servers}),
-                    ]
-                )
+                # Filter out SDK servers - they're handled in-process
+                external_servers = {
+                    name: config
+                    for name, config in self._options.mcp_servers.items()
+                    if not (isinstance(config, dict) and config.get("type") == "sdk")
+                }
+
+                # Only pass external servers to CLI
+                if external_servers:
+                    cmd.extend(
+                        [
+                            "--mcp-config",
+                            json.dumps({"mcpServers": external_servers}),
+                        ]
+                    )
             else:
                 # String or Path format: pass directly as file path or JSON string
                 cmd.extend(["--mcp-config", str(self._options.mcp_servers)])

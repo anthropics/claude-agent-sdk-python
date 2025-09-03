@@ -14,7 +14,7 @@ bash commands, edit files, search the web, fetch web content) to accomplish.
 # BASIC STREAMING
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, TextBlock
 
 async with ClaudeSDKClient() as client:
     print("User: What is 2+2?")
@@ -32,7 +32,8 @@ async with ClaudeSDKClient() as client:
 # ============================================================================
 
 import asyncio
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
 
 async with ClaudeSDKClient() as client:
     async def send_and_receive(prompt):
@@ -53,7 +54,7 @@ async with ClaudeSDKClient() as client:
 # PERSISTENT CLIENT FOR MULTIPLE QUESTIONS
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
 
 # Create client
 client = ClaudeSDKClient()
@@ -88,8 +89,7 @@ await client.disconnect()
 # IMPORTANT: Interrupts require active message consumption. You must be
 # consuming messages from the client for the interrupt to be processed.
 
-import asyncio
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
 
 async with ClaudeSDKClient() as client:
     print("\n--- Sending initial message ---\n")
@@ -141,7 +141,7 @@ async with ClaudeSDKClient() as client:
 # ERROR HANDLING PATTERN
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
 
 try:
     async with ClaudeSDKClient() as client:
@@ -168,7 +168,8 @@ except Exception as e:
 # SENDING ASYNC ITERABLE OF MESSAGES
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
+
 
 async def message_generator():
     """Generate multiple messages as an async iterable."""
@@ -209,7 +210,7 @@ async with ClaudeSDKClient() as client:
 # COLLECTING ALL MESSAGES INTO A LIST
 # ============================================================================
 
-from claude_code_sdk import ClaudeSDKClient, AssistantMessage, TextBlock, ResultMessage
+from claude_code_sdk import AssistantMessage, ClaudeSDKClient, TextBlock
 
 async with ClaudeSDKClient() as client:
     print("User: What are the primary colors?")

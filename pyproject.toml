@@ -61,6 +61,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = [
     "--import-mode=importlib",
+    "-p", "asyncio",
 ]
 
 [tool.pytest-asyncio]

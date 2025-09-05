@@ -456,15 +456,14 @@ class Query:
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
-        async with self._message_receive:
-            async for message in self._message_receive:
-                # Check for special messages
-                if message.get("type") == "end":
-                    break
-                elif message.get("type") == "error":
-                    raise Exception(message.get("error", "Unknown error"))
+        async for message in self._message_receive:
+            # Check for special messages
+            if message.get("type") == "end":
+                break
+            elif message.get("type") == "error":
+                raise Exception(message.get("error", "Unknown error"))
 
-                yield message
+            yield message
 
     async def close(self) -> None:
         """Close the query and transport."""

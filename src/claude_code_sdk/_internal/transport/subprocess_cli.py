@@ -4,8 +4,6 @@ import json
 import logging
 import os
 import shutil
-import tempfile
-from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -42,9 +40,7 @@ class SubprocessCLITransport(Transport):
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
-        self._stderr_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
-        self._stderr_file: Any = None  # tempfile.NamedTemporaryFile
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
 
@@ -174,12 +170,6 @@ class SubprocessCLITransport(Transport):
 
         cmd = self._build_command()
         try:
-            # Create a temp file for stderr to avoid pipe buffer deadlock
-            # We can't use context manager as we need it for the subprocess lifetime
-            self._stderr_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                mode="w+", prefix="claude_stderr_", suffix=".log", delete=False
-            )
-
             # Merge environment variables: system -> user -> SDK required
             process_env = {
                 **os.environ,
@@ -190,11 +180,19 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
+            # Only output stderr if customer explicitly requested debug output and provided a file object
+            stderr_dest = (
+                self._options.debug_stderr
+                if "debug-to-stderr" in self._options.extra_args
+                and self._options.debug_stderr
+                else None
+            )
+
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
                 stdout=PIPE,
-                stderr=self._stderr_file,
+                stderr=stderr_dest,
                 cwd=self._cwd,
                 env=process_env,
             )
@@ -234,7 +232,7 @@ class SubprocessCLITransport(Transport):
         if not self._process:
             return
 
-        # Close stdin first if it's still open
+        # Close streams
         if self._stdin_stream:
             with suppress(Exception):
                 await self._stdin_stream.aclose()
@@ -253,18 +251,8 @@ class SubprocessCLITransport(Transport):
                     # Just try to wait, but don't block if it fails
                     await self._process.wait()
 
-        # Clean up temp file
-        if self._stderr_file:
-            try:
-                self._stderr_file.close()
-                Path(self._stderr_file.name).unlink()
-            except Exception:
-                pass
-            self._stderr_file = None
-
         self._process = None
         self._stdout_stream = None
-        self._stderr_stream = None
         self._stdin_stream = None
         self._exit_error = None
 
@@ -358,46 +346,20 @@ class SubprocessCLITransport(Transport):
             # Client disconnected
             pass
 
-        # Read stderr from temp file (keep only last N lines for memory efficiency)
-        stderr_lines: deque[str] = deque(maxlen=100)  # Keep last 100 lines
-        if self._stderr_file:
-            try:
-                # Flush any pending writes
-                self._stderr_file.flush()
-                # Read from the beginning
-                self._stderr_file.seek(0)
-                for line in self._stderr_file:
-                    line_text = line.strip()
-                    if line_text:
-                        stderr_lines.append(line_text)
-            except Exception:
-                pass
-
         # Check process completion and handle errors
         try:
             returncode = await self._process.wait()
         except Exception:
             returncode = -1
 
-        # Convert deque to string for error reporting
-        stderr_output = "\n".join(list(stderr_lines)) if stderr_lines else ""
-        if len(stderr_lines) == stderr_lines.maxlen:
-            stderr_output = (
-                f"[stderr truncated, showing last {stderr_lines.maxlen} lines]\n"
-                + stderr_output
-            )
-
-        # Use exit code for error detection, not string matching
+        # Use exit code for error detection
         if returncode is not None and returncode != 0:
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr=stderr_output,
+                stderr="Check stderr output for details",
             )
             raise self._exit_error
-        elif stderr_output:
-            # Log stderr for debugging but don't fail on non-zero exit
-            logger.debug(f"Process stderr: {stderr_output}")
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

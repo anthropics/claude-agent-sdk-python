@@ -1,5 +1,6 @@
 """Type definitions for Claude SDK."""
 
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -250,6 +251,9 @@ class ClaudeCodeOptions:
     extra_args: dict[str, str | None] = field(
         default_factory=dict
     )  # Pass arbitrary CLI flags
+    debug_stderr: Any = (
+        sys.stderr
+    )  # File-like object for debug output when debug-to-stderr is set
 
     # Tool permission callback
     can_use_tool: CanUseTool | None = None

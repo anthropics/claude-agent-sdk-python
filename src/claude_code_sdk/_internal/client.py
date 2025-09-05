@@ -20,17 +20,17 @@ class InternalClient:
         """Initialize the internal client."""
 
     def _convert_hooks_to_internal_format(
-        self, hooks: dict[str, list]
+        self, hooks: dict[str, list[Any]]
     ) -> dict[str, list[dict[str, Any]]]:
         """Convert HookMatcher format to internal Query format."""
-        internal_hooks = {}
+        internal_hooks: dict[str, list[dict[str, Any]]] = {}
         for event, matchers in hooks.items():
             internal_hooks[event] = []
             for matcher in matchers:
                 # Convert HookMatcher to internal dict format
                 internal_matcher = {
-                    "matcher": matcher.matcher if hasattr(matcher, 'matcher') else None,
-                    "hooks": matcher.hooks if hasattr(matcher, 'hooks') else []
+                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
+                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
                 }
                 internal_hooks[event].append(internal_matcher)
         return internal_hooks
@@ -57,7 +57,7 @@ class InternalClient:
         if options.mcp_servers and isinstance(options.mcp_servers, dict):
             for name, config in options.mcp_servers.items():
                 if isinstance(config, dict) and config.get("type") == "sdk":
-                    sdk_mcp_servers[name] = config["instance"]
+                    sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
         # Create Query to handle control protocol
         is_streaming = not isinstance(prompt, str)
@@ -65,7 +65,9 @@ class InternalClient:
             transport=chosen_transport,
             is_streaming_mode=is_streaming,
             can_use_tool=options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(options.hooks) if options.hooks else None,
+            hooks=self._convert_hooks_to_internal_format(options.hooks)
+            if options.hooks
+            else None,
             sdk_mcp_servers=sdk_mcp_servers,
         )
 

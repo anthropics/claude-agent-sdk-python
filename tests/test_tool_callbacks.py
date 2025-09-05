@@ -38,6 +38,7 @@ class MockTransport(Transport):
         async def _read():
             for msg in self.messages_to_read:
                 yield msg
+
         return _read()
 
     def is_ready(self) -> bool:
@@ -53,9 +54,7 @@ class TestToolPermissionCallbacks:
         callback_invoked = False
 
         async def allow_callback(
-            tool_name: str,
-            input_data: dict,
-            context: ToolPermissionContext
+            tool_name: str, input_data: dict, context: ToolPermissionContext
         ) -> PermissionResultAllow:
             nonlocal callback_invoked
             callback_invoked = True
@@ -68,7 +67,7 @@ class TestToolPermissionCallbacks:
             transport=transport,
             is_streaming_mode=True,
             can_use_tool=allow_callback,
-            hooks=None
+            hooks=None,
         )
 
         # Simulate control request
@@ -79,8 +78,8 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "TestTool",
                 "input": {"param": "value"},
-                "permission_suggestions": []
-            }
+                "permission_suggestions": [],
+            },
         }
 
         await query._handle_control_request(request)
@@ -96,21 +95,18 @@ class TestToolPermissionCallbacks:
     @pytest.mark.asyncio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""
+
         async def deny_callback(
-            tool_name: str,
-            input_data: dict,
-            context: ToolPermissionContext
+            tool_name: str, input_data: dict, context: ToolPermissionContext
         ) -> PermissionResultDeny:
-            return PermissionResultDeny(
-                message="Security policy violation"
-            )
+            return PermissionResultDeny(message="Security policy violation")
 
         transport = MockTransport()
         query = Query(
             transport=transport,
             is_streaming_mode=True,
             can_use_tool=deny_callback,
-            hooks=None
+            hooks=None,
         )
 
         request = {
@@ -120,8 +116,8 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "DangerousTool",
                 "input": {"command": "rm -rf /"},
-                "permission_suggestions": ["deny"]
-            }
+                "permission_suggestions": ["deny"],
+            },
         }
 
         await query._handle_control_request(request)
@@ -135,24 +131,21 @@ class TestToolPermissionCallbacks:
     @pytest.mark.asyncio
     async def test_permission_callback_input_modification(self):
         """Test callback that modifies tool input."""
+
         async def modify_callback(
-            tool_name: str,
-            input_data: dict,
-            context: ToolPermissionContext
+            tool_name: str, input_data: dict, context: ToolPermissionContext
         ) -> PermissionResultAllow:
             # Modify the input to add safety flag
             modified_input = input_data.copy()
             modified_input["safe_mode"] = True
-            return PermissionResultAllow(
-                updatedInput=modified_input
-            )
+            return PermissionResultAllow(updated_input=modified_input)
 
         transport = MockTransport()
         query = Query(
             transport=transport,
             is_streaming_mode=True,
             can_use_tool=modify_callback,
-            hooks=None
+            hooks=None,
         )
 
         request = {
@@ -162,8 +155,8 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "WriteTool",
                 "input": {"file_path": "/etc/passwd"},
-                "permission_suggestions": []
-            }
+                "permission_suggestions": [],
+            },
         }
 
         await query._handle_control_request(request)
@@ -177,10 +170,9 @@ class TestToolPermissionCallbacks:
     @pytest.mark.asyncio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
+
         async def error_callback(
-            tool_name: str,
-            input_data: dict,
-            context: ToolPermissionContext
+            tool_name: str, input_data: dict, context: ToolPermissionContext
         ) -> PermissionResultAllow:
             raise ValueError("Callback error")
 
@@ -189,7 +181,7 @@ class TestToolPermissionCallbacks:
             transport=transport,
             is_streaming_mode=True,
             can_use_tool=error_callback,
-            hooks=None
+            hooks=None,
         )
 
         request = {
@@ -199,8 +191,8 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "TestTool",
                 "input": {},
-                "permission_suggestions": []
-            }
+                "permission_suggestions": [],
+            },
         }
 
         await query._handle_control_request(request)
@@ -221,33 +213,20 @@ class TestHookCallbacks:
         hook_calls = []
 
         async def test_hook(
-            input_data: dict,
-            tool_use_id: str | None,
-            context: HookContext
+            input_data: dict, tool_use_id: str | None, context: HookContext
         ) -> dict:
-            hook_calls.append({
-                "input": input_data,
-                "tool_use_id": tool_use_id
-            })
+            hook_calls.append({"input": input_data, "tool_use_id": tool_use_id})
             return {"processed": True}
 
         transport = MockTransport()
 
         # Create hooks configuration
         hooks = {
-            "tool_use_start": [
-                {
-                    "matcher": {"tool": "TestTool"},
-                    "hooks": [test_hook]
-                }
-            ]
+            "tool_use_start": [{"matcher": {"tool": "TestTool"}, "hooks": [test_hook]}]
         }
 
         query = Query(
-            transport=transport,
-            is_streaming_mode=True,
-            can_use_tool=None,
-            hooks=hooks
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=hooks
         )
 
         # Manually register the hook callback to avoid needing the full initialize flow
@@ -262,8 +241,8 @@ class TestHookCallbacks:
                 "subtype": "hook_callback",
                 "callback_id": callback_id,
                 "input": {"test": "data"},
-                "tool_use_id": "tool-123"
-            }
+                "tool_use_id": "tool-123",
+            },
         }
 
         await query._handle_control_request(request)
@@ -284,17 +263,14 @@ class TestClaudeCodeOptionsIntegration:
 
     def test_options_with_callbacks(self):
         """Test creating options with callbacks."""
+
         async def my_callback(
-            tool_name: str,
-            input_data: dict,
-            context: ToolPermissionContext
+            tool_name: str, input_data: dict, context: ToolPermissionContext
         ) -> PermissionResultAllow:
             return PermissionResultAllow()
 
         async def my_hook(
-            input_data: dict,
-            tool_use_id: str | None,
-            context: HookContext
+            input_data: dict, tool_use_id: str | None, context: HookContext
         ) -> dict:
             return {}
 
@@ -302,12 +278,9 @@ class TestClaudeCodeOptionsIntegration:
             can_use_tool=my_callback,
             hooks={
                 "tool_use_start": [
-                    HookMatcher(
-                        matcher={"tool": "Bash"},
-                        hooks=[my_hook]
-                    )
+                    HookMatcher(matcher={"tool": "Bash"}, hooks=[my_hook])
                 ]
-            }
+            },
         )
 
         assert options.can_use_tool == my_callback

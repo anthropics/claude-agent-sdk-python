@@ -57,7 +57,7 @@ class SdkMcpTool(Generic[T]):
 
 def tool(
     name: str, description: str, input_schema: type | dict[str, Any]
-) -> Callable[[Callable[[Any], Awaitable[dict[str, Any]]]], SdkMcpTool]:
+) -> Callable[[Callable[[Any], Awaitable[dict[str, Any]]]], SdkMcpTool[Any]]:
     """Decorator for defining MCP tools with type safety.
 
     Creates a tool that can be used with SDK MCP servers. The tool runs
@@ -105,7 +105,9 @@ def tool(
         - Errors can be indicated by including "is_error": True in the response
     """
 
-    def decorator(handler: Callable[[Any], Awaitable[dict[str, Any]]]) -> SdkMcpTool:
+    def decorator(
+        handler: Callable[[Any], Awaitable[dict[str, Any]]],
+    ) -> SdkMcpTool[Any]:
         return SdkMcpTool(
             name=name,
             description=description,
@@ -117,7 +119,7 @@ def tool(
 
 
 def create_sdk_mcp_server(
-    name: str, version: str = "1.0.0", tools: list[SdkMcpTool] | None = None
+    name: str, version: str = "1.0.0", tools: list[SdkMcpTool[Any]] | None = None
 ) -> McpSdkServerConfig:
     """Create an in-process MCP server that runs within your Python application.
 
@@ -200,7 +202,7 @@ def create_sdk_mcp_server(
         tool_map = {tool_def.name: tool_def for tool_def in tools}
 
         # Register list_tools handler to expose available tools
-        @server.list_tools()
+        @server.list_tools()  # type: ignore[no-untyped-call,misc]
         async def list_tools() -> list[Tool]:
             """Return the list of available tools."""
             tool_list = []
@@ -246,8 +248,8 @@ def create_sdk_mcp_server(
             return tool_list
 
         # Register call_tool handler to execute tools
-        @server.call_tool()
-        async def call_tool(name: str, arguments: dict) -> Any:
+        @server.call_tool()  # type: ignore[misc]
+        async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             """Execute a tool by name with given arguments."""
             if name not in tool_map:
                 raise ValueError(f"Tool '{name}' not found")

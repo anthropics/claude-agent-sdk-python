@@ -61,7 +61,7 @@ async def my_permission_callback(
             modified_input = input_data.copy()
             modified_input["file_path"] = safe_path
             return PermissionResultAllow(
-                updatedInput=modified_input
+                updated_input=modified_input
             )
 
     # Check dangerous bash commands

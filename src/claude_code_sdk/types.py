@@ -87,7 +87,33 @@ CanUseTool = Callable[
 ]
 
 
-# Hook callback types
+##### Hook types
+# Supported hook event types. Due to setup limitations, the Python SDK does not
+# support SessionStart, SessionEnd, and Notification hooks.
+HookEvent = (
+    Literal["PreToolUse"]
+    | Literal["PostToolUse"]
+    | Literal["UserPromptSubmit"]
+    | Literal["Stop"]
+    | Literal["SubagentStop"]
+    | Literal["PreCompact"]
+)
+
+
+# See https://docs.anthropic.com/en/docs/claude-code/hooks#advanced%3A-json-output
+# for documentation of the output types. Currently, "continue", "stopReason",
+# and "suppressOutput" are not supported in the Python SDK.
+class HookJSONOutput(TypedDict):
+    # Whether to block the action related to the hook.
+    decision: NotRequired[Literal["block"]]
+    # Optionally add a system message that is not visible to Claude but saved in
+    # the chat transcript.
+    systemMessage: NotRequired[str]
+    # See each hook's individual "Decision Control" section in the documentation
+    # for guidance.
+    hookSpecificOutput: NotRequired[Any]
+
+
 @dataclass
 class HookContext:
     """Context information for hook callbacks."""
@@ -96,8 +122,14 @@ class HookContext:
 
 
 HookCallback = Callable[
-    [dict[str, Any], str | None, HookContext],  # input, tool_use_id, context
-    Awaitable[dict[str, Any]],  # response data
+    # HookCallback input parameters:
+    # - input
+    #   See https://docs.anthropic.com/en/docs/claude-code/hooks#hook-input for
+    #   the type of 'input', the first value.
+    # - tool_use_id
+    # - context
+    [dict[str, Any], str | None, HookContext],
+    Awaitable[HookJSONOutput],
 ]
 
 
@@ -106,8 +138,14 @@ HookCallback = Callable[
 class HookMatcher:
     """Hook matcher configuration."""
 
-    matcher: dict[str, Any] | None = None  # Matcher criteria
-    hooks: list[HookCallback] = field(default_factory=list)  # Callbacks to invoke
+    # See https://docs.anthropic.com/en/docs/claude-code/hooks#structure for the
+    # expected string value. For example, for PreToolUse, the matcher can be
+    # a tool name like "Bash" or a combination of tool names like
+    # "Write|MultiEdit|Edit".
+    matcher: str | None = None
+
+    # A list of Python functions with function signature HookCallback
+    hooks: list[HookCallback] = field(default_factory=list)
 
 
 # MCP Server config
@@ -259,7 +297,7 @@ class ClaudeCodeOptions:
     can_use_tool: CanUseTool | None = None
 
     # Hook configurations
-    hooks: dict[str, list[HookMatcher]] | None = None
+    hooks: dict[HookEvent, list[HookMatcher]] | None = None
 
 
 # SDK Control Protocol
@@ -278,8 +316,7 @@ class SDKControlPermissionRequest(TypedDict):
 
 class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
-    # TODO: Use HookEvent names as the key.
-    hooks: dict[str, Any] | None
+    hooks: dict[HookEvent, Any] | None
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

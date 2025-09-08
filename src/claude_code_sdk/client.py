@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from ._errors import CLIConnectionError
-from .types import ClaudeCodeOptions, Message, ResultMessage
+from .types import ClaudeCodeOptions, HookEvent, HookMatcher, Message, ResultMessage
 
 
 class ClaudeSDKClient:
@@ -102,7 +102,7 @@ class ClaudeSDKClient:
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
     def _convert_hooks_to_internal_format(
-        self, hooks: dict[str, list[Any]]
+        self, hooks: dict[HookEvent, list[HookMatcher]]
     ) -> dict[str, list[dict[str, Any]]]:
         """Convert HookMatcher format to internal Query format."""
         internal_hooks: dict[str, list[dict[str, Any]]] = {}

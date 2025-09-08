@@ -6,6 +6,8 @@ from typing import Any
 
 from ..types import (
     ClaudeCodeOptions,
+    HookEvent,
+    HookMatcher,
     Message,
 )
 from .message_parser import parse_message
@@ -21,7 +23,7 @@ class InternalClient:
         """Initialize the internal client."""
 
     def _convert_hooks_to_internal_format(
-        self, hooks: dict[str, list[Any]]
+        self, hooks: dict[HookEvent, list[HookMatcher]]
     ) -> dict[str, list[dict[str, Any]]]:
         """Convert HookMatcher format to internal Query format."""
         internal_hooks: dict[str, list[dict[str, Any]]] = {}

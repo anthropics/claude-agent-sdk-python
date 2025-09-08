@@ -2,7 +2,9 @@ name: Claude Code E2E Test
 
 on:
   pull_request:
-    types: [opened, synchronize]
+  push:
+    branches:
+      - 'main'
 
 jobs:
   integration-test:

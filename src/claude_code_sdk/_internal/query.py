@@ -250,9 +250,11 @@ class Query:
                 # Type narrowing - we've verified these are not None above
                 assert isinstance(server_name, str)
                 assert isinstance(mcp_message, dict)
-                response_data = await self._handle_sdk_mcp_request(
+                mcp_response = await self._handle_sdk_mcp_request(
                     server_name, mcp_message
                 )
+                # Wrap the MCP response as expected by the control protocol
+                response_data = {"mcp_response": mcp_response}
 
             else:
                 raise Exception(f"Unsupported control request subtype: {subtype}")
@@ -357,7 +359,24 @@ class Query:
             #
             # This forces us to manually route methods. When Python MCP adds Transport
             # support, we can refactor to match the TypeScript approach.
-            if method == "tools/list":
+            if method == "initialize":
+                # Handle MCP initialization - hardcoded for tools only, no listChanged
+                return {
+                    "jsonrpc": "2.0",
+                    "id": message.get("id"),
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "tools": {}  # Tools capability without listChanged
+                        },
+                        "serverInfo": {
+                            "name": server.name,
+                            "version": server.version or "1.0.0",
+                        },
+                    },
+                }
+
+            elif method == "tools/list":
                 request = ListToolsRequest(method=method)
                 handler = server.request_handlers.get(ListToolsRequest)
                 if handler:
@@ -367,7 +386,11 @@ class Query:
                         {
                             "name": tool.name,
                             "description": tool.description,
-                            "inputSchema": tool.inputSchema.model_dump()  # type: ignore[union-attr]
+                            "inputSchema": (
+                                tool.inputSchema.model_dump()
+                                if hasattr(tool.inputSchema, "model_dump")
+                                else tool.inputSchema
+                            )
                             if tool.inputSchema
                             else {},
                         }
@@ -412,6 +435,10 @@ class Query:
                         "id": message.get("id"),
                         "result": response_data,
                     }
+
+            elif method == "notifications/initialized":
+                # Handle initialized notification - just acknowledge it
+                return {"jsonrpc": "2.0", "result": {}}
 
             # Add more methods here as MCP SDK adds them (resources, prompts, etc.)
             # This is the limitation Ashwin pointed out - we have to manually update

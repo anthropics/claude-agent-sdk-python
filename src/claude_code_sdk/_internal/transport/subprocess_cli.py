@@ -125,19 +125,25 @@ class SubprocessCLITransport(Transport):
 
         if self._options.mcp_servers:
             if isinstance(self._options.mcp_servers, dict):
-                # Filter out SDK servers - they're handled in-process
-                external_servers = {
-                    name: config
-                    for name, config in self._options.mcp_servers.items()
-                    if not (isinstance(config, dict) and config.get("type") == "sdk")
-                }
+                # Process all servers, stripping instance field from SDK servers
+                servers_for_cli: dict[str, Any] = {}
+                for name, config in self._options.mcp_servers.items():
+                    if isinstance(config, dict) and config.get("type") == "sdk":
+                        # For SDK servers, pass everything except the instance field
+                        sdk_config: dict[str, object] = {
+                            k: v for k, v in config.items() if k != "instance"
+                        }
+                        servers_for_cli[name] = sdk_config
+                    else:
+                        # For external servers, pass as-is
+                        servers_for_cli[name] = config
 
-                # Only pass external servers to CLI
-                if external_servers:
+                # Pass all servers to CLI
+                if servers_for_cli:
                     cmd.extend(
                         [
                             "--mcp-config",
-                            json.dumps({"mcpServers": external_servers}),
+                            json.dumps({"mcpServers": servers_for_cli}),
                         ]
                     )
             else:

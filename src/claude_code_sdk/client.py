@@ -3,6 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from ._errors import CLIConnectionError
@@ -134,9 +135,30 @@ class ClaudeSDKClient:
 
         actual_prompt = _empty_stream() if prompt is None else prompt
 
+        # Validate and configure permission settings (matching TypeScript SDK logic)
+        if self.options.can_use_tool:
+            # canUseTool callback requires streaming mode (AsyncIterable prompt)
+            if isinstance(prompt, str):
+                raise ValueError(
+                    "can_use_tool callback requires streaming mode. "
+                    "Please provide prompt as an AsyncIterable instead of a string."
+                )
+
+            # canUseTool and permission_prompt_tool_name are mutually exclusive
+            if self.options.permission_prompt_tool_name:
+                raise ValueError(
+                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+                    "Please use one or the other."
+                )
+
+            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
+            options = replace(self.options, permission_prompt_tool_name="stdio")
+        else:
+            options = self.options
+
         self._transport = SubprocessCLITransport(
             prompt=actual_prompt,
-            options=self.options,
+            options=options,
         )
         await self._transport.connect()
 

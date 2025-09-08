@@ -1,6 +1,7 @@
 """Internal client implementation."""
 
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from ..types import (
@@ -43,19 +44,43 @@ class InternalClient:
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""
 
+        # Validate and configure permission settings (matching TypeScript SDK logic)
+        configured_options = options
+        if options.can_use_tool:
+            # canUseTool callback requires streaming mode (AsyncIterable prompt)
+            if isinstance(prompt, str):
+                raise ValueError(
+                    "can_use_tool callback requires streaming mode. "
+                    "Please provide prompt as an AsyncIterable instead of a string."
+                )
+
+            # canUseTool and permission_prompt_tool_name are mutually exclusive
+            if options.permission_prompt_tool_name:
+                raise ValueError(
+                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+                    "Please use one or the other."
+                )
+
+            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
+            configured_options = replace(options, permission_prompt_tool_name="stdio")
+
         # Use provided transport or create subprocess transport
         if transport is not None:
             chosen_transport = transport
         else:
-            chosen_transport = SubprocessCLITransport(prompt=prompt, options=options)
+            chosen_transport = SubprocessCLITransport(
+                prompt=prompt, options=configured_options
+            )
 
         # Connect transport
         await chosen_transport.connect()
 
-        # Extract SDK MCP servers from options
+        # Extract SDK MCP servers from configured options
         sdk_mcp_servers = {}
-        if options.mcp_servers and isinstance(options.mcp_servers, dict):
-            for name, config in options.mcp_servers.items():
+        if configured_options.mcp_servers and isinstance(
+            configured_options.mcp_servers, dict
+        ):
+            for name, config in configured_options.mcp_servers.items():
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
@@ -64,9 +89,9 @@ class InternalClient:
         query = Query(
             transport=chosen_transport,
             is_streaming_mode=is_streaming,
-            can_use_tool=options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(options.hooks)
-            if options.hooks
+            can_use_tool=configured_options.can_use_tool,
+            hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
+            if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
         )

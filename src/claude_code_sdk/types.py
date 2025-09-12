@@ -271,7 +271,6 @@ class ClaudeCodeOptions:
     """Query options for Claude SDK."""
 
     allowed_tools: list[str] = field(default_factory=list)
-    max_thinking_tokens: int = 8000
     system_prompt: str | None = None
     append_system_prompt: str | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)

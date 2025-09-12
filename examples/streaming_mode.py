@@ -217,7 +217,6 @@ async def example_with_options():
     # Configure options
     options = ClaudeCodeOptions(
         allowed_tools=["Read", "Write"],  # Allow file operations
-        max_thinking_tokens=10000,
         system_prompt="You are a helpful coding assistant.",
         env={
             "ANTHROPIC_MODEL": "claude-3-7-sonnet-20250219",

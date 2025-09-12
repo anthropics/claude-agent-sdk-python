@@ -80,7 +80,6 @@ class TestOptions:
         """Test Options with default values."""
         options = ClaudeCodeOptions()
         assert options.allowed_tools == []
-        assert options.max_thinking_tokens == 8000
         assert options.system_prompt is None
         assert options.permission_mode is None
         assert options.continue_conversation is False

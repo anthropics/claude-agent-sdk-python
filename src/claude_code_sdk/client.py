@@ -39,57 +39,16 @@ class ClaudeSDKClient:
     - When all inputs are known upfront
     - Stateless operations
 
-    Example - Interactive conversation:
-        ```python
-        # Automatically connects with empty stream for interactive use
-        async with ClaudeSDKClient() as client:
-            # Send initial message
-            await client.query("Let's solve a math problem step by step")
+    See examples/streaming_mode.py for full examples of ClaudeSDKClient in
+    different scenarios.
 
-            # Receive and process response
-            async for message in client.receive_messages():
-                if "ready" in str(message.content).lower():
-                    break
-
-            # Send follow-up based on response
-            await client.query("What's 15% of 80?")
-
-            # Continue conversation...
-        # Automatically disconnects
-        ```
-
-    Example - With interrupt:
-        ```python
-        async with ClaudeSDKClient() as client:
-            # Start a long task
-            await client.query("Count to 1000")
-
-            # Interrupt after 2 seconds
-            await anyio.sleep(2)
-            await client.interrupt()
-
-            # Send new instruction
-            await client.query("Never mind, what's 2+2?")
-        ```
-
-    Example - Manual connection:
-        ```python
-        client = ClaudeSDKClient()
-
-        # Connect with initial message stream
-        async def message_stream():
-            yield {"type": "user", "message": {"role": "user", "content": "Hello"}}
-
-        await client.connect(message_stream())
-
-        # Send additional messages dynamically
-        await client.query("What's the weather?")
-
-        async for message in client.receive_messages():
-            print(message)
-
-        await client.disconnect()
-        ```
+    Caveat: As of v0.0.20, you cannot use a ClaudeSDKClient instance across
+    different async runtime contexts (e.g., different trio nurseries or asyncio
+    task groups). The client internally maintains a persistent anyio task group
+    for reading messages that remains active from connect() until disconnect().
+    This means you must complete all operations with the client within the same
+    async context where it was connected. Ideally, this limitation should not
+    exist.
     """
 
     def __init__(self, options: ClaudeCodeOptions | None = None):

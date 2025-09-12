@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.22
+
+- Introduce custom tools, implemented as in-process MCP servers.
+- Introduce hooks.
+- Update internal `Transport` class to lower-level interface.
+- `ClaudeSDKClient` can no longer be run in different async contexts.
+
 ## 0.0.19
 
 - Add `ClaudeCodeOptions.add_dirs` for `--add-dir`

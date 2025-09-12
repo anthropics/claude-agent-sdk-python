@@ -20,17 +20,13 @@ from claude_code_sdk import (
 
 # Define calculator tools using the @tool decorator
 
+
 @tool("add", "Add two numbers", {"a": float, "b": float})
 async def add_numbers(args: dict[str, Any]) -> dict[str, Any]:
     """Add two numbers together."""
     result = args["a"] + args["b"]
     return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"{args['a']} + {args['b']} = {result}"
-            }
-        ]
+        "content": [{"type": "text", "text": f"{args['a']} + {args['b']} = {result}"}]
     }
 
 
@@ -39,12 +35,7 @@ async def subtract_numbers(args: dict[str, Any]) -> dict[str, Any]:
     """Subtract b from a."""
     result = args["a"] - args["b"]
     return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"{args['a']} - {args['b']} = {result}"
-            }
-        ]
+        "content": [{"type": "text", "text": f"{args['a']} - {args['b']} = {result}"}]
     }
 
 
@@ -53,12 +44,7 @@ async def multiply_numbers(args: dict[str, Any]) -> dict[str, Any]:
     """Multiply two numbers."""
     result = args["a"] * args["b"]
     return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"{args['a']} × {args['b']} = {result}"
-            }
-        ]
+        "content": [{"type": "text", "text": f"{args['a']} × {args['b']} = {result}"}]
     }
 
 
@@ -68,22 +54,14 @@ async def divide_numbers(args: dict[str, Any]) -> dict[str, Any]:
     if args["b"] == 0:
         return {
             "content": [
-                {
-                    "type": "text",
-                    "text": "Error: Division by zero is not allowed"
-                }
+                {"type": "text", "text": "Error: Division by zero is not allowed"}
             ],
-            "is_error": True
+            "is_error": True,
         }
 
     result = args["a"] / args["b"]
     return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"{args['a']} ÷ {args['b']} = {result}"
-            }
-        ]
+        "content": [{"type": "text", "text": f"{args['a']} ÷ {args['b']} = {result}"}]
     }
 
 
@@ -96,22 +74,16 @@ async def square_root(args: dict[str, Any]) -> dict[str, Any]:
             "content": [
                 {
                     "type": "text",
-                    "text": f"Error: Cannot calculate square root of negative number {n}"
+                    "text": f"Error: Cannot calculate square root of negative number {n}",
                 }
             ],
-            "is_error": True
+            "is_error": True,
         }
 
     import math
+
     result = math.sqrt(n)
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"√{n} = {result}"
-            }
-        ]
-    }
+    return {"content": [{"type": "text", "text": f"√{n} = {result}"}]}
 
 
 @tool("power", "Raise a number to a power", {"base": float, "exponent": float})
@@ -120,10 +92,7 @@ async def power(args: dict[str, Any]) -> dict[str, Any]:
     result = args["base"] ** args["exponent"]
     return {
         "content": [
-            {
-                "type": "text",
-                "text": f"{args['base']}^{args['exponent']} = {result}"
-            }
+            {"type": "text", "text": f"{args['base']}^{args['exponent']} = {result}"}
         ]
     }
 
@@ -139,13 +108,15 @@ def display_message(msg):
         ToolUseBlock,
         UserMessage,
     )
-    
+
     if isinstance(msg, UserMessage):
         for block in msg.content:
             if isinstance(block, TextBlock):
                 print(f"User: {block.text}")
             elif isinstance(block, ToolResultBlock):
-                print(f"Tool Result: {block.content[:100] if block.content else 'None'}...")
+                print(
+                    f"Tool Result: {block.content[:100] if block.content else 'None'}..."
+                )
     elif isinstance(msg, AssistantMessage):
         for block in msg.content:
             if isinstance(block, TextBlock):
@@ -178,8 +149,8 @@ async def main():
             multiply_numbers,
             divide_numbers,
             square_root,
-            power
-        ]
+            power,
+        ],
     )
 
     # Configure Claude to use the calculator server with allowed tools
@@ -188,12 +159,12 @@ async def main():
         mcp_servers={"calc": calculator},
         allowed_tools=[
             "mcp__calc__add",
-            "mcp__calc__subtract", 
+            "mcp__calc__subtract",
             "mcp__calc__multiply",
             "mcp__calc__divide",
             "mcp__calc__sqrt",
-            "mcp__calc__power"
-        ]
+            "mcp__calc__power",
+        ],
     )
 
     # Example prompts to demonstrate calculator usage
@@ -203,17 +174,17 @@ async def main():
         "What is 100 divided by 7?",
         "Calculate the square root of 144",
         "What is 2 raised to the power of 8?",
-        "Calculate (12 + 8) * 3 - 10"  # Complex calculation
+        "Calculate (12 + 8) * 3 - 10",  # Complex calculation
     ]
 
     for prompt in prompts:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"Prompt: {prompt}")
-        print(f"{'='*50}")
-        
+        print(f"{'=' * 50}")
+
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
-            
+
             async for message in client.receive_response():
                 display_message(message)
 

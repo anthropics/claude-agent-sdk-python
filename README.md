@@ -1,6 +1,6 @@
 # Claude Code SDK for Python
 
-Python SDK for Claude Code. See the [Claude Code SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk) for more information.
+Python SDK for Claude Code. See the [Claude Code SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-python) for more information.
 
 ## Installation
 
@@ -26,9 +26,9 @@ async def main():
 anyio.run(main)
 ```
 
-## Usage
+## Basic Usage: query()
 
-### Basic Query
+`query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_code_sdk/query.py](src/claude_code_sdk/query.py).
 
 ```python
 from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage, TextBlock
@@ -76,14 +76,25 @@ options = ClaudeCodeOptions(
 )
 ```
 
-### SDK MCP Servers (In-Process)
+## ClaudeSDKClient
 
-The SDK now supports in-process MCP servers that run directly within your Python application, eliminating the need for separate processes.
+`ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
+Code. See [src/claude_code_sdk/client.py](src/claude_code_sdk/client.py).
+
+Unlike `query()`, `ClaudeSDKClient` additionally enables **custom tools** and **hooks**, both of which can be defined as Python functions.
+
+### Custom Tools (as In-Process SDK MCP Servers)
+
+A **custom tool** is a Python function that you can offer to Claude, for Claude to invoke as needed.
+
+Custom tools are implemented in-process MCP servers that run directly within your Python application, eliminating the need for separate processes that regular MCP servers require.
+
+For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
 
 #### Creating a Simple Tool
 
 ```python
-from claude_code_sdk import tool, create_sdk_mcp_server
+from claude_code_sdk import tool, create_sdk_mcp_server, ClaudeCodeOptions, ClaudeSDKClient
 
 # Define a tool using the @tool decorator
 @tool("greet", "Greet a user", {"name": str})
@@ -103,11 +114,16 @@ server = create_sdk_mcp_server(
 
 # Use it with Claude
 options = ClaudeCodeOptions(
-    mcp_servers={"tools": server}
+    mcp_servers={"tools": server},
+    allowed_tools=["mcp__tools__greet"]
 )
 
-async for message in query(prompt="Greet Alice", options=options):
-    print(message)
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Greet Alice")
+
+    # Extract and print response
+    async for msg in client.receive_response():
+        print(msg)
 ```
 
 #### Benefits Over External MCP Servers
@@ -161,19 +177,60 @@ options = ClaudeCodeOptions(
 )
 ```
 
-## API Reference
+### Hooks
 
-### `query(prompt, options=None)`
+A **hook** is a Python function that the Claude Code *application* (*not* Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
 
-Main async function for querying Claude.
+For more examples, see examples/hooks.py.
 
-**Parameters:**
-- `prompt` (str): The prompt to send to Claude
-- `options` (ClaudeCodeOptions): Optional configuration
+#### Example
 
-**Returns:** AsyncIterator[Message] - Stream of response messages
+```python
+from claude_code_sdk import ClaudeCodeOptions, ClaudeSDKClient, HookMatcher
 
-### Types
+async def check_bash_command(input_data, tool_use_id, context):
+    tool_name = input_data["tool_name"]
+    tool_input = input_data["tool_input"]
+    if tool_name != "Bash":
+        return {}
+    command = tool_input.get("command", "")
+    block_patterns = ["foo.sh"]
+    for pattern in block_patterns:
+        if pattern in command:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"Command contains invalid pattern: {pattern}",
+                }
+            }
+    return {}
+
+options = ClaudeCodeOptions(
+    allowed_tools=["Bash"],
+    hooks={
+        "PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[check_bash_command]),
+        ],
+    }
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    # Test 1: Command with forbidden pattern (will be blocked)
+    await client.query("Run the bash command: ./foo.sh --help")
+    async for msg in client.receive_response():
+        print(msg)
+
+    print("\n" + "=" * 50 + "\n")
+
+    # Test 2: Safe command that should work
+    await client.query("Run the bash command: echo 'Hello from hooks example!'")
+    async for msg in client.receive_response():
+        print(msg)
+```
+
+
+## Types
 
 See [src/claude_code_sdk/types.py](src/claude_code_sdk/types.py) for complete type definitions:
 - `ClaudeCodeOptions` - Configuration options
@@ -211,6 +268,8 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 ## Examples
 
 See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
+
+See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
 
 ## License
 

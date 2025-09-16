@@ -352,3 +352,41 @@ class TestSubprocessCLITransport:
                     assert env_passed["PATH"] == os.environ["PATH"]
 
         anyio.run(_test)
+
+    def test_connect_as_different_user(self):
+        """Test connect as different user."""
+
+        async def _test():
+            custom_user = "claude"
+            options = ClaudeCodeOptions(user=custom_user)
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()  # Add async aclose method
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+                mock_open_process.return_value = mock_process
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                    cli_path="/usr/bin/claude",
+                )
+
+                await transport.connect()
+
+                # Verify open_process was called with correct user
+                mock_open_process.assert_called_once()
+                call_kwargs = mock_open_process.call_args.kwargs
+                assert "user" in call_kwargs
+                user_passed = call_kwargs["user"]
+
+                # Check that user was passed
+                assert user_passed == "claude"
+
+        anyio.run(_test)

@@ -230,6 +230,7 @@ class UserMessage:
     """User message."""
 
     content: str | list[ContentBlock]
+    parent_tool_use_id: str | None = None
 
 
 @dataclass
@@ -238,6 +239,7 @@ class AssistantMessage:
 
     content: list[ContentBlock]
     model: str
+    parent_tool_use_id: str | None = None
 
 
 @dataclass

@@ -130,6 +130,17 @@ class TestMessageParser:
         assert isinstance(message.content[2], ToolResultBlock)
         assert isinstance(message.content[3], TextBlock)
 
+    def test_parse_user_message_inside_subagent(self):
+        """Test parsing a valid user message."""
+        data = {
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+            "parent_tool_use_id": "toolu_01Xrwd5Y13sEHtzScxR77So8",
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.parent_tool_use_id == "toolu_01Xrwd5Y13sEHtzScxR77So8"
+
     def test_parse_valid_assistant_message(self):
         """Test parsing a valid assistant message."""
         data = {
@@ -184,6 +195,28 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, SystemMessage)
         assert message.subtype == "start"
+
+    def test_parse_assistant_message_inside_subagent(self):
+        """Test parsing a valid assistant message."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool_123",
+                        "name": "Read",
+                        "input": {"file_path": "/test.txt"},
+                    },
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+            "parent_tool_use_id": "toolu_01Xrwd5Y13sEHtzScxR77So8",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.parent_tool_use_id == "toolu_01Xrwd5Y13sEHtzScxR77So8"
 
     def test_parse_valid_result_message(self):
         """Test parsing a valid result message."""

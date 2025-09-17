@@ -9,6 +9,7 @@ from ..types import (
     ContentBlock,
     Message,
     ResultMessage,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
@@ -152,6 +153,19 @@ def parse_message(data: dict[str, Any]) -> Message:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in result message: {e}", data
+                ) from e
+
+        case "stream_event":
+            try:
+                return StreamEvent(
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                    event=data["event"],
+                    parent_tool_use_id=data.get("parent_tool_use_id"),
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in stream_event message: {e}", data
                 ) from e
 
         case _:

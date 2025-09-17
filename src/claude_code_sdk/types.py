@@ -265,7 +265,17 @@ class ResultMessage:
     result: str | None = None
 
 
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage
+@dataclass
+class StreamEvent:
+    """Stream event for partial message updates during streaming."""
+
+    uuid: str
+    session_id: str
+    event: dict[str, Any]  # The raw Anthropic API stream event
+    parent_tool_use_id: str | None = None
+
+
+Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
 
 
 @dataclass
@@ -301,6 +311,9 @@ class ClaudeCodeOptions:
     hooks: dict[HookEvent, list[HookMatcher]] | None = None
 
     user: str | None = None
+
+    # Partial message streaming support
+    include_partial_messages: bool = False
 
 
 # SDK Control Protocol

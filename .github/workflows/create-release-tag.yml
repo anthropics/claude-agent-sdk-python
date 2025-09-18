@@ -43,23 +43,17 @@ jobs:
         git push origin "v${{ steps.extract_version.outputs.version }}"
     
     - name: Create GitHub Release
-      uses: actions/create-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: v${{ steps.extract_version.outputs.version }}
-        release_name: Release v${{ steps.extract_version.outputs.version }}
-        body: |
-          ## Release v${{ steps.extract_version.outputs.version }}
-          
-          Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ steps.extract_version.outputs.version }}/
-          
-          ### Installation
-          ```bash
-          pip install claude-code-sdk==${{ steps.extract_version.outputs.version }}
-          ```
-          
-          ### What's Changed
-          See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ steps.previous_tag.outputs.previous_tag }}...v${{ steps.extract_version.outputs.version }})
-        draft: false
-        prerelease: false
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Create release with auto-generated notes
+        gh release create "v${{ steps.extract_version.outputs.version }}" \
+          --title "Release v${{ steps.extract_version.outputs.version }}" \
+          --generate-notes \
+          --notes-start-tag "${{ steps.previous_tag.outputs.previous_tag }}" \
+          --notes "Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ steps.extract_version.outputs.version }}/
+
+        ### Installation
+        \`\`\`bash
+        pip install claude-code-sdk==${{ steps.extract_version.outputs.version }}
+        \`\`\`"

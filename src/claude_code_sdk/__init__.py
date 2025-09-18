@@ -274,7 +274,7 @@ def create_sdk_mcp_server(
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 
 
-__version__ = "0.0.22"
+__version__ = "0.0.23"
 
 __all__ = [
     # Main exports

@@ -217,9 +217,10 @@ class Query:
                     if response.updated_input is not None:
                         response_data["updatedInput"] = response.updated_input
                     if response.updated_permissions is not None:
-                        response_data["updatedPermissions"] = (
-                            response.updated_permissions
-                        )
+                        response_data["updatedPermissions"] = [
+                            permission.to_dict()
+                            for permission in response.updated_permissions
+                        ]
                 elif isinstance(response, PermissionResultDeny):
                     response_data = {"behavior": "deny", "message": response.message}
                     if response.interrupt:

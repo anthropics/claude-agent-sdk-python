@@ -153,6 +153,9 @@ class SubprocessCLITransport(Transport):
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 
+        if self._options.fork_session:
+            cmd.append("--fork-session")
+
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
             if value is None:

@@ -12,6 +12,7 @@ from ._errors import (
     ProcessError,
 )
 from ._internal.transport import Transport
+from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
@@ -274,11 +275,10 @@ def create_sdk_mcp_server(
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 
 
-__version__ = "0.0.23"
-
 __all__ = [
     # Main exports
     "query",
+    "__version__",
     # Transport
     "Transport",
     "ClaudeSDKClient",

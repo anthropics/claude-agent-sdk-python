@@ -16,6 +16,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
+from ..._version import __version__
 from ...types import ClaudeCodeOptions
 from . import Transport
 
@@ -187,6 +188,7 @@ class SubprocessCLITransport(Transport):
                 **os.environ,
                 **self._options.env,  # User-provided env vars
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
             if self._cwd:

@@ -11,7 +11,7 @@ def update_version(new_version: str) -> None:
     # Update pyproject.toml
     pyproject_path = Path("pyproject.toml")
     content = pyproject_path.read_text()
-    
+
     # Only update the version field in [project] section
     content = re.sub(
         r'^version = "[^"]*"',
@@ -20,14 +20,14 @@ def update_version(new_version: str) -> None:
         count=1,
         flags=re.MULTILINE
     )
-    
+
     pyproject_path.write_text(content)
     print(f"Updated pyproject.toml to version {new_version}")
-    
-    # Update __init__.py
-    init_path = Path("src/claude_code_sdk/__init__.py")
-    content = init_path.read_text()
-    
+
+    # Update _version.py
+    version_path = Path("src/claude_code_sdk/_version.py")
+    content = version_path.read_text()
+
     # Only update __version__ assignment
     content = re.sub(
         r'^__version__ = "[^"]*"',
@@ -36,9 +36,9 @@ def update_version(new_version: str) -> None:
         count=1,
         flags=re.MULTILINE
     )
-    
-    init_path.write_text(content)
-    print(f"Updated __init__.py to version {new_version}")
+
+    version_path.write_text(content)
+    print(f"Updated _version.py to version {new_version}")
 
 
 if __name__ == "__main__":

@@ -123,9 +123,9 @@ jobs:
         # Get current SHA values of files
         echo "Getting SHA for pyproject.toml"
         PYPROJECT_SHA=$(gh api /repos/$GITHUB_REPOSITORY/contents/pyproject.toml --jq '.sha')
-        echo "Getting SHA for __init__.py"
-        INIT_SHA=$(gh api /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/__init__.py --jq '.sha')
-        
+        echo "Getting SHA for _version.py"
+        VERSION_SHA=$(gh api /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/_version.py --jq '.sha')
+
         # Commit pyproject.toml via GitHub API (this creates signed commits)
         message="chore: bump version to ${{ env.VERSION }}"
         base64 -i pyproject.toml > pyproject.toml.b64
@@ -136,15 +136,15 @@ jobs:
           -F content=@pyproject.toml.b64 \
           -f sha="$PYPROJECT_SHA" \
           -f branch="$BRANCH_NAME"
-        
-        # Commit __init__.py via GitHub API
-        base64 -i src/claude_code_sdk/__init__.py > init.py.b64
+
+        # Commit _version.py via GitHub API
+        base64 -i src/claude_code_sdk/_version.py > version.py.b64
         gh api \
           --method PUT \
-          /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/__init__.py \
+          /repos/$GITHUB_REPOSITORY/contents/src/claude_code_sdk/_version.py \
           -f message="$message" \
-          -F content=@init.py.b64 \
-          -f sha="$INIT_SHA" \
+          -F content=@version.py.b64 \
+          -f sha="$VERSION_SHA" \
           -f branch="$BRANCH_NAME"
         
         # Create PR using GitHub CLI
@@ -152,7 +152,7 @@ jobs:
         
         ## Changes
         - Updated version in \`pyproject.toml\`
-        - Updated version in \`src/claude_code_sdk/__init__.py\`
+        - Updated version in \`src/claude_code_sdk/_version.py\`
         
         ## Release Information
         - Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ env.VERSION }}/

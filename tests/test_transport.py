@@ -52,12 +52,58 @@ class TestSubprocessCLITransport:
 
         assert transport._cli_path == "/usr/bin/claude"
 
+    def test_build_command_with_system_prompt_string(self):
+        """Test building CLI command with system prompt as string."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeCodeOptions(
+                system_prompt="Be helpful",
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        assert "Be helpful" in cmd
+
+    def test_build_command_with_system_prompt_preset(self):
+        """Test building CLI command with system prompt preset."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeCodeOptions(
+                system_prompt={"type": "preset", "preset": "claude_code"},
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
+
+    def test_build_command_with_system_prompt_preset_and_append(self):
+        """Test building CLI command with system prompt preset and append."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeCodeOptions(
+                system_prompt={
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Be concise.",
+                },
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" in cmd
+        assert "Be concise." in cmd
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=ClaudeCodeOptions(
-                system_prompt="Be helpful",
                 allowed_tools=["Read", "Write"],
                 disallowed_tools=["Bash"],
                 model="claude-3-5-sonnet",
@@ -68,8 +114,6 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--system-prompt" in cmd
-        assert "Be helpful" in cmd
         assert "--allowedTools" in cmd
         assert "Read,Write" in cmd
         assert "--disallowedTools" in cmd

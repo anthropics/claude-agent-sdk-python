@@ -107,14 +107,34 @@ class TestOptions:
         options_accept = ClaudeCodeOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
-    def test_claude_code_options_with_system_prompt(self):
-        """Test Options with system prompt."""
+    def test_claude_code_options_with_system_prompt_string(self):
+        """Test Options with system prompt as string."""
         options = ClaudeCodeOptions(
             system_prompt="You are a helpful assistant.",
-            append_system_prompt="Be concise.",
         )
         assert options.system_prompt == "You are a helpful assistant."
-        assert options.append_system_prompt == "Be concise."
+
+    def test_claude_code_options_with_system_prompt_preset(self):
+        """Test Options with system prompt preset."""
+        options = ClaudeCodeOptions(
+            system_prompt={"type": "preset", "preset": "claude_code"},
+        )
+        assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
+
+    def test_claude_code_options_with_system_prompt_preset_and_append(self):
+        """Test Options with system prompt preset and append."""
+        options = ClaudeCodeOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": "Be concise.",
+            },
+        )
+        assert options.system_prompt == {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": "Be concise.",
+        }
 
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""

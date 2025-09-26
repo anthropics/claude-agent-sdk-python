@@ -85,11 +85,18 @@ class SubprocessCLITransport(Transport):
         """Build CLI command with arguments."""
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
-        if self._options.system_prompt:
+        if self._options.system_prompt is None:
+            pass
+        elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
-
-        if self._options.append_system_prompt:
-            cmd.extend(["--append-system-prompt", self._options.append_system_prompt])
+        else:
+            if (
+                self._options.system_prompt.get("type") == "preset"
+                and "append" in self._options.system_prompt
+            ):
+                cmd.extend(
+                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                )
 
         if self._options.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])

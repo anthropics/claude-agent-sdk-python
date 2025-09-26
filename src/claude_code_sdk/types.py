@@ -18,6 +18,14 @@ PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 SettingSource = Literal["user", "project", "local"]
 
 
+class SystemPromptPreset(TypedDict):
+    """System prompt preset configuration."""
+
+    type: Literal["preset"]
+    preset: Literal["claude_code"]
+    append: NotRequired[str]
+
+
 @dataclass
 class AgentDefinition:
     """Agent definition configuration."""
@@ -296,8 +304,7 @@ class ClaudeCodeOptions:
     """Query options for Claude SDK."""
 
     allowed_tools: list[str] = field(default_factory=list)
-    system_prompt: str | None = None
-    append_system_prompt: str | None = None
+    system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False

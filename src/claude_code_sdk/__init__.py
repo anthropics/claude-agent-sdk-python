@@ -16,6 +16,7 @@ from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    AgentDefinition,
     AssistantMessage,
     CanUseTool,
     ClaudeCodeOptions,
@@ -32,6 +33,7 @@ from .types import (
     PermissionResultDeny,
     PermissionUpdate,
     ResultMessage,
+    SettingSource,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
@@ -307,6 +309,9 @@ __all__ = [
     "HookCallback",
     "HookContext",
     "HookMatcher",
+    # Agent support
+    "AgentDefinition",
+    "SettingSource",
     # MCP Server Support
     "create_sdk_mcp_server",
     "tool",

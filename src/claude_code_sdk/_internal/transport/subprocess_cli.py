@@ -6,6 +6,7 @@ import os
 import shutil
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
+from dataclasses import asdict
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any
@@ -156,6 +157,20 @@ class SubprocessCLITransport(Transport):
 
         if self._options.fork_session:
             cmd.append("--fork-session")
+
+        if self._options.agents:
+            agents_dict = {
+                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                for name, agent_def in self._options.agents.items()
+            }
+            cmd.extend(["--agents", json.dumps(agents_dict)])
+
+        sources_value = (
+            ",".join(self._options.setting_sources)
+            if self._options.setting_sources is not None
+            else ""
+        )
+        cmd.extend(["--setting-sources", sources_value])
 
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():

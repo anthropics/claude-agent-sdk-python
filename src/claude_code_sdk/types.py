@@ -14,6 +14,19 @@ if TYPE_CHECKING:
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
+# Agent definitions
+SettingSource = Literal["user", "project", "local"]
+
+
+@dataclass
+class AgentDefinition:
+    """Agent definition configuration."""
+
+    description: str
+    prompt: str
+    tools: list[str] | None = None
+    model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+
 
 # Permission Update types (matching TypeScript SDK)
 PermissionUpdateDestination = Literal[
@@ -317,6 +330,10 @@ class ClaudeCodeOptions:
     # When true resumed sessions will fork to a new session ID rather than
     # continuing the previous session.
     fork_session: bool = False
+    # Agent definitions for custom agents
+    agents: dict[str, AgentDefinition] | None = None
+    # Setting sources to load (user, project, local)
+    setting_sources: list[SettingSource] | None = None
 
 
 # SDK Control Protocol

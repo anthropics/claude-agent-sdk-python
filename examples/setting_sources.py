@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     SystemMessage,
 )
@@ -52,7 +52,7 @@ async def example_default():
 
     sdk_dir = Path(__file__).parent.parent
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         cwd=sdk_dir,
     )
 
@@ -81,7 +81,7 @@ async def example_user_only():
     # Use the SDK repo directory which has .claude/commands/commit.md
     sdk_dir = Path(__file__).parent.parent
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         setting_sources=["user"],
         cwd=sdk_dir,
     )
@@ -112,7 +112,7 @@ async def example_project_and_user():
 
     sdk_dir = Path(__file__).parent.parent
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         setting_sources=["user", "project"],
         cwd=sdk_dir,
     )

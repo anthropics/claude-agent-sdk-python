@@ -16,7 +16,7 @@ messages will include StreamEvent messages interspersed with regular messages.
 import asyncio
 from claude_code_sdk import ClaudeSDKClient
 from claude_code_sdk.types import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     StreamEvent,
     AssistantMessage,
     UserMessage,
@@ -27,7 +27,7 @@ from claude_code_sdk.types import (
 
 async def main():
     # Enable partial message streaming
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         include_partial_messages=True,
         model="claude-sonnet-4-20250514",
         max_turns=2,

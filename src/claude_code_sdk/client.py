@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from ._errors import CLIConnectionError
-from .types import ClaudeCodeOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
 
 
 class ClaudeSDKClient:
@@ -51,10 +51,10 @@ class ClaudeSDKClient:
     exist.
     """
 
-    def __init__(self, options: ClaudeCodeOptions | None = None):
+    def __init__(self, options: ClaudeAgentOptions | None = None):
         """Initialize Claude SDK client."""
         if options is None:
-            options = ClaudeCodeOptions()
+            options = ClaudeAgentOptions()
         self.options = options
         self._transport: Any | None = None
         self._query: Any | None = None

@@ -18,7 +18,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeCodeOptions
+from ...types import ClaudeAgentOptions
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class SubprocessCLITransport(Transport):
     def __init__(
         self,
         prompt: str | AsyncIterable[dict[str, Any]],
-        options: ClaudeCodeOptions,
+        options: ClaudeAgentOptions,
         cli_path: str | Path | None = None,
     ):
         self._prompt = prompt

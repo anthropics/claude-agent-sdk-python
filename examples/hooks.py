@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Example of using hooks with Claude Code SDK via ClaudeCodeOptions.
+"""Example of using hooks with Claude Code SDK via ClaudeAgentOptions.
 
 This file demonstrates various hook patterns using the hooks parameter
-in ClaudeCodeOptions instead of decorator-based hooks.
+in ClaudeAgentOptions instead of decorator-based hooks.
 
 Usage:
 ./examples/hooks.py - List the examples
@@ -15,7 +15,7 @@ import logging
 import sys
 from typing import Any
 
-from claude_code_sdk import ClaudeCodeOptions, ClaudeSDKClient
+from claude_code_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_code_sdk.types import (
     AssistantMessage,
     HookContext,
@@ -86,8 +86,8 @@ async def example_pretooluse() -> None:
     print("=== PreToolUse Example ===")
     print("This example demonstrates how PreToolUse can block some bash commands but not others.\n")
 
-    # Configure hooks using ClaudeCodeOptions
-    options = ClaudeCodeOptions(
+    # Configure hooks using ClaudeAgentOptions
+    options = ClaudeAgentOptions(
         allowed_tools=["Bash"],
         hooks={
             "PreToolUse": [
@@ -125,7 +125,7 @@ async def example_userpromptsubmit() -> None:
     print("=== UserPromptSubmit Example ===")
     print("This example shows how a UserPromptSubmit hook can add context.\n")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         hooks={
             "UserPromptSubmit": [
                 HookMatcher(matcher=None, hooks=[add_custom_instructions]),

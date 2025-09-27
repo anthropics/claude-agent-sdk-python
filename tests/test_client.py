@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_code_sdk import AssistantMessage, ClaudeAgentOptions, query
 from claude_code_sdk.types import TextBlock
 
 
@@ -52,7 +52,7 @@ class TestQueryFunction:
 
                 mock_process.return_value = mock_generator()
 
-                options = ClaudeCodeOptions(
+                options = ClaudeAgentOptions(
                     allowed_tools=["Read", "Write"],
                     system_prompt="You are helpful",
                     permission_mode="acceptEdits",
@@ -109,7 +109,7 @@ class TestQueryFunction:
                 mock_transport.write = AsyncMock()
                 mock_transport.is_ready = Mock(return_value=True)
 
-                options = ClaudeCodeOptions(cwd="/custom/path")
+                options = ClaudeAgentOptions(cwd="/custom/path")
                 messages = []
                 async for msg in query(prompt="test", options=options):
                     messages.append(msg)

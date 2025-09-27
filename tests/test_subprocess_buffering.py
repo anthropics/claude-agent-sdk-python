@@ -13,7 +13,7 @@ from claude_code_sdk._internal.transport.subprocess_cli import (
     _MAX_BUFFER_SIZE,
     SubprocessCLITransport,
 )
-from claude_code_sdk.types import ClaudeCodeOptions
+from claude_code_sdk.types import ClaudeAgentOptions
 
 
 class MockTextReceiveStream:
@@ -51,7 +51,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -86,7 +86,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -116,7 +116,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n\n\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -162,7 +162,7 @@ class TestSubprocessBuffering:
             part3 = complete_json[250:]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -210,7 +210,7 @@ class TestSubprocessBuffering:
             ]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -240,7 +240,7 @@ class TestSubprocessBuffering:
             huge_incomplete = '{"data": "' + "x" * (_MAX_BUFFER_SIZE + 1000)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -282,7 +282,7 @@ class TestSubprocessBuffering:
             ]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()

@@ -5,7 +5,7 @@ import anyio
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
     query,
@@ -28,7 +28,7 @@ async def with_options_example():
     """Example with custom options."""
     print("=== With Options Example ===")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         system_prompt="You are a helpful assistant that explains things simply.",
         max_turns=1,
     )
@@ -47,7 +47,7 @@ async def with_tools_example():
     """Example using tools."""
     print("=== With Tools Example ===")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         allowed_tools=["Read", "Write"],
         system_prompt="You are a helpful file assistant.",
     )

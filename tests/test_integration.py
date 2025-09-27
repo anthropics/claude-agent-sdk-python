@@ -10,7 +10,7 @@ import pytest
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     CLINotFoundError,
     ResultMessage,
     query,
@@ -132,7 +132,7 @@ class TestIntegration:
                 messages = []
                 async for msg in query(
                     prompt="Read /test.txt",
-                    options=ClaudeCodeOptions(allowed_tools=["Read"]),
+                    options=ClaudeAgentOptions(allowed_tools=["Read"]),
                 ):
                     messages.append(msg)
 
@@ -202,7 +202,7 @@ class TestIntegration:
                 messages = []
                 async for msg in query(
                     prompt="Continue",
-                    options=ClaudeCodeOptions(continue_conversation=True),
+                    options=ClaudeAgentOptions(continue_conversation=True),
                 ):
                     messages.append(msg)
 

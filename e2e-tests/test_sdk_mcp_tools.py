@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     create_sdk_mcp_server,
     tool,
@@ -34,7 +34,7 @@ async def test_sdk_mcp_tool_execution():
         tools=[echo_tool],
     )
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"test": server},
         allowed_tools=["mcp__test__echo"],
     )
@@ -73,7 +73,7 @@ async def test_sdk_mcp_permission_enforcement():
         tools=[echo_tool, greet_tool],
     )
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"test": server},
         disallowed_tools=["mcp__test__echo"],  # Block echo tool
         allowed_tools=["mcp__test__greet"],  # But allow greet
@@ -116,7 +116,7 @@ async def test_sdk_mcp_multiple_tools():
         tools=[echo_tool, greet_tool],
     )
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"multi": server},
         allowed_tools=["mcp__multi__echo", "mcp__multi__greet"],
     )
@@ -153,7 +153,7 @@ async def test_sdk_mcp_without_permissions():
     )
 
     # No allowed_tools specified
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"noperm": server},
     )
 

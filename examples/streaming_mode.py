@@ -21,7 +21,7 @@ import sys
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     CLIConnectionError,
     ResultMessage,
@@ -211,15 +211,15 @@ async def example_manual_message_handling():
 
 
 async def example_with_options():
-    """Use ClaudeCodeOptions to configure the client."""
+    """Use ClaudeAgentOptions to configure the client."""
     print("=== Custom Options Example ===")
 
     # Configure options
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         allowed_tools=["Read", "Write"],  # Allow file operations
         system_prompt="You are a helpful coding assistant.",
         env={
-            "ANTHROPIC_MODEL": "claude-3-7-sonnet-20250219",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-20250514",
         },
     )
 

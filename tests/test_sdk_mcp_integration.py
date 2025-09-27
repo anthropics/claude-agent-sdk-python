@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     create_sdk_mcp_server,
     tool,
 )
@@ -159,7 +159,7 @@ async def test_mixed_servers():
     # Create configuration with both SDK and external servers
     external_server = {"type": "stdio", "command": "echo", "args": ["test"]}
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"sdk": sdk_server, "external": external_server}
     )
 

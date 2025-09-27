@@ -13,7 +13,7 @@ import anyio
 from claude_code_sdk import (
     AgentDefinition,
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
     query,
@@ -24,7 +24,7 @@ async def code_reviewer_example():
     """Example using a custom code reviewer agent."""
     print("=== Code Reviewer Agent Example ===")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         agents={
             "code-reviewer": AgentDefinition(
                 description="Reviews code for best practices and potential issues",
@@ -54,7 +54,7 @@ async def documentation_writer_example():
     """Example using a documentation writer agent."""
     print("=== Documentation Writer Agent Example ===")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         agents={
             "doc-writer": AgentDefinition(
                 description="Writes comprehensive documentation",
@@ -83,7 +83,7 @@ async def multiple_agents_example():
     """Example with multiple custom agents."""
     print("=== Multiple Agents Example ===")
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         agents={
             "analyzer": AgentDefinition(
                 description="Analyzes code structure and patterns",

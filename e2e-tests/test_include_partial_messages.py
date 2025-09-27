@@ -11,7 +11,7 @@ import pytest
 
 from claude_code_sdk import ClaudeSDKClient
 from claude_code_sdk.types import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     StreamEvent,
     AssistantMessage,
     SystemMessage,
@@ -26,7 +26,7 @@ from claude_code_sdk.types import (
 async def test_include_partial_messages_stream_events():
     """Test that include_partial_messages produces StreamEvent messages."""
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         include_partial_messages=True,
         model="claude-sonnet-4-20250514",
         max_turns=2,
@@ -92,7 +92,7 @@ async def test_include_partial_messages_stream_events():
 async def test_include_partial_messages_thinking_deltas():
     """Test that thinking content is streamed incrementally via deltas."""
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         include_partial_messages=True,
         model="claude-sonnet-4-20250514",
         max_turns=2,
@@ -130,7 +130,7 @@ async def test_include_partial_messages_thinking_deltas():
 async def test_partial_messages_disabled_by_default():
     """Test that partial messages are not included when option is not set."""
 
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         # include_partial_messages not set (defaults to False)
         model="claude-sonnet-4-20250514",
         max_turns=2,

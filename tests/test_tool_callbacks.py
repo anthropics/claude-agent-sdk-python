@@ -3,7 +3,7 @@
 import pytest
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     HookContext,
     HookMatcher,
     PermissionResultAllow,
@@ -258,8 +258,8 @@ class TestHookCallbacks:
         assert '"processed": true' in last_response
 
 
-class TestClaudeCodeOptionsIntegration:
-    """Test that callbacks work through ClaudeCodeOptions."""
+class TestClaudeAgentOptionsIntegration:
+    """Test that callbacks work through ClaudeAgentOptions."""
 
     def test_options_with_callbacks(self):
         """Test creating options with callbacks."""
@@ -274,7 +274,7 @@ class TestClaudeCodeOptionsIntegration:
         ) -> dict:
             return {}
 
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             can_use_tool=my_callback,
             hooks={
                 "tool_use_start": [

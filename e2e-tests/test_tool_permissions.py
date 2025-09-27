@@ -3,7 +3,7 @@
 import pytest
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -27,7 +27,7 @@ async def test_permission_callback_gets_called():
         callback_invocations.append(tool_name)
         return PermissionResultAllow()
     
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         can_use_tool=permission_callback,
     )
     

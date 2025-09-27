@@ -300,7 +300,7 @@ Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | Strea
 
 
 @dataclass
-class ClaudeCodeOptions:
+class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
     allowed_tools: list[str] = field(default_factory=list)

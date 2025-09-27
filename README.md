@@ -31,7 +31,7 @@ anyio.run(main)
 `query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_code_sdk/query.py](src/claude_code_sdk/query.py).
 
 ```python
-from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage, TextBlock
+from claude_code_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
 
 # Simple query
 async for message in query(prompt="Hello Claude"):
@@ -41,7 +41,7 @@ async for message in query(prompt="Hello Claude"):
                 print(block.text)
 
 # With options
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     system_prompt="You are a helpful assistant",
     max_turns=1
 )
@@ -53,7 +53,7 @@ async for message in query(prompt="Tell me a joke", options=options):
 ### Using Tools
 
 ```python
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     allowed_tools=["Read", "Write", "Bash"],
     permission_mode='acceptEdits'  # auto-accept file edits
 )
@@ -71,7 +71,7 @@ async for message in query(
 ```python
 from pathlib import Path
 
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     cwd="/path/to/project"  # or Path("/path/to/project")
 )
 ```
@@ -94,7 +94,7 @@ For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
 #### Creating a Simple Tool
 
 ```python
-from claude_code_sdk import tool, create_sdk_mcp_server, ClaudeCodeOptions, ClaudeSDKClient
+from claude_code_sdk import tool, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient
 
 # Define a tool using the @tool decorator
 @tool("greet", "Greet a user", {"name": str})
@@ -113,7 +113,7 @@ server = create_sdk_mcp_server(
 )
 
 # Use it with Claude
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     mcp_servers={"tools": server},
     allowed_tools=["mcp__tools__greet"]
 )
@@ -138,7 +138,7 @@ async with ClaudeSDKClient(options=options) as client:
 
 ```python
 # BEFORE: External MCP server (separate process)
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     mcp_servers={
         "calculator": {
             "type": "stdio",
@@ -156,7 +156,7 @@ calculator = create_sdk_mcp_server(
     tools=[add, subtract]
 )
 
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     mcp_servers={"calculator": calculator}
 )
 ```
@@ -166,7 +166,7 @@ options = ClaudeCodeOptions(
 You can use both SDK and external MCP servers together:
 
 ```python
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     mcp_servers={
         "internal": sdk_server,      # In-process SDK server
         "external": {                # External subprocess server
@@ -186,7 +186,7 @@ For more examples, see examples/hooks.py.
 #### Example
 
 ```python
-from claude_code_sdk import ClaudeCodeOptions, ClaudeSDKClient, HookMatcher
+from claude_code_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 async def check_bash_command(input_data, tool_use_id, context):
     tool_name = input_data["tool_name"]
@@ -206,7 +206,7 @@ async def check_bash_command(input_data, tool_use_id, context):
             }
     return {}
 
-options = ClaudeCodeOptions(
+options = ClaudeAgentOptions(
     allowed_tools=["Bash"],
     hooks={
         "PreToolUse": [
@@ -233,7 +233,7 @@ async with ClaudeSDKClient(options=options) as client:
 ## Types
 
 See [src/claude_code_sdk/types.py](src/claude_code_sdk/types.py) for complete type definitions:
-- `ClaudeCodeOptions` - Configuration options
+- `ClaudeAgentOptions` - Configuration options
 - `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
 

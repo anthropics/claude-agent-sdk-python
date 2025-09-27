@@ -6,13 +6,13 @@ from typing import Any
 
 from ._internal.client import InternalClient
 from ._internal.transport import Transport
-from .types import ClaudeCodeOptions, Message
+from .types import ClaudeAgentOptions, Message
 
 
 async def query(
     *,
     prompt: str | AsyncIterable[dict[str, Any]],
-    options: ClaudeCodeOptions | None = None,
+    options: ClaudeAgentOptions | None = None,
     transport: Transport | None = None,
 ) -> AsyncIterator[Message]:
     """
@@ -52,7 +52,7 @@ async def query(
                     "parent_tool_use_id": None,
                     "session_id": "..."
                 }
-        options: Optional configuration (defaults to ClaudeCodeOptions() if None).
+        options: Optional configuration (defaults to ClaudeAgentOptions() if None).
                  Set options.permission_mode to control tool execution:
                  - 'default': CLI prompts for dangerous tools
                  - 'acceptEdits': Auto-accept file edits
@@ -77,7 +77,7 @@ async def query(
         # Code generation with specific settings
         async for message in query(
             prompt="Create a Python web server",
-            options=ClaudeCodeOptions(
+            options=ClaudeAgentOptions(
                 system_prompt="You are an expert Python developer",
                 cwd="/home/user/project"
             )
@@ -114,7 +114,7 @@ async def query(
 
     """
     if options is None:
-        options = ClaudeCodeOptions()
+        options = ClaudeAgentOptions()
 
     os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
 

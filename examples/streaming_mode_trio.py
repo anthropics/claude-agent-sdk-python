@@ -11,7 +11,7 @@ import trio
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
     SystemMessage,
@@ -46,7 +46,7 @@ def display_message(msg):
 async def multi_turn_conversation():
     """Example of a multi-turn conversation using trio."""
     async with ClaudeSDKClient(
-        options=ClaudeCodeOptions(model="claude-3-5-sonnet-20241022")
+        options=ClaudeAgentOptions(model="claude-3-5-sonnet-20241022")
     ) as client:
         print("=== Multi-turn Conversation with Trio ===\n")
 

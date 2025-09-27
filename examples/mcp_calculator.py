@@ -13,7 +13,7 @@ import asyncio
 from typing import Any
 
 from claude_code_sdk import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     create_sdk_mcp_server,
     tool,
 )
@@ -155,7 +155,7 @@ async def main():
 
     # Configure Claude to use the calculator server with allowed tools
     # Pre-approve all calculator MCP tools so they can be used without permission prompts
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"calc": calculator},
         allowed_tools=[
             "mcp__calc__add",

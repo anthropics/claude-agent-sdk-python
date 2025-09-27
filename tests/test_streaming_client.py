@@ -12,7 +12,7 @@ import pytest
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     CLIConnectionError,
     ResultMessage,
@@ -471,7 +471,7 @@ class TestClaudeSDKClientStreaming:
         """Test client initialization with options."""
 
         async def _test():
-            options = ClaudeCodeOptions(
+            options = ClaudeAgentOptions(
                 cwd="/custom/path",
                 allowed_tools=["Read", "Write"],
                 system_prompt="Be helpful",

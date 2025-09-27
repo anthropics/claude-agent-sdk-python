@@ -2,7 +2,7 @@
 
 from claude_code_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ResultMessage,
 )
 from claude_code_sdk.types import (
@@ -78,7 +78,7 @@ class TestOptions:
 
     def test_default_options(self):
         """Test Options with default values."""
-        options = ClaudeCodeOptions()
+        options = ClaudeAgentOptions()
         assert options.allowed_tools == []
         assert options.system_prompt is None
         assert options.permission_mode is None
@@ -87,7 +87,7 @@ class TestOptions:
 
     def test_claude_code_options_with_tools(self):
         """Test Options with built-in tools."""
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             allowed_tools=["Read", "Write", "Edit"], disallowed_tools=["Bash"]
         )
         assert options.allowed_tools == ["Read", "Write", "Edit"]
@@ -95,35 +95,35 @@ class TestOptions:
 
     def test_claude_code_options_with_permission_mode(self):
         """Test Options with permission mode."""
-        options = ClaudeCodeOptions(permission_mode="bypassPermissions")
+        options = ClaudeAgentOptions(permission_mode="bypassPermissions")
         assert options.permission_mode == "bypassPermissions"
 
-        options_plan = ClaudeCodeOptions(permission_mode="plan")
+        options_plan = ClaudeAgentOptions(permission_mode="plan")
         assert options_plan.permission_mode == "plan"
 
-        options_default = ClaudeCodeOptions(permission_mode="default")
+        options_default = ClaudeAgentOptions(permission_mode="default")
         assert options_default.permission_mode == "default"
 
-        options_accept = ClaudeCodeOptions(permission_mode="acceptEdits")
+        options_accept = ClaudeAgentOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
     def test_claude_code_options_with_system_prompt_string(self):
         """Test Options with system prompt as string."""
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             system_prompt="You are a helpful assistant.",
         )
         assert options.system_prompt == "You are a helpful assistant."
 
     def test_claude_code_options_with_system_prompt_preset(self):
         """Test Options with system prompt preset."""
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             system_prompt={"type": "preset", "preset": "claude_code"},
         )
         assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
 
     def test_claude_code_options_with_system_prompt_preset_and_append(self):
         """Test Options with system prompt preset and append."""
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
@@ -138,13 +138,13 @@ class TestOptions:
 
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""
-        options = ClaudeCodeOptions(continue_conversation=True, resume="session-123")
+        options = ClaudeAgentOptions(continue_conversation=True, resume="session-123")
         assert options.continue_conversation is True
         assert options.resume == "session-123"
 
     def test_claude_code_options_with_model_specification(self):
         """Test Options with model specification."""
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             model="claude-3-5-sonnet-20241022", permission_prompt_tool_name="CustomTool"
         )
         assert options.model == "claude-3-5-sonnet-20241022"

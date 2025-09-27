@@ -7,7 +7,7 @@ import pytest
 
 from claude_code_sdk import (
     AgentDefinition,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     SystemMessage,
 )
@@ -17,7 +17,7 @@ from claude_code_sdk import (
 @pytest.mark.asyncio
 async def test_agent_definition():
     """Test that custom agent definitions work."""
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         agents={
             "test-agent": AgentDefinition(
                 description="A test agent for verification",
@@ -60,7 +60,7 @@ async def test_setting_sources_default():
         settings_file.write_text('{"outputStyle": "local-test-style"}')
 
         # Don't provide setting_sources - should default to no settings
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             cwd=project_dir,
             max_turns=1,
         )
@@ -102,7 +102,7 @@ This is a test command.
         )
 
         # Use setting_sources=["user"] to exclude project settings
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             setting_sources=["user"],
             cwd=project_dir,
             max_turns=1,
@@ -136,7 +136,7 @@ async def test_setting_sources_project_included():
         settings_file.write_text('{"outputStyle": "local-test-style"}')
 
         # Use setting_sources=["user", "project", "local"] to include local settings
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             setting_sources=["user", "project", "local"],
             cwd=project_dir,
             max_turns=1,

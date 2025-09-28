@@ -2,7 +2,7 @@
 
 import pytest
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
     HookMatcher,
@@ -10,8 +10,8 @@ from claude_code_sdk import (
     PermissionResultDeny,
     ToolPermissionContext,
 )
-from claude_code_sdk._internal.query import Query
-from claude_code_sdk._internal.transport import Transport
+from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.transport import Transport
 
 
 class MockTransport(Transport):

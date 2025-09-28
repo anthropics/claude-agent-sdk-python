@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 
-from claude_code_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
-from claude_code_sdk.types import ClaudeAgentOptions
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk.types import ClaudeAgentOptions
 
 
 class TestSubprocessCLITransport:
@@ -16,7 +16,7 @@ class TestSubprocessCLITransport:
 
     def test_find_cli_not_found(self):
         """Test CLI not found error."""
-        from claude_code_sdk._errors import CLINotFoundError
+        from claude_agent_sdk._errors import CLINotFoundError
 
         with (
             patch("shutil.which", return_value=None),
@@ -207,7 +207,7 @@ class TestSubprocessCLITransport:
 
     def test_connect_with_nonexistent_cwd(self):
         """Test that connect raises CLIConnectionError when cwd doesn't exist."""
-        from claude_code_sdk._errors import CLIConnectionError
+        from claude_agent_sdk._errors import CLIConnectionError
 
         async def _test():
             transport = SubprocessCLITransport(

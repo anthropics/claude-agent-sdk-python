@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "claude-code-sdk"
+name = "claude-agent-sdk"
 version = "0.0.23"
 description = "Python SDK for Claude Code"
 readme = "README.md"
@@ -41,12 +41,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/anthropics/claude-code-sdk-python"
+Homepage = "https://github.com/anthropics/claude-agent-sdk-python"
 Documentation = "https://docs.anthropic.com/en/docs/claude-code/sdk"
-Issues = "https://github.com/anthropics/claude-code-sdk-python/issues"
+Issues = "https://github.com/anthropics/claude-agent-sdk-python/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/claude_code_sdk"]
+packages = ["src/claude_agent_sdk"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -105,4 +105,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["claude_code_sdk"]
+known-first-party = ["claude_agent_sdk"]

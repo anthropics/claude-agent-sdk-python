@@ -51,9 +51,9 @@ jobs:
           --title "Release v${{ steps.extract_version.outputs.version }}" \
           --generate-notes \
           --notes-start-tag "${{ steps.previous_tag.outputs.previous_tag }}" \
-          --notes "Published to PyPI: https://pypi.org/project/claude-code-sdk/${{ steps.extract_version.outputs.version }}/
+          --notes "Published to PyPI: https://pypi.org/project/claude-agent-sdk/${{ steps.extract_version.outputs.version }}/
 
         ### Installation
         \`\`\`bash
-        pip install claude-code-sdk==${{ steps.extract_version.outputs.version }}
+        pip install claude-agent-sdk==${{ steps.extract_version.outputs.version }}
         \`\`\`"

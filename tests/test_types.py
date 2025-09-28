@@ -1,11 +1,11 @@
 """Tests for Claude SDK type definitions."""
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
 )
-from claude_code_sdk.types import (
+from claude_agent_sdk.types import (
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,

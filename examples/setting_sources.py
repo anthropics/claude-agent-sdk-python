@@ -29,7 +29,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     SystemMessage,

@@ -15,8 +15,8 @@ import logging
 import sys
 from typing import Any
 
-from claude_code_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_code_sdk.types import (
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk.types import (
     AssistantMessage,
     HookContext,
     HookJSONOutput,

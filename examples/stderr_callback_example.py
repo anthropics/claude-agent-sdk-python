@@ -2,7 +2,7 @@
 
 import asyncio
 
-from claude_code_sdk import ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions, query
 
 
 async def main():
@@ -19,7 +19,7 @@ async def main():
             print(f"Error detected: {message}")
 
     # Create options with stderr callback and enable debug mode
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         stderr=stderr_callback,
         extra_args={"debug-to-stderr": None}  # Enable debug output
     )

@@ -10,7 +10,7 @@ Usage:
 
 import anyio
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
@@ -38,7 +38,7 @@ async def code_reviewer_example():
     )
 
     async for message in query(
-        prompt="Use the code-reviewer agent to review the code in src/claude_code_sdk/types.py",
+        prompt="Use the code-reviewer agent to review the code in src/claude_agent_sdk/types.py",
         options=options,
     ):
         if isinstance(message, AssistantMessage):

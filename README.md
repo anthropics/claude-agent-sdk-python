@@ -1,11 +1,11 @@
-# Claude Code SDK for Python
+# Claude Agent SDK for Python
 
-Python SDK for Claude Code. See the [Claude Code SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-python) for more information.
+Python SDK for Claude Agent. See the [Claude Agent SDK documentation](https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-python) for more information.
 
 ## Installation
 
 ```bash
-pip install claude-code-sdk
+pip install claude-agent-sdk
 ```
 
 **Prerequisites:**
@@ -17,7 +17,7 @@ pip install claude-code-sdk
 
 ```python
 import anyio
-from claude_code_sdk import query
+from claude_agent_sdk import query
 
 async def main():
     async for message in query(prompt="What is 2 + 2?"):
@@ -28,10 +28,10 @@ anyio.run(main)
 
 ## Basic Usage: query()
 
-`query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_code_sdk/query.py](src/claude_code_sdk/query.py).
+`query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).
 
 ```python
-from claude_code_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
 
 # Simple query
 async for message in query(prompt="Hello Claude"):
@@ -79,7 +79,7 @@ options = ClaudeAgentOptions(
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
-Code. See [src/claude_code_sdk/client.py](src/claude_code_sdk/client.py).
+Code. See [src/claude_agent_sdk/client.py](src/claude_agent_sdk/client.py).
 
 Unlike `query()`, `ClaudeSDKClient` additionally enables **custom tools** and **hooks**, both of which can be defined as Python functions.
 
@@ -94,7 +94,7 @@ For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
 #### Creating a Simple Tool
 
 ```python
-from claude_code_sdk import tool, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import tool, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient
 
 # Define a tool using the @tool decorator
 @tool("greet", "Greet a user", {"name": str})
@@ -186,7 +186,7 @@ For more examples, see examples/hooks.py.
 #### Example
 
 ```python
-from claude_code_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 async def check_bash_command(input_data, tool_use_id, context):
     tool_name = input_data["tool_name"]
@@ -232,7 +232,7 @@ async with ClaudeSDKClient(options=options) as client:
 
 ## Types
 
-See [src/claude_code_sdk/types.py](src/claude_code_sdk/types.py) for complete type definitions:
+See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
 - `ClaudeAgentOptions` - Configuration options
 - `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
@@ -240,7 +240,7 @@ See [src/claude_code_sdk/types.py](src/claude_code_sdk/types.py) for complete ty
 ## Error Handling
 
 ```python
-from claude_code_sdk import (
+from claude_agent_sdk import (
     ClaudeSDKError,      # Base error
     CLINotFoundError,    # Claude Code not installed
     CLIConnectionError,  # Connection issues
@@ -259,7 +259,7 @@ except CLIJSONDecodeError as e:
     print(f"Failed to parse response: {e}")
 ```
 
-See [src/claude_code_sdk/_errors.py](src/claude_code_sdk/_errors.py) for all error types.
+See [src/claude_agent_sdk/_errors.py](src/claude_agent_sdk/_errors.py) for all error types.
 
 ## Available Tools
 

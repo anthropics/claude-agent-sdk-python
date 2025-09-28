@@ -9,7 +9,7 @@ Claude's responses.
 
 import trio
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,

@@ -2,7 +2,7 @@
 
 import pytest
 
-from claude_code_sdk import ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions, query
 
 
 @pytest.mark.e2e
@@ -15,7 +15,7 @@ async def test_stderr_callback_captures_debug_output():
         stderr_lines.append(line)
 
     # Enable debug mode to generate stderr output
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         stderr=capture_stderr,
         extra_args={"debug-to-stderr": None}
     )
@@ -39,7 +39,7 @@ async def test_stderr_callback_without_debug():
         stderr_lines.append(line)
 
     # No debug mode enabled
-    options = ClaudeCodeOptions(stderr=capture_stderr)
+    options = ClaudeAgentOptions(stderr=capture_stderr)
 
     # Run a simple query
     async for _ in query(prompt="What is 1+1?", options=options):

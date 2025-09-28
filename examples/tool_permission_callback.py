@@ -8,7 +8,7 @@ which tools Claude can use and modify their inputs.
 import asyncio
 import json
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,

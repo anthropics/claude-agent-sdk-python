@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AgentDefinition,
     ClaudeAgentOptions,
     ClaudeSDKClient,

@@ -25,7 +25,7 @@ def update_version(new_version: str) -> None:
     print(f"Updated pyproject.toml to version {new_version}")
 
     # Update _version.py
-    version_path = Path("src/claude_code_sdk/_version.py")
+    version_path = Path("src/claude_agent_sdk/_version.py")
     content = version_path.read_text()
 
     # Only update __version__ assignment

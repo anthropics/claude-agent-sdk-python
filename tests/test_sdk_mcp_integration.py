@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     ClaudeAgentOptions,
     create_sdk_mcp_server,
     tool,

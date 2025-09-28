@@ -66,15 +66,6 @@ class SubprocessCLITransport(Transport):
             if path.exists() and path.is_file():
                 return str(path)
 
-        node_installed = shutil.which("node") is not None
-
-        if not node_installed:
-            error_msg = "Claude Code requires Node.js, which is not installed.\n\n"
-            error_msg += "Install Node.js from: https://nodejs.org/\n"
-            error_msg += "\nAfter installing Node.js, install Claude Code:\n"
-            error_msg += "  npm install -g @anthropic-ai/claude-code"
-            raise CLINotFoundError(error_msg)
-
         raise CLINotFoundError(
             "Claude Code not found. Install with:\n"
             "  npm install -g @anthropic-ai/claude-code\n"

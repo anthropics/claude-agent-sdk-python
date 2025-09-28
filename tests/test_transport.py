@@ -25,7 +25,7 @@ class TestSubprocessCLITransport:
         ):
             SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
 
-        assert "Claude Code requires Node.js" in str(exc_info.value)
+        assert "Claude Code not found" in str(exc_info.value)
 
     def test_build_command_basic(self):
         """Test building basic CLI command."""

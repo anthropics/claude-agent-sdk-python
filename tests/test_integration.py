@@ -161,7 +161,7 @@ class TestIntegration:
                 async for _ in query(prompt="test"):
                     pass
 
-            assert "Claude Code requires Node.js" in str(exc_info.value)
+            assert "Claude Code not found" in str(exc_info.value)
 
         anyio.run(_test)
 

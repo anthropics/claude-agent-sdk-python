@@ -193,6 +193,54 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
 
+    async def set_permission_mode(self, mode: str) -> None:
+        """Change permission mode during conversation (only works with streaming mode).
+
+        Args:
+            mode: The permission mode to set. Valid options:
+                - 'default': CLI prompts for dangerous tools
+                - 'acceptEdits': Auto-accept file edits
+                - 'bypassPermissions': Allow all tools (use with caution)
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                # Start with default permissions
+                await client.query("Help me analyze this codebase")
+
+                # Review mode done, switch to auto-accept edits
+                await client.set_permission_mode('acceptEdits')
+                await client.query("Now implement the fix we discussed")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_permission_mode(mode)
+
+    async def set_model(self, model: str | None = None) -> None:
+        """Change the AI model during conversation (only works with streaming mode).
+
+        Args:
+            model: The model to use, or None to use default. Examples:
+                - 'claude-sonnet-4-20250514'
+                - 'claude-opus-4-1-20250805'
+                - 'claude-opus-4-20250514'
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                # Start with default model
+                await client.query("Help me understand this problem")
+
+                # Switch to a different model for implementation
+                await client.set_model('claude-3-5-sonnet-20241022')
+                await client.query("Now implement the solution")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_model(model)
+
     async def get_server_info(self) -> dict[str, Any] | None:
         """Get server initialization info including available commands and output styles.
 

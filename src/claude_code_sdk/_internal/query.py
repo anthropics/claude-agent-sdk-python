@@ -469,6 +469,15 @@ class Query:
             }
         )
 
+    async def set_model(self, model: str | None) -> None:
+        """Change the AI model."""
+        await self._send_control_request(
+            {
+                "subtype": "set_model",
+                "model": model,
+            }
+        )
+
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport."""
         try:

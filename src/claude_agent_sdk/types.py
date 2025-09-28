@@ -320,6 +320,7 @@ class ClaudeAgentOptions:
     extra_args: dict[str, str | None] = field(
         default_factory=dict
     )  # Pass arbitrary CLI flags
+    max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout
     debug_stderr: Any = (
         sys.stderr
     )  # Deprecated: File-like object for debug output. Use stderr callback instead.

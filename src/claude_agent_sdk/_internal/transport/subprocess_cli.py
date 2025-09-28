@@ -24,7 +24,7 @@ from . import Transport
 
 logger = logging.getLogger(__name__)
 
-_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+_DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 
 
 class SubprocessCLITransport(Transport):
@@ -48,6 +48,11 @@ class SubprocessCLITransport(Transport):
         self._stderr_task_group: anyio.abc.TaskGroup | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
+        self._max_buffer_size = (
+            options.max_buffer_size
+            if options.max_buffer_size is not None
+            else _DEFAULT_MAX_BUFFER_SIZE
+        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -402,12 +407,13 @@ class SubprocessCLITransport(Transport):
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
-                    if len(json_buffer) > _MAX_BUFFER_SIZE:
+                    if len(json_buffer) > self._max_buffer_size:
+                        buffer_length = len(json_buffer)
                         json_buffer = ""
                         raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
+                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
                             ValueError(
-                                f"Buffer size {len(json_buffer)} exceeds limit {_MAX_BUFFER_SIZE}"
+                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
                             ),
                         )
 
@@ -418,7 +424,7 @@ class SubprocessCLITransport(Transport):
                     except json.JSONDecodeError:
                         # We are speculatively decoding the buffer until we get
                         # a full JSON object. If there is an actual issue, we
-                        # raise an error after _MAX_BUFFER_SIZE.
+                        # raise an error after exceeding the configured limit.
                         continue
 
         except anyio.ClosedResourceError:

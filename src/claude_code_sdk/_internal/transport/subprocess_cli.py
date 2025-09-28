@@ -12,6 +12,7 @@ from subprocess import PIPE
 from typing import Any
 
 import anyio
+import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
@@ -43,6 +44,8 @@ class SubprocessCLITransport(Transport):
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
+        self._stderr_stream: TextReceiveStream | None = None
+        self._stderr_task_group: anyio.abc.TaskGroup | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
 
@@ -216,13 +219,14 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Only output stderr if customer explicitly requested debug output and provided a file object
-            stderr_dest = (
-                self._options.debug_stderr
-                if "debug-to-stderr" in self._options.extra_args
-                and self._options.debug_stderr
-                else None
+            # Pipe stderr if we have a callback OR debug mode is enabled
+            should_pipe_stderr = (
+                self._options.stderr is not None
+                or "debug-to-stderr" in self._options.extra_args
             )
+
+            # For backward compat: use debug_stderr file object if no callback and debug is on
+            stderr_dest = PIPE if should_pipe_stderr else None
 
             self._process = await anyio.open_process(
                 cmd,
@@ -236,6 +240,14 @@ class SubprocessCLITransport(Transport):
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
+
+            # Setup stderr stream if piped
+            if should_pipe_stderr and self._process.stderr:
+                self._stderr_stream = TextReceiveStream(self._process.stderr)
+                # Start async task to read stderr
+                self._stderr_task_group = anyio.create_task_group()
+                await self._stderr_task_group.__aenter__()
+                self._stderr_task_group.start_soon(self._handle_stderr)
 
             # Setup stdin for streaming mode
             if self._is_streaming and self._process.stdin:
@@ -262,6 +274,34 @@ class SubprocessCLITransport(Transport):
             self._exit_error = error
             raise error from e
 
+    async def _handle_stderr(self) -> None:
+        """Handle stderr stream - read and invoke callbacks."""
+        if not self._stderr_stream:
+            return
+
+        try:
+            async for line in self._stderr_stream:
+                line_str = line.rstrip()
+                if not line_str:
+                    continue
+
+                # Call the stderr callback if provided
+                if self._options.stderr:
+                    self._options.stderr(line_str)
+
+                # For backward compatibility: write to debug_stderr if in debug mode
+                elif (
+                    "debug-to-stderr" in self._options.extra_args
+                    and self._options.debug_stderr
+                ):
+                    self._options.debug_stderr.write(line_str + "\n")
+                    if hasattr(self._options.debug_stderr, "flush"):
+                        self._options.debug_stderr.flush()
+        except anyio.ClosedResourceError:
+            pass  # Stream closed, exit normally
+        except Exception:
+            pass  # Ignore other errors during stderr reading
+
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         self._ready = False
@@ -269,11 +309,23 @@ class SubprocessCLITransport(Transport):
         if not self._process:
             return
 
+        # Close stderr task group if active
+        if self._stderr_task_group:
+            with suppress(Exception):
+                self._stderr_task_group.cancel_scope.cancel()
+                await self._stderr_task_group.__aexit__(None, None, None)
+            self._stderr_task_group = None
+
         # Close streams
         if self._stdin_stream:
             with suppress(Exception):
                 await self._stdin_stream.aclose()
             self._stdin_stream = None
+
+        if self._stderr_stream:
+            with suppress(Exception):
+                await self._stderr_stream.aclose()
+            self._stderr_stream = None
 
         if self._process.stdin:
             with suppress(Exception):
@@ -291,6 +343,7 @@ class SubprocessCLITransport(Transport):
         self._process = None
         self._stdout_stream = None
         self._stdin_stream = None
+        self._stderr_stream = None
         self._exit_error = None
 
     async def write(self, data: str) -> None:

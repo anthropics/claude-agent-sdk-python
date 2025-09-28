@@ -322,7 +322,8 @@ class ClaudeAgentOptions:
     )  # Pass arbitrary CLI flags
     debug_stderr: Any = (
         sys.stderr
-    )  # File-like object for debug output when debug-to-stderr is set
+    )  # Deprecated: File-like object for debug output. Use stderr callback instead.
+    stderr: Callable[[str], None] | None = None  # Callback for stderr output from CLI
 
     # Tool permission callback
     can_use_tool: CanUseTool | None = None

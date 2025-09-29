@@ -6,6 +6,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import replace
 from typing import Any
 
+from . import Transport
 from ._errors import CLIConnectionError
 from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
 
@@ -51,12 +52,17 @@ class ClaudeSDKClient:
     exist.
     """
 
-    def __init__(self, options: ClaudeAgentOptions | None = None):
+    def __init__(
+        self,
+        options: ClaudeAgentOptions | None = None,
+        transport: Transport | None = None,
+    ):
         """Initialize Claude SDK client."""
         if options is None:
             options = ClaudeAgentOptions()
         self.options = options
-        self._transport: Any | None = None
+        self._custom_transport = transport
+        self._transport: Transport | None = None
         self._query: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
@@ -115,10 +121,14 @@ class ClaudeSDKClient:
         else:
             options = self.options
 
-        self._transport = SubprocessCLITransport(
-            prompt=actual_prompt,
-            options=options,
-        )
+        # Use provided custom transport or create subprocess transport
+        if self._custom_transport:
+            self._transport = self._custom_transport
+        else:
+            self._transport = SubprocessCLITransport(
+                prompt=actual_prompt,
+                options=options,
+            )
         await self._transport.connect()
 
         # Extract SDK MCP servers from options

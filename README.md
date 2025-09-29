@@ -10,7 +10,7 @@ pip install claude-agent-sdk
 
 **Prerequisites:**
 - Python 3.10+
-- Node.js 
+- Node.js
 - Claude Code: `npm install -g @anthropic-ai/claude-code`
 
 ## Quick Start
@@ -59,7 +59,7 @@ options = ClaudeAgentOptions(
 )
 
 async for message in query(
-    prompt="Create a hello.py file", 
+    prompt="Create a hello.py file",
     options=options
 ):
     # Process tool use and results
@@ -270,6 +270,15 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
 
 See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
+
+## Migrating from Claude Code SDK
+
+If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the [CHANGELOG.md](CHANGELOG.md#010) for details on breaking changes and new features, including:
+
+- `ClaudeCodeOptions` → `ClaudeAgentOptions` rename
+- Merged system prompt configuration
+- Settings isolation and explicit control
+- New programmatic subagents and session forking features
 
 ## License
 

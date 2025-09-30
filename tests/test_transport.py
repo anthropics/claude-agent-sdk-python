@@ -106,7 +106,7 @@ class TestSubprocessCLITransport:
             options=ClaudeAgentOptions(
                 allowed_tools=["Read", "Write"],
                 disallowed_tools=["Bash"],
-                model="claude-3-5-sonnet",
+                model="claude-sonnet-4-5",
                 permission_mode="acceptEdits",
                 max_turns=5,
             ),
@@ -119,7 +119,7 @@ class TestSubprocessCLITransport:
         assert "--disallowedTools" in cmd
         assert "Bash" in cmd
         assert "--model" in cmd
-        assert "claude-3-5-sonnet" in cmd
+        assert "claude-sonnet-4-5" in cmd
         assert "--permission-mode" in cmd
         assert "acceptEdits" in cmd
         assert "--max-turns" in cmd

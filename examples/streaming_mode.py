@@ -219,7 +219,7 @@ async def example_with_options():
         allowed_tools=["Read", "Write"],  # Allow file operations
         system_prompt="You are a helpful coding assistant.",
         env={
-            "ANTHROPIC_MODEL": "claude-sonnet-4-20250514",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-5",
         },
     )
 

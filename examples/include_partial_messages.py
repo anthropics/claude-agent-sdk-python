@@ -29,7 +29,7 @@ async def main():
     # Enable partial message streaming
     options = ClaudeAgentOptions(
         include_partial_messages=True,
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_turns=2,
         env={
             "MAX_THINKING_TOKENS": "8000",

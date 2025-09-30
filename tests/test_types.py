@@ -145,7 +145,7 @@ class TestOptions:
     def test_claude_code_options_with_model_specification(self):
         """Test Options with model specification."""
         options = ClaudeAgentOptions(
-            model="claude-3-5-sonnet-20241022", permission_prompt_tool_name="CustomTool"
+            model="claude-sonnet-4-5", permission_prompt_tool_name="CustomTool"
         )
-        assert options.model == "claude-3-5-sonnet-20241022"
+        assert options.model == "claude-sonnet-4-5"
         assert options.permission_prompt_tool_name == "CustomTool"

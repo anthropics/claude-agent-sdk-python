@@ -232,7 +232,7 @@ class ClaudeSDKClient:
 
         Args:
             model: The model to use, or None to use default. Examples:
-                - 'claude-sonnet-4-20250514'
+                - 'claude-sonnet-4-5'
                 - 'claude-opus-4-1-20250805'
                 - 'claude-opus-4-20250514'
 
@@ -243,7 +243,7 @@ class ClaudeSDKClient:
                 await client.query("Help me understand this problem")
 
                 # Switch to a different model for implementation
-                await client.set_model('claude-3-5-sonnet-20241022')
+                await client.set_model('claude-sonnet-4-5')
                 await client.query("Now implement the solution")
             ```
         """

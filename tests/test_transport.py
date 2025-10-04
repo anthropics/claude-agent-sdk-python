@@ -163,6 +163,16 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
@@ -175,7 +185,8 @@ class TestSubprocessCLITransport:
                 mock_stdin.aclose = AsyncMock()
                 mock_process.stdin = mock_stdin
 
-                mock_exec.return_value = mock_process
+                # Return version process first, then main process
+                mock_exec.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -363,13 +374,25 @@ class TestSubprocessCLITransport:
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
                 mock_stdin.aclose = AsyncMock()  # Add async aclose method
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
-                mock_open_process.return_value = mock_process
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -379,11 +402,13 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called with correct env vars
-                mock_open_process.assert_called_once()
-                call_kwargs = mock_open_process.call_args.kwargs
-                assert "env" in call_kwargs
-                env_passed = call_kwargs["env"]
+                # Verify open_process was called twice (version check + main process)
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
 
                 # Check that custom env var was passed
                 assert env_passed["MY_TEST_VAR"] == test_value
@@ -410,13 +435,25 @@ class TestSubprocessCLITransport:
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
                 mock_stdin.aclose = AsyncMock()  # Add async aclose method
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
-                mock_open_process.return_value = mock_process
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -426,11 +463,13 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called with correct user
-                mock_open_process.assert_called_once()
-                call_kwargs = mock_open_process.call_args.kwargs
-                assert "user" in call_kwargs
-                user_passed = call_kwargs["user"]
+                # Verify open_process was called twice (version check + main process)
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for user
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "user" in second_call_kwargs
+                user_passed = second_call_kwargs["user"]
 
                 # Check that user was passed
                 assert user_passed == "claude"

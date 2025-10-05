@@ -11,7 +11,7 @@ pip install claude-agent-sdk
 **Prerequisites:**
 - Python 3.10+
 - Node.js
-- Claude Code: `npm install -g @anthropic-ai/claude-code`
+- Claude Code 2.0.0+: `npm install -g @anthropic-ai/claude-code`
 
 ## Quick Start
 

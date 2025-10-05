@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import re
 import shutil
+import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from dataclasses import asdict
@@ -25,6 +27,7 @@ from . import Transport
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
 class SubprocessCLITransport(Transport):
@@ -201,6 +204,8 @@ class SubprocessCLITransport(Transport):
         """Start subprocess."""
         if self._process:
             return
+
+        await self._check_claude_version()
 
         cmd = self._build_command()
         try:
@@ -447,6 +452,46 @@ class SubprocessCLITransport(Transport):
                 stderr="Check stderr output for details",
             )
             raise self._exit_error
+
+    async def _check_claude_version(self) -> None:
+        """Check Claude Code version and warn if below minimum."""
+        version_process = None
+        try:
+            with anyio.fail_after(2):  # 2 second timeout
+                version_process = await anyio.open_process(
+                    [self._cli_path, "-v"],
+                    stdout=PIPE,
+                    stderr=PIPE,
+                )
+
+                if version_process.stdout:
+                    stdout_bytes = await version_process.stdout.receive()
+                    version_output = stdout_bytes.decode().strip()
+
+                    match = re.match(r"([0-9]+\.[0-9]+\.[0-9]+)", version_output)
+                    if match:
+                        version = match.group(1)
+                        version_parts = [int(x) for x in version.split(".")]
+                        min_parts = [
+                            int(x) for x in MINIMUM_CLAUDE_CODE_VERSION.split(".")
+                        ]
+
+                        if version_parts < min_parts:
+                            warning = (
+                                f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
+                                f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
+                                "Some features may not work correctly."
+                            )
+                            logger.warning(warning)
+                            print(warning, file=sys.stderr)
+        except Exception:
+            pass
+        finally:
+            if version_process:
+                with suppress(Exception):
+                    version_process.terminate()
+                with suppress(Exception):
+                    await version_process.wait()
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

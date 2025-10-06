@@ -90,7 +90,7 @@ class TestToolPermissionCallbacks:
         # Check response was sent
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": true' in response
+        assert '"behavior": "allow"' in response
 
     @pytest.mark.asyncio
     async def test_permission_callback_deny(self):
@@ -125,8 +125,8 @@ class TestToolPermissionCallbacks:
         # Check response
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": false' in response
-        assert '"reason": "Security policy violation"' in response
+        assert '"behavior": "deny"' in response
+        assert '"message": "Security policy violation"' in response
 
     @pytest.mark.asyncio
     async def test_permission_callback_input_modification(self):
@@ -164,7 +164,7 @@ class TestToolPermissionCallbacks:
         # Check response includes modified input
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": true' in response
+        assert '"behavior": "allow"' in response
         assert '"safe_mode": true' in response
 
     @pytest.mark.asyncio

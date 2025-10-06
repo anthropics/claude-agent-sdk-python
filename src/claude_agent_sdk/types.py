@@ -70,6 +70,42 @@ class PermissionUpdate:
     directories: list[str] | None = None
     destination: PermissionUpdateDestination | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert PermissionUpdate to dictionary format matching TypeScript control protocol."""
+        result: dict[str, Any] = {
+            "type": self.type,
+        }
+
+        # Add destination for all variants
+        if self.destination is not None:
+            result["destination"] = self.destination
+
+        # Handle different type variants
+        if self.type in ["addRules", "replaceRules", "removeRules"]:
+            # Rules-based variants require rules and behavior
+            if self.rules is not None:
+                result["rules"] = [
+                    {
+                        "toolName": rule.tool_name,
+                        "ruleContent": rule.rule_content,
+                    }
+                    for rule in self.rules
+                ]
+            if self.behavior is not None:
+                result["behavior"] = self.behavior
+
+        elif self.type == "setMode":
+            # Mode variant requires mode
+            if self.mode is not None:
+                result["mode"] = self.mode
+
+        elif self.type in ["addDirectories", "removeDirectories"]:
+            # Directory variants require directories
+            if self.directories is not None:
+                result["directories"] = self.directories
+
+        return result
+
 
 # Tool callback types
 @dataclass

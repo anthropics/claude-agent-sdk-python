@@ -213,13 +213,18 @@ class Query:
 
                 # Convert PermissionResult to expected dict format
                 if isinstance(response, PermissionResultAllow):
-                    response_data = {"allow": True}
+                    response_data = {"behavior": "allow"}
                     if response.updated_input is not None:
-                        response_data["input"] = response.updated_input
-                    # TODO: Handle updatedPermissions when control protocol supports it
+                        response_data["updatedInput"] = response.updated_input
+                    if response.updated_permissions is not None:
+                        response_data["updatedPermissions"] = [
+                            permission.to_dict()
+                            for permission in response.updated_permissions
+                        ]
                 elif isinstance(response, PermissionResultDeny):
-                    response_data = {"allow": False, "reason": response.message}
-                    # TODO: Handle interrupt flag when control protocol supports it
+                    response_data = {"behavior": "deny", "message": response.message}
+                    if response.interrupt:
+                        response_data["interrupt"] = response.interrupt
                 else:
                     raise TypeError(
                         f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}"

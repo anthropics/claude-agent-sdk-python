@@ -270,12 +270,11 @@ def create_sdk_mcp_server(
                     if item.get("type") == "text":
                         content.append(TextContent(type="text", text=item["text"]))
                     if item.get("type") == "image":
-                        source = item["source"]
                         content.append(
                             ImageContent(
                                 type="image",
-                                data=source["data"],
-                                mimeType=source["mimeType"],
+                                data=item["data"],
+                                mimeType=item["mimeType"],
                             )
                         )
 

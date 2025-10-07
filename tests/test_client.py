@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
-from claude_code_sdk.types import TextBlock
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
+from claude_agent_sdk.types import TextBlock
 
 
 class TestQueryFunction:
@@ -16,7 +16,7 @@ class TestQueryFunction:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.InternalClient.process_query"
+                "claude_agent_sdk._internal.client.InternalClient.process_query"
             ) as mock_process:
                 # Mock the async generator
                 async def mock_generator():
@@ -41,7 +41,7 @@ class TestQueryFunction:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.InternalClient.process_query"
+                "claude_agent_sdk._internal.client.InternalClient.process_query"
             ) as mock_process:
 
                 async def mock_generator():
@@ -52,7 +52,7 @@ class TestQueryFunction:
 
                 mock_process.return_value = mock_generator()
 
-                options = ClaudeCodeOptions(
+                options = ClaudeAgentOptions(
                     allowed_tools=["Read", "Write"],
                     system_prompt="You are helpful",
                     permission_mode="acceptEdits",
@@ -76,7 +76,7 @@ class TestQueryFunction:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.SubprocessCLITransport"
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
             ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
@@ -109,7 +109,7 @@ class TestQueryFunction:
                 mock_transport.write = AsyncMock()
                 mock_transport.is_ready = Mock(return_value=True)
 
-                options = ClaudeCodeOptions(cwd="/custom/path")
+                options = ClaudeAgentOptions(cwd="/custom/path")
                 messages = []
                 async for msg in query(prompt="test", options=options):
                     messages.append(msg)

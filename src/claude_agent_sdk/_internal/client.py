@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..types import (
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     HookEvent,
     HookMatcher,
     Message,
@@ -41,7 +41,7 @@ class InternalClient:
     async def process_query(
         self,
         prompt: str | AsyncIterable[dict[str, Any]],
-        options: ClaudeCodeOptions,
+        options: ClaudeAgentOptions,
         transport: Transport | None = None,
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""

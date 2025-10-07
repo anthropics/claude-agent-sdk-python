@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, Mock, patch
 import anyio
 import pytest
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     CLINotFoundError,
     ResultMessage,
     query,
 )
-from claude_code_sdk.types import ToolUseBlock
+from claude_agent_sdk.types import ToolUseBlock
 
 
 class TestIntegration:
@@ -26,7 +26,7 @@ class TestIntegration:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.SubprocessCLITransport"
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
             ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
@@ -84,7 +84,7 @@ class TestIntegration:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.SubprocessCLITransport"
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
             ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
@@ -132,7 +132,7 @@ class TestIntegration:
                 messages = []
                 async for msg in query(
                     prompt="Read /test.txt",
-                    options=ClaudeCodeOptions(allowed_tools=["Read"]),
+                    options=ClaudeAgentOptions(allowed_tools=["Read"]),
                 ):
                     messages.append(msg)
 
@@ -161,7 +161,7 @@ class TestIntegration:
                 async for _ in query(prompt="test"):
                     pass
 
-            assert "Claude Code requires Node.js" in str(exc_info.value)
+            assert "Claude Code not found" in str(exc_info.value)
 
         anyio.run(_test)
 
@@ -170,7 +170,7 @@ class TestIntegration:
 
         async def _test():
             with patch(
-                "claude_code_sdk._internal.client.SubprocessCLITransport"
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
             ) as mock_transport_class:
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
@@ -202,7 +202,7 @@ class TestIntegration:
                 messages = []
                 async for msg in query(
                     prompt="Continue",
-                    options=ClaudeCodeOptions(continue_conversation=True),
+                    options=ClaudeAgentOptions(continue_conversation=True),
                 ):
                     messages.append(msg)
 

@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 import anyio
 import pytest
 
-from claude_code_sdk._errors import CLIJSONDecodeError
-from claude_code_sdk._internal.transport.subprocess_cli import (
-    _MAX_BUFFER_SIZE,
+from claude_agent_sdk._errors import CLIJSONDecodeError
+from claude_agent_sdk._internal.transport.subprocess_cli import (
+    _DEFAULT_MAX_BUFFER_SIZE,
     SubprocessCLITransport,
 )
-from claude_code_sdk.types import ClaudeCodeOptions
+from claude_agent_sdk.types import ClaudeAgentOptions
 
 
 class MockTextReceiveStream:
@@ -51,7 +51,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -86,7 +86,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -116,7 +116,7 @@ class TestSubprocessBuffering:
             buffered_line = json.dumps(json_obj1) + "\n\n\n" + json.dumps(json_obj2)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -162,7 +162,7 @@ class TestSubprocessBuffering:
             part3 = complete_json[250:]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -210,7 +210,7 @@ class TestSubprocessBuffering:
             ]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -237,10 +237,10 @@ class TestSubprocessBuffering:
         """Test that exceeding buffer size raises an appropriate error."""
 
         async def _test() -> None:
-            huge_incomplete = '{"data": "' + "x" * (_MAX_BUFFER_SIZE + 1000)
+            huge_incomplete = '{"data": "' + "x" * (_DEFAULT_MAX_BUFFER_SIZE + 1000)
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()
@@ -257,6 +257,34 @@ class TestSubprocessBuffering:
 
             assert isinstance(exc_info.value, CLIJSONDecodeError)
             assert "exceeded maximum buffer size" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_buffer_size_option(self) -> None:
+        """Test that the configurable buffer size option is respected."""
+
+        async def _test() -> None:
+            custom_limit = 512
+            huge_incomplete = '{"data": "' + "x" * (custom_limit + 10)
+
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(max_buffer_size=custom_limit),
+                cli_path="/usr/bin/claude",
+            )
+
+            mock_process = MagicMock()
+            mock_process.returncode = None
+            mock_process.wait = AsyncMock(return_value=None)
+            transport._process = mock_process
+            transport._stdout_stream = MockTextReceiveStream([huge_incomplete])
+            transport._stderr_stream = MockTextReceiveStream([])
+
+            with pytest.raises(CLIJSONDecodeError) as exc_info:
+                async for _ in transport.read_messages():
+                    pass
+
+            assert f"maximum buffer size of {custom_limit} bytes" in str(exc_info.value)
 
         anyio.run(_test)
 
@@ -282,7 +310,7 @@ class TestSubprocessBuffering:
             ]
 
             transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+                prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
             )
 
             mock_process = MagicMock()

@@ -8,9 +8,9 @@ which tools Claude can use and modify their inputs.
 import asyncio
 import json
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
     AssistantMessage,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -107,7 +107,7 @@ async def main():
     print("=" * 60)
 
     # Configure options with our callback
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         can_use_tool=my_permission_callback,
         # Use default permission mode to ensure callbacks are invoked
         permission_mode="default",

@@ -3,25 +3,31 @@
 import json
 import logging
 import os
+import re
 import shutil
+import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
+from dataclasses import asdict
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any
 
 import anyio
+import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
-from ...types import ClaudeCodeOptions
+from ..._version import __version__
+from ...types import ClaudeAgentOptions
 from . import Transport
 
 logger = logging.getLogger(__name__)
 
-_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+_DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
 class SubprocessCLITransport(Transport):
@@ -30,7 +36,7 @@ class SubprocessCLITransport(Transport):
     def __init__(
         self,
         prompt: str | AsyncIterable[dict[str, Any]],
-        options: ClaudeCodeOptions,
+        options: ClaudeAgentOptions,
         cli_path: str | Path | None = None,
     ):
         self._prompt = prompt
@@ -41,8 +47,15 @@ class SubprocessCLITransport(Transport):
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
+        self._stderr_stream: TextReceiveStream | None = None
+        self._stderr_task_group: anyio.abc.TaskGroup | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
+        self._max_buffer_size = (
+            options.max_buffer_size
+            if options.max_buffer_size is not None
+            else _DEFAULT_MAX_BUFFER_SIZE
+        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -61,15 +74,6 @@ class SubprocessCLITransport(Transport):
             if path.exists() and path.is_file():
                 return str(path)
 
-        node_installed = shutil.which("node") is not None
-
-        if not node_installed:
-            error_msg = "Claude Code requires Node.js, which is not installed.\n\n"
-            error_msg += "Install Node.js from: https://nodejs.org/\n"
-            error_msg += "\nAfter installing Node.js, install Claude Code:\n"
-            error_msg += "  npm install -g @anthropic-ai/claude-code"
-            raise CLINotFoundError(error_msg)
-
         raise CLINotFoundError(
             "Claude Code not found. Install with:\n"
             "  npm install -g @anthropic-ai/claude-code\n"
@@ -83,11 +87,18 @@ class SubprocessCLITransport(Transport):
         """Build CLI command with arguments."""
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
-        if self._options.system_prompt:
+        if self._options.system_prompt is None:
+            pass
+        elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
-
-        if self._options.append_system_prompt:
-            cmd.extend(["--append-system-prompt", self._options.append_system_prompt])
+        else:
+            if (
+                self._options.system_prompt.get("type") == "preset"
+                and "append" in self._options.system_prompt
+            ):
+                cmd.extend(
+                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                )
 
         if self._options.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
@@ -153,6 +164,23 @@ class SubprocessCLITransport(Transport):
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 
+        if self._options.fork_session:
+            cmd.append("--fork-session")
+
+        if self._options.agents:
+            agents_dict = {
+                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                for name, agent_def in self._options.agents.items()
+            }
+            cmd.extend(["--agents", json.dumps(agents_dict)])
+
+        sources_value = (
+            ",".join(self._options.setting_sources)
+            if self._options.setting_sources is not None
+            else ""
+        )
+        cmd.extend(["--setting-sources", sources_value])
+
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
             if value is None:
@@ -177,6 +205,8 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
+        await self._check_claude_version()
+
         cmd = self._build_command()
         try:
             # Merge environment variables: system -> user -> SDK required
@@ -184,18 +214,20 @@ class SubprocessCLITransport(Transport):
                 **os.environ,
                 **self._options.env,  # User-provided env vars
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Only output stderr if customer explicitly requested debug output and provided a file object
-            stderr_dest = (
-                self._options.debug_stderr
-                if "debug-to-stderr" in self._options.extra_args
-                and self._options.debug_stderr
-                else None
+            # Pipe stderr if we have a callback OR debug mode is enabled
+            should_pipe_stderr = (
+                self._options.stderr is not None
+                or "debug-to-stderr" in self._options.extra_args
             )
+
+            # For backward compat: use debug_stderr file object if no callback and debug is on
+            stderr_dest = PIPE if should_pipe_stderr else None
 
             self._process = await anyio.open_process(
                 cmd,
@@ -209,6 +241,14 @@ class SubprocessCLITransport(Transport):
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
+
+            # Setup stderr stream if piped
+            if should_pipe_stderr and self._process.stderr:
+                self._stderr_stream = TextReceiveStream(self._process.stderr)
+                # Start async task to read stderr
+                self._stderr_task_group = anyio.create_task_group()
+                await self._stderr_task_group.__aenter__()
+                self._stderr_task_group.start_soon(self._handle_stderr)
 
             # Setup stdin for streaming mode
             if self._is_streaming and self._process.stdin:
@@ -235,6 +275,34 @@ class SubprocessCLITransport(Transport):
             self._exit_error = error
             raise error from e
 
+    async def _handle_stderr(self) -> None:
+        """Handle stderr stream - read and invoke callbacks."""
+        if not self._stderr_stream:
+            return
+
+        try:
+            async for line in self._stderr_stream:
+                line_str = line.rstrip()
+                if not line_str:
+                    continue
+
+                # Call the stderr callback if provided
+                if self._options.stderr:
+                    self._options.stderr(line_str)
+
+                # For backward compatibility: write to debug_stderr if in debug mode
+                elif (
+                    "debug-to-stderr" in self._options.extra_args
+                    and self._options.debug_stderr
+                ):
+                    self._options.debug_stderr.write(line_str + "\n")
+                    if hasattr(self._options.debug_stderr, "flush"):
+                        self._options.debug_stderr.flush()
+        except anyio.ClosedResourceError:
+            pass  # Stream closed, exit normally
+        except Exception:
+            pass  # Ignore other errors during stderr reading
+
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         self._ready = False
@@ -242,11 +310,23 @@ class SubprocessCLITransport(Transport):
         if not self._process:
             return
 
+        # Close stderr task group if active
+        if self._stderr_task_group:
+            with suppress(Exception):
+                self._stderr_task_group.cancel_scope.cancel()
+                await self._stderr_task_group.__aexit__(None, None, None)
+            self._stderr_task_group = None
+
         # Close streams
         if self._stdin_stream:
             with suppress(Exception):
                 await self._stdin_stream.aclose()
             self._stdin_stream = None
+
+        if self._stderr_stream:
+            with suppress(Exception):
+                await self._stderr_stream.aclose()
+            self._stderr_stream = None
 
         if self._process.stdin:
             with suppress(Exception):
@@ -264,6 +344,7 @@ class SubprocessCLITransport(Transport):
         self._process = None
         self._stdout_stream = None
         self._stdin_stream = None
+        self._stderr_stream = None
         self._exit_error = None
 
     async def write(self, data: str) -> None:
@@ -331,12 +412,13 @@ class SubprocessCLITransport(Transport):
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
-                    if len(json_buffer) > _MAX_BUFFER_SIZE:
+                    if len(json_buffer) > self._max_buffer_size:
+                        buffer_length = len(json_buffer)
                         json_buffer = ""
                         raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {_MAX_BUFFER_SIZE} bytes",
+                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
                             ValueError(
-                                f"Buffer size {len(json_buffer)} exceeds limit {_MAX_BUFFER_SIZE}"
+                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
                             ),
                         )
 
@@ -347,7 +429,7 @@ class SubprocessCLITransport(Transport):
                     except json.JSONDecodeError:
                         # We are speculatively decoding the buffer until we get
                         # a full JSON object. If there is an actual issue, we
-                        # raise an error after _MAX_BUFFER_SIZE.
+                        # raise an error after exceeding the configured limit.
                         continue
 
         except anyio.ClosedResourceError:
@@ -370,6 +452,46 @@ class SubprocessCLITransport(Transport):
                 stderr="Check stderr output for details",
             )
             raise self._exit_error
+
+    async def _check_claude_version(self) -> None:
+        """Check Claude Code version and warn if below minimum."""
+        version_process = None
+        try:
+            with anyio.fail_after(2):  # 2 second timeout
+                version_process = await anyio.open_process(
+                    [self._cli_path, "-v"],
+                    stdout=PIPE,
+                    stderr=PIPE,
+                )
+
+                if version_process.stdout:
+                    stdout_bytes = await version_process.stdout.receive()
+                    version_output = stdout_bytes.decode().strip()
+
+                    match = re.match(r"([0-9]+\.[0-9]+\.[0-9]+)", version_output)
+                    if match:
+                        version = match.group(1)
+                        version_parts = [int(x) for x in version.split(".")]
+                        min_parts = [
+                            int(x) for x in MINIMUM_CLAUDE_CODE_VERSION.split(".")
+                        ]
+
+                        if version_parts < min_parts:
+                            warning = (
+                                f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
+                                f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
+                                "Some features may not work correctly."
+                            )
+                            logger.warning(warning)
+                            print(warning, file=sys.stderr)
+        except Exception:
+            pass
+        finally:
+            if version_process:
+                with suppress(Exception):
+                    version_process.terminate()
+                with suppress(Exception):
+                    await version_process.wait()
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

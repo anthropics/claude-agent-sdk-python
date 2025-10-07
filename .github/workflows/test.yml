@@ -28,7 +28,7 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest tests/ -v --cov=claude_code_sdk --cov-report=xml
+          python -m pytest tests/ -v --cov=claude_agent_sdk --cov-report=xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

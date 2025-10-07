@@ -2,16 +2,16 @@
 
 import pytest
 
-from claude_code_sdk import (
-    ClaudeCodeOptions,
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
     HookContext,
     HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
     ToolPermissionContext,
 )
-from claude_code_sdk._internal.query import Query
-from claude_code_sdk._internal.transport import Transport
+from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.transport import Transport
 
 
 class MockTransport(Transport):
@@ -90,7 +90,7 @@ class TestToolPermissionCallbacks:
         # Check response was sent
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": true' in response
+        assert '"behavior": "allow"' in response
 
     @pytest.mark.asyncio
     async def test_permission_callback_deny(self):
@@ -125,8 +125,8 @@ class TestToolPermissionCallbacks:
         # Check response
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": false' in response
-        assert '"reason": "Security policy violation"' in response
+        assert '"behavior": "deny"' in response
+        assert '"message": "Security policy violation"' in response
 
     @pytest.mark.asyncio
     async def test_permission_callback_input_modification(self):
@@ -164,7 +164,7 @@ class TestToolPermissionCallbacks:
         # Check response includes modified input
         assert len(transport.written_messages) == 1
         response = transport.written_messages[0]
-        assert '"allow": true' in response
+        assert '"behavior": "allow"' in response
         assert '"safe_mode": true' in response
 
     @pytest.mark.asyncio
@@ -258,8 +258,8 @@ class TestHookCallbacks:
         assert '"processed": true' in last_response
 
 
-class TestClaudeCodeOptionsIntegration:
-    """Test that callbacks work through ClaudeCodeOptions."""
+class TestClaudeAgentOptionsIntegration:
+    """Test that callbacks work through ClaudeAgentOptions."""
 
     def test_options_with_callbacks(self):
         """Test creating options with callbacks."""
@@ -274,7 +274,7 @@ class TestClaudeCodeOptionsIntegration:
         ) -> dict:
             return {}
 
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             can_use_tool=my_callback,
             hooks={
                 "tool_use_start": [

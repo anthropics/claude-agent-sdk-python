@@ -14,6 +14,27 @@ if TYPE_CHECKING:
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
+# Agent definitions
+SettingSource = Literal["user", "project", "local"]
+
+
+class SystemPromptPreset(TypedDict):
+    """System prompt preset configuration."""
+
+    type: Literal["preset"]
+    preset: Literal["claude_code"]
+    append: NotRequired[str]
+
+
+@dataclass
+class AgentDefinition:
+    """Agent definition configuration."""
+
+    description: str
+    prompt: str
+    tools: list[str] | None = None
+    model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+
 
 # Permission Update types (matching TypeScript SDK)
 PermissionUpdateDestination = Literal[
@@ -48,6 +69,42 @@ class PermissionUpdate:
     mode: PermissionMode | None = None
     directories: list[str] | None = None
     destination: PermissionUpdateDestination | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert PermissionUpdate to dictionary format matching TypeScript control protocol."""
+        result: dict[str, Any] = {
+            "type": self.type,
+        }
+
+        # Add destination for all variants
+        if self.destination is not None:
+            result["destination"] = self.destination
+
+        # Handle different type variants
+        if self.type in ["addRules", "replaceRules", "removeRules"]:
+            # Rules-based variants require rules and behavior
+            if self.rules is not None:
+                result["rules"] = [
+                    {
+                        "toolName": rule.tool_name,
+                        "ruleContent": rule.rule_content,
+                    }
+                    for rule in self.rules
+                ]
+            if self.behavior is not None:
+                result["behavior"] = self.behavior
+
+        elif self.type == "setMode":
+            # Mode variant requires mode
+            if self.mode is not None:
+                result["mode"] = self.mode
+
+        elif self.type in ["addDirectories", "removeDirectories"]:
+            # Directory variants require directories
+            if self.directories is not None:
+                result["directories"] = self.directories
+
+        return result
 
 
 # Tool callback types
@@ -279,12 +336,11 @@ Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | Strea
 
 
 @dataclass
-class ClaudeCodeOptions:
+class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
     allowed_tools: list[str] = field(default_factory=list)
-    system_prompt: str | None = None
-    append_system_prompt: str | None = None
+    system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False
@@ -300,9 +356,11 @@ class ClaudeCodeOptions:
     extra_args: dict[str, str | None] = field(
         default_factory=dict
     )  # Pass arbitrary CLI flags
+    max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout
     debug_stderr: Any = (
         sys.stderr
-    )  # File-like object for debug output when debug-to-stderr is set
+    )  # Deprecated: File-like object for debug output. Use stderr callback instead.
+    stderr: Callable[[str], None] | None = None  # Callback for stderr output from CLI
 
     # Tool permission callback
     can_use_tool: CanUseTool | None = None
@@ -314,6 +372,13 @@ class ClaudeCodeOptions:
 
     # Partial message streaming support
     include_partial_messages: bool = False
+    # When true resumed sessions will fork to a new session ID rather than
+    # continuing the previous session.
+    fork_session: bool = False
+    # Agent definitions for custom agents
+    agents: dict[str, AgentDefinition] | None = None
+    # Setting sources to load (user, project, local)
+    setting_sources: list[SettingSource] | None = None
 
 
 # SDK Control Protocol

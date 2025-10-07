@@ -6,8 +6,9 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import replace
 from typing import Any
 
+from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeCodeOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
 
 
 class ClaudeSDKClient:
@@ -51,12 +52,17 @@ class ClaudeSDKClient:
     exist.
     """
 
-    def __init__(self, options: ClaudeCodeOptions | None = None):
+    def __init__(
+        self,
+        options: ClaudeAgentOptions | None = None,
+        transport: Transport | None = None,
+    ):
         """Initialize Claude SDK client."""
         if options is None:
-            options = ClaudeCodeOptions()
+            options = ClaudeAgentOptions()
         self.options = options
-        self._transport: Any | None = None
+        self._custom_transport = transport
+        self._transport: Transport | None = None
         self._query: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
@@ -115,10 +121,14 @@ class ClaudeSDKClient:
         else:
             options = self.options
 
-        self._transport = SubprocessCLITransport(
-            prompt=actual_prompt,
-            options=options,
-        )
+        # Use provided custom transport or create subprocess transport
+        if self._custom_transport:
+            self._transport = self._custom_transport
+        else:
+            self._transport = SubprocessCLITransport(
+                prompt=actual_prompt,
+                options=options,
+            )
         await self._transport.connect()
 
         # Extract SDK MCP servers from options
@@ -192,6 +202,54 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
+
+    async def set_permission_mode(self, mode: str) -> None:
+        """Change permission mode during conversation (only works with streaming mode).
+
+        Args:
+            mode: The permission mode to set. Valid options:
+                - 'default': CLI prompts for dangerous tools
+                - 'acceptEdits': Auto-accept file edits
+                - 'bypassPermissions': Allow all tools (use with caution)
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                # Start with default permissions
+                await client.query("Help me analyze this codebase")
+
+                # Review mode done, switch to auto-accept edits
+                await client.set_permission_mode('acceptEdits')
+                await client.query("Now implement the fix we discussed")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_permission_mode(mode)
+
+    async def set_model(self, model: str | None = None) -> None:
+        """Change the AI model during conversation (only works with streaming mode).
+
+        Args:
+            model: The model to use, or None to use default. Examples:
+                - 'claude-sonnet-4-5'
+                - 'claude-opus-4-1-20250805'
+                - 'claude-opus-4-20250514'
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                # Start with default model
+                await client.query("Help me understand this problem")
+
+                # Switch to a different model for implementation
+                await client.set_model('claude-sonnet-4-5')
+                await client.query("Now implement the solution")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_model(model)
 
     async def get_server_info(self) -> dict[str, Any] | None:
         """Get server initialization info including available commands and output styles.

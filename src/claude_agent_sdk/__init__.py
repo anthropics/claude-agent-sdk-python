@@ -12,12 +12,14 @@ from ._errors import (
     ProcessError,
 )
 from ._internal.transport import Transport
+from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    AgentDefinition,
     AssistantMessage,
     CanUseTool,
-    ClaudeCodeOptions,
+    ClaudeAgentOptions,
     ContentBlock,
     HookCallback,
     HookContext,
@@ -31,6 +33,7 @@ from .types import (
     PermissionResultDeny,
     PermissionUpdate,
     ResultMessage,
+    SettingSource,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
@@ -141,7 +144,7 @@ def create_sdk_mcp_server(
 
     Returns:
         McpSdkServerConfig: A configuration object that can be passed to
-        ClaudeCodeOptions.mcp_servers. This config contains the server
+        ClaudeAgentOptions.mcp_servers. This config contains the server
         instance and metadata needed for the SDK to route tool calls.
 
     Example:
@@ -161,7 +164,7 @@ def create_sdk_mcp_server(
         ... )
         >>>
         >>> # Use with Claude
-        >>> options = ClaudeCodeOptions(
+        >>> options = ClaudeAgentOptions(
         ...     mcp_servers={"calc": calculator},
         ...     allowed_tools=["add", "multiply"]
         ... )
@@ -188,7 +191,7 @@ def create_sdk_mcp_server(
 
     See Also:
         - tool(): Decorator for creating tool functions
-        - ClaudeCodeOptions: Configuration for using servers with query()
+        - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
     from mcp.types import TextContent, ImageContent, Tool
@@ -283,11 +286,10 @@ def create_sdk_mcp_server(
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 
 
-__version__ = "0.0.23"
-
 __all__ = [
     # Main exports
     "query",
+    "__version__",
     # Transport
     "Transport",
     "ClaudeSDKClient",
@@ -300,7 +302,7 @@ __all__ = [
     "SystemMessage",
     "ResultMessage",
     "Message",
-    "ClaudeCodeOptions",
+    "ClaudeAgentOptions",
     "TextBlock",
     "ThinkingBlock",
     "ToolUseBlock",
@@ -316,6 +318,9 @@ __all__ = [
     "HookCallback",
     "HookContext",
     "HookMatcher",
+    # Agent support
+    "AgentDefinition",
+    "SettingSource",
     # MCP Server Support
     "create_sdk_mcp_server",
     "tool",

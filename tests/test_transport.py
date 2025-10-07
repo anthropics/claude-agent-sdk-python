@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 
-from claude_code_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
-from claude_code_sdk.types import ClaudeCodeOptions
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk.types import ClaudeAgentOptions
 
 
 class TestSubprocessCLITransport:
@@ -16,21 +16,21 @@ class TestSubprocessCLITransport:
 
     def test_find_cli_not_found(self):
         """Test CLI not found error."""
-        from claude_code_sdk._errors import CLINotFoundError
+        from claude_agent_sdk._errors import CLINotFoundError
 
         with (
             patch("shutil.which", return_value=None),
             patch("pathlib.Path.exists", return_value=False),
             pytest.raises(CLINotFoundError) as exc_info,
         ):
-            SubprocessCLITransport(prompt="test", options=ClaudeCodeOptions())
+            SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
 
-        assert "Claude Code requires Node.js" in str(exc_info.value)
+        assert "Claude Code not found" in str(exc_info.value)
 
     def test_build_command_basic(self):
         """Test building basic CLI command."""
         transport = SubprocessCLITransport(
-            prompt="Hello", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+            prompt="Hello", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
         )
 
         cmd = transport._build_command()
@@ -46,23 +46,18 @@ class TestSubprocessCLITransport:
 
         transport = SubprocessCLITransport(
             prompt="Hello",
-            options=ClaudeCodeOptions(),
+            options=ClaudeAgentOptions(),
             cli_path=Path("/usr/bin/claude"),
         )
 
         assert transport._cli_path == "/usr/bin/claude"
 
-    def test_build_command_with_options(self):
-        """Test building CLI command with options."""
+    def test_build_command_with_system_prompt_string(self):
+        """Test building CLI command with system prompt as string."""
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(
+            options=ClaudeAgentOptions(
                 system_prompt="Be helpful",
-                allowed_tools=["Read", "Write"],
-                disallowed_tools=["Bash"],
-                model="claude-3-5-sonnet",
-                permission_mode="acceptEdits",
-                max_turns=5,
             ),
             cli_path="/usr/bin/claude",
         )
@@ -70,12 +65,61 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--system-prompt" in cmd
         assert "Be helpful" in cmd
+
+    def test_build_command_with_system_prompt_preset(self):
+        """Test building CLI command with system prompt preset."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(
+                system_prompt={"type": "preset", "preset": "claude_code"},
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
+
+    def test_build_command_with_system_prompt_preset_and_append(self):
+        """Test building CLI command with system prompt preset and append."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(
+                system_prompt={
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Be concise.",
+                },
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" in cmd
+        assert "Be concise." in cmd
+
+    def test_build_command_with_options(self):
+        """Test building CLI command with options."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write"],
+                disallowed_tools=["Bash"],
+                model="claude-sonnet-4-5",
+                permission_mode="acceptEdits",
+                max_turns=5,
+            ),
+            cli_path="/usr/bin/claude",
+        )
+
+        cmd = transport._build_command()
         assert "--allowedTools" in cmd
         assert "Read,Write" in cmd
         assert "--disallowedTools" in cmd
         assert "Bash" in cmd
         assert "--model" in cmd
-        assert "claude-3-5-sonnet" in cmd
+        assert "claude-sonnet-4-5" in cmd
         assert "--permission-mode" in cmd
         assert "acceptEdits" in cmd
         assert "--max-turns" in cmd
@@ -87,7 +131,7 @@ class TestSubprocessCLITransport:
 
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(
+            options=ClaudeAgentOptions(
                 add_dirs=["/path/to/dir1", Path("/path/to/dir2")]
             ),
             cli_path="/usr/bin/claude",
@@ -103,7 +147,9 @@ class TestSubprocessCLITransport:
         """Test session continuation options."""
         transport = SubprocessCLITransport(
             prompt="Continue from before",
-            options=ClaudeCodeOptions(continue_conversation=True, resume="session-123"),
+            options=ClaudeAgentOptions(
+                continue_conversation=True, resume="session-123"
+            ),
             cli_path="/usr/bin/claude",
         )
 
@@ -117,6 +163,16 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
@@ -129,11 +185,12 @@ class TestSubprocessCLITransport:
                 mock_stdin.aclose = AsyncMock()
                 mock_process.stdin = mock_stdin
 
-                mock_exec.return_value = mock_process
+                # Return version process first, then main process
+                mock_exec.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
-                    options=ClaudeCodeOptions(),
+                    options=ClaudeAgentOptions(),
                     cli_path="/usr/bin/claude",
                 )
 
@@ -151,7 +208,7 @@ class TestSubprocessCLITransport:
         # This test is simplified to just test the transport creation
         # The full async stream handling is tested in integration tests
         transport = SubprocessCLITransport(
-            prompt="test", options=ClaudeCodeOptions(), cli_path="/usr/bin/claude"
+            prompt="test", options=ClaudeAgentOptions(), cli_path="/usr/bin/claude"
         )
 
         # The transport now just provides raw message reading via read_messages()
@@ -161,12 +218,12 @@ class TestSubprocessCLITransport:
 
     def test_connect_with_nonexistent_cwd(self):
         """Test that connect raises CLIConnectionError when cwd doesn't exist."""
-        from claude_code_sdk._errors import CLIConnectionError
+        from claude_agent_sdk._errors import CLIConnectionError
 
         async def _test():
             transport = SubprocessCLITransport(
                 prompt="test",
-                options=ClaudeCodeOptions(cwd="/this/directory/does/not/exist"),
+                options=ClaudeAgentOptions(cwd="/this/directory/does/not/exist"),
                 cli_path="/usr/bin/claude",
             )
 
@@ -181,7 +238,7 @@ class TestSubprocessCLITransport:
         """Test building CLI command with settings as file path."""
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(settings="/path/to/settings.json"),
+            options=ClaudeAgentOptions(settings="/path/to/settings.json"),
             cli_path="/usr/bin/claude",
         )
 
@@ -194,7 +251,7 @@ class TestSubprocessCLITransport:
         settings_json = '{"permissions": {"allow": ["Bash(ls:*)"]}}'
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(settings=settings_json),
+            options=ClaudeAgentOptions(settings=settings_json),
             cli_path="/usr/bin/claude",
         )
 
@@ -206,7 +263,7 @@ class TestSubprocessCLITransport:
         """Test building CLI command with extra_args for future flags."""
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(
+            options=ClaudeAgentOptions(
                 extra_args={
                     "new-flag": "value",
                     "boolean-flag": None,
@@ -244,7 +301,7 @@ class TestSubprocessCLITransport:
 
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(mcp_servers=mcp_servers),
+            options=ClaudeAgentOptions(mcp_servers=mcp_servers),
             cli_path="/usr/bin/claude",
         )
 
@@ -267,7 +324,7 @@ class TestSubprocessCLITransport:
         # Test with string path
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(mcp_servers="/path/to/mcp-config.json"),
+            options=ClaudeAgentOptions(mcp_servers="/path/to/mcp-config.json"),
             cli_path="/usr/bin/claude",
         )
 
@@ -279,7 +336,7 @@ class TestSubprocessCLITransport:
         # Test with Path object
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(mcp_servers=Path("/path/to/mcp-config.json")),
+            options=ClaudeAgentOptions(mcp_servers=Path("/path/to/mcp-config.json")),
             cli_path="/usr/bin/claude",
         )
 
@@ -293,7 +350,7 @@ class TestSubprocessCLITransport:
         json_config = '{"mcpServers": {"server": {"type": "stdio", "command": "test"}}}'
         transport = SubprocessCLITransport(
             prompt="test",
-            options=ClaudeCodeOptions(mcp_servers=json_config),
+            options=ClaudeAgentOptions(mcp_servers=json_config),
             cli_path="/usr/bin/claude",
         )
 
@@ -311,19 +368,31 @@ class TestSubprocessCLITransport:
                 "MY_TEST_VAR": test_value,
             }
 
-            options = ClaudeCodeOptions(env=custom_env)
+            options = ClaudeAgentOptions(env=custom_env)
 
             # Mock the subprocess to capture the env argument
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
                 mock_stdin.aclose = AsyncMock()  # Add async aclose method
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
-                mock_open_process.return_value = mock_process
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -333,11 +402,13 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called with correct env vars
-                mock_open_process.assert_called_once()
-                call_kwargs = mock_open_process.call_args.kwargs
-                assert "env" in call_kwargs
-                env_passed = call_kwargs["env"]
+                # Verify open_process was called twice (version check + main process)
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
 
                 # Check that custom env var was passed
                 assert env_passed["MY_TEST_VAR"] == test_value
@@ -358,19 +429,31 @@ class TestSubprocessCLITransport:
 
         async def _test():
             custom_user = "claude"
-            options = ClaudeCodeOptions(user=custom_user)
+            options = ClaudeAgentOptions(user=custom_user)
 
             # Mock the subprocess to capture the env argument
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
                 mock_stdin.aclose = AsyncMock()  # Add async aclose method
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
-                mock_open_process.return_value = mock_process
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -380,11 +463,13 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called with correct user
-                mock_open_process.assert_called_once()
-                call_kwargs = mock_open_process.call_args.kwargs
-                assert "user" in call_kwargs
-                user_passed = call_kwargs["user"]
+                # Verify open_process was called twice (version check + main process)
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for user
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "user" in second_call_kwargs
+                user_passed = second_call_kwargs["user"]
 
                 # Check that user was passed
                 assert user_passed == "claude"

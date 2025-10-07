@@ -18,7 +18,7 @@ python -m pytest tests/test_client.py
 
 # Codebase Structure
 
-- `src/claude_code_sdk/` - Main package
+- `src/claude_agent_sdk/` - Main package
   - `client.py` - ClaudeSDKClient for interactive sessions
   - `query.py` - One-shot query function
   - `types.py` - Type definitions

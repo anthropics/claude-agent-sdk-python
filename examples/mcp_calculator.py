@@ -12,8 +12,8 @@ and simpler deployment.
 import asyncio
 from typing import Any
 
-from claude_code_sdk import (
-    ClaudeCodeOptions,
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
     create_sdk_mcp_server,
     tool,
 )
@@ -99,7 +99,7 @@ async def power(args: dict[str, Any]) -> dict[str, Any]:
 
 def display_message(msg):
     """Display message content in a clean format."""
-    from claude_code_sdk import (
+    from claude_agent_sdk import (
         AssistantMessage,
         ResultMessage,
         SystemMessage,
@@ -137,7 +137,7 @@ def display_message(msg):
 
 async def main():
     """Run example calculations using the SDK MCP server with streaming client."""
-    from claude_code_sdk import ClaudeSDKClient
+    from claude_agent_sdk import ClaudeSDKClient
 
     # Create the calculator server with all tools
     calculator = create_sdk_mcp_server(
@@ -155,7 +155,7 @@ async def main():
 
     # Configure Claude to use the calculator server with allowed tools
     # Pre-approve all calculator MCP tools so they can be used without permission prompts
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         mcp_servers={"calc": calculator},
         allowed_tools=[
             "mcp__calc__add",

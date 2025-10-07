@@ -63,6 +63,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+          $claudePath = "$env:LOCALAPPDATA\Programs\claude-code"
+          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
 
       - name: Verify Claude Code installation
@@ -105,6 +107,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+          $claudePath = "$env:LOCALAPPDATA\Programs\claude-code"
+          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
 
       - name: Verify Claude Code installation

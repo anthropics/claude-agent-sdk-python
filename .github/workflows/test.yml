@@ -8,9 +8,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -37,10 +38,11 @@ jobs:
           fail_ci_if_error: false
 
   test-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     needs: test # Run after unit tests pass
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -51,10 +53,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Claude Code
+      - name: Install Claude Code (Linux/macOS)
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install Claude Code (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          irm https://claude.ai/install.ps1 | iex
+          $claudePath = "$env:USERPROFILE\.local\bin"
+          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
       - name: Verify Claude Code installation
         run: claude -v
@@ -85,10 +96,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Claude Code
+      - name: Install Claude Code (Linux)
+        if: runner.os == 'Linux'
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install Claude Code (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          irm https://claude.ai/install.ps1 | iex
+          $claudePath = "$env:USERPROFILE\.local\bin"
+          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
       - name: Verify Claude Code installation
         run: claude -v
@@ -98,9 +118,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Run example scripts
+      - name: Run example scripts (Linux)
+        if: runner.os == 'Linux'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python examples/quick_start.py
           timeout 120 python examples/streaming_mode.py all
+
+      - name: Run example scripts (Windows)
+        if: runner.os == 'Windows'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python examples/quick_start.py
+          $job = Start-Job { python examples/streaming_mode.py all }
+          Wait-Job $job -Timeout 120 | Out-Null
+          Stop-Job $job
+          Receive-Job $job
+        shell: pwsh

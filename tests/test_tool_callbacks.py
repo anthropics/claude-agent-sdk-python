@@ -257,6 +257,129 @@ class TestHookCallbacks:
         last_response = transport.written_messages[-1]
         assert '"processed": true' in last_response
 
+    @pytest.mark.asyncio
+    async def test_hook_output_fields(self):
+        """Test that all SyncHookJSONOutput fields are properly handled."""
+
+        # Test all SyncHookJSONOutput fields together
+        async def comprehensive_hook(
+            input_data: dict, tool_use_id: str | None, context: HookContext
+        ) -> dict:
+            return {
+                # Control fields
+                "continue_": True,
+                "suppressOutput": False,
+                "stopReason": "Test stop reason",
+                # Decision fields
+                "decision": "block",
+                "systemMessage": "Test system message",
+                "reason": "Test reason for blocking",
+                # Hook-specific output with all PreToolUse fields
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "Security policy violation",
+                    "updatedInput": {"modified": "input"},
+                },
+            }
+
+        transport = MockTransport()
+        hooks = {
+            "PreToolUse": [
+                {"matcher": {"tool": "TestTool"}, "hooks": [comprehensive_hook]}
+            ]
+        }
+
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=hooks
+        )
+
+        callback_id = "test_comprehensive_hook"
+        query.hook_callbacks[callback_id] = comprehensive_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-comprehensive",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": "tool-456",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check response contains all the fields
+        assert len(transport.written_messages) > 0
+        last_response = transport.written_messages[-1]
+
+        # Verify control fields are present
+        assert (
+            '"continue_": true' in last_response or '"continue": true' in last_response
+        )
+        assert (
+            '"suppressOutput": false' in last_response
+            or '"suppressOutput":false' in last_response
+        )
+        assert '"stopReason": "Test stop reason"' in last_response
+
+        # Verify decision fields are present
+        assert '"decision": "block"' in last_response
+        assert '"reason": "Test reason for blocking"' in last_response
+        assert '"systemMessage": "Test system message"' in last_response
+
+        # Verify hook-specific output is present
+        assert '"hookSpecificOutput"' in last_response
+        assert '"permissionDecision": "deny"' in last_response
+        assert (
+            '"permissionDecisionReason": "Security policy violation"' in last_response
+        )
+        assert '"updatedInput"' in last_response
+
+    @pytest.mark.asyncio
+    async def test_async_hook_output(self):
+        """Test AsyncHookJSONOutput type with proper async fields."""
+
+        async def async_hook(
+            input_data: dict, tool_use_id: str | None, context: HookContext
+        ) -> dict:
+            # Test that async hooks properly use async_ and asyncTimeout fields
+            return {
+                "async_": True,
+                "asyncTimeout": 5000,
+            }
+
+        transport = MockTransport()
+        hooks = {"PreToolUse": [{"matcher": None, "hooks": [async_hook]}]}
+
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=hooks
+        )
+
+        callback_id = "test_async_hook"
+        query.hook_callbacks[callback_id] = async_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-async",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "async_data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check response contains async fields
+        assert len(transport.written_messages) > 0
+        last_response = transport.written_messages[-1]
+        # The SDK should preserve the async_ field (or convert to "async")
+        assert '"async_": true' in last_response or '"async": true' in last_response
+        assert '"asyncTimeout": 5000' in last_response
+
 
 class TestClaudeAgentOptionsIntegration:
     """Test that callbacks work through ClaudeAgentOptions."""

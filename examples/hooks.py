@@ -81,6 +81,69 @@ async def add_custom_instructions(
     }
 
 
+async def review_tool_output(
+    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+) -> HookJSONOutput:
+    """Review tool output and provide additional context or warnings."""
+    tool_response = input_data.get("tool_response", "")
+
+    # If the tool produced an error, add helpful context
+    if "error" in str(tool_response).lower():
+        return {
+            "systemMessage": "⚠️ The command produced an error",
+            "reason": "Tool execution failed - consider checking the command syntax",
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": "The command encountered an error. You may want to try a different approach.",
+            }
+        }
+
+    return {}
+
+
+async def strict_approval_hook(
+    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+) -> HookJSONOutput:
+    """Demonstrates blocking with decision='block' and providing a reason."""
+    tool_name = input_data.get("tool_name")
+    tool_input = input_data.get("tool_input", {})
+
+    # Block any Write operations to specific files
+    if tool_name == "Write":
+        file_path = tool_input.get("file_path", "")
+        if "important" in file_path.lower():
+            logger.warning(f"Blocked Write to: {file_path}")
+            return {
+                "decision": "block",
+                "reason": "Writes to files containing 'important' in the name are not allowed for safety",
+                "systemMessage": "🚫 Write operation blocked by security policy",
+            }
+
+    # Approve everything else explicitly
+    return {
+        "decision": "approve",
+        "reason": "Tool use approved after security review",
+    }
+
+
+async def stop_on_error_hook(
+    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+) -> HookJSONOutput:
+    """Demonstrates using continue=False to stop execution on certain conditions."""
+    tool_response = input_data.get("tool_response", "")
+
+    # Stop execution if we see a critical error
+    if "critical" in str(tool_response).lower():
+        logger.error("Critical error detected - stopping execution")
+        return {
+            "continue_": False,
+            "stopReason": "Critical error detected in tool output - execution halted for safety",
+            "systemMessage": "🛑 Execution stopped due to critical error",
+        }
+
+    return {"continue_": True}
+
+
 async def example_pretooluse() -> None:
     """Basic example demonstrating hook protection."""
     print("=== PreToolUse Example ===")
@@ -143,11 +206,99 @@ async def example_userpromptsubmit() -> None:
     print("\n")
 
 
+async def example_posttooluse() -> None:
+    """Demonstrate PostToolUse hook with reason and systemMessage fields."""
+    print("=== PostToolUse Example ===")
+    print("This example shows how PostToolUse can provide feedback with reason and systemMessage.\n")
+
+    options = ClaudeAgentOptions(
+        allowed_tools=["Bash"],
+        hooks={
+            "PostToolUse": [
+                HookMatcher(matcher="Bash", hooks=[review_tool_output]),
+            ],
+        }
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        print("User: Run a command that will produce an error: ls /nonexistent_directory")
+        await client.query("Run this command: ls /nonexistent_directory")
+
+        async for msg in client.receive_response():
+            display_message(msg)
+
+    print("\n")
+
+
+async def example_decision_fields() -> None:
+    """Demonstrate decision, reason, and systemMessage fields."""
+    print("=== Decision Fields Example ===")
+    print("This example shows how to use decision='block'/'approve' with reason and systemMessage.\n")
+
+    options = ClaudeAgentOptions(
+        allowed_tools=["Write", "Bash"],
+        model="claude-sonnet-4-5-20250929",
+        hooks={
+            "PreToolUse": [
+                HookMatcher(matcher="Write", hooks=[strict_approval_hook]),
+            ],
+        }
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        # Test 1: Try to write to a file with "important" in the name (should be blocked)
+        print("Test 1: Trying to write to important_config.txt (should be blocked)...")
+        print("User: Write 'test' to important_config.txt")
+        await client.query("Write the text 'test data' to a file called important_config.txt")
+
+        async for msg in client.receive_response():
+            display_message(msg)
+
+        print("\n" + "=" * 50 + "\n")
+
+        # Test 2: Write to a regular file (should be approved)
+        print("Test 2: Trying to write to regular_file.txt (should be approved)...")
+        print("User: Write 'test' to regular_file.txt")
+        await client.query("Write the text 'test data' to a file called regular_file.txt")
+
+        async for msg in client.receive_response():
+            display_message(msg)
+
+    print("\n")
+
+
+async def example_continue_control() -> None:
+    """Demonstrate continue and stopReason fields for execution control."""
+    print("=== Continue/Stop Control Example ===")
+    print("This example shows how to use continue_=False with stopReason to halt execution.\n")
+
+    options = ClaudeAgentOptions(
+        allowed_tools=["Bash"],
+        hooks={
+            "PostToolUse": [
+                HookMatcher(matcher="Bash", hooks=[stop_on_error_hook]),
+            ],
+        }
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        print("User: Run a command that outputs 'CRITICAL ERROR'")
+        await client.query("Run this bash command: echo 'CRITICAL ERROR: system failure'")
+
+        async for msg in client.receive_response():
+            display_message(msg)
+
+    print("\n")
+
+
 async def main() -> None:
     """Run all examples or a specific example based on command line argument."""
     examples = {
         "PreToolUse": example_pretooluse,
         "UserPromptSubmit": example_userpromptsubmit,
+        "PostToolUse": example_posttooluse,
+        "DecisionFields": example_decision_fields,
+        "ContinueControl": example_continue_control,
     }
 
     if len(sys.argv) < 2:
@@ -157,6 +308,12 @@ async def main() -> None:
         print("  all - Run all examples")
         for name in examples:
             print(f"  {name}")
+        print("\nExample descriptions:")
+        print("  PreToolUse       - Block commands using PreToolUse hook")
+        print("  UserPromptSubmit - Add context at prompt submission")
+        print("  PostToolUse      - Review tool output with reason and systemMessage")
+        print("  DecisionFields   - Use decision='block'/'approve' with reason")
+        print("  ContinueControl  - Control execution with continue_ and stopReason")
         sys.exit(0)
 
     example_name = sys.argv[1]

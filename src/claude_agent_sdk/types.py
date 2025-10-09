@@ -157,18 +157,72 @@ HookEvent = (
 )
 
 
+# Hook-specific output types
+class PreToolUseHookSpecificOutput(TypedDict):
+    """Hook-specific output for PreToolUse events."""
+
+    hookEventName: Literal["PreToolUse"]
+    permissionDecision: NotRequired[Literal["allow", "deny", "ask"]]
+    permissionDecisionReason: NotRequired[str]
+    updatedInput: NotRequired[dict[str, Any]]
+
+
+class PostToolUseHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostToolUse events."""
+
+    hookEventName: Literal["PostToolUse"]
+    additionalContext: NotRequired[str]
+
+
+class UserPromptSubmitHookSpecificOutput(TypedDict):
+    """Hook-specific output for UserPromptSubmit events."""
+
+    hookEventName: Literal["UserPromptSubmit"]
+    additionalContext: NotRequired[str]
+
+
+class SessionStartHookSpecificOutput(TypedDict):
+    """Hook-specific output for SessionStart events."""
+
+    hookEventName: Literal["SessionStart"]
+    additionalContext: NotRequired[str]
+
+
+HookSpecificOutput = (
+    PreToolUseHookSpecificOutput
+    | PostToolUseHookSpecificOutput
+    | UserPromptSubmitHookSpecificOutput
+    | SessionStartHookSpecificOutput
+)
+
+
 # See https://docs.anthropic.com/en/docs/claude-code/hooks#advanced%3A-json-output
-# for documentation of the output types. Currently, "continue", "stopReason",
-# and "suppressOutput" are not supported in the Python SDK.
-class HookJSONOutput(TypedDict):
-    # Whether to block the action related to the hook.
-    decision: NotRequired[Literal["block"]]
-    # Optionally add a system message that is not visible to Claude but saved in
-    # the chat transcript.
+# for documentation of the output types.
+class AsyncHookJSONOutput(TypedDict):
+    """Async hook output that defers hook execution."""
+
+    async_: Literal[True]  # Using async_ to avoid Python keyword
+    asyncTimeout: NotRequired[int]
+
+
+class SyncHookJSONOutput(TypedDict):
+    """Synchronous hook output with control and decision fields."""
+
+    # Common control fields
+    continue_: NotRequired[bool]  # Using continue_ to avoid Python keyword
+    suppressOutput: NotRequired[bool]
+    stopReason: NotRequired[str]
+
+    # Decision fields
+    decision: NotRequired[Literal["approve", "block"]]
     systemMessage: NotRequired[str]
-    # See each hook's individual "Decision Control" section in the documentation
-    # for guidance.
-    hookSpecificOutput: NotRequired[Any]
+    reason: NotRequired[str]
+
+    # Hook-specific outputs
+    hookSpecificOutput: NotRequired[HookSpecificOutput]
+
+
+HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 
 
 @dataclass

@@ -1,10 +1,13 @@
 """Tests for tool permission callbacks and hook callbacks."""
 
+import json
+
 import pytest
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
+    HookJSONOutput,
     HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -264,7 +267,7 @@ class TestHookCallbacks:
         # Test all SyncHookJSONOutput fields together
         async def comprehensive_hook(
             input_data: dict, tool_use_id: str | None, context: HookContext
-        ) -> dict:
+        ) -> HookJSONOutput:
             return {
                 # Control fields
                 "continue_": True,
@@ -314,28 +317,29 @@ class TestHookCallbacks:
         assert len(transport.written_messages) > 0
         last_response = transport.written_messages[-1]
 
+        # Parse the JSON response
+        response_data = json.loads(last_response)
+        # The hook result is nested at response.response
+        result = response_data["response"]["response"]
+
         # Verify control fields are present
-        assert (
-            '"continue_": true' in last_response or '"continue": true' in last_response
-        )
-        assert (
-            '"suppressOutput": false' in last_response
-            or '"suppressOutput":false' in last_response
-        )
-        assert '"stopReason": "Test stop reason"' in last_response
+        assert result.get("continue_") is True or result.get("continue") is True
+        assert result.get("suppressOutput") is False
+        assert result.get("stopReason") == "Test stop reason"
 
         # Verify decision fields are present
-        assert '"decision": "block"' in last_response
-        assert '"reason": "Test reason for blocking"' in last_response
-        assert '"systemMessage": "Test system message"' in last_response
+        assert result.get("decision") == "block"
+        assert result.get("reason") == "Test reason for blocking"
+        assert result.get("systemMessage") == "Test system message"
 
         # Verify hook-specific output is present
-        assert '"hookSpecificOutput"' in last_response
-        assert '"permissionDecision": "deny"' in last_response
+        hook_output = result.get("hookSpecificOutput", {})
+        assert hook_output.get("hookEventName") == "PreToolUse"
+        assert hook_output.get("permissionDecision") == "deny"
         assert (
-            '"permissionDecisionReason": "Security policy violation"' in last_response
+            hook_output.get("permissionDecisionReason") == "Security policy violation"
         )
-        assert '"updatedInput"' in last_response
+        assert "updatedInput" in hook_output
 
     @pytest.mark.asyncio
     async def test_async_hook_output(self):
@@ -343,7 +347,7 @@ class TestHookCallbacks:
 
         async def async_hook(
             input_data: dict, tool_use_id: str | None, context: HookContext
-        ) -> dict:
+        ) -> HookJSONOutput:
             # Test that async hooks properly use async_ and asyncTimeout fields
             return {
                 "async_": True,
@@ -376,9 +380,15 @@ class TestHookCallbacks:
         # Check response contains async fields
         assert len(transport.written_messages) > 0
         last_response = transport.written_messages[-1]
+
+        # Parse the JSON response
+        response_data = json.loads(last_response)
+        # The hook result is nested at response.response
+        result = response_data["response"]["response"]
+
         # The SDK should preserve the async_ field (or convert to "async")
-        assert '"async_": true' in last_response or '"async": true' in last_response
-        assert '"asyncTimeout": 5000' in last_response
+        assert result.get("async_") is True or result.get("async") is True
+        assert result.get("asyncTimeout") == 5000
 
 
 class TestClaudeAgentOptionsIntegration:

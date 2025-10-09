@@ -214,7 +214,9 @@ class SyncHookJSONOutput(TypedDict):
     stopReason: NotRequired[str]
 
     # Decision fields
-    decision: NotRequired[Literal["approve", "block"]]
+    # Note: "approve" is deprecated for PreToolUse (use permissionDecision instead)
+    # For other hooks, only "block" is meaningful
+    decision: NotRequired[Literal["block"]]
     systemMessage: NotRequired[str]
     reason: NotRequired[str]
 

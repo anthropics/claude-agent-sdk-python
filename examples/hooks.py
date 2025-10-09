@@ -104,7 +104,7 @@ async def review_tool_output(
 async def strict_approval_hook(
     input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
-    """Demonstrates blocking with decision='block' and providing a reason."""
+    """Demonstrates using permissionDecision to control tool execution."""
     tool_name = input_data.get("tool_name")
     tool_input = input_data.get("tool_input", {})
 
@@ -114,15 +114,23 @@ async def strict_approval_hook(
         if "important" in file_path.lower():
             logger.warning(f"Blocked Write to: {file_path}")
             return {
-                "decision": "block",
                 "reason": "Writes to files containing 'important' in the name are not allowed for safety",
                 "systemMessage": "🚫 Write operation blocked by security policy",
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "Security policy blocks writes to important files",
+                },
             }
 
-    # Approve everything else explicitly
+    # Allow everything else explicitly
     return {
-        "decision": "approve",
         "reason": "Tool use approved after security review",
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "Tool passed security checks",
+        },
     }
 
 
@@ -231,9 +239,9 @@ async def example_posttooluse() -> None:
 
 
 async def example_decision_fields() -> None:
-    """Demonstrate decision, reason, and systemMessage fields."""
-    print("=== Decision Fields Example ===")
-    print("This example shows how to use decision='block'/'approve' with reason and systemMessage.\n")
+    """Demonstrate permissionDecision, reason, and systemMessage fields."""
+    print("=== Permission Decision Example ===")
+    print("This example shows how to use permissionDecision='allow'/'deny' with reason and systemMessage.\n")
 
     options = ClaudeAgentOptions(
         allowed_tools=["Write", "Bash"],
@@ -312,7 +320,7 @@ async def main() -> None:
         print("  PreToolUse       - Block commands using PreToolUse hook")
         print("  UserPromptSubmit - Add context at prompt submission")
         print("  PostToolUse      - Review tool output with reason and systemMessage")
-        print("  DecisionFields   - Use decision='block'/'approve' with reason")
+        print("  DecisionFields   - Use permissionDecision='allow'/'deny' with reason")
         print("  ContinueControl  - Control execution with continue_ and stopReason")
         sys.exit(0)
 

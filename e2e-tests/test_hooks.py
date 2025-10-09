@@ -13,14 +13,14 @@ from claude_agent_sdk import (
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_hook_with_decision_and_reason():
-    """Test that hooks with decision and reason fields work end-to-end."""
+async def test_hook_with_permission_decision_and_reason():
+    """Test that hooks with permissionDecision and reason fields work end-to-end."""
     hook_invocations = []
 
     async def test_hook(
         input_data: dict, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        """Hook that uses decision and reason fields."""
+        """Hook that uses permissionDecision and reason fields."""
         tool_name = input_data.get("tool_name", "")
         print(f"Hook called for tool: {tool_name}")
         hook_invocations.append(tool_name)
@@ -28,7 +28,6 @@ async def test_hook_with_decision_and_reason():
         # Block Bash commands for this test
         if tool_name == "Bash":
             return {
-                "decision": "block",
                 "reason": "Bash commands are blocked in this test for safety",
                 "systemMessage": "⚠️ Command blocked by hook",
                 "hookSpecificOutput": {
@@ -39,7 +38,6 @@ async def test_hook_with_decision_and_reason():
             }
 
         return {
-            "decision": "approve",
             "reason": "Tool approved by security review",
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

@@ -118,8 +118,6 @@ async def main():
         # Don't set permission_mode when using can_use_tool callback
         # Don't set permission_prompt_tool_name when using can_use_tool callback
         cwd=".",  # Set working directory
-        # Clear any potential hooks that might conflict
-        hooks=None
     )
 
     # Create client and send a query that will use multiple tools

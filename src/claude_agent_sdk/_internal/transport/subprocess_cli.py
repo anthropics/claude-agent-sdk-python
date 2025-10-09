@@ -181,6 +181,10 @@ class SubprocessCLITransport(Transport):
         )
         cmd.extend(["--setting-sources", sources_value])
 
+        # Add canUseTool flag if callback is provided
+        if self._options.can_use_tool:
+            cmd.append("--can-use-tool")
+
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
             if value is None:

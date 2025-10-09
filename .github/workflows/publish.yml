@@ -129,6 +129,7 @@ jobs:
         git commit -m "chore: bump version to ${{ env.VERSION }}"
 
     - name: Update changelog with Claude
+      continue-on-error: true
       uses: anthropics/claude-code-action@v1
       with:
         prompt: |

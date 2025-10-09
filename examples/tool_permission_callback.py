@@ -104,14 +104,22 @@ async def main():
     print("2. Modify tool inputs for safety")
     print("3. Log tool usage")
     print("4. Prompt for unknown tools")
+    print("\nNote: When using can_use_tool callback, do not set:")
+    print("- permission_mode (SDK handles this automatically)")
+    print("- permission_prompt_tool_name (SDK sets this to 'stdio')")
+    print("- hooks (these may conflict with permission callbacks)")
     print("=" * 60)
 
     # Configure options with our callback
+    # When using can_use_tool callback, don't set permission_mode or permission_prompt_tool_name
+    # as the SDK will automatically handle these settings
     options = ClaudeAgentOptions(
         can_use_tool=my_permission_callback,
-        # Use default permission mode to ensure callbacks are invoked
-        permission_mode="default",
-        cwd="."  # Set working directory
+        # Don't set permission_mode when using can_use_tool callback
+        # Don't set permission_prompt_tool_name when using can_use_tool callback
+        cwd=".",  # Set working directory
+        # Clear any potential hooks that might conflict
+        hooks=None
     )
 
     # Create client and send a query that will use multiple tools

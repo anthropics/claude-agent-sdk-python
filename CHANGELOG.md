@@ -43,6 +43,17 @@ For full migration instructions, see our [migration guide](https://docs.claude.c
 - New guides for [Custom Tools](https://docs.claude.com/en/api/agent-sdk/custom-tools), [Permissions](https://docs.claude.com/en/api/agent-sdk/permissions), [Session Management](https://docs.claude.com/en/api/agent-sdk/sessions), and more
 - Complete [Python API reference](https://docs.claude.com/en/api/agent-sdk/python)
 
+## 0.1.1
+
+### Features
+
+- **Minimum Claude Code version check**: Added version validation to ensure Claude Code 2.0.0+ is installed. The SDK will display a warning if an older version is detected, helping prevent compatibility issues
+- **Updated PermissionResult types**: Aligned permission result types with the latest control protocol for better type safety and compatibility
+
+### Improvements
+
+- **Model references**: Updated all examples and tests to use the simplified `claude-sonnet-4-5` model identifier instead of dated version strings
+
 ## 0.0.22
 
 - Introduce custom tools, implemented as in-process MCP servers.

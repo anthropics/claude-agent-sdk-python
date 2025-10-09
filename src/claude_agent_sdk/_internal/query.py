@@ -195,6 +195,7 @@ class Query:
 
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
+                original_input = permission_request["input"]
                 # Handle tool permission request
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
@@ -213,9 +214,14 @@ class Query:
 
                 # Convert PermissionResult to expected dict format
                 if isinstance(response, PermissionResultAllow):
-                    response_data = {"behavior": "allow"}
-                    if response.updated_input is not None:
-                        response_data["updatedInput"] = response.updated_input
+                    response_data = {
+                        "behavior": "allow",
+                        "updatedInput": (
+                            response.updated_input
+                            if response.updated_input is not None
+                            else original_input
+                        ),
+                    }
                     if response.updated_permissions is not None:
                         response_data["updatedPermissions"] = [
                             permission.to_dict()

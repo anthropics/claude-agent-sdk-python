@@ -157,6 +157,73 @@ HookEvent = (
 )
 
 
+# Hook input types - strongly typed for each hook event
+class BaseHookInput(TypedDict):
+    """Base hook input fields present across many hook events."""
+
+    session_id: str
+    transcript_path: str
+    cwd: str
+    permission_mode: NotRequired[str]
+
+
+class PreToolUseHookInput(BaseHookInput):
+    """Input data for PreToolUse hook events."""
+
+    hook_event_name: Literal["PreToolUse"]
+    tool_name: str
+    tool_input: dict[str, Any]
+
+
+class PostToolUseHookInput(BaseHookInput):
+    """Input data for PostToolUse hook events."""
+
+    hook_event_name: Literal["PostToolUse"]
+    tool_name: str
+    tool_input: dict[str, Any]
+    tool_response: Any
+
+
+class UserPromptSubmitHookInput(BaseHookInput):
+    """Input data for UserPromptSubmit hook events."""
+
+    hook_event_name: Literal["UserPromptSubmit"]
+    prompt: str
+
+
+class StopHookInput(BaseHookInput):
+    """Input data for Stop hook events."""
+
+    hook_event_name: Literal["Stop"]
+    stop_hook_active: bool
+
+
+class SubagentStopHookInput(BaseHookInput):
+    """Input data for SubagentStop hook events."""
+
+    hook_event_name: Literal["SubagentStop"]
+    stop_hook_active: bool
+
+
+class PreCompactHookInput(BaseHookInput):
+    """Input data for PreCompact hook events."""
+
+    hook_event_name: Literal["PreCompact"]
+    trigger: Literal["manual", "auto"]
+    custom_instructions: str | None
+
+
+# Union type for all hook inputs
+HookInput = (
+    PreToolUseHookInput
+    | PostToolUseHookInput
+    | UserPromptSubmitHookInput
+    | StopHookInput
+    | SubagentStopHookInput
+    | PreCompactHookInput
+)
+
+
 # Hook-specific output types
 class PreToolUseHookSpecificOutput(TypedDict):
     """Hook-specific output for PreToolUse events."""
@@ -265,21 +332,22 @@ class SyncHookJSONOutput(TypedDict):
 HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 
 
-@dataclass
-class HookContext:
-    """Context information for hook callbacks."""
+class HookContext(TypedDict):
+    """Context information for hook callbacks.
 
-    signal: Any | None = None  # Future: abort signal support
+    Fields:
+        signal: Reserved for future abort signal support. Currently always None.
+    """
+
+    signal: Any | None  # Future: abort signal support
 
 
 HookCallback = Callable[
     # HookCallback input parameters:
-    # - input
-    #   See https://docs.anthropic.com/en/docs/claude-code/hooks#hook-input for
-    #   the type of 'input', the first value.
-    # - tool_use_id
-    # - context
-    [dict[str, Any], str | None, HookContext],
+    # - input: Strongly-typed hook input with discriminated unions based on hook_event_name
+    # - tool_use_id: Optional tool use identifier
+    # - context: Hook context with abort signal support (currently placeholder)
+    [HookInput, str | None, HookContext],
     Awaitable[HookJSONOutput],
 ]
 

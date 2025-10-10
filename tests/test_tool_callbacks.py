@@ -7,6 +7,7 @@ import pytest
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
+    HookInput,
     HookJSONOutput,
     HookMatcher,
     PermissionResultAllow,
@@ -216,7 +217,7 @@ class TestHookCallbacks:
         hook_calls = []
 
         async def test_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> dict:
             hook_calls.append({"input": input_data, "tool_use_id": tool_use_id})
             return {"processed": True}
@@ -266,7 +267,7 @@ class TestHookCallbacks:
 
         # Test all SyncHookJSONOutput fields together
         async def comprehensive_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             return {
                 # Control fields
@@ -349,7 +350,7 @@ class TestHookCallbacks:
         """Test AsyncHookJSONOutput type with proper async fields."""
 
         async def async_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             # Test that async hooks properly use async_ and asyncTimeout fields
             return {
@@ -399,7 +400,7 @@ class TestHookCallbacks:
         """Test that Python-safe field names (async_, continue_) are converted to CLI format (async, continue)."""
 
         async def conversion_test_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             # Return both async_ and continue_ to test conversion
             return {
@@ -468,7 +469,7 @@ class TestClaudeAgentOptionsIntegration:
             return PermissionResultAllow()
 
         async def my_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> dict:
             return {}
 

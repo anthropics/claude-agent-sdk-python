@@ -18,11 +18,13 @@ from .query import query
 from .types import (
     AgentDefinition,
     AssistantMessage,
+    BaseHookInput,
     CanUseTool,
     ClaudeAgentOptions,
     ContentBlock,
     HookCallback,
     HookContext,
+    HookInput,
     HookJSONOutput,
     HookMatcher,
     McpSdkServerConfig,
@@ -33,8 +35,13 @@ from .types import (
     PermissionResultAllow,
     PermissionResultDeny,
     PermissionUpdate,
+    PostToolUseHookInput,
+    PreCompactHookInput,
+    PreToolUseHookInput,
     ResultMessage,
     SettingSource,
+    StopHookInput,
+    SubagentStopHookInput,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
@@ -42,6 +49,7 @@ from .types import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    UserPromptSubmitHookInput,
 )
 
 # MCP Server Support
@@ -307,8 +315,17 @@ __all__ = [
     "PermissionResultAllow",
     "PermissionResultDeny",
     "PermissionUpdate",
+    # Hook support
     "HookCallback",
     "HookContext",
+    "HookInput",
+    "BaseHookInput",
+    "PreToolUseHookInput",
+    "PostToolUseHookInput",
+    "UserPromptSubmitHookInput",
+    "StopHookInput",
+    "SubagentStopHookInput",
+    "PreCompactHookInput",
     "HookJSONOutput",
     "HookMatcher",
     # Agent support

@@ -15,9 +15,10 @@ import logging
 import sys
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import (
+from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
     HookContext,
     HookJSONOutput,
     HookMatcher,
@@ -155,7 +156,9 @@ async def stop_on_error_hook(
 async def example_pretooluse() -> None:
     """Basic example demonstrating hook protection."""
     print("=== PreToolUse Example ===")
-    print("This example demonstrates how PreToolUse can block some bash commands but not others.\n")
+    print(
+        "This example demonstrates how PreToolUse can block some bash commands but not others.\n"
+    )
 
     # Configure hooks using ClaudeAgentOptions
     options = ClaudeAgentOptions(
@@ -164,7 +167,7 @@ async def example_pretooluse() -> None:
             "PreToolUse": [
                 HookMatcher(matcher="Bash", hooks=[check_bash_command]),
             ],
-        }
+        },
     )
 
     async with ClaudeSDKClient(options=options) as client:

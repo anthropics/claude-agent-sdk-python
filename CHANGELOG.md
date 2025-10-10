@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+### Bug Fixes
+
+- **Hook output fields**: Added missing hook output fields to match the TypeScript SDK, including `reason`, `continue_`, `suppressOutput`, and `stopReason`. The `decision` field now properly supports both "approve" and "block" values. Added `AsyncHookJSONOutput` type for deferred hook execution and proper typing for `hookSpecificOutput` with discriminated unions
+
 ## 0.1.1
 
 ### Features

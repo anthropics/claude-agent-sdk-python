@@ -19,6 +19,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import (
     AssistantMessage,
     HookContext,
+    HookInput,
     HookJSONOutput,
     HookMatcher,
     Message,
@@ -43,7 +44,7 @@ def display_message(msg: Message) -> None:
 
 ##### Hook callback functions
 async def check_bash_command(
-    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
     """Prevent certain bash commands from being executed."""
     tool_name = input_data["tool_name"]
@@ -70,7 +71,7 @@ async def check_bash_command(
 
 
 async def add_custom_instructions(
-    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
     """Add custom instructions when a session starts."""
     return {
@@ -82,7 +83,7 @@ async def add_custom_instructions(
 
 
 async def review_tool_output(
-    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
     """Review tool output and provide additional context or warnings."""
     tool_response = input_data.get("tool_response", "")
@@ -102,7 +103,7 @@ async def review_tool_output(
 
 
 async def strict_approval_hook(
-    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
     """Demonstrates using permissionDecision to control tool execution."""
     tool_name = input_data.get("tool_name")
@@ -135,7 +136,7 @@ async def strict_approval_hook(
 
 
 async def stop_on_error_hook(
-    input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
     """Demonstrates using continue=False to stop execution on certain conditions."""
     tool_response = input_data.get("tool_response", "")

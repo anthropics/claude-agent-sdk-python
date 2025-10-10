@@ -42,6 +42,7 @@ from .types import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    HookJSONOutput
 )
 
 # MCP Server Support
@@ -324,4 +325,5 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+     "HookJSONOutput",
 ]

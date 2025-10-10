@@ -198,18 +198,56 @@ HookSpecificOutput = (
 
 # See https://docs.anthropic.com/en/docs/claude-code/hooks#advanced%3A-json-output
 # for documentation of the output types.
+#
+# IMPORTANT: The Python SDK uses `async_` and `continue_` (with underscores) to avoid
+# Python keyword conflicts. These fields are automatically converted to `async` and
+# `continue` when sent to the CLI. You should use the underscore versions in your
+# Python code.
 class AsyncHookJSONOutput(TypedDict):
-    """Async hook output that defers hook execution."""
+    """Async hook output that defers hook execution.
 
-    async_: Literal[True]  # Using async_ to avoid Python keyword
+    Fields:
+        async_: Set to True to defer hook execution. Note: This is converted to
+            "async" when sent to the CLI - use "async_" in your Python code.
+        asyncTimeout: Optional timeout in milliseconds for the async operation.
+    """
+
+    async_: Literal[
+        True
+    ]  # Using async_ to avoid Python keyword (converted to "async" for CLI)
     asyncTimeout: NotRequired[int]
 
 
 class SyncHookJSONOutput(TypedDict):
-    """Synchronous hook output with control and decision fields."""
+    """Synchronous hook output with control and decision fields.
+
+    This defines the structure for hook callbacks to control execution and provide
+    feedback to Claude.
+
+    Common Control Fields:
+        continue_: Whether Claude should proceed after hook execution (default: True).
+            Note: This is converted to "continue" when sent to the CLI.
+        suppressOutput: Hide stdout from transcript mode (default: False).
+        stopReason: Message shown when continue is False.
+
+    Decision Fields:
+        decision: Set to "block" to indicate blocking behavior.
+        systemMessage: Warning message displayed to the user.
+        reason: Feedback message for Claude about the decision.
+
+    Hook-Specific Output:
+        hookSpecificOutput: Event-specific controls (e.g., permissionDecision for
+            PreToolUse, additionalContext for PostToolUse).
+
+    Note: The CLI documentation shows field names without underscores ("async", "continue"),
+    but Python code should use the underscore versions ("async_", "continue_") as they
+    are automatically converted.
+    """
 
     # Common control fields
-    continue_: NotRequired[bool]  # Using continue_ to avoid Python keyword
+    continue_: NotRequired[
+        bool
+    ]  # Using continue_ to avoid Python keyword (converted to "continue" for CLI)
     suppressOutput: NotRequired[bool]
     stopReason: NotRequired[str]
 

@@ -23,6 +23,7 @@ from .types import (
     ContentBlock,
     HookCallback,
     HookContext,
+    HookJSONOutput,
     HookMatcher,
     McpSdkServerConfig,
     McpServerConfig,
@@ -308,6 +309,7 @@ __all__ = [
     "PermissionUpdate",
     "HookCallback",
     "HookContext",
+    "HookJSONOutput",
     "HookMatcher",
     # Agent support
     "AgentDefinition",

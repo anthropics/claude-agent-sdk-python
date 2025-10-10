@@ -125,6 +125,8 @@ jobs:
         run: |
           python examples/quick_start.py
           timeout 120 python examples/streaming_mode.py all
+          timeout 120 python examples/hooks.py PreToolUse
+          timeout 120 python examples/hooks.py DecisionFields
 
       - name: Run example scripts (Windows)
         if: runner.os == 'Windows'
@@ -133,6 +135,16 @@ jobs:
         run: |
           python examples/quick_start.py
           $job = Start-Job { python examples/streaming_mode.py all }
+          Wait-Job $job -Timeout 120 | Out-Null
+          Stop-Job $job
+          Receive-Job $job
+
+          $job = Start-Job { python examples/hooks.py PreToolUse }
+          Wait-Job $job -Timeout 120 | Out-Null
+          Stop-Job $job
+          Receive-Job $job
+
+          $job = Start-Job { python examples/hooks.py DecisionFields }
           Wait-Job $job -Timeout 120 | Out-Null
           Stop-Job $job
           Receive-Job $job

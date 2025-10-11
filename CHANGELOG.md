@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+### Internal/Other Changes
+
+- **CI/CD**: Re-enabled Windows testing in the end-to-end test workflow. Windows CI had been temporarily disabled but is now fully operational across all test suites
+
 ## 0.1.2
 
 ### Bug Fixes

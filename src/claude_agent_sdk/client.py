@@ -128,7 +128,6 @@ class ClaudeSDKClient:
             self._transport = SubprocessCLITransport(
                 prompt=actual_prompt,
                 options=options,
-                cli_path=options.cli_path,
             )
         await self._transport.connect()
 

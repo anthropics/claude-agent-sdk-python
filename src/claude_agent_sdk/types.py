@@ -157,6 +157,73 @@ HookEvent = (
 )
 
 
+# Hook input types - strongly typed for each hook event
+class BaseHookInput(TypedDict):
+    """Base hook input fields present across many hook events."""
+
+    session_id: str
+    transcript_path: str
+    cwd: str
+    permission_mode: NotRequired[str]
+
+
+class PreToolUseHookInput(BaseHookInput):
+    """Input data for PreToolUse hook events."""
+
+    hook_event_name: Literal["PreToolUse"]
+    tool_name: str
+    tool_input: dict[str, Any]
+
+
+class PostToolUseHookInput(BaseHookInput):
+    """Input data for PostToolUse hook events."""
+
+    hook_event_name: Literal["PostToolUse"]
+    tool_name: str
+    tool_input: dict[str, Any]
+    tool_response: Any
+
+
+class UserPromptSubmitHookInput(BaseHookInput):
+    """Input data for UserPromptSubmit hook events."""
+
+    hook_event_name: Literal["UserPromptSubmit"]
+    prompt: str
+
+
+class StopHookInput(BaseHookInput):
+    """Input data for Stop hook events."""
+
+    hook_event_name: Literal["Stop"]
+    stop_hook_active: bool
+
+
+class SubagentStopHookInput(BaseHookInput):
+    """Input data for SubagentStop hook events."""
+
+    hook_event_name: Literal["SubagentStop"]
+    stop_hook_active: bool
+
+
+class PreCompactHookInput(BaseHookInput):
+    """Input data for PreCompact hook events."""
+
+    hook_event_name: Literal["PreCompact"]
+    trigger: Literal["manual", "auto"]
+    custom_instructions: str | None
+
+
+# Union type for all hook inputs
+HookInput = (
+    PreToolUseHookInput
+    | PostToolUseHookInput
+    | UserPromptSubmitHookInput
+    | StopHookInput
+    | SubagentStopHookInput
+    | PreCompactHookInput
+)
+
+
 # Hook-specific output types
 class PreToolUseHookSpecificOutput(TypedDict):
     """Hook-specific output for PreToolUse events."""
@@ -198,18 +265,56 @@ HookSpecificOutput = (
 
 # See https://docs.anthropic.com/en/docs/claude-code/hooks#advanced%3A-json-output
 # for documentation of the output types.
+#
+# IMPORTANT: The Python SDK uses `async_` and `continue_` (with underscores) to avoid
+# Python keyword conflicts. These fields are automatically converted to `async` and
+# `continue` when sent to the CLI. You should use the underscore versions in your
+# Python code.
 class AsyncHookJSONOutput(TypedDict):
-    """Async hook output that defers hook execution."""
+    """Async hook output that defers hook execution.
 
-    async_: Literal[True]  # Using async_ to avoid Python keyword
+    Fields:
+        async_: Set to True to defer hook execution. Note: This is converted to
+            "async" when sent to the CLI - use "async_" in your Python code.
+        asyncTimeout: Optional timeout in milliseconds for the async operation.
+    """
+
+    async_: Literal[
+        True
+    ]  # Using async_ to avoid Python keyword (converted to "async" for CLI)
     asyncTimeout: NotRequired[int]
 
 
 class SyncHookJSONOutput(TypedDict):
-    """Synchronous hook output with control and decision fields."""
+    """Synchronous hook output with control and decision fields.
+
+    This defines the structure for hook callbacks to control execution and provide
+    feedback to Claude.
+
+    Common Control Fields:
+        continue_: Whether Claude should proceed after hook execution (default: True).
+            Note: This is converted to "continue" when sent to the CLI.
+        suppressOutput: Hide stdout from transcript mode (default: False).
+        stopReason: Message shown when continue is False.
+
+    Decision Fields:
+        decision: Set to "block" to indicate blocking behavior.
+        systemMessage: Warning message displayed to the user.
+        reason: Feedback message for Claude about the decision.
+
+    Hook-Specific Output:
+        hookSpecificOutput: Event-specific controls (e.g., permissionDecision for
+            PreToolUse, additionalContext for PostToolUse).
+
+    Note: The CLI documentation shows field names without underscores ("async", "continue"),
+    but Python code should use the underscore versions ("async_", "continue_") as they
+    are automatically converted.
+    """
 
     # Common control fields
-    continue_: NotRequired[bool]  # Using continue_ to avoid Python keyword
+    continue_: NotRequired[
+        bool
+    ]  # Using continue_ to avoid Python keyword (converted to "continue" for CLI)
     suppressOutput: NotRequired[bool]
     stopReason: NotRequired[str]
 
@@ -227,21 +332,22 @@ class SyncHookJSONOutput(TypedDict):
 HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 
 
-@dataclass
-class HookContext:
-    """Context information for hook callbacks."""
+class HookContext(TypedDict):
+    """Context information for hook callbacks.
 
-    signal: Any | None = None  # Future: abort signal support
+    Fields:
+        signal: Reserved for future abort signal support. Currently always None.
+    """
+
+    signal: Any | None  # Future: abort signal support
 
 
 HookCallback = Callable[
     # HookCallback input parameters:
-    # - input
-    #   See https://docs.anthropic.com/en/docs/claude-code/hooks#hook-input for
-    #   the type of 'input', the first value.
-    # - tool_use_id
-    # - context
-    [dict[str, Any], str | None, HookContext],
+    # - input: Strongly-typed hook input with discriminated unions based on hook_event_name
+    # - tool_use_id: Optional tool use identifier
+    # - context: Hook context with abort signal support (currently placeholder)
+    [HookInput, str | None, HookContext],
     Awaitable[HookJSONOutput],
 ]
 

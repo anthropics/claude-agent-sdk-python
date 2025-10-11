@@ -7,6 +7,7 @@ import pytest
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
+    HookInput,
     HookJSONOutput,
     HookMatcher,
     PermissionResultAllow,
@@ -216,7 +217,7 @@ class TestHookCallbacks:
         hook_calls = []
 
         async def test_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> dict:
             hook_calls.append({"input": input_data, "tool_use_id": tool_use_id})
             return {"processed": True}
@@ -266,7 +267,7 @@ class TestHookCallbacks:
 
         # Test all SyncHookJSONOutput fields together
         async def comprehensive_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             return {
                 # Control fields
@@ -322,8 +323,11 @@ class TestHookCallbacks:
         # The hook result is nested at response.response
         result = response_data["response"]["response"]
 
-        # Verify control fields are present
-        assert result.get("continue_") is True or result.get("continue") is True
+        # Verify control fields are present and converted to CLI format
+        assert result.get("continue") is True, (
+            "continue_ should be converted to continue"
+        )
+        assert "continue_" not in result, "continue_ should not appear in CLI output"
         assert result.get("suppressOutput") is False
         assert result.get("stopReason") == "Test stop reason"
 
@@ -346,7 +350,7 @@ class TestHookCallbacks:
         """Test AsyncHookJSONOutput type with proper async fields."""
 
         async def async_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             # Test that async hooks properly use async_ and asyncTimeout fields
             return {
@@ -386,9 +390,71 @@ class TestHookCallbacks:
         # The hook result is nested at response.response
         result = response_data["response"]["response"]
 
-        # The SDK should preserve the async_ field (or convert to "async")
-        assert result.get("async_") is True or result.get("async") is True
+        # The SDK should convert async_ to "async" for CLI compatibility
+        assert result.get("async") is True, "async_ should be converted to async"
+        assert "async_" not in result, "async_ should not appear in CLI output"
         assert result.get("asyncTimeout") == 5000
+
+    @pytest.mark.asyncio
+    async def test_field_name_conversion(self):
+        """Test that Python-safe field names (async_, continue_) are converted to CLI format (async, continue)."""
+
+        async def conversion_test_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            # Return both async_ and continue_ to test conversion
+            return {
+                "async_": True,
+                "asyncTimeout": 10000,
+                "continue_": False,
+                "stopReason": "Testing field conversion",
+                "systemMessage": "Fields should be converted",
+            }
+
+        transport = MockTransport()
+        hooks = {"PreToolUse": [{"matcher": None, "hooks": [conversion_test_hook]}]}
+
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=hooks
+        )
+
+        callback_id = "test_conversion"
+        query.hook_callbacks[callback_id] = conversion_test_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-conversion",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check response has converted field names
+        assert len(transport.written_messages) > 0
+        last_response = transport.written_messages[-1]
+
+        response_data = json.loads(last_response)
+        result = response_data["response"]["response"]
+
+        # Verify async_ was converted to async
+        assert result.get("async") is True, "async_ should be converted to async"
+        assert "async_" not in result, "async_ should not appear in output"
+
+        # Verify continue_ was converted to continue
+        assert result.get("continue") is False, (
+            "continue_ should be converted to continue"
+        )
+        assert "continue_" not in result, "continue_ should not appear in output"
+
+        # Verify other fields are unchanged
+        assert result.get("asyncTimeout") == 10000
+        assert result.get("stopReason") == "Testing field conversion"
+        assert result.get("systemMessage") == "Fields should be converted"
 
 
 class TestClaudeAgentOptionsIntegration:
@@ -403,7 +469,7 @@ class TestClaudeAgentOptionsIntegration:
             return PermissionResultAllow()
 
         async def my_hook(
-            input_data: dict, tool_use_id: str | None, context: HookContext
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> dict:
             return {}
 

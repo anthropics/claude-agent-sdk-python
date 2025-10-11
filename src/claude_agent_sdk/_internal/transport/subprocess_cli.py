@@ -3,9 +3,11 @@
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from dataclasses import asdict
@@ -28,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Command line length limits by platform
+# Windows: 8191 characters (cmd.exe), use 8000 for safety margin
+# Other platforms: Much higher limits (typically 128KB+), use 100000 for safety
+_CMD_LENGTH_LIMIT = 8000 if platform.system() == "Windows" else 100000
 
 
 class SubprocessCLITransport(Transport):
@@ -56,6 +63,7 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._temp_files: list[str] = []  # Track temp files for cleanup
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -172,7 +180,29 @@ class SubprocessCLITransport(Transport):
                 name: {k: v for k, v in asdict(agent_def).items() if v is not None}
                 for name, agent_def in self._options.agents.items()
             }
-            cmd.extend(["--agents", json.dumps(agents_dict)])
+            agents_json = json.dumps(agents_dict)
+
+            # Check if adding --agents would exceed command line length limit
+            # Calculate current command length plus the agents argument
+            current_cmd_str = " ".join(cmd)
+            estimated_length = (
+                len(current_cmd_str) + len(" --agents ") + len(agents_json)
+            )
+
+            if estimated_length > _CMD_LENGTH_LIMIT:
+                # Use temp file to avoid command line length limit
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False, encoding="utf-8"
+                ) as temp_file:
+                    temp_file.write(agents_json)
+                    temp_file_path = temp_file.name
+
+                self._temp_files.append(temp_file_path)
+                # Use @filepath syntax for Claude CLI
+                cmd.extend(["--agents", f"@{temp_file_path}"])
+            else:
+                # Command line is short enough, pass directly
+                cmd.extend(["--agents", agents_json])
 
         sources_value = (
             ",".join(self._options.setting_sources)
@@ -346,6 +376,12 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream = None
         self._stderr_stream = None
         self._exit_error = None
+
+        # Clean up temporary files
+        for temp_file_path in self._temp_files:
+            with suppress(Exception):
+                Path(temp_file_path).unlink()
+        self._temp_files.clear()
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""

@@ -10,7 +10,6 @@ import pytest
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk.types import ClaudeAgentOptions
 
-
 DEFAULT_CLI_PATH = "/usr/bin/claude"
 
 
@@ -157,9 +156,7 @@ class TestSubprocessCLITransport:
         """Test session continuation options."""
         transport = SubprocessCLITransport(
             prompt="Continue from before",
-            options=make_options(
-                continue_conversation=True, resume="session-123"
-            ),
+            options=make_options(continue_conversation=True, resume="session-123"),
         )
 
         cmd = transport._build_command()

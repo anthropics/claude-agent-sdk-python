@@ -10,7 +10,6 @@ import pytest
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk.types import ClaudeAgentOptions
 
-
 DEFAULT_CLI_PATH = "/usr/bin/claude"
 
 

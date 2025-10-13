@@ -15,7 +15,6 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
 )
 from claude_agent_sdk.types import ClaudeAgentOptions
 
-
 DEFAULT_CLI_PATH = "/usr/bin/claude"
 
 

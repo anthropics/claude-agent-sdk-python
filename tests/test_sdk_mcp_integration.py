@@ -7,6 +7,8 @@ matching the TypeScript SDK test/sdk.test.ts pattern.
 from typing import Any
 
 import pytest
+import base64
+from mcp.types import CallToolRequest, CallToolRequestParams
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -196,7 +198,6 @@ async def test_server_creation():
 @pytest.mark.asyncio
 async def test_image_content_support():
     """Test that tools can return image content with base64 data."""
-    import base64
 
     # Create sample base64 image data (a simple 1x1 pixel PNG)
     png_data = base64.b64encode(
@@ -232,9 +233,6 @@ async def test_image_content_support():
 
     # Get the server instance
     server = server_config["instance"]
-
-    # Test call_tool handler
-    from mcp.types import CallToolRequest, CallToolRequestParams
 
     call_handler = server.request_handlers[CallToolRequest]
 

@@ -280,6 +280,16 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 - Settings isolation and explicit control
 - New programmatic subagents and session forking features
 
+## Development
+
+If you're contributing to this project, run the initial setup script to install git hooks:
+
+```bash
+./scripts/initial-setup.sh
+```
+
+This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
 ## License
 
 MIT

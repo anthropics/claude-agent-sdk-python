@@ -66,6 +66,19 @@ class InternalClient:
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")
 
+        # Check for SDK MCP servers with string prompts
+        if isinstance(options.mcp_servers, dict):
+            has_sdk_servers = any(
+                isinstance(config, dict) and config.get("type") == "sdk"
+                for config in options.mcp_servers.values()
+            )
+            if has_sdk_servers and isinstance(prompt, str):
+                raise ValueError(
+                    "SDK MCP servers require streaming mode for bidirectional communication. "
+                    "Use ClaudeSDKClient instead of query() with a string prompt. "
+                    "See examples/mcp_calculator.py for a complete example."
+                )
+
         # Use provided transport or create subprocess transport
         if transport is not None:
             chosen_transport = transport

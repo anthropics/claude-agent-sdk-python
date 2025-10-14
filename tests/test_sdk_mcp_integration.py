@@ -191,3 +191,30 @@ async def test_server_creation():
 
     # When no tools are provided, the handlers are not registered
     assert ListToolsRequest not in instance.request_handlers
+
+
+def test_sdk_server_requires_streaming_mode():
+    """Test that SDK MCP servers with string prompts raise helpful error."""
+    import anyio
+
+    from claude_agent_sdk import query
+
+    async def _test():
+        # Create an SDK server
+        @tool("test_tool", "Test tool", {})
+        async def test_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "test"}]}
+
+        sdk_server = create_sdk_mcp_server(name="test-server", tools=[test_tool])
+
+        # Try to use query() with string prompt - should raise ValueError
+        options = ClaudeAgentOptions(mcp_servers={"test": sdk_server})
+
+        with pytest.raises(
+            ValueError,
+            match="SDK MCP servers require streaming mode for bidirectional communication",
+        ):
+            async for _ in query(prompt="test prompt", options=options):
+                pass
+
+    anyio.run(_test)

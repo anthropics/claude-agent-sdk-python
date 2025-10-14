@@ -31,6 +31,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
+    """Convert Python-safe field names to CLI-expected field names.
+
+    The Python SDK uses `async_` and `continue_` to avoid keyword conflicts,
+    but the CLI expects `async` and `continue`. This function performs the
+    necessary conversion.
+    """
+    converted = {}
+    for key, value in hook_output.items():
+        # Convert Python-safe names to JavaScript names
+        if key == "async_":
+            converted["async"] = value
+        elif key == "continue_":
+            converted["continue"] = value
+        else:
+            converted[key] = value
+    return converted
+
+
 class Query:
     """Handles bidirectional control protocol on top of Transport.
 
@@ -195,6 +214,7 @@ class Query:
 
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
+                original_input = permission_request["input"]
                 # Handle tool permission request
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
@@ -213,9 +233,14 @@ class Query:
 
                 # Convert PermissionResult to expected dict format
                 if isinstance(response, PermissionResultAllow):
-                    response_data = {"behavior": "allow"}
-                    if response.updated_input is not None:
-                        response_data["updatedInput"] = response.updated_input
+                    response_data = {
+                        "behavior": "allow",
+                        "updatedInput": (
+                            response.updated_input
+                            if response.updated_input is not None
+                            else original_input
+                        ),
+                    }
                     if response.updated_permissions is not None:
                         response_data["updatedPermissions"] = [
                             permission.to_dict()
@@ -238,11 +263,13 @@ class Query:
                 if not callback:
                     raise Exception(f"No hook callback found for ID: {callback_id}")
 
-                response_data = await callback(
+                hook_output = await callback(
                     request_data.get("input"),
                     request_data.get("tool_use_id"),
                     {"signal": None},  # TODO: Add abort signal support
                 )
+                # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
+                response_data = _convert_hook_output_for_cli(hook_output)
 
             elif subtype == "mcp_message":
                 # Handle SDK MCP request

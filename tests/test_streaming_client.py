@@ -633,21 +633,28 @@ assert '"Second"' in stdin_messages[1]
 print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_api_ms": 50, "is_error": false, "num_turns": 1, "session_id": "test", "total_cost_usd": 0.001}')
 """)
 
-            Path(test_script).chmod(0o755)
+            # Make script executable (Unix-style systems)
+            if sys.platform != "win32":
+                Path(test_script).chmod(0o755)
 
             try:
-                # Mock _find_cli to return python executing our test script
+                # Mock _find_cli to return the test script path directly
                 with patch.object(
-                    SubprocessCLITransport, "_find_cli", return_value=sys.executable
+                    SubprocessCLITransport, "_find_cli", return_value=test_script
                 ):
-                    # Mock _build_command to add our test script as first argument
+                    # Mock _build_command to properly execute Python script
                     original_build_command = SubprocessCLITransport._build_command
 
                     def mock_build_command(self):
                         # Get original command
                         cmd = original_build_command(self)
-                        # Replace the CLI path with python + script
-                        cmd[0] = test_script
+                        # On Windows, we need to use python interpreter to run the script
+                        if sys.platform == "win32":
+                            # Replace first element with python interpreter and script
+                            cmd[0:1] = [sys.executable, test_script]
+                        else:
+                            # On Unix, just use the script directly
+                            cmd[0] = test_script
                         return cmd
 
                     with patch.object(

@@ -37,12 +37,13 @@ class SubprocessCLITransport(Transport):
         self,
         prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeAgentOptions,
-        cli_path: str | Path | None = None,
     ):
         self._prompt = prompt
         self._is_streaming = not isinstance(prompt, str)
         self._options = options
-        self._cli_path = str(cli_path) if cli_path else self._find_cli()
+        self._cli_path = (
+            str(options.cli_path) if options.cli_path is not None else self._find_cli()
+        )
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
@@ -79,8 +80,8 @@ class SubprocessCLITransport(Transport):
             "  npm install -g @anthropic-ai/claude-code\n"
             "\nIf already installed locally, try:\n"
             '  export PATH="$HOME/node_modules/.bin:$PATH"\n'
-            "\nOr specify the path when creating transport:\n"
-            "  SubprocessCLITransport(..., cli_path='/path/to/claude')"
+            "\nOr provide the path via ClaudeAgentOptions:\n"
+            "  ClaudeAgentOptions(cli_path='/path/to/claude')"
         )
 
     def _build_command(self) -> list[str]:

@@ -1,5 +1,7 @@
 """End-to-end tests for agents and setting sources with real Claude API calls."""
 
+import asyncio
+import sys
 import tempfile
 from pathlib import Path
 
@@ -80,6 +82,10 @@ async def test_setting_sources_default():
                     ), f"outputStyle should be 'default', got: {output_style}"
                     break
 
+        # On Windows, wait for file handles to be released before cleanup
+        if sys.platform == "win32":
+            await asyncio.sleep(0.5)
+
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
@@ -120,6 +126,10 @@ This is a test command.
                     ), f"testcmd should NOT be available with user-only sources, got: {commands}"
                     break
 
+        # On Windows, wait for file handles to be released before cleanup
+        if sys.platform == "win32":
+            await asyncio.sleep(0.5)
+
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
@@ -153,3 +163,7 @@ async def test_setting_sources_project_included():
                         output_style == "local-test-style"
                     ), f"outputStyle should be from local settings, got: {output_style}"
                     break
+
+        # On Windows, wait for file handles to be released before cleanup
+        if sys.platform == "win32":
+            await asyncio.sleep(0.5)

@@ -4,9 +4,11 @@ This test file verifies that SDK MCP servers work correctly through the full sta
 matching the TypeScript SDK test/sdk.test.ts pattern.
 """
 
+import base64
 from typing import Any
 
 import pytest
+from mcp.types import CallToolRequest, CallToolRequestParams
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -191,3 +193,73 @@ async def test_server_creation():
 
     # When no tools are provided, the handlers are not registered
     assert ListToolsRequest not in instance.request_handlers
+
+
+@pytest.mark.asyncio
+async def test_image_content_support():
+    """Test that tools can return image content with base64 data."""
+
+    # Create sample base64 image data (a simple 1x1 pixel PNG)
+    png_data = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\tpHYs\x00\x00\x0b\x13"
+        b"\x00\x00\x0b\x13\x01\x00\x9a\x9c\x18\x00\x00\x00\x0cIDATx\x9cc```"
+        b"\x00\x00\x00\x04\x00\x01]U!\x1c\x00\x00\x00\x00IEND\xaeB`\x82"
+    ).decode("utf-8")
+
+    # Track tool executions
+    tool_executions: list[dict[str, Any]] = []
+
+    # Create a tool that returns both text and image content
+    @tool(
+        "generate_chart", "Generates a chart and returns it as an image", {"title": str}
+    )
+    async def generate_chart(args: dict[str, Any]) -> dict[str, Any]:
+        tool_executions.append({"name": "generate_chart", "args": args})
+        return {
+            "content": [
+                {"type": "text", "text": f"Generated chart: {args['title']}"},
+                {
+                    "type": "image",
+                    "data": png_data,
+                    "mimeType": "image/png",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="image-test-server", version="1.0.0", tools=[generate_chart]
+    )
+
+    # Get the server instance
+    server = server_config["instance"]
+
+    call_handler = server.request_handlers[CallToolRequest]
+
+    # Call the chart generation tool
+    chart_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(
+            name="generate_chart", arguments={"title": "Sales Report"}
+        ),
+    )
+    result = await call_handler(chart_request)
+
+    # Verify the result contains both text and image content
+    assert len(result.root.content) == 2
+
+    # Check text content
+    text_content = result.root.content[0]
+    assert text_content.type == "text"
+    assert text_content.text == "Generated chart: Sales Report"
+
+    # Check image content
+    image_content = result.root.content[1]
+    assert image_content.type == "image"
+    assert image_content.data == png_data
+    assert image_content.mimeType == "image/png"
+
+    # Verify the tool was executed correctly
+    assert len(tool_executions) == 1
+    assert tool_executions[0]["name"] == "generate_chart"
+    assert tool_executions[0]["args"]["title"] == "Sales Report"

@@ -3,6 +3,7 @@
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -450,6 +451,7 @@ class UserMessage:
 
     content: str | list[ContentBlock]
     parent_tool_use_id: str | None = None
+    timestamp: datetime | None = None
 
 
 @dataclass
@@ -459,6 +461,7 @@ class AssistantMessage:
     content: list[ContentBlock]
     model: str
     parent_tool_use_id: str | None = None
+    timestamp: datetime | None = None
 
 
 @dataclass
@@ -467,6 +470,7 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+    timestamp: datetime | None = None
 
 
 @dataclass
@@ -482,6 +486,7 @@ class ResultMessage:
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None
+    timestamp: datetime | None = None
 
 
 @dataclass

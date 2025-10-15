@@ -4,10 +4,10 @@ This test file verifies that SDK MCP servers work correctly through the full sta
 matching the TypeScript SDK test/sdk.test.ts pattern.
 """
 
+import base64
 from typing import Any
 
 import pytest
-import base64
 from mcp.types import CallToolRequest, CallToolRequestParams
 
 from claude_agent_sdk import (

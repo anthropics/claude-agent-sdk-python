@@ -203,7 +203,7 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
-    from mcp.types import TextContent, ImageContent, Tool
+    from mcp.types import ImageContent, TextContent, Tool
 
     # Create MCP server instance
     server = Server(name, version=version)

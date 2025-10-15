@@ -75,10 +75,12 @@ def parse_message(data: dict[str, Any]) -> Message:
                     return UserMessage(
                         content=user_content_blocks,
                         parent_tool_use_id=parent_tool_use_id,
+                        timestamp=data.get("timestamp"),
                     )
                 return UserMessage(
                     content=data["message"]["content"],
                     parent_tool_use_id=parent_tool_use_id,
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -120,6 +122,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     content=content_blocks,
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -131,6 +134,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                 return SystemMessage(
                     subtype=data["subtype"],
                     data=data,
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -149,6 +153,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -162,6 +167,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     session_id=data["session_id"],
                     event=data["event"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(

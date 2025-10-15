@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+### Features
+
+- **Message timestamps**: Added optional `timestamp` field to all message types (`UserMessage`, `AssistantMessage`, `SystemMessage`, `ResultMessage`, `StreamEvent`) to support timeline displays and message ordering. The timestamp is automatically populated from CLI transcript data when available
+
 ## 0.1.3
 
 ### Features

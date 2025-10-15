@@ -206,7 +206,8 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
-        await self._check_claude_version()
+        if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
+            await self._check_claude_version()
 
         cmd = self._build_command()
         try:

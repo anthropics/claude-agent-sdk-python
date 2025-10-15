@@ -273,7 +273,7 @@ def create_sdk_mcp_server(
             # Convert result to MCP format
             # The decorator expects us to return the content, not a CallToolResult
             # It will wrap our return value in CallToolResult
-            content = []
+            content: list[TextContent | ImageContent] = []
             if "content" in result:
                 for item in result["content"]:
                     if item.get("type") == "text":

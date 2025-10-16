@@ -450,6 +450,7 @@ class UserMessage:
 
     content: str | list[ContentBlock]
     parent_tool_use_id: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -459,6 +460,7 @@ class AssistantMessage:
     content: list[ContentBlock]
     model: str
     parent_tool_use_id: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -467,6 +469,7 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+    timestamp: str | None = None
 
 
 @dataclass
@@ -482,6 +485,7 @@ class ResultMessage:
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass

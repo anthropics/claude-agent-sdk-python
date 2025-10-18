@@ -18,6 +18,8 @@ PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 SettingSource = Literal["user", "project", "local"]
 
 
+
+
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
 
@@ -512,7 +514,6 @@ class ClaudeAgentOptions:
     model: str | None = None
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
-    cli_path: str | Path | None = None
     settings: str | None = None
     add_dirs: list[str | Path] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)

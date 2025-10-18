@@ -203,7 +203,7 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
-    from mcp.types import ImageContent, TextContent, Tool
+    from mcp.types import TextContent, Tool
 
     # Create MCP server instance
     server = Server(name, version=version)
@@ -273,19 +273,11 @@ def create_sdk_mcp_server(
             # Convert result to MCP format
             # The decorator expects us to return the content, not a CallToolResult
             # It will wrap our return value in CallToolResult
-            content: list[TextContent | ImageContent] = []
+            content = []
             if "content" in result:
                 for item in result["content"]:
                     if item.get("type") == "text":
                         content.append(TextContent(type="text", text=item["text"]))
-                    if item.get("type") == "image":
-                        content.append(
-                            ImageContent(
-                                type="image",
-                                data=item["data"],
-                                mimeType=item["mimeType"],
-                            )
-                        )
 
             # Return just the content list - the decorator wraps it
             return content
@@ -293,6 +285,28 @@ def create_sdk_mcp_server(
     # Return SDK server configuration
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 
+
+# Extended agent functionality
+from claude_agent_sdk.agent import (
+    ClaudeAgent,
+    ClaudeAgentForUDSIO,
+    create_claude_agent,
+    default_agent_factory,
+    default_agent_factory_for_uds_io,
+)
+from claude_agent_sdk.controller import AgentCard, UDSAgentController
+from claude_agent_sdk.interfaces import (
+    AGENT_TYPE,
+    AgentOptions,
+    IAgent,
+    IUDSAgentProcessIO,
+    MCPParams,
+    SDKMcpParams,
+    UDSConnectionInfo,
+)
+from claude_agent_sdk.log_protocol import DefaultLogProtocol, LogProtocol
+from claude_agent_sdk.uds_io import UDSAgentProcessIO, start_uds_io
+from claude_agent_sdk.utils import generate_agent_id, get_session_id, merge_options
 
 __all__ = [
     # Main exports
@@ -349,4 +363,26 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    # Extended agent functionality
+    "ClaudeAgent",
+    "ClaudeAgentForUDSIO",
+    "create_claude_agent",
+    "default_agent_factory",
+    "default_agent_factory_for_uds_io",
+    "AgentCard",
+    "UDSAgentController",
+    "UDSAgentProcessIO",
+    "start_uds_io",
+    "LogProtocol",
+    "DefaultLogProtocol",
+    "AgentOptions",
+    "IAgent",
+    "IUDSAgentProcessIO",
+    "MCPParams",
+    "SDKMcpParams",
+    "UDSConnectionInfo",
+    "AGENT_TYPE",
+    "generate_agent_id",
+    "get_session_id",
+    "merge_options",
 ]

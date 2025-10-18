@@ -71,8 +71,7 @@ class InternalClient:
             chosen_transport = transport
         else:
             chosen_transport = SubprocessCLITransport(
-                prompt=prompt,
-                options=configured_options,
+                prompt=prompt, options=configured_options
             )
 
         # Connect transport

@@ -12,7 +12,7 @@ import pytest
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from mcps.UnixDomainSocketAgentController import AgentHandle, UDSAgentController
+from claude_agent_sdk.controller import AgentHandle, UDSAgentController
 
 
 @pytest.mark.asyncio

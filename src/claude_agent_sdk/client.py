@@ -147,6 +147,7 @@ class ClaudeSDKClient:
             if self.options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
+            accumulate_streaming_content=self.options.accumulate_streaming_content,
         )
 
         # Start reading messages and initialize

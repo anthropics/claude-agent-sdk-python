@@ -15,7 +15,9 @@ Usage:
 """
 
 import argparse
+import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -67,10 +69,30 @@ def update_version(version: str) -> None:
     )
 
 
-def download_cli(cli_version: str = "latest") -> None:
+def get_bundled_cli_version() -> str:
+    """Get the CLI version that should be bundled from _cli_version.py."""
+    version_file = Path("src/claude_agent_sdk/_cli_version.py")
+    if not version_file.exists():
+        return "latest"
+
+    content = version_file.read_text()
+    match = re.search(r'__cli_version__ = "([^"]+)"', content)
+    if match:
+        return match.group(1)
+    return "latest"
+
+
+def download_cli(cli_version: str | None = None) -> None:
     """Download Claude Code CLI."""
+    # Use provided version, or fall back to version from _cli_version.py
+    if cli_version is None:
+        cli_version = get_bundled_cli_version()
+
     script_dir = Path(__file__).parent
     download_script = script_dir / "download_cli.py"
+
+    # Set environment variable for download script
+    os.environ["CLAUDE_CLI_VERSION"] = cli_version
 
     run_command(
         [sys.executable, str(download_script)],
@@ -276,8 +298,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--cli-version",
-        default="latest",
-        help="Claude Code CLI version to download (default: latest)",
+        default=None,
+        help="Claude Code CLI version to download (default: read from _cli_version.py)",
     )
     parser.add_argument(
         "--skip-download",

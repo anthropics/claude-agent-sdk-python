@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g., 0.1.0)"
+        description: 'Package version to publish (e.g., 0.1.4)'
         required: true
         type: string
+      claude_code_version:
+        description: 'Claude Code CLI version to bundle (e.g., 2.0.0 or latest)'
+        required: false
+        type: string
+        default: 'latest'
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -56,114 +61,165 @@ jobs:
         run: |
           mypy src/
 
-  publish:
+  build-wheels:
     needs: [test, lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Fetch all history including tags (necessary for changelog generation)
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+      shell: bash
+
+    - name: Build wheel with bundled CLI
+      run: |
+        python scripts/build_wheel.py \
+          --version "${{ github.event.inputs.version }}" \
+          --cli-version "${{ github.event.inputs.claude_code_version }}" \
+          --skip-sdist \
+          --clean
+      shell: bash
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}
+        path: dist/*.whl
+        if-no-files-found: error
+
+  publish:
+    needs: [build-wheels]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0 # Fetch all history including tags (necessary for changelog generation)
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
 
-      - name: Set version
-        id: version
-        run: |
-          VERSION="${{ github.event.inputs.version }}"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+    - name: Set version
+      id: version
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Update version
-        run: |
-          python scripts/update_version.py "${{ env.VERSION }}"
+    - name: Update version
+      run: |
+        python scripts/update_version.py "${{ env.VERSION }}"
 
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install build twine
+    - name: Update CLI version
+      run: |
+        python scripts/update_cli_version.py "${{ github.event.inputs.claude_code_version }}"
 
-      - name: Build package
-        run: python -m build
+    - name: Download all wheel artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: wheel-*
+        merge-multiple: true
 
-      - name: Check package
-        run: twine check dist/*
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
 
-      - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          twine upload dist/*
-          echo "Package published to PyPI"
-          echo "Install with: pip install claude-agent-sdk==${{ env.VERSION }}"
+    - name: Build source distribution
+      run: python -m build --sdist
 
-      - name: Get previous release tag
-        id: previous_tag
-        run: |
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-          echo "Previous release: $PREVIOUS_TAG"
+    - name: Publish to PyPI
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      run: |
+        twine upload dist/*
+        echo "Package published to PyPI"
+        echo "Install with: pip install claude-agent-sdk==${{ env.VERSION }}"
+    
+    - name: Get previous release tag
+      id: previous_tag
+      run: |
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+        echo "Previous release: $PREVIOUS_TAG"
 
-      - name: Create release branch and commit version changes
-        run: |
-          # Create a new branch for the version update
-          BRANCH_NAME="release/v${{ env.VERSION }}"
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+    - name: Create release branch and commit version changes
+      run: |
+        # Create a new branch for the version update
+        BRANCH_NAME="release/v${{ env.VERSION }}"
+        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-          # Configure git
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+        # Configure git
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
 
-          # Create and switch to new branch
-          git checkout -b "$BRANCH_NAME"
+        # Create and switch to new branch
+        git checkout -b "$BRANCH_NAME"
 
-          # Commit version changes
-          git add pyproject.toml src/claude_agent_sdk/_version.py
-          git commit -m "chore: bump version to ${{ env.VERSION }}"
+        # Commit version changes
+        git add pyproject.toml src/claude_agent_sdk/_version.py src/claude_agent_sdk/_cli_version.py
+        git commit -m "chore: bump version to ${{ env.VERSION }} with CLI ${{ github.event.inputs.claude_code_version }}"
 
-      - name: Update changelog with Claude
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: |
-            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+    - name: Update changelog with Claude
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      with:
+        prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}"
+        anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        claude_args: |
+          --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
 
-      - name: Push branch and create PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Push the branch with all commits
-          git push origin "${{ env.BRANCH_NAME }}"
+    - name: Push branch and create PR
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Push the branch with all commits
+        git push origin "${{ env.BRANCH_NAME }}"
 
-          # Create PR using GitHub CLI
-          PR_BODY="This PR updates the version to ${{ env.VERSION }} after publishing to PyPI.
+        # Create PR using GitHub CLI
+        PR_BODY="This PR updates the version to ${{ env.VERSION }} after publishing to PyPI.
 
-          ## Changes
-          - Updated version in \`pyproject.toml\`
-          - Updated version in \`src/claude_agent_sdk/_version.py\`
-          - Updated \`CHANGELOG.md\` with release notes
+        ## Changes
+        - Updated version in \`pyproject.toml\` to ${{ env.VERSION }}
+        - Updated version in \`src/claude_agent_sdk/_version.py\` to ${{ env.VERSION }}
+        - Updated bundled CLI version in \`src/claude_agent_sdk/_cli_version.py\` to ${{ github.event.inputs.claude_code_version }}
+        - Updated \`CHANGELOG.md\` with release notes
 
-          ## Release Information
-          - Published to PyPI: https://pypi.org/project/claude-agent-sdk/${{ env.VERSION }}/
-          - Install with: \`pip install claude-agent-sdk==${{ env.VERSION }}\`
+        ## Release Information
+        - Published to PyPI: https://pypi.org/project/claude-agent-sdk/${{ env.VERSION }}/
+        - Bundled CLI version: ${{ github.event.inputs.claude_code_version }}
+        - Install with: \`pip install claude-agent-sdk==${{ env.VERSION }}\`
 
-          🤖 Generated by GitHub Actions"
+        🤖 Generated by GitHub Actions"
 
-          PR_URL=$(gh pr create \
-            --title "chore: release v${{ env.VERSION }}" \
-            --body "$PR_BODY" \
-            --base main \
-            --head "${{ env.BRANCH_NAME }}")
+        PR_URL=$(gh pr create \
+          --title "chore: release v${{ env.VERSION }}" \
+          --body "$PR_BODY" \
+          --base main \
+          --head "${{ env.BRANCH_NAME }}")
 
-          echo "PR created: $PR_URL"
+        echo "PR created: $PR_URL"

@@ -68,6 +68,12 @@ class SubprocessCLITransport(Transport):
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
+        # First, check for bundled CLI
+        bundled_cli = self._find_bundled_cli()
+        if bundled_cli:
+            return bundled_cli
+
+        # Fall back to system-wide search
         if cli := shutil.which("claude"):
             return cli
 
@@ -92,6 +98,21 @@ class SubprocessCLITransport(Transport):
             "\nOr provide the path via ClaudeAgentOptions:\n"
             "  ClaudeAgentOptions(cli_path='/path/to/claude')"
         )
+
+    def _find_bundled_cli(self) -> str | None:
+        """Find bundled CLI binary if it exists."""
+        # Determine the CLI binary name based on platform
+        cli_name = "claude.exe" if platform.system() == "Windows" else "claude"
+
+        # Get the path to the bundled CLI
+        # The _bundled directory is in the same package as this module
+        bundled_path = Path(__file__).parent.parent.parent / "_bundled" / cli_name
+
+        if bundled_path.exists() and bundled_path.is_file():
+            logger.info(f"Using bundled Claude Code CLI: {bundled_path}")
+            return str(bundled_path)
+
+        return None
 
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""

@@ -10,8 +10,10 @@ pip install claude-agent-sdk
 
 **Prerequisites:**
 - Python 3.10+
-- Node.js
-- Claude Code 2.0.0+: `npm install -g @anthropic-ai/claude-code`
+
+**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
+- Install Claude Code separately: `npm install -g @anthropic-ai/claude-code`
+- Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
 
 ## Quick Start
 
@@ -289,6 +291,38 @@ If you're contributing to this project, run the initial setup script to install 
 ```
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
+### Building Wheels Locally
+
+To build wheels with the bundled Claude Code CLI:
+
+```bash
+# Install build dependencies
+pip install build twine
+
+# Build wheel with bundled CLI
+python scripts/build_wheel.py
+
+# Build with specific version
+python scripts/build_wheel.py --version 0.1.4
+
+# Build with specific CLI version
+python scripts/build_wheel.py --cli-version 2.0.0
+
+# Clean bundled CLI after building
+python scripts/build_wheel.py --clean
+
+# Skip CLI download (use existing)
+python scripts/build_wheel.py --skip-download
+```
+
+The build script:
+1. Downloads Claude Code CLI for your platform
+2. Bundles it in the wheel
+3. Builds both wheel and source distribution
+4. Checks the package with twine
+
+See `python scripts/build_wheel.py --help` for all options.
 
 ## License
 

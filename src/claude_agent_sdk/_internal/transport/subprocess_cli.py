@@ -3,9 +3,11 @@
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from dataclasses import asdict
@@ -28,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Platform-specific command line length limits
+# Windows cmd.exe has a limit of 8191 characters, use 8000 for safety
+# Other platforms have much higher limits
+_CMD_LENGTH_LIMIT = 8000 if platform.system() == "Windows" else 100000
 
 
 class SubprocessCLITransport(Transport):
@@ -57,6 +64,7 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._temp_files: list[str] = []  # Track temporary files for cleanup
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -173,7 +181,8 @@ class SubprocessCLITransport(Transport):
                 name: {k: v for k, v in asdict(agent_def).items() if v is not None}
                 for name, agent_def in self._options.agents.items()
             }
-            cmd.extend(["--agents", json.dumps(agents_dict)])
+            agents_json = json.dumps(agents_dict)
+            cmd.extend(["--agents", agents_json])
 
         sources_value = (
             ",".join(self._options.setting_sources)
@@ -198,6 +207,37 @@ class SubprocessCLITransport(Transport):
         else:
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
+
+        # Check if command line is too long (Windows limitation)
+        cmd_str = " ".join(cmd)
+        if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:
+            # Command is too long - use temp file for agents
+            # Find the --agents argument and replace its value with @filepath
+            try:
+                agents_idx = cmd.index("--agents")
+                agents_json_value = cmd[agents_idx + 1]
+
+                # Create a temporary file
+                # ruff: noqa: SIM115
+                temp_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False, encoding="utf-8"
+                )
+                temp_file.write(agents_json_value)
+                temp_file.close()
+
+                # Track for cleanup
+                self._temp_files.append(temp_file.name)
+
+                # Replace agents JSON with @filepath reference
+                cmd[agents_idx + 1] = f"@{temp_file.name}"
+
+                logger.info(
+                    f"Command line length ({len(cmd_str)}) exceeds limit ({_CMD_LENGTH_LIMIT}). "
+                    f"Using temp file for --agents: {temp_file.name}"
+                )
+            except (ValueError, IndexError) as e:
+                # This shouldn't happen, but log it just in case
+                logger.warning(f"Failed to optimize command line length: {e}")
 
         return cmd
 
@@ -308,6 +348,12 @@ class SubprocessCLITransport(Transport):
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         self._ready = False
+
+        # Clean up temporary files first (before early return)
+        for temp_file in self._temp_files:
+            with suppress(Exception):
+                Path(temp_file).unlink(missing_ok=True)
+        self._temp_files.clear()
 
         if not self._process:
             return

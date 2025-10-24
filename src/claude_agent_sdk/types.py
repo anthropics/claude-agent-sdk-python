@@ -406,6 +406,16 @@ McpServerConfig = (
 )
 
 
+class SdkPluginConfig(TypedDict):
+    """SDK plugin configuration.
+
+    Currently only local plugins are supported via the 'local' type.
+    """
+
+    type: Literal["local"]
+    path: str
+
+
 # Content block types
 @dataclass
 class TextBlock:
@@ -542,6 +552,8 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
+    # Plugin configurations for custom plugins
+    plugins: list[SdkPluginConfig] = field(default_factory=list)
 
 
 # SDK Control Protocol

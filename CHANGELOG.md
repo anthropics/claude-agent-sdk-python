@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+### Features
+
+- **Plugin support**: Added the ability to load Claude Code plugins programmatically through the SDK. Plugins can be specified using the new `plugins` field in `ClaudeAgentOptions` with a `SdkPluginConfig` type that supports loading local plugins by path. This enables SDK applications to extend functionality with custom commands and capabilities defined in plugin directories
+
 ## 0.1.4
 
 ### Features

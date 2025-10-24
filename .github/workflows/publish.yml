@@ -133,21 +133,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          prompt: |
-            You are updating the changelog for the new release v${{ env.VERSION }}.
-
-            Update CHANGELOG.md to add a new section for version ${{ env.VERSION }} at the top of the file, right after the '# Changelog' heading.
-
-            Review the recent commits and merged pull requests since the last release (${{ steps.previous_tag.outputs.previous_tag }}) to generate meaningful changelog content for v${{ env.VERSION }}. Follow the existing format in CHANGELOG.md with sections like:
-            - Breaking Changes (if any)
-            - New Features
-            - Bug Fixes
-            - Documentation
-            - Internal/Other changes
-
-            Include only the sections that are relevant based on the actual changes. Write clear, user-focused descriptions.
-
-            After updating CHANGELOG.md, commit the changes with the message "docs: update changelog for v${{ env.VERSION }}".
+          prompt: /generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |

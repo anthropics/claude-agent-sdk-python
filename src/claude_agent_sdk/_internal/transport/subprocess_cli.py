@@ -191,6 +191,14 @@ class SubprocessCLITransport(Transport):
         )
         cmd.extend(["--setting-sources", sources_value])
 
+        # Add plugin directories
+        if self._options.plugins:
+            for plugin in self._options.plugins:
+                if plugin["type"] == "local":
+                    cmd.extend(["--plugin-dir", plugin["path"]])
+                else:
+                    raise ValueError(f"Unsupported plugin type: {plugin['type']}")
+
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
             if value is None:

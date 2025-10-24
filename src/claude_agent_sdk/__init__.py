@@ -39,6 +39,7 @@ from .types import (
     PreCompactHookInput,
     PreToolUseHookInput,
     ResultMessage,
+    SdkPluginConfig,
     SettingSource,
     StopHookInput,
     SubagentStopHookInput,
@@ -339,6 +340,8 @@ __all__ = [
     # Agent support
     "AgentDefinition",
     "SettingSource",
+    # Plugin support
+    "SdkPluginConfig",
     # MCP Server Support
     "create_sdk_mcp_server",
     "tool",

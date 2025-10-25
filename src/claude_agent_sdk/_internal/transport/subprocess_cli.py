@@ -68,16 +68,29 @@ class SubprocessCLITransport(Transport):
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
-        if cli := shutil.which("claude"):
+        # On Windows, npm creates both 'claude' (bash script) and 'claude.cmd' (batch file)
+        # We need to use 'claude.cmd' for proper execution on Windows
+        search_name = "claude.cmd" if sys.platform == "win32" else "claude"
+
+        if cli := shutil.which(search_name):
             return cli
 
-        locations = [
-            Path.home() / ".npm-global/bin/claude",
-            Path("/usr/local/bin/claude"),
-            Path.home() / ".local/bin/claude",
-            Path.home() / "node_modules/.bin/claude",
-            Path.home() / ".yarn/bin/claude",
-        ]
+        # Fallback locations to check manually
+        if sys.platform == "win32":
+            locations = [
+                Path.home() / "AppData/Roaming/npm/claude.cmd",
+                Path.home() / ".npm-global/bin/claude.cmd",
+                Path.home() / "node_modules/.bin/claude.cmd",
+                Path.home() / ".yarn/bin/claude.cmd",
+            ]
+        else:
+            locations = [
+                Path.home() / ".npm-global/bin/claude",
+                Path("/usr/local/bin/claude"),
+                Path.home() / ".local/bin/claude",
+                Path.home() / "node_modules/.bin/claude",
+                Path.home() / ".yarn/bin/claude",
+            ]
 
         for path in locations:
             if path.exists() and path.is_file():

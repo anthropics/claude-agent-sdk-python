@@ -46,6 +46,8 @@ class TestSubprocessCLITransport:
         assert "stream-json" in cmd
         assert "--print" in cmd
         assert "Hello" in cmd
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == ""
 
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""

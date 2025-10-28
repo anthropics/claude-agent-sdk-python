@@ -212,3 +212,73 @@ class TestIntegration:
                 assert call_kwargs["options"].continue_conversation is True
 
         anyio.run(_test)
+
+    def test_max_budget_usd_option(self):
+        """Test query with max_budget_usd option."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                # Mock the message stream that exceeds budget
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "Starting to read..."}
+                            ],
+                            "model": "claude-opus-4-1-20250805",
+                        },
+                    }
+                    yield {
+                        "type": "result",
+                        "subtype": "error_max_budget_usd",
+                        "duration_ms": 500,
+                        "duration_api_ms": 400,
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "test-session-budget",
+                        "total_cost_usd": 0.0002,
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                        },
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                # Run query with very small budget
+                messages = []
+                async for msg in query(
+                    prompt="Read the readme",
+                    options=ClaudeAgentOptions(max_budget_usd=0.0001),
+                ):
+                    messages.append(msg)
+
+                # Verify results
+                assert len(messages) == 2
+
+                # Check result message
+                assert isinstance(messages[1], ResultMessage)
+                assert messages[1].subtype == "error_max_budget_usd"
+                assert messages[1].is_error is False
+                assert messages[1].total_cost_usd == 0.0002
+                assert messages[1].total_cost_usd is not None
+                assert messages[1].total_cost_usd > 0
+
+                # Verify transport was created with max_budget_usd option
+                mock_transport_class.assert_called_once()
+                call_kwargs = mock_transport_class.call_args.kwargs
+                assert call_kwargs["options"].max_budget_usd == 0.0001
+
+        anyio.run(_test)

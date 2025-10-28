@@ -115,6 +115,9 @@ class SubprocessCLITransport(Transport):
         if self._options.max_turns:
             cmd.extend(["--max-turns", str(self._options.max_turns)])
 
+        if self._options.max_budget_usd is not None:
+            cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
+
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 

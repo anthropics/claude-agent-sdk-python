@@ -216,6 +216,11 @@ class SubprocessCLITransport(Transport):
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
 
+        if self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
+
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)
         if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:

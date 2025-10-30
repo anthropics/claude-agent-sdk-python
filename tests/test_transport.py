@@ -129,6 +129,17 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_max_thinking_tokens(self):
+        """Test building CLI command with max_thinking_tokens option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(max_thinking_tokens=5000),
+        )
+
+        cmd = transport._build_command()
+        assert "--max-thinking-tokens" in cmd
+        assert "5000" in cmd
+
     def test_build_command_with_add_dirs(self):
         """Test building CLI command with add_dirs option."""
         from pathlib import Path

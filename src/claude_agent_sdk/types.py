@@ -518,6 +518,7 @@ class ClaudeAgentOptions:
     continue_conversation: bool = False
     resume: str | None = None
     max_turns: int | None = None
+    max_budget_usd: float | None = None
     disallowed_tools: list[str] = field(default_factory=list)
     model: str | None = None
     permission_prompt_tool_name: str | None = None

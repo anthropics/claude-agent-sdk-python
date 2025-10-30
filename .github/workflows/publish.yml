@@ -133,7 +133,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          prompt: /generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}
+          prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}"
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |

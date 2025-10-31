@@ -97,7 +97,7 @@ class SubprocessCLITransport(Transport):
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
-            pass
+            cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:

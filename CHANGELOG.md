@@ -6,15 +6,11 @@
 
 - **Max budget control**: Added `max_budget_usd` option to set a maximum spending limit in USD for SDK sessions. When the budget is exceeded, the session will automatically terminate, helping prevent unexpected costs (#293)
 - **Extended thinking configuration**: Added `max_thinking_tokens` option to control the maximum number of tokens allocated for Claude's internal reasoning process. This allows fine-tuning of the balance between response quality and token usage (#298)
-- **Changelog generation command**: Added `/generate-changelog` slash command to streamline release processes. This command automatically reviews recent commits and PRs to generate formatted changelog entries (#287)
 
 ### Bug Fixes
 
 - **System prompt defaults**: Fixed issue where a default system prompt was being used when none was specified. The SDK now correctly uses an empty system prompt by default, giving users full control over agent behavior (#290)
 
-### Internal/Other Changes
-
-- **CI improvements**: Updated publish workflow and limited CI examples to Python 3.13 for improved build reliability (#299, #300)
 
 ## 0.1.5
 

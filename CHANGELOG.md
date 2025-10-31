@@ -11,7 +11,6 @@
 
 - **System prompt defaults**: Fixed issue where a default system prompt was being used when none was specified. The SDK now correctly uses an empty system prompt by default, giving users full control over agent behavior (#290)
 
-
 ## 0.1.5
 
 ### Features

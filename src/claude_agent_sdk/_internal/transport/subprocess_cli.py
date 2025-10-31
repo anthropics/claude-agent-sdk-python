@@ -77,6 +77,7 @@ class SubprocessCLITransport(Transport):
             Path.home() / ".local/bin/claude",
             Path.home() / "node_modules/.bin/claude",
             Path.home() / ".yarn/bin/claude",
+            Path.home() / ".claude/local/claude",
         ]
 
         for path in locations:

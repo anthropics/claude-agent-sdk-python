@@ -225,6 +225,14 @@ class SubprocessCLITransport(Transport):
                 ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
             )
 
+        if self._options.first_turn_tool_choice is not None:
+            cmd.extend(
+                ["--first-turn-tool-choice", json.dumps(self._options.first_turn_tool_choice)]
+            )
+
+        if self._options.ensure_tool_usage:
+            cmd.append("--ensure-tool-usage")
+
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)
         if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:

@@ -17,6 +17,9 @@ PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
 
+# Tool choice types
+ToolChoice = Literal["auto", "any", "none"] | dict[str, str]
+
 
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
@@ -557,6 +560,10 @@ class ClaudeAgentOptions:
     plugins: list[SdkPluginConfig] = field(default_factory=list)
     # Max tokens for thinking blocks
     max_thinking_tokens: int | None = None
+    # Tool choice for first turn only
+    first_turn_tool_choice: ToolChoice | None = None
+    # Ensure at least one tool is used before conversation ends
+    ensure_tool_usage: bool = False
 
 
 # SDK Control Protocol

@@ -212,14 +212,7 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
-        # Add prompt handling based on mode
-        if self._is_streaming:
-            # Streaming mode: use --input-format stream-json
-            cmd.extend(["--input-format", "stream-json"])
-        else:
-            # String mode: use --print with the prompt
-            cmd.extend(["--print", "--", str(self._prompt)])
-
+        # Add options that must come before prompt delimiter
         if self._options.max_thinking_tokens is not None:
             cmd.extend(
                 ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
@@ -230,8 +223,21 @@ class SubprocessCLITransport(Transport):
                 ["--first-turn-tool-choice", json.dumps(self._options.first_turn_tool_choice)]
             )
 
+        if self._options.final_turn_tool_choice is not None:
+            cmd.extend(
+                ["--final-turn-tool-choice", json.dumps(self._options.final_turn_tool_choice)]
+            )
+
         if self._options.ensure_tool_usage:
             cmd.append("--ensure-tool-usage")
+
+        # Add prompt handling based on mode (must come last for --print mode)
+        if self._is_streaming:
+            # Streaming mode: use --input-format stream-json
+            cmd.extend(["--input-format", "stream-json"])
+        else:
+            # String mode: use --print with the prompt
+            cmd.extend(["--print", "--", str(self._prompt)])
 
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)

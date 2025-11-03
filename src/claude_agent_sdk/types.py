@@ -562,6 +562,8 @@ class ClaudeAgentOptions:
     max_thinking_tokens: int | None = None
     # Tool choice for first turn only
     first_turn_tool_choice: ToolChoice | None = None
+    # Tool choice for final turn before ending
+    final_turn_tool_choice: ToolChoice | None = None
     # Ensure at least one tool is used before conversation ends
     ensure_tool_usage: bool = False
 

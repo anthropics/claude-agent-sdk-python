@@ -471,8 +471,8 @@ async def example_fallback_model():
 
     # Configure with fallback model
     options = ClaudeAgentOptions(
-        model="claude-opus-4-5",
-        fallback_model="claude-sonnet-4-5",
+        model="opus",  # Use shorthand for latest Opus
+        fallback_model="sonnet",  # Fallback to Sonnet if Opus is overloaded
         system_prompt="You are a helpful assistant.",
     )
 

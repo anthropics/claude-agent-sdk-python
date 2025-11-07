@@ -125,6 +125,9 @@ class SubprocessCLITransport(Transport):
         if self._options.model:
             cmd.extend(["--model", self._options.model])
 
+        if self._options.fallback_model:
+            cmd.extend(["--fallback-model", self._options.fallback_model])
+
         if self._options.permission_prompt_tool_name:
             cmd.extend(
                 ["--permission-prompt-tool", self._options.permission_prompt_tool_name]

@@ -1,5 +1,7 @@
 """Tests for message parser error handling."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from claude_agent_sdk._errors import MessageParseError
@@ -282,3 +284,67 @@ class TestMessageParser:
         with pytest.raises(MessageParseError) as exc_info:
             parse_message(data)
         assert exc_info.value.data == data
+
+    def test_parse_user_message_with_timestamp(self):
+        """Test parsing a user message with timestamp."""
+        data = {
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+            "timestamp": "2025-10-09T19:00:40.452Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.timestamp is not None
+        assert message.timestamp == datetime(
+            2025, 10, 9, 19, 0, 40, 452000, tzinfo=timezone.utc
+        )
+
+    def test_parse_assistant_message_with_timestamp(self):
+        """Test parsing an assistant message with timestamp."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-opus-4-1-20250805",
+            },
+            "timestamp": "2025-10-09T19:00:40.452Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.timestamp is not None
+        assert message.timestamp == datetime(
+            2025, 10, 9, 19, 0, 40, 452000, tzinfo=timezone.utc
+        )
+
+    def test_parse_system_message_with_timestamp(self):
+        """Test parsing a system message with timestamp."""
+        data = {
+            "type": "system",
+            "subtype": "start",
+            "timestamp": "2025-10-09T19:00:40.452Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, SystemMessage)
+        assert message.timestamp is not None
+        assert message.timestamp == datetime(
+            2025, 10, 9, 19, 0, 40, 452000, tzinfo=timezone.utc
+        )
+
+    def test_parse_result_message_with_timestamp(self):
+        """Test parsing a result message with timestamp."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "timestamp": "2025-10-09T19:00:40.452Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.timestamp is not None
+        assert message.timestamp == datetime(
+            2025, 10, 9, 19, 0, 40, 452000, tzinfo=timezone.utc
+        )

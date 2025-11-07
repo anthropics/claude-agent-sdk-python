@@ -1,6 +1,7 @@
 """Message parser for Claude Code SDK responses."""
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from .._errors import MessageParseError
@@ -19,6 +20,20 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_timestamp(timestamp_str: str | None) -> datetime | None:
+    """Parse ISO 8601 timestamp string to datetime object.
+
+    Args:
+        timestamp_str: ISO 8601 timestamp string (e.g., "2025-10-09T19:00:40.452Z")
+
+    Returns:
+        datetime object or None if timestamp_str is None
+    """
+    if timestamp_str is None:
+        return None
+    return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
 
 
 def parse_message(data: dict[str, Any]) -> Message:
@@ -48,6 +63,7 @@ def parse_message(data: dict[str, Any]) -> Message:
         case "user":
             try:
                 parent_tool_use_id = data.get("parent_tool_use_id")
+                timestamp = _parse_timestamp(data.get("timestamp"))
                 if isinstance(data["message"]["content"], list):
                     user_content_blocks: list[ContentBlock] = []
                     for block in data["message"]["content"]:
@@ -75,10 +91,12 @@ def parse_message(data: dict[str, Any]) -> Message:
                     return UserMessage(
                         content=user_content_blocks,
                         parent_tool_use_id=parent_tool_use_id,
+                        timestamp=timestamp,
                     )
                 return UserMessage(
                     content=data["message"]["content"],
                     parent_tool_use_id=parent_tool_use_id,
+                    timestamp=timestamp,
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -120,6 +138,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     content=content_blocks,
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
+                    timestamp=_parse_timestamp(data.get("timestamp")),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -131,6 +150,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                 return SystemMessage(
                     subtype=data["subtype"],
                     data=data,
+                    timestamp=_parse_timestamp(data.get("timestamp")),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -149,6 +169,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),
+                    timestamp=_parse_timestamp(data.get("timestamp")),
                 )
             except KeyError as e:
                 raise MessageParseError(

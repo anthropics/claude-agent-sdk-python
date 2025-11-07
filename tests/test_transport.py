@@ -131,6 +131,22 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_fallback_model(self):
+        """Test building CLI command with fallback_model option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                model="claude-opus-4-5",
+                fallback_model="claude-sonnet-4-5",
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--model" in cmd
+        assert "claude-opus-4-5" in cmd
+        assert "--fallback-model" in cmd
+        assert "claude-sonnet-4-5" in cmd
+
     def test_build_command_with_max_thinking_tokens(self):
         """Test building CLI command with max_thinking_tokens option."""
         transport = SubprocessCLITransport(

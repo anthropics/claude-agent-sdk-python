@@ -464,6 +464,37 @@ async def example_error_handling():
     print("\n")
 
 
+async def example_fallback_model():
+    """Demonstrate fallback model configuration."""
+    print("=== Fallback Model Example ===")
+    print("Configure automatic fallback to a different model when primary is overloaded\n")
+
+    # Configure with fallback model
+    options = ClaudeAgentOptions(
+        model="claude-opus-4-5",
+        fallback_model="claude-sonnet-4-5",
+        system_prompt="You are a helpful assistant.",
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        print("User: What is the capital of France?")
+        print("(Will use Opus if available, automatically fall back to Sonnet if overloaded)")
+        await client.query("What is the capital of France?")
+
+        # Process response
+        async for msg in client.receive_response():
+            if isinstance(msg, SystemMessage):
+                # Look for fallback messages
+                if msg.subtype == "info":
+                    data = msg.data
+                    if "message" in data and "fallback" in data["message"].lower():
+                        print(f"\n[System]: {data['message']}")
+            else:
+                display_message(msg)
+
+    print("\n")
+
+
 async def main():
     """Run all examples or a specific example based on command line argument."""
     examples = {
@@ -477,6 +508,7 @@ async def main():
         "bash_command": example_bash_command,
         "control_protocol": example_control_protocol,
         "error_handling": example_error_handling,
+        "fallback_model": example_fallback_model,
     }
 
     if len(sys.argv) < 2:

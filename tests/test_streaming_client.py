@@ -15,11 +15,14 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     CLIConnectionError,
+    PermissionResultAllow,
     ResultMessage,
     TextBlock,
     UserMessage,
     query,
 )
+from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.transport import Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 
@@ -34,6 +37,7 @@ def create_mock_transport(with_init_response=True):
     mock_transport.close = AsyncMock()
     mock_transport.end_input = AsyncMock()
     mock_transport.write = AsyncMock()
+    mock_transport.flush_stdin = AsyncMock()
     mock_transport.is_ready = Mock(return_value=True)
 
     # Track written messages to simulate control protocol responses
@@ -571,6 +575,82 @@ class TestClaudeSDKClientStreaming:
 
         anyio.run(_test)
 
+    def test_flush_stdin_called_after_control_responses(self):
+        """Test that flush_stdin is called after responding to control requests (issue #208)."""
+
+        async def _test():
+            # Create a mock transport
+            mock_transport = AsyncMock(spec=Transport)
+            mock_transport.is_ready = Mock(return_value=True)
+
+            # Track write and flush calls
+            write_calls = []
+            flush_calls = []
+
+            async def mock_write(data):
+                write_calls.append(data)
+
+            async def mock_flush():
+                flush_calls.append(True)
+
+            mock_transport.write = AsyncMock(side_effect=mock_write)
+            mock_transport.flush_stdin = AsyncMock(side_effect=mock_flush)
+
+            # Create mock read_messages that doesn't yield anything
+            async def mock_read_messages():
+                # Just wait forever (test will complete before this matters)
+                await asyncio.sleep(1000)
+                yield {}
+
+            mock_transport.read_messages = mock_read_messages
+
+            # Create Query with streaming mode
+            query = Query(transport=mock_transport, is_streaming_mode=True)
+            await query.start()
+
+            # Simulate an incoming tool permission request
+            permission_request = {
+                "type": "control_request",
+                "request_id": "test_req_123",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Read",
+                    "input": {"file_path": "/test.txt"},
+                    "permission_suggestions": [],
+                },
+            }
+
+            # Set up a permission callback that allows the tool
+            async def mock_can_use_tool(tool_name, input_data, context):
+                return PermissionResultAllow()
+
+            query.can_use_tool = mock_can_use_tool
+
+            # Clear previous calls
+            write_calls.clear()
+            flush_calls.clear()
+
+            # Handle the control request
+            await query._handle_control_request(permission_request)
+
+            # Give it a moment to complete
+            await asyncio.sleep(0.01)
+
+            # Verify that flush_stdin was called after writing the response
+            assert len(write_calls) == 1, "Should have written one control response"
+            assert len(flush_calls) == 1, (
+                "flush_stdin should be called after writing response"
+            )
+
+            # Verify the response was a success
+            response_data = json.loads(write_calls[0])
+            assert response_data["type"] == "control_response"
+            assert response_data["response"]["subtype"] == "success"
+
+            await query.close()
+
+        anyio.run(_test)
+
 
 class TestQueryWithAsyncIterable:
     """Test query() function with async iterable inputs."""
@@ -831,5 +911,46 @@ class TestClaudeSDKClientEdgeCases:
                         for msg in messages
                     )
                     assert isinstance(messages[-1], ResultMessage)
+
+        anyio.run(_test)
+
+    def test_flush_stdin_called_after_control_requests(self):
+        """Test that flush_stdin is called after sending control requests (issue #208)."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = create_mock_transport()
+
+                # Add flush_stdin mock and tracking
+                flush_calls = []
+
+                async def mock_flush():
+                    flush_calls.append(True)
+
+                mock_transport.flush_stdin = AsyncMock(side_effect=mock_flush)
+
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    # Initialization should call flush_stdin
+                    # Wait a bit for initialization to complete
+                    await asyncio.sleep(0.05)
+
+                    # Verify flush_stdin was called at least once (for initialization)
+                    assert len(flush_calls) >= 1, (
+                        "flush_stdin should be called during initialization"
+                    )
+                    initial_flush_count = len(flush_calls)
+
+                    # Send interrupt control request
+                    await client.interrupt()
+                    await asyncio.sleep(0.05)
+
+                    # Verify flush_stdin was called again (for interrupt request)
+                    assert len(flush_calls) > initial_flush_count, (
+                        "flush_stdin should be called after interrupt"
+                    )
 
         anyio.run(_test)

@@ -1,5 +1,6 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import asyncio
 import json
 import logging
 import os
@@ -48,9 +49,7 @@ class SubprocessCLITransport(Transport):
         self._prompt = prompt
         self._is_streaming = not isinstance(prompt, str)
         self._options = options
-        self._cli_path = (
-            str(options.cli_path) if options.cli_path is not None else self._find_cli()
-        )
+        self._cli_path = str(options.cli_path) if options.cli_path is not None else None
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
@@ -265,6 +264,10 @@ class SubprocessCLITransport(Transport):
         """Start subprocess."""
         if self._process:
             return
+
+        # Defer CLI path lookup to async context to avoid blocking calls
+        if self._cli_path is None:
+            self._cli_path = await asyncio.to_thread(self._find_cli)
 
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()

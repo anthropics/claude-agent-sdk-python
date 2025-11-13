@@ -22,9 +22,7 @@ async with ClaudeSDKClient() as client:
 
     async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {msg}")
 
 
 # ============================================================================
@@ -41,9 +39,7 @@ async with ClaudeSDKClient() as client:
         await client.query(prompt)
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"Claude: {block.text}")
+                print(f"Claude: {msg}")
 
     await send_and_receive("Tell me a short joke")
     print("\n---\n")
@@ -65,9 +61,7 @@ await client.connect()
 async def get_response():
     async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {msg}")
 
 
 # Use it multiple times
@@ -106,9 +100,7 @@ async with ClaudeSDKClient() as client:
         async for msg in client.receive_messages():
             messages_received.append(msg)
             if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(f"Claude: {block.text}")
+                print(f"Claude: {msg}")
 
             # Check if we got a result after interrupt
             if isinstance(msg, ResultMessage) and interrupt_sent:
@@ -154,9 +146,7 @@ try:
             async for msg in client.receive_response():
                 messages.append(msg)
                 if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            print(f"Claude: {block.text}")
+                    print(f"Claude: {msg}")
 
 except asyncio.TimeoutError:
     print("Request timed out after 20 seconds")
@@ -201,9 +191,7 @@ async with ClaudeSDKClient() as client:
 
     async for msg in client.receive_response():
         if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {msg}")
 
 
 # ============================================================================
@@ -222,8 +210,6 @@ async with ClaudeSDKClient() as client:
     # Process them afterwards
     for msg in messages:
         if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {msg}")
         elif isinstance(msg, ResultMessage):
             print(f"Total messages: {len(messages)}")

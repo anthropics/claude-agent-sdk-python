@@ -18,9 +18,7 @@ async def basic_example():
 
     async for message in query(prompt="What is 2 + 2?"):
         if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {message}")
     print()
 
 
@@ -37,9 +35,7 @@ async def with_options_example():
         prompt="Explain what Python is in one sentence.", options=options
     ):
         if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {message}")
     print()
 
 
@@ -57,9 +53,7 @@ async def with_tools_example():
         options=options,
     ):
         if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    print(f"Claude: {block.text}")
+            print(f"Claude: {message}")
         elif isinstance(message, ResultMessage) and message.total_cost_usd > 0:
             print(f"\nCost: ${message.total_cost_usd:.4f}")
     print()

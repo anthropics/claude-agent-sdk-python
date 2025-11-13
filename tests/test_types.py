@@ -6,6 +6,10 @@ from claude_agent_sdk import (
     ResultMessage,
 )
 from claude_agent_sdk.types import (
+    PermissionResultAllow,
+    PermissionResultDeny,
+    StreamEvent,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -149,3 +153,90 @@ class TestOptions:
         )
         assert options.model == "claude-sonnet-4-5"
         assert options.permission_prompt_tool_name == "CustomTool"
+
+
+class TestReprStr:
+    """Test __repr__ and __str__ methods for all types."""
+
+    def test_text_block_repr_str(self):
+        """Test TextBlock repr and str."""
+        b = TextBlock(text="Hello, world!")
+        assert "TextBlock" in repr(b) and "Hello" in repr(b)
+        assert str(b) == "Hello, world!"
+
+    def test_thinking_block_repr_str(self):
+        """Test ThinkingBlock repr and str."""
+        b = ThinkingBlock(thinking="Let me think...", signature="sig-1")
+        assert "ThinkingBlock" in repr(b) and "sig-1" in repr(b)
+        assert str(b) == "Let me think..."
+
+    def test_tool_use_block_repr_str(self):
+        """Test ToolUseBlock repr and str."""
+        b = ToolUseBlock(id="tool-1", name="Read", input={"path": "file.txt"})
+        assert "ToolUseBlock" in repr(b) and "Read" in repr(b)
+        assert "Tool: Read" in str(b) and "tool-1" in str(b)
+
+    def test_tool_result_block_repr_str(self):
+        """Test ToolResultBlock repr and str."""
+        b = ToolResultBlock(tool_use_id="tool-1", content="Result", is_error=False)
+        assert "ToolResultBlock" in repr(b) and "tool-1" in repr(b)
+        assert "success" in str(b) and "tool-1" in str(b)
+
+    def test_user_message_string_repr_str(self):
+        """Test UserMessage with string content repr and str."""
+        m = UserMessage(content="Hello")
+        assert "UserMessage" in repr(m) and "Hello" in repr(m)
+        assert str(m) == "Hello"
+
+    def test_user_message_blocks_repr_str(self):
+        """Test UserMessage with blocks repr and str."""
+        m = UserMessage(
+            content=[TextBlock(text="Hi"), ToolUseBlock(id="t1", name="Bash", input={})]
+        )
+        assert "TextBlock" in repr(m) and "ToolUseBlock" in repr(m)
+        assert "UserMessage:" in str(m) and "Bash" in str(m)
+
+    def test_assistant_message_repr_str(self):
+        """Test AssistantMessage repr and str."""
+        m = AssistantMessage(
+            content=[TextBlock(text="Response")], model="claude-sonnet"
+        )
+        assert "AssistantMessage" in repr(m) and "TextBlock" in repr(m)
+        assert "from claude-sonnet" in str(m) and "Response" in str(m)
+
+    def test_system_message_repr_str(self):
+        """Test SystemMessage repr and str."""
+        m = SystemMessage(subtype="test_type", data={"key": "value"})
+        assert "SystemMessage" in repr(m) and "test_type" in repr(m)
+        assert "test_type" in str(m)
+
+    def test_result_message_repr_str(self):
+        """Test ResultMessage repr and str."""
+        m = ResultMessage(
+            subtype="ok",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        )
+        assert "ResultMessage" in repr(m) and "s1" in repr(m)
+        assert "success" in str(m) and "1 turn" in str(m)
+
+    def test_stream_event_repr_str(self):
+        """Test StreamEvent repr and str."""
+        e = StreamEvent(uuid="uuid-123", session_id="s1", event={"type": "message"})
+        assert "StreamEvent" in repr(e) and "uuid-123" in repr(e)
+        assert "message" in str(e) and "uuid-123" in str(e)
+
+    def test_permission_result_allow_repr_str(self):
+        """Test PermissionResultAllow repr and str."""
+        p = PermissionResultAllow()
+        assert "PermissionResultAllow" in repr(p)
+        assert "PermissionResultAllow" in str(p)
+
+    def test_permission_result_deny_repr_str(self):
+        """Test PermissionResultDeny repr and str."""
+        p = PermissionResultDeny(message="Not allowed")
+        assert "PermissionResultDeny" in repr(p) and "Not allowed" in repr(p)
+        assert "Not allowed" in str(p)

@@ -14,6 +14,17 @@ else:
     # Runtime placeholder for forward reference resolution in Pydantic 2.12+
     McpServer = Any
 
+# Repr/str truncation length for content blocks
+_REPR_MAX_LENGTH = 50
+
+
+def _truncate_repr(text: str) -> str:
+    """Truncate text for repr output if it exceeds _REPR_MAX_LENGTH."""
+    if len(text) > _REPR_MAX_LENGTH:
+        return text[:_REPR_MAX_LENGTH] + "..."
+    return text
+
+
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
@@ -140,6 +151,18 @@ class PermissionResultAllow:
     updated_input: dict[str, Any] | None = None
     updated_permissions: list[PermissionUpdate] | None = None
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        return (
+            f"PermissionResultAllow(behavior='allow', "
+            f"updated_input={self.updated_input is not None}, "
+            f"updated_permissions={len(self.updated_permissions) if self.updated_permissions else 0})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly permission result info."""
+        return "PermissionResultAllow"
+
 
 @dataclass
 class PermissionResultDeny:
@@ -148,6 +171,18 @@ class PermissionResultDeny:
     behavior: Literal["deny"] = "deny"
     message: str = ""
     interrupt: bool = False
+
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        message_preview = _truncate_repr(self.message)
+        return (
+            f"PermissionResultDeny(behavior='deny', message={message_preview!r}, "
+            f"interrupt={self.interrupt})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly permission result info."""
+        return f"PermissionResultDeny: {self.message}"
 
 
 PermissionResult = PermissionResultAllow | PermissionResultDeny
@@ -516,6 +551,15 @@ class TextBlock:
 
     text: str
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        preview = _truncate_repr(self.text)
+        return f"TextBlock({preview!r})"
+
+    def __str__(self) -> str:
+        """Return user-friendly text content."""
+        return self.text
+
 
 @dataclass
 class ThinkingBlock:
@@ -523,6 +567,15 @@ class ThinkingBlock:
 
     thinking: str
     signature: str
+
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        thinking_preview = _truncate_repr(self.thinking)
+        return f"ThinkingBlock(thinking={thinking_preview!r}, signature={self.signature!r})"
+
+    def __str__(self) -> str:
+        """Return user-friendly thinking content."""
+        return self.thinking
 
 
 @dataclass
@@ -533,6 +586,17 @@ class ToolUseBlock:
     name: str
     input: dict[str, Any]
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        input_preview = _truncate_repr(str(self.input))
+        return (
+            f"ToolUseBlock(id={self.id!r}, name={self.name!r}, input={input_preview})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly tool usage info."""
+        return f"Tool: {self.name} (ID: {self.id})"
+
 
 @dataclass
 class ToolResultBlock:
@@ -541,6 +605,22 @@ class ToolResultBlock:
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        if isinstance(self.content, str):
+            content_preview = _truncate_repr(self.content)
+        else:
+            content_preview = _truncate_repr(str(self.content))
+        return (
+            f"ToolResultBlock(tool_use_id={self.tool_use_id!r}, "
+            f"content={content_preview!r}, is_error={self.is_error})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly tool result info."""
+        status = "error" if self.is_error else "success"
+        return f"Tool Result [{status}] (ID: {self.tool_use_id})"
 
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
@@ -565,6 +645,25 @@ class UserMessage:
     uuid: str | None = None
     parent_tool_use_id: str | None = None
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        if isinstance(self.content, str):
+            content_preview = _truncate_repr(self.content)
+        else:
+            # Show repr of each content block
+            blocks_repr = ", ".join(repr(b) for b in self.content)
+            content_preview = f"[{blocks_repr}]"
+        return f"UserMessage(content={content_preview!r})"
+
+    def __str__(self) -> str:
+        """Return user-friendly message content."""
+        if isinstance(self.content, str):
+            return self.content
+        else:
+            # Use str() of each content block for user-friendly output
+            block_strs = "\n  ".join(str(b) for b in self.content)
+            return f"UserMessage:\n  {block_strs}"
+
 
 @dataclass
 class AssistantMessage:
@@ -575,6 +674,19 @@ class AssistantMessage:
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        # Show repr of each content block
+        blocks_repr = ", ".join(repr(b) for b in self.content)
+        content_preview = f"[{blocks_repr}]"
+        return f"AssistantMessage(model={self.model!r}, content={content_preview})"
+
+    def __str__(self) -> str:
+        """Return user-friendly message summary."""
+        # Use str() of each content block for user-friendly output
+        block_strs = "\n  ".join(str(b) for b in self.content)
+        return f"AssistantMessage from {self.model}:\n  {block_strs}"
+
 
 @dataclass
 class SystemMessage:
@@ -582,6 +694,15 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        data_preview = _truncate_repr(str(self.data))
+        return f"SystemMessage(subtype={self.subtype!r}, data={data_preview})"
+
+    def __str__(self) -> str:
+        """Return user-friendly system message info."""
+        return f"SystemMessage [{self.subtype}]"
 
 
 @dataclass
@@ -599,6 +720,22 @@ class ResultMessage:
     result: str | None = None
     structured_output: Any = None
 
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        return (
+            f"ResultMessage(subtype={self.subtype!r}, duration_ms={self.duration_ms}, "
+            f"is_error={self.is_error}, num_turns={self.num_turns}, "
+            f"session_id={self.session_id!r})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly result message info."""
+        status = "error" if self.is_error else "success"
+        return (
+            f"ResultMessage [{status}] - {self.num_turns} turn(s), "
+            f"{self.duration_ms}ms (API: {self.duration_api_ms}ms)"
+        )
+
 
 @dataclass
 class StreamEvent:
@@ -608,6 +745,19 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+
+    def __repr__(self) -> str:
+        """Return technical representation showing structure."""
+        event_preview = _truncate_repr(str(self.event))
+        return (
+            f"StreamEvent(uuid={self.uuid!r}, session_id={self.session_id!r}, "
+            f"event={event_preview})"
+        )
+
+    def __str__(self) -> str:
+        """Return user-friendly stream event info."""
+        event_type = self.event.get("type", "unknown")
+        return f"StreamEvent [{event_type}] ({self.uuid[:8]}...)"
 
 
 Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent

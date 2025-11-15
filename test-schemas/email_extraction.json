@@ -1,0 +1,34 @@
+{
+  "description": "Schema for extracting contact information from text.",
+  "properties": {
+    "name": {
+      "description": "Full name extracted from the text",
+      "title": "Name",
+      "type": "string"
+    },
+    "email": {
+      "description": "Email address extracted from the text",
+      "title": "Email",
+      "type": "string"
+    },
+    "plan_interest": {
+      "description": "The plan or product they are interested in",
+      "title": "Plan Interest",
+      "type": "string"
+    },
+    "demo_requested": {
+      "description": "Whether they requested a demo or meeting",
+      "title": "Demo Requested",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "email",
+    "plan_interest",
+    "demo_requested"
+  ],
+  "title": "EmailExtraction",
+  "type": "object",
+  "additionalProperties": false
+}

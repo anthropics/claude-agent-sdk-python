@@ -129,7 +129,11 @@ global.fetch = async function (url, options) {
   }
 
   // Inject schema into request body if available
-  if (schema && options.body) {
+  // Only inject for /messages endpoint, not for count_tokens or other endpoints
+  const isMessagesEndpoint = urlString.includes('/v1/messages') &&
+                              !urlString.includes('/count_tokens');
+
+  if (schema && options.body && isMessagesEndpoint) {
     try {
       const originalBody = JSON.parse(options.body);
       log('REQUEST', 'Original request body:', originalBody);
@@ -149,6 +153,8 @@ global.fetch = async function (url, options) {
     } catch (error) {
       log('ERROR', `Failed to modify request body: ${error.message}`);
     }
+  } else if (schema && !isMessagesEndpoint) {
+    log('DEBUG', 'Skipping schema injection for non-messages endpoint');
   }
 
   // Make the actual request

@@ -65,6 +65,7 @@ def _clean_schema_for_anthropic(schema: dict[str, Any]) -> dict[str, Any]:
     """Clean and validate a JSON schema for use with Anthropic's structured outputs.
 
     Removes Pydantic-specific fields that might not be compatible with Anthropic API.
+    Adds required fields like additionalProperties: false for object types.
 
     Args:
         schema: The raw JSON schema from Pydantic
@@ -84,6 +85,11 @@ def _clean_schema_for_anthropic(schema: dict[str, Any]) -> dict[str, Any]:
         cleaned.pop("$defs", None)
     if "definitions" in cleaned and not _schema_uses_refs(cleaned, "definitions"):
         cleaned.pop("definitions", None)
+
+    # Anthropic requires additionalProperties: false for object types
+    # Validated 2025-11-14: API returns error without this field
+    if cleaned.get("type") == "object" and "additionalProperties" not in cleaned:
+        cleaned["additionalProperties"] = False
 
     return cleaned
 

@@ -119,6 +119,13 @@ def convert_output_format(
 
     Handles both raw JSON schemas and Pydantic models.
 
+    VALIDATED: The output format {"type": "json_schema", "schema": {...}} has been
+    confirmed to work with the Anthropic API (tested 2025-11-14). The API accepts
+    this format with the beta header "anthropic-beta: structured-outputs-2025-11-13"
+    and returns structured JSON matching the schema.
+
+    Supported models: claude-sonnet-4-5-20250929 (Haiku 4.5 not supported).
+
     TODO: This currently only validates/converts schemas but doesn't pass them
     to the CLI. Once CLI adds schema support (anthropics/claude-code#9058),
     this will need integration in subprocess_cli.py to actually send schemas

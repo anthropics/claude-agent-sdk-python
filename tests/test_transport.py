@@ -147,6 +147,126 @@ class TestSubprocessCLITransport:
         assert "--fallback-model" in cmd
         assert "sonnet" in cmd
 
+    def test_output_format_sets_custom_headers(self):
+        """Test that output_format sets ANTHROPIC_CUSTOM_HEADERS with beta header."""
+
+        async def _test():
+            schema = {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "email": {"type": "string"},
+                },
+                "required": ["name", "email"],
+            }
+
+            options = make_options(output_format=schema)
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
+
+                # Verify ANTHROPIC_CUSTOM_HEADERS is set with beta header
+                assert "ANTHROPIC_CUSTOM_HEADERS" in env_passed
+                assert (
+                    "anthropic-beta: structured-outputs-2025-11-13"
+                    in env_passed["ANTHROPIC_CUSTOM_HEADERS"]
+                )
+
+        anyio.run(_test)
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("sys").modules.get("pydantic"), "__version__"),
+        reason="Pydantic not installed",
+    )
+    def test_output_format_with_pydantic_model(self):
+        """Test that Pydantic models are converted and headers are set."""
+
+        async def _test():
+            from pydantic import BaseModel
+
+            class EmailData(BaseModel):
+                name: str
+                email: str
+
+            options = make_options(output_format=EmailData)
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Check env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                env_passed = second_call_kwargs["env"]
+
+                # Verify headers are set
+                assert "ANTHROPIC_CUSTOM_HEADERS" in env_passed
+                assert (
+                    "anthropic-beta: structured-outputs-2025-11-13"
+                    in env_passed["ANTHROPIC_CUSTOM_HEADERS"]
+                )
+
+        anyio.run(_test)
+
     def test_build_command_with_max_thinking_tokens(self):
         """Test building CLI command with max_thinking_tokens option."""
         transport = SubprocessCLITransport(
@@ -447,6 +567,58 @@ class TestSubprocessCLITransport:
                 if "PATH" in os.environ:
                     assert "PATH" in env_passed
                     assert env_passed["PATH"] == os.environ["PATH"]
+
+        anyio.run(_test)
+
+    def test_anthropic_beta_sets_custom_headers(self):
+        """Test that anthropic_beta option sets ANTHROPIC_CUSTOM_HEADERS."""
+
+        async def _test():
+            beta_header = "structured-outputs-2025-11-13"
+            options = make_options(anthropic_beta=beta_header)
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
+
+                # Verify ANTHROPIC_CUSTOM_HEADERS is set with beta header
+                assert "ANTHROPIC_CUSTOM_HEADERS" in env_passed
+                assert (
+                    f"anthropic-beta: {beta_header}"
+                    in env_passed["ANTHROPIC_CUSTOM_HEADERS"]
+                )
 
         anyio.run(_test)
 

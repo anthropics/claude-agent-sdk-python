@@ -10,6 +10,7 @@ from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+    from pydantic import BaseModel
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
@@ -522,6 +523,13 @@ class ClaudeAgentOptions:
     disallowed_tools: list[str] = field(default_factory=list)
     model: str | None = None
     fallback_model: str | None = None
+    # Structured outputs support
+    anthropic_beta: str | None = (
+        None  # Beta header (e.g., "structured-outputs-2025-11-13")
+    )
+    output_format: dict[str, Any] | type["BaseModel"] | None = (
+        None  # JSON schema or Pydantic model
+    )
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
     cli_path: str | Path | None = None

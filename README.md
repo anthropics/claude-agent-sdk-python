@@ -76,6 +76,58 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### Structured Outputs
+
+Structured outputs allow you to get responses from Claude in a specific JSON schema format, ensuring type-safe and predictable responses.
+
+**Note:** This feature requires Claude Code CLI support for passing schemas (see [anthropics/claude-code#9058](https://github.com/anthropics/claude-code/issues/9058)). The SDK provides the public API and schema conversion utilities, ready for when CLI support is added.
+
+#### Using Raw JSON Schema
+
+```python
+from claude_agent_sdk import query
+
+# Define your expected output schema
+schema = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "email": {"type": "string"},
+        "plan_interest": {"type": "string"},
+        "demo_requested": {"type": "boolean"}
+    },
+    "required": ["name", "email", "plan_interest", "demo_requested"]
+}
+
+async for message in query(
+    prompt="Extract info: John Smith (john@example.com) wants Enterprise plan demo",
+    output_format=schema
+):
+    print(message)
+```
+
+#### Using Pydantic Models (Recommended)
+
+```python
+from pydantic import BaseModel, Field
+from claude_agent_sdk import query
+
+class EmailExtraction(BaseModel):
+    """Structured data from an email."""
+    name: str = Field(description="Full name")
+    email: str = Field(description="Email address")
+    plan_interest: str = Field(description="Plan they're interested in")
+    demo_requested: bool = Field(description="Whether they requested a demo")
+
+async for message in query(
+    prompt="Extract info: Sarah (sarah@company.com) wants Professional plan demo",
+    output_format=EmailExtraction  # Pass the Pydantic model class
+):
+    print(message)
+```
+
+For more examples, see [examples/structured_outputs.py](examples/structured_outputs.py).
+
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
@@ -270,6 +322,8 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
 
 See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
+
+See [examples/structured_outputs.py](examples/structured_outputs.py) for structured outputs examples using both Pydantic models and raw JSON schemas.
 
 ## Migrating from Claude Code SDK
 

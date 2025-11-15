@@ -279,6 +279,30 @@ class SubprocessCLITransport(Transport):
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
+            # Build custom headers for structured outputs and other beta features
+            custom_headers = []
+
+            # Add anthropic_beta header if specified
+            if self._options.anthropic_beta:
+                custom_headers.append(f"anthropic-beta: {self._options.anthropic_beta}")
+
+            # If output_format is specified, add beta header
+            # Note: Actual schema passing requires CLI support (see issue #9058)
+            if (
+                self._options.output_format is not None
+                and not self._options.anthropic_beta
+            ):
+                # Auto-add the structured outputs beta header
+                custom_headers.append("anthropic-beta: structured-outputs-2025-11-13")
+
+            # Set ANTHROPIC_CUSTOM_HEADERS if we have any custom headers
+            if custom_headers:
+                # Merge with existing custom headers from user env
+                existing_headers = process_env.get("ANTHROPIC_CUSTOM_HEADERS", "")
+                if existing_headers:
+                    custom_headers.append(existing_headers)
+                process_env["ANTHROPIC_CUSTOM_HEADERS"] = "; ".join(custom_headers)
+
             if self._cwd:
                 process_env["PWD"] = self._cwd
 

@@ -233,14 +233,10 @@ class Query:
 
                 # Convert PermissionResult to expected dict format
                 if isinstance(response, PermissionResultAllow):
-                    response_data = {
-                        "behavior": "allow",
-                        "updatedInput": (
-                            response.updated_input
-                            if response.updated_input is not None
-                            else original_input
-                        ),
-                    }
+                    response_data = {"behavior": "allow"}
+                    # Only include updatedInput if explicitly provided by the user
+                    if response.updated_input is not None:
+                        response_data["updatedInput"] = response.updated_input
                     if response.updated_permissions is not None:
                         response_data["updatedPermissions"] = [
                             permission.to_dict()

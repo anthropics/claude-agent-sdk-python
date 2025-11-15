@@ -96,6 +96,13 @@ class TestToolPermissionCallbacks:
         response = transport.written_messages[0]
         assert '"behavior": "allow"' in response
 
+        # IMPORTANT: Verify updatedInput is NOT included when not provided
+        # This is the regression test for issue #1063
+        assert '"updatedInput"' not in response, (
+            "updatedInput should not be included when PermissionResultAllow() "
+            "is returned without updated_input parameter"
+        )
+
     @pytest.mark.asyncio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""

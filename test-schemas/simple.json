@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Full name extracted from the text"
+    },
+    "email": {
+      "type": "string",
+      "description": "Email address extracted from the text"
+    },
+    "plan_interest": {
+      "type": "string",
+      "description": "The plan or product they are interested in"
+    },
+    "demo_requested": {
+      "type": "boolean",
+      "description": "Whether they requested a demo or meeting"
+    }
+  },
+  "required": ["name", "email", "plan_interest", "demo_requested"],
+  "additionalProperties": false
+}

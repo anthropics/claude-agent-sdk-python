@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# Claude CLI Wrapper with Structured Outputs Support
+#
+# This script acts as a drop-in replacement for the Claude CLI that adds
+# structured outputs support via HTTP interception.
+#
+# Usage:
+#   1. Make this script executable: chmod +x bin/claude-with-structured-outputs
+#   2. Set ANTHROPIC_SCHEMA_FILE or ANTHROPIC_SCHEMA environment variable
+#   3. Use with SDK: ClaudeAgentOptions(cli_path="/path/to/claude-with-structured-outputs")
+#
+# The SDK will call this script instead of the real claude CLI, and this script
+# will inject the structured outputs beta header and schema into all API requests.
+
+set -euo pipefail
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Real claude binary (from PATH)
+REAL_CLAUDE="$(which claude || true)"
+
+if [ -z "$REAL_CLAUDE" ]; then
+    echo "Error: claude CLI not found in PATH" >&2
+    echo "Install with: npm install -g @anthropic-ai/claude-code" >&2
+    exit 1
+fi
+
+# Interceptor script
+INTERCEPTOR="$PROJECT_ROOT/intercept-claude.js"
+
+if [ ! -f "$INTERCEPTOR" ]; then
+    echo "Error: Interceptor not found at $INTERCEPTOR" >&2
+    exit 1
+fi
+
+# Check Node.js version
+NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+if [ "$NODE_VERSION" -lt 18 ]; then
+    echo "Error: Node.js >= 18 required (current: v$NODE_VERSION)" >&2
+    exit 1
+fi
+
+# Pass all arguments to the real claude CLI with interceptor
+exec node --require "$INTERCEPTOR" "$REAL_CLAUDE" "$@"

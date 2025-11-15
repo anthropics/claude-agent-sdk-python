@@ -168,7 +168,10 @@ class ClaudeSDKClient:
             yield parse_message(data)
 
     async def query(
-        self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]],
+        session_id: str = "default",
+        output_format: dict[str, Any] | type[Any] | None = None,
     ) -> None:
         """
         Send a new request in streaming mode.
@@ -176,6 +179,10 @@ class ClaudeSDKClient:
         Args:
             prompt: Either a string message or an async iterable of message dictionaries
             session_id: Session identifier for the conversation
+            output_format: Optional JSON schema or Pydantic model for structured outputs.
+                          Note: Per-query output_format is not yet supported in interactive
+                          sessions. Use options.output_format for now. This parameter is
+                          reserved for future CLI support.
         """
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")

@@ -121,3 +121,44 @@ class TestQueryFunction:
                 assert call_kwargs["options"].cwd == "/custom/path"
 
         anyio.run(_test)
+
+    def test_query_with_output_format(self):
+        """Test query() function with output_format parameter."""
+
+        async def _test():
+            # Skip if pydantic not available
+            try:
+                from pydantic import BaseModel
+            except ImportError:
+                return
+
+            class TestModel(BaseModel):
+                name: str
+                value: int
+
+            with patch(
+                "claude_agent_sdk._internal.client.InternalClient.process_query"
+            ) as mock_process:
+
+                async def mock_generator():
+                    yield AssistantMessage(
+                        content=[TextBlock(text='{"name": "test", "value": 42}')],
+                        model="claude-opus-4-1-20250805",
+                    )
+
+                mock_process.return_value = mock_generator()
+
+                messages = []
+                async for msg in query(prompt="Extract data", output_format=TestModel):
+                    messages.append(msg)
+
+                # Verify it doesn't crash even though CLI doesn't support it yet
+                assert len(messages) == 1
+                assert isinstance(messages[0], AssistantMessage)
+
+                # Verify process_query was called with output_format in options
+                mock_process.assert_called_once()
+                call_args = mock_process.call_args
+                assert call_args[1]["options"].output_format is TestModel
+
+        anyio.run(_test)

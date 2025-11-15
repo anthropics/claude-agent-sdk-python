@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from ._internal.client import InternalClient
@@ -14,6 +15,7 @@ async def query(
     prompt: str | AsyncIterable[dict[str, Any]],
     options: ClaudeAgentOptions | None = None,
     transport: Transport | None = None,
+    output_format: dict[str, Any] | type[Any] | None = None,
 ) -> AsyncIterator[Message]:
     """
     Query Claude Code for one-shot or unidirectional streaming interactions.
@@ -61,6 +63,10 @@ async def query(
         transport: Optional transport implementation. If provided, this will be used
                   instead of the default transport selection based on options.
                   The transport will be automatically configured with the prompt and options.
+        output_format: Optional JSON schema or Pydantic model for structured outputs.
+                       Enables type-safe JSON responses. Requires CLI support (see
+                       anthropics/claude-code#9058). Per-query parameter overrides
+                       options.output_format if both are specified.
 
     Yields:
         Messages from the conversation
@@ -81,6 +87,23 @@ async def query(
                 system_prompt="You are an expert Python developer",
                 cwd="/home/user/project"
             )
+        ):
+            print(message)
+        ```
+
+    Example - With structured outputs:
+        ```python
+        from pydantic import BaseModel
+
+        class ProductInfo(BaseModel):
+            name: str
+            price: float
+            in_stock: bool
+
+        # Per-query schema (recommended)
+        async for message in query(
+            prompt="Extract: Widget, $29.99, in stock",
+            output_format=ProductInfo
         ):
             print(message)
         ```
@@ -115,6 +138,10 @@ async def query(
     """
     if options is None:
         options = ClaudeAgentOptions()
+
+    # Handle output_format parameter - per-query overrides options
+    if output_format is not None:
+        options = replace(options, output_format=output_format)
 
     os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
 

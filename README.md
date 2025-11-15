@@ -78,9 +78,9 @@ options = ClaudeAgentOptions(
 
 ### Structured Outputs
 
-Structured outputs allow you to get responses from Claude in a specific JSON schema format, ensuring type-safe and predictable responses.
+> **⚠️ NOT YET FUNCTIONAL**: This feature requires CLI support (see [anthropics/claude-code#9058](https://github.com/anthropics/claude-code/issues/9058)). The API and utilities are ready, but structured outputs won't work until the CLI implements schema passing.
 
-**Note:** This feature requires Claude Code CLI support for passing schemas (see [anthropics/claude-code#9058](https://github.com/anthropics/claude-code/issues/9058)). The SDK provides the public API and schema conversion utilities, ready for when CLI support is added.
+Structured outputs allow you to get responses from Claude in a specific JSON schema format, ensuring type-safe and predictable responses.
 
 #### Using Raw JSON Schema
 

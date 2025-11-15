@@ -1,6 +1,5 @@
 """Utilities for converting Pydantic models to JSON schemas for structured outputs."""
 
-import json
 from copy import deepcopy
 from typing import Any
 
@@ -99,8 +98,18 @@ def _schema_uses_refs(schema: dict[str, Any], defs_key: str) -> bool:
     Returns:
         True if the schema contains $ref, False otherwise
     """
-    schema_str = json.dumps(schema)
-    return "$ref" in schema_str
+
+    def has_ref(obj: Any) -> bool:
+        """Recursively check for $ref in nested structures."""
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                return True
+            return any(has_ref(v) for v in obj.values())
+        elif isinstance(obj, list):
+            return any(has_ref(item) for item in obj)
+        return False
+
+    return has_ref(schema)
 
 
 def convert_output_format(
@@ -109,6 +118,11 @@ def convert_output_format(
     """Convert an output_format parameter to the format expected by Anthropic API.
 
     Handles both raw JSON schemas and Pydantic models.
+
+    TODO: This currently only validates/converts schemas but doesn't pass them
+    to the CLI. Once CLI adds schema support (anthropics/claude-code#9058),
+    this will need integration in subprocess_cli.py to actually send schemas
+    to the Messages API.
 
     Args:
         output_format: Either a dict containing a JSON schema or a Pydantic model class
@@ -145,5 +159,7 @@ def convert_output_format(
 
     raise TypeError(
         f"output_format must be a dict (JSON schema) or a Pydantic model, "
-        f"got {type(output_format).__name__}"
+        f"got {type(output_format).__name__}. "
+        f"Examples: output_format={{'type': 'object', 'properties': {{...}}}} "
+        f"or output_format=MyPydanticModel"
     )

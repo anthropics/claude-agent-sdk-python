@@ -609,6 +609,57 @@ async def example_saas() -> None:
 # =============================================================================
 
 
+async def example_error_handling() -> None:
+    """Demonstrate error handling for structured outputs."""
+    print("\n=== Error Handling Examples ===")
+    print("Demonstrates: Common errors and how to handle them")
+    print("-" * 70)
+
+    # Example 1: Invalid schema type
+    print("\n1. Invalid schema type (not dict or Pydantic model):")
+    try:
+        options = ClaudeAgentOptions(
+            anthropic_beta="structured-outputs-2025-11-13",
+            permission_mode="bypassPermissions",
+            max_turns=1,
+        )
+        async for _ in query(prompt="test", options=options, output_format="invalid"):  # type: ignore
+            pass
+    except TypeError as e:
+        print(f"   ✓ Caught TypeError: {e}")
+
+    # Example 2: Pydantic not installed
+    print("\n2. Using Pydantic without installation:")
+    print("   If Pydantic is not installed, you'll get an ImportError when")
+    print("   trying to use Pydantic models. Use raw JSON schemas instead:")
+    print("   output_format={'type': 'object', 'properties': {...}}")
+
+    # Example 3: CLI doesn't support structured outputs yet
+    print("\n3. Current limitation - CLI doesn't support schema passing yet:")
+    print("   ⚠️  Even with valid schemas, structured outputs won't work until")
+    print("   the CLI implements schema passing (see anthropics/claude-code#9058)")
+    print("   The SDK will accept schemas but Claude will return markdown, not JSON.")
+
+    class SimpleModel(BaseModel):
+        message: str
+
+    options = ClaudeAgentOptions(
+        anthropic_beta="structured-outputs-2025-11-13",
+        permission_mode="bypassPermissions",
+        max_turns=1,
+    )
+
+    print("\n   Attempting query with valid schema (will return markdown):")
+    async for message in query(
+        prompt="Say hello", options=options, output_format=SimpleModel
+    ):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    print(f"   Response: {block.text[:100]}...")
+                    print("   ⚠️  Note: This is markdown, not the structured JSON we requested")
+
+
 async def main() -> None:
     """Run all sophisticated structured output examples."""
     print("=" * 70)
@@ -623,6 +674,7 @@ async def main() -> None:
         await example_legal()
         await example_research()
         await example_saas()
+        await example_error_handling()
 
         print("\n" + "=" * 70)
         print("All examples completed successfully!")

@@ -8,7 +8,14 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import (
+    ClaudeAgentOptions,
+    HookEvent,
+    HookMatcher,
+    Message,
+    PermissionMode,
+    ResultMessage,
+)
 
 
 class ClaudeSDKClient:
@@ -202,8 +209,6 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
-
-    from .types import PermissionMode
 
     async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).

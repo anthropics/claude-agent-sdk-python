@@ -164,7 +164,7 @@ class BaseHookInput(TypedDict):
     session_id: str
     transcript_path: str
     cwd: str
-    permission_mode: NotRequired[str]
+    permission_mode: NotRequired[PermissionMode]
 
 
 class PreToolUseHookInput(BaseHookInput):
@@ -570,13 +570,6 @@ class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
 
-
-class BaseHookInput(TypedDict):
-    """Base hook input fields present across many hook events."""
-    session_id: str
-    transcript_path: str
-    cwd: str
-    permission_mode: NotRequired[PermissionMode]
 
 class SDKControlPermissionRequest(TypedDict):
     subtype: Literal["can_use_tool"]

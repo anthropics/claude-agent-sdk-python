@@ -203,25 +203,17 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
 
-    async def set_permission_mode(self, mode: str) -> None:
+    from .types import PermissionMode
+
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).
 
         Args:
             mode: The permission mode to set. Valid options:
                 - 'default': CLI prompts for dangerous tools
                 - 'acceptEdits': Auto-accept file edits
+                - 'plan': Plan-only (no edits; generates plans)
                 - 'bypassPermissions': Allow all tools (use with caution)
-
-        Example:
-            ```python
-            async with ClaudeSDKClient() as client:
-                # Start with default permissions
-                await client.query("Help me analyze this codebase")
-
-                # Review mode done, switch to auto-accept edits
-                await client.set_permission_mode('acceptEdits')
-                await client.query("Now implement the fix we discussed")
-            ```
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")

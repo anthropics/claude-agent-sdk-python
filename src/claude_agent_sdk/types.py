@@ -565,24 +565,29 @@ class SDKControlInterruptRequest(TypedDict):
     subtype: Literal["interrupt"]
 
 
-class SDKControlPermissionRequest(TypedDict):
-    subtype: Literal["can_use_tool"]
-    tool_name: str
-    input: dict[str, Any]
-    # TODO: Add PermissionUpdate type here
-    permission_suggestions: list[Any] | None
-    blocked_path: str | None
-
 
 class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
 
 
+class BaseHookInput(TypedDict):
+    """Base hook input fields present across many hook events."""
+    session_id: str
+    transcript_path: str
+    cwd: str
+    permission_mode: NotRequired[PermissionMode]
+
+class SDKControlPermissionRequest(TypedDict):
+    subtype: Literal["can_use_tool"]
+    tool_name: str
+    input: dict[str, Any]
+    permission_suggestions: list[PermissionUpdate] | None
+    blocked_path: str | None
+
 class SDKControlSetPermissionModeRequest(TypedDict):
     subtype: Literal["set_permission_mode"]
-    # TODO: Add PermissionMode
-    mode: str
+    mode: PermissionMode
 
 
 class SDKHookCallbackRequest(TypedDict):

@@ -300,7 +300,13 @@ class Query:
                     "response": response_data,
                 },
             }
-            await self.transport.write(json.dumps(success_response) + "\n")
+            try:
+                await self.transport.write(json.dumps(success_response) + "\n")
+            except Exception as write_err:
+                # Transport not ready (likely during cleanup) - log but don't fail
+                logger.debug(
+                    f"Could not write control response (transport not ready): {write_err}"
+                )
 
         except Exception as e:
             # Send error response
@@ -312,7 +318,13 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            try:
+                await self.transport.write(json.dumps(error_response) + "\n")
+            except Exception as write_err:
+                # Transport not ready (likely during cleanup) - log but don't fail
+                logger.debug(
+                    f"Could not write error response (transport not ready): {write_err}"
+                )
 
     async def _send_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Send control request to CLI and wait for response."""

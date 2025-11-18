@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7
+
+### Features
+
+- **Structured output support**: Added support for structured outputs, allowing you to define response schemas and get predictably formatted results from Claude (#340)
+- **Fallback model handling**: Added automatic fallback model handling for improved reliability and parity with the TypeScript SDK. When the primary model is unavailable, the SDK will automatically use a fallback model (#317)
+- **Local Claude CLI support**: Added support for using a locally installed Claude CLI from `~/.claude/local/claude`, enabling development and testing with custom Claude CLI builds (#302)
+
 ## 0.1.6
 
 ### Features

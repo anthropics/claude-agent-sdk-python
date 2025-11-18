@@ -4,6 +4,8 @@ These tests verify that the output_schema feature works correctly by making
 actual API calls to Claude with JSON Schema validation.
 """
 
+import tempfile
+
 import pytest
 
 from claude_agent_sdk import (
@@ -177,7 +179,7 @@ async def test_structured_output_with_tools():
     options = ClaudeAgentOptions(
         output_format={"type": "json_schema", "schema": schema},
         permission_mode="acceptEdits",
-        cwd="/tmp",  # Use a safe directory
+        cwd=tempfile.gettempdir(),  # Cross-platform temp directory
     )
 
     result_message = None

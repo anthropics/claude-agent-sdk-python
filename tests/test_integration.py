@@ -342,7 +342,10 @@ class TestIntegration:
                 async for msg in query(
                     prompt="Count Python files in src/",
                     options=ClaudeAgentOptions(
-                        output_format={"type": "json_schema", "schema": schema}
+                        output_format={
+                            "type": "json_schema",
+                            "schema": schema,
+                        }
                     ),
                 ):
                     messages.append(msg)
@@ -360,7 +363,9 @@ class TestIntegration:
                 # Verify transport was created with output_format option
                 mock_transport_class.assert_called_once()
                 call_kwargs = mock_transport_class.call_args.kwargs
-                expected_format = {"type": "json_schema", "schema": schema}
-                assert call_kwargs["options"].output_format == expected_format
+                assert call_kwargs["options"].output_format == {
+                    "type": "json_schema",
+                    "schema": schema,
+                }
 
         anyio.run(_test)

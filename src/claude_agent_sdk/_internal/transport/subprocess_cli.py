@@ -220,16 +220,16 @@ class SubprocessCLITransport(Transport):
                 ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
             )
 
-        if self._options.output_format is not None:
-            # Extract schema from output_format structure
-            # Expected: {"type": "json_schema", "schema": {...}}
-            if (
-                isinstance(self._options.output_format, dict)
-                and self._options.output_format.get("type") == "json_schema"
-            ):
-                schema = self._options.output_format.get("schema")
-                if schema is not None:
-                    cmd.extend(["--json-schema", json.dumps(schema)])
+        # Extract schema from output_format structure if provided
+        # Expected: {"type": "json_schema", "schema": {...}}
+        if (
+            self._options.output_format is not None
+            and isinstance(self._options.output_format, dict)
+            and self._options.output_format.get("type") == "json_schema"
+        ):
+            schema = self._options.output_format.get("schema")
+            if schema is not None:
+                cmd.extend(["--json-schema", json.dumps(schema)])
 
         # Add prompt handling based on mode
         # IMPORTANT: This must come AFTER all flags because everything after "--" is treated as arguments

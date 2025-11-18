@@ -149,6 +149,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),
+                    structured_output=data.get("structured_output"),
                 )
             except KeyError as e:
                 raise MessageParseError(

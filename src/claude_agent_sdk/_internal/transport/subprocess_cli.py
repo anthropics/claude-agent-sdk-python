@@ -215,18 +215,30 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
+        if self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
+
+        # Extract schema from output_format structure if provided
+        # Expected: {"type": "json_schema", "schema": {...}}
+        if (
+            self._options.output_format is not None
+            and isinstance(self._options.output_format, dict)
+            and self._options.output_format.get("type") == "json_schema"
+        ):
+            schema = self._options.output_format.get("schema")
+            if schema is not None:
+                cmd.extend(["--json-schema", json.dumps(schema)])
+
         # Add prompt handling based on mode
+        # IMPORTANT: This must come AFTER all flags because everything after "--" is treated as arguments
         if self._is_streaming:
             # Streaming mode: use --input-format stream-json
             cmd.extend(["--input-format", "stream-json"])
         else:
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
-
-        if self._options.max_thinking_tokens is not None:
-            cmd.extend(
-                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
-            )
 
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)

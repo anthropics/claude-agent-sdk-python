@@ -360,9 +360,7 @@ class TestIntegration:
                 # Verify transport was created with output_format option
                 mock_transport_class.assert_called_once()
                 call_kwargs = mock_transport_class.call_args.kwargs
-                assert call_kwargs["options"].output_format == {
-                    "type": "json_schema",
-                    "schema": schema,
-                }
+                expected_format = {"type": "json_schema", "schema": schema}
+                assert call_kwargs["options"].output_format == expected_format
 
         anyio.run(_test)

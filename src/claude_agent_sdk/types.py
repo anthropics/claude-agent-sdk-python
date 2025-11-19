@@ -366,6 +366,9 @@ class HookMatcher:
     # A list of Python functions with function signature HookCallback
     hooks: list[HookCallback] = field(default_factory=list)
 
+    # Timeout in seconds for all hooks in this matcher (default: 60)
+    timeout: int | None = None
+
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):

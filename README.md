@@ -9,9 +9,13 @@ pip install claude-agent-sdk
 ```
 
 **Prerequisites:**
+
 - Python 3.10+
-- Node.js
-- Claude Code 2.0.0+: `npm install -g @anthropic-ai/claude-code`
+
+**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
+
+- Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
+- Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
 
 ## Quick Start
 
@@ -179,7 +183,7 @@ options = ClaudeAgentOptions(
 
 ### Hooks
 
-A **hook** is a Python function that the Claude Code *application* (*not* Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
+A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
 
 For more examples, see examples/hooks.py.
 
@@ -229,10 +233,10 @@ async with ClaudeSDKClient(options=options) as client:
         print(msg)
 ```
 
-
 ## Types
 
 See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
+
 - `ClaudeAgentOptions` - Configuration options
 - `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
@@ -259,7 +263,7 @@ except CLIJSONDecodeError as e:
     print(f"Failed to parse response: {e}")
 ```
 
-See [src/claude_agent_sdk/_errors.py](src/claude_agent_sdk/_errors.py) for all error types.
+See [src/claude_agent_sdk/\_errors.py](src/claude_agent_sdk/_errors.py) for all error types.
 
 ## Available Tools
 
@@ -289,6 +293,63 @@ If you're contributing to this project, run the initial setup script to install 
 ```
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
+### Building Wheels Locally
+
+To build wheels with the bundled Claude Code CLI:
+
+```bash
+# Install build dependencies
+pip install build twine
+
+# Build wheel with bundled CLI
+python scripts/build_wheel.py
+
+# Build with specific version
+python scripts/build_wheel.py --version 0.1.4
+
+# Build with specific CLI version
+python scripts/build_wheel.py --cli-version 2.0.0
+
+# Clean bundled CLI after building
+python scripts/build_wheel.py --clean
+
+# Skip CLI download (use existing)
+python scripts/build_wheel.py --skip-download
+```
+
+The build script:
+
+1. Downloads Claude Code CLI for your platform
+2. Bundles it in the wheel
+3. Builds both wheel and source distribution
+4. Checks the package with twine
+
+See `python scripts/build_wheel.py --help` for all options.
+
+### Release Workflow
+
+The package is published to PyPI via the GitHub Actions workflow in `.github/workflows/publish.yml`. To create a new release:
+
+1. **Trigger the workflow** manually from the Actions tab with two inputs:
+   - `version`: The package version to publish (e.g., `0.1.5`)
+   - `claude_code_version`: The Claude Code CLI version to bundle (e.g., `2.0.0` or `latest`)
+
+2. **The workflow will**:
+   - Build platform-specific wheels for macOS, Linux, and Windows
+   - Bundle the specified Claude Code CLI version in each wheel
+   - Build a source distribution
+   - Publish all artifacts to PyPI
+   - Create a release branch with version updates
+   - Open a PR to main with:
+     - Updated `pyproject.toml` version
+     - Updated `src/claude_agent_sdk/_version.py`
+     - Updated `src/claude_agent_sdk/_cli_version.py` with bundled CLI version
+     - Auto-generated `CHANGELOG.md` entry
+
+3. **Review and merge** the release PR to update main with the new version information
+
+The workflow tracks both the package version and the bundled CLI version separately, allowing you to release a new package version with an updated CLI without code changes.
 
 ## License
 

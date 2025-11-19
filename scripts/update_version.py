@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Update version in pyproject.toml and __init__.py files."""
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 
@@ -18,7 +18,7 @@ def update_version(new_version: str) -> None:
         f'version = "{new_version}"',
         content,
         count=1,
-        flags=re.MULTILINE
+        flags=re.MULTILINE,
     )
 
     pyproject_path.write_text(content)
@@ -34,7 +34,7 @@ def update_version(new_version: str) -> None:
         f'__version__ = "{new_version}"',
         content,
         count=1,
-        flags=re.MULTILINE
+        flags=re.MULTILINE,
     )
 
     version_path.write_text(content)
@@ -45,5 +45,5 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python scripts/update_version.py <version>")
         sys.exit(1)
-    
+
     update_version(sys.argv[1])

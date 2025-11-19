@@ -47,6 +47,7 @@ Issues = "https://github.com/anthropics/claude-agent-sdk-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_agent_sdk"]
+only-include = ["src/claude_agent_sdk"]
 
 [tool.hatch.build.targets.sdist]
 include = [

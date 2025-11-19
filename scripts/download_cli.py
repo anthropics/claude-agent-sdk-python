@@ -20,12 +20,21 @@ def get_cli_version() -> str:
 
 def find_installed_cli() -> Path | None:
     """Find the installed Claude CLI binary."""
-    # Check common installation locations
-    locations = [
-        Path.home() / ".local/bin/claude",
-        Path("/usr/local/bin/claude"),
-        Path.home() / "node_modules/.bin/claude",
-    ]
+    system = platform.system()
+
+    if system == "Windows":
+        # Windows installation locations (matches test.yml: $USERPROFILE\.local\bin)
+        locations = [
+            Path.home() / ".local" / "bin" / "claude.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Claude" / "claude.exe",
+        ]
+    else:
+        # Unix installation locations
+        locations = [
+            Path.home() / ".local" / "bin" / "claude",
+            Path("/usr/local/bin/claude"),
+            Path.home() / "node_modules" / ".bin" / "claude",
+        ]
 
     # Also check PATH
     cli_path = shutil.which("claude")
@@ -42,18 +51,43 @@ def find_installed_cli() -> Path | None:
 def download_cli() -> None:
     """Download Claude Code CLI using the official install script."""
     version = get_cli_version()
+    system = platform.system()
 
     print(f"Downloading Claude Code CLI version: {version}")
 
-    # Download and run install script
-    install_script = "curl -fsSL https://claude.ai/install.sh | bash"
-    if version != "latest":
-        install_script = f"curl -fsSL https://claude.ai/install.sh | bash -s {version}"
+    # Build install command based on platform
+    if system == "Windows":
+        # Use PowerShell installer on Windows
+        if version == "latest":
+            install_cmd = [
+                "powershell",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "irm https://claude.ai/install.ps1 | iex",
+            ]
+        else:
+            install_cmd = [
+                "powershell",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) {version}",
+            ]
+    else:
+        # Use bash installer on Unix-like systems
+        if version == "latest":
+            install_cmd = ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
+        else:
+            install_cmd = [
+                "bash",
+                "-c",
+                f"curl -fsSL https://claude.ai/install.sh | bash -s {version}",
+            ]
 
     try:
         subprocess.run(
-            install_script,
-            shell=True,
+            install_cmd,
             check=True,
             capture_output=True,
         )

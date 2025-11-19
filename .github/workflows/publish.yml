@@ -102,6 +102,7 @@ jobs:
         name: wheel-${{ matrix.os }}
         path: dist/*.whl
         if-no-files-found: error
+        compression-level: 0
 
   publish:
     needs: [build-wheels]

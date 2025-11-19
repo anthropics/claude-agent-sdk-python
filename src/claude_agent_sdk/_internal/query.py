@@ -126,12 +126,13 @@ class Query:
                             self.next_callback_id += 1
                             self.hook_callbacks[callback_id] = callback
                             callback_ids.append(callback_id)
-                        hooks_config[event].append(
-                            {
-                                "matcher": matcher.get("matcher"),
-                                "hookCallbackIds": callback_ids,
-                            }
-                        )
+                        hook_matcher_config: dict[str, Any] = {
+                            "matcher": matcher.get("matcher"),
+                            "hookCallbackIds": callback_ids,
+                        }
+                        if matcher.get("timeout") is not None:
+                            hook_matcher_config["timeout"] = matcher.get("timeout")
+                        hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request
         request = {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+### Features
+
+- Claude Code is now included by default in the package, removing the requirement to install it separately. If you do wish to use a separately installed build, use the `cli_path` field in `Options`.
+
 ## 0.1.7
 
 ### Features

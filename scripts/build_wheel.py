@@ -34,7 +34,7 @@ except ImportError:
 def run_command(cmd: list[str], description: str) -> None:
     """Run a command and handle errors."""
     print(f"\n{'=' * 60}")
-    print(f"📦 {description}")
+    print(f"{description}")
     print(f"{'=' * 60}")
     print(f"$ {' '.join(cmd)}")
     print()
@@ -49,7 +49,7 @@ def run_command(cmd: list[str], description: str) -> None:
         )
         print(result.stdout)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error: {description} failed", file=sys.stderr)
+        print(f"Error: {description} failed", file=sys.stderr)
         print(e.stdout, file=sys.stderr)
         sys.exit(1)
 
@@ -60,7 +60,7 @@ def update_version(version: str) -> None:
     update_script = script_dir / "update_version.py"
 
     if not update_script.exists():
-        print("⚠️  Warning: update_version.py not found, skipping version update")
+        print("Warning: update_version.py not found, skipping version update")
         return
 
     run_command(
@@ -105,10 +105,10 @@ def clean_dist() -> None:
     dist_dir = Path("dist")
     if dist_dir.exists():
         print(f"\n{'=' * 60}")
-        print("🧹 Cleaning dist directory")
+        print("Cleaning dist directory")
         print(f"{'=' * 60}")
         shutil.rmtree(dist_dir)
-        print("✓ Cleaned dist/")
+        print("Cleaned dist/")
 
 
 def get_platform_tag() -> str:
@@ -152,7 +152,7 @@ def get_platform_tag() -> str:
 def retag_wheel(wheel_path: Path, platform_tag: str) -> Path:
     """Retag a wheel with the correct platform tag using wheel package."""
     print(f"\n{'=' * 60}")
-    print("🏷️  Retagging wheel as platform-specific")
+    print("Retagging wheel as platform-specific")
     print(f"{'=' * 60}")
     print(f"Old: {wheel_path.name}")
 
@@ -173,7 +173,7 @@ def retag_wheel(wheel_path: Path, platform_tag: str) -> Path:
     )
 
     if result.returncode != 0:
-        print(f"⚠️  Warning: Failed to retag wheel: {result.stderr}")
+        print(f"Warning: Failed to retag wheel: {result.stderr}")
         return wheel_path
 
     # Find the newly tagged wheel
@@ -184,7 +184,7 @@ def retag_wheel(wheel_path: Path, platform_tag: str) -> Path:
     if new_wheels:
         new_path = new_wheels[0]
         print(f"New: {new_path.name}")
-        print("✓ Wheel retagged successfully")
+        print("Wheel retagged successfully")
 
         # Remove the old wheel
         if wheel_path.exists() and wheel_path != new_path:
@@ -192,7 +192,7 @@ def retag_wheel(wheel_path: Path, platform_tag: str) -> Path:
 
         return new_path
     else:
-        print("⚠️  Warning: Could not find retagged wheel")
+        print("Warning: Could not find retagged wheel")
         return wheel_path
 
 
@@ -221,9 +221,9 @@ def build_wheel() -> None:
                 if "-any.whl" in wheel.name:
                     retag_wheel(wheel, platform_tag)
         else:
-            print("⚠️  Warning: No wheel found to retag")
+            print("Warning: No wheel found to retag")
     else:
-        print("\nℹ️  No bundled CLI found - wheel will be platform-independent")
+        print("\nNo bundled CLI found - wheel will be platform-independent")
 
 
 def build_sdist() -> None:
@@ -237,12 +237,12 @@ def build_sdist() -> None:
 def check_package() -> None:
     """Check package with twine."""
     if not HAS_TWINE:
-        print("\n⚠️  Warning: twine not installed, skipping package check")
+        print("\nWarning: twine not installed, skipping package check")
         print("Install with: pip install twine")
         return
 
     print(f"\n{'=' * 60}")
-    print("📦 Checking package with twine")
+    print("Checking package with twine")
     print(f"{'=' * 60}")
     print(f"$ {sys.executable} -m twine check dist/*")
     print()
@@ -258,13 +258,13 @@ def check_package() -> None:
         print(result.stdout)
 
         if result.returncode != 0:
-            print("\n⚠️  Warning: twine check reported issues")
+            print("\nWarning: twine check reported issues")
             print("Note: 'License-File' warnings are false positives from twine 6.x")
             print("PyPI will accept these packages without issues")
         else:
-            print("✓ Package check passed")
+            print("Package check passed")
     except Exception as e:
-        print(f"⚠️  Warning: Failed to run twine check: {e}")
+        print(f"Warning: Failed to run twine check: {e}")
 
 
 def clean_bundled_cli() -> None:
@@ -274,14 +274,14 @@ def clean_bundled_cli() -> None:
 
     if cli_files:
         print(f"\n{'=' * 60}")
-        print("🧹 Cleaning bundled CLI")
+        print("Cleaning bundled CLI")
         print(f"{'=' * 60}")
         for cli_file in cli_files:
             if cli_file.name != ".gitignore":
                 cli_file.unlink()
-                print(f"✓ Removed {cli_file}")
+                print(f"Removed {cli_file}")
     else:
-        print("\nℹ️  No bundled CLI to clean")
+        print("\nNo bundled CLI to clean")
 
 
 def list_artifacts() -> None:
@@ -291,7 +291,7 @@ def list_artifacts() -> None:
         return
 
     print(f"\n{'=' * 60}")
-    print("📦 Built Artifacts")
+    print("Built Artifacts")
     print(f"{'=' * 60}")
 
     artifacts = sorted(dist_dir.iterdir())
@@ -345,7 +345,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
-    print("🚀 Claude Agent SDK - Wheel Builder")
+    print("Claude Agent SDK - Wheel Builder")
     print("=" * 60)
 
     # Clean dist if requested
@@ -360,7 +360,7 @@ def main() -> None:
     if not args.skip_download:
         download_cli(args.cli_version)
     else:
-        print("\nℹ️  Skipping CLI download (using existing)")
+        print("\nSkipping CLI download (using existing)")
 
     # Build wheel
     build_wheel()
@@ -380,7 +380,7 @@ def main() -> None:
     list_artifacts()
 
     print(f"\n{'=' * 60}")
-    print("✅ Build complete!")
+    print("Build complete!")
     print(f"{'=' * 60}")
     print("\nNext steps:")
     print("  1. Test the wheel: pip install dist/*.whl")

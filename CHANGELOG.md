@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+### Bug Fixes
+
+- **Wheel build process**: Fixed missing `wheel` package dependency in the publish workflow. The `build_wheel.py` script uses `python -m wheel tags` to retag platform-specific wheels, but the `wheel` package wasn't explicitly installed in the CI/CD pipeline, which could cause build failures (#345)
+
 ## 0.1.7
 
 ### Features

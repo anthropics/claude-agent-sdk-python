@@ -2,9 +2,9 @@
 
 ## 0.1.8
 
-### Bug Fixes
+### Features
 
-- **Wheel build process**: Fixed missing `wheel` package dependency in the publish workflow. The `build_wheel.py` script uses `python -m wheel tags` to retag platform-specific wheels, but the `wheel` package wasn't explicitly installed in the CI/CD pipeline, which could cause build failures (#345)
+- Claude Code is now included by default in the package, removing the requirement to install it separately. If you do wish to use a separately installed build, use the `cli_path` field in `Options`.
 
 ## 0.1.7
 

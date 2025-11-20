@@ -500,3 +500,83 @@ class TestSubprocessCLITransport:
                 assert user_passed == "claude"
 
         anyio.run(_test)
+
+    def test_concurrent_writes_are_serialized(self):
+        """Test that concurrent writes to stdin are serialized by the lock."""
+        import json
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.stdout = MagicMock()
+
+                # Track write calls to verify serialization
+                write_events: list[tuple[str, str]] = []  # (event_type, data_preview)
+
+                async def mock_send(data: str):
+                    """Mock send that tracks start/end of each write."""
+                    preview = data[:20]
+                    write_events.append(("start", preview))
+                    # Small delay to increase chance of interleaving if lock is broken
+                    await anyio.sleep(0.001)
+                    write_events.append(("end", preview))
+
+                mock_stdin = MagicMock()
+                mock_stdin.send = mock_send
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                # Return version process first, then main process
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                # Create transport in streaming mode (required for stdin writes)
+                async def dummy_stream():
+                    yield {"type": "user"}
+
+                transport = SubprocessCLITransport(
+                    prompt=dummy_stream(),
+                    options=make_options(),
+                )
+
+                await transport.connect()
+                assert transport.is_ready()
+
+                # Spawn multiple concurrent writes
+                num_writes = 5
+                messages = [
+                    json.dumps({"id": i, "data": "x" * 50}) + "\n"
+                    for i in range(num_writes)
+                ]
+
+                async with anyio.create_task_group() as tg:
+                    for msg in messages:
+                        tg.start_soon(transport.write, msg)
+
+                # Verify serialization: events should be strictly alternating start/end pairs
+                # If writes interleaved, we'd see patterns like: start, start, end, end
+                assert len(write_events) == num_writes * 2
+
+                for i in range(0, len(write_events), 2):
+                    assert write_events[i][0] == "start", f"Expected start at index {i}"
+                    assert write_events[i + 1][0] == "end", (
+                        f"Expected end at index {i + 1}"
+                    )
+                    # Each start should be followed by its corresponding end
+                    assert write_events[i][1] == write_events[i + 1][1], (
+                        f"Mismatched start/end at index {i}"
+                    )
+
+                await transport.close()
+
+        anyio.run(_test)

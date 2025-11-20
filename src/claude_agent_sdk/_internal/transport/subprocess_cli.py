@@ -65,6 +65,7 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._temp_files: list[str] = []  # Track temporary files for cleanup
+        self._write_lock: anyio.Lock = anyio.Lock()  # Serialize stdin writes
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -418,11 +419,12 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_task_group.__aexit__(None, None, None)
             self._stderr_task_group = None
 
-        # Close streams
-        if self._stdin_stream:
-            with suppress(Exception):
-                await self._stdin_stream.aclose()
-            self._stdin_stream = None
+        # Close stdin stream under lock to wait for any in-flight writes
+        async with self._write_lock:
+            if self._stdin_stream:
+                with suppress(Exception):
+                    await self._stdin_stream.aclose()
+                self._stdin_stream = None
 
         if self._stderr_stream:
             with suppress(Exception):
@@ -450,37 +452,39 @@ class SubprocessCLITransport(Transport):
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""
-        # Check if ready (like TypeScript)
-        if not self._ready or not self._stdin_stream:
-            raise CLIConnectionError("ProcessTransport is not ready for writing")
+        async with self._write_lock:
+            # Check if ready (like TypeScript)
+            if not self._ready or not self._stdin_stream:
+                raise CLIConnectionError("ProcessTransport is not ready for writing")
 
-        # Check if process is still alive (like TypeScript)
-        if self._process and self._process.returncode is not None:
-            raise CLIConnectionError(
-                f"Cannot write to terminated process (exit code: {self._process.returncode})"
-            )
+            # Check if process is still alive (like TypeScript)
+            if self._process and self._process.returncode is not None:
+                raise CLIConnectionError(
+                    f"Cannot write to terminated process (exit code: {self._process.returncode})"
+                )
 
-        # Check for exit errors (like TypeScript)
-        if self._exit_error:
-            raise CLIConnectionError(
-                f"Cannot write to process that exited with error: {self._exit_error}"
-            ) from self._exit_error
+            # Check for exit errors (like TypeScript)
+            if self._exit_error:
+                raise CLIConnectionError(
+                    f"Cannot write to process that exited with error: {self._exit_error}"
+                ) from self._exit_error
 
-        try:
-            await self._stdin_stream.send(data)
-        except Exception as e:
-            self._ready = False  # Mark as not ready (like TypeScript)
-            self._exit_error = CLIConnectionError(
-                f"Failed to write to process stdin: {e}"
-            )
-            raise self._exit_error from e
+            try:
+                await self._stdin_stream.send(data)
+            except Exception as e:
+                self._ready = False  # Mark as not ready (like TypeScript)
+                self._exit_error = CLIConnectionError(
+                    f"Failed to write to process stdin: {e}"
+                )
+                raise self._exit_error from e
 
     async def end_input(self) -> None:
         """End the input stream (close stdin)."""
-        if self._stdin_stream:
-            with suppress(Exception):
-                await self._stdin_stream.aclose()
-            self._stdin_stream = None
+        async with self._write_lock:
+            if self._stdin_stream:
+                with suppress(Exception):
+                    await self._stdin_stream.aclose()
+                self._stdin_stream = None
 
     def read_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Read and parse messages from the transport."""

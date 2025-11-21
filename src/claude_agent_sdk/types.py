@@ -146,7 +146,7 @@ CanUseTool = Callable[
 
 ##### Hook types
 # Supported hook event types. Due to setup limitations, the Python SDK does not
-# support SessionStart, SessionEnd, and Notification hooks.
+# support Notification hooks.
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]
@@ -154,6 +154,8 @@ HookEvent = (
     | Literal["Stop"]
     | Literal["SubagentStop"]
     | Literal["PreCompact"]
+    | Literal["SessionStart"]
+    | Literal["SessionEnd"]
 )
 
 
@@ -213,6 +215,20 @@ class PreCompactHookInput(BaseHookInput):
     custom_instructions: str | None
 
 
+class SessionStartHookInput(BaseHookInput):
+    """Input data for SessionStart hook events."""
+
+    hook_event_name: Literal["SessionStart"]
+    source: Literal["startup", "resume", "clear", "compact"]
+
+
+class SessionEndHookInput(BaseHookInput):
+    """Input data for SessionEnd hook events."""
+
+    hook_event_name: Literal["SessionEnd"]
+    reason: Literal["clear", "logout", "prompt_input_exit", "other"]
+
+
 # Union type for all hook inputs
 HookInput = (
     PreToolUseHookInput
@@ -221,6 +237,8 @@ HookInput = (
     | StopHookInput
     | SubagentStopHookInput
     | PreCompactHookInput
+    | SessionStartHookInput
+    | SessionEndHookInput
 )
 
 
@@ -255,11 +273,18 @@ class SessionStartHookSpecificOutput(TypedDict):
     additionalContext: NotRequired[str]
 
 
+class SessionEndHookSpecificOutput(TypedDict):
+    """Hook-specific output for SessionEnd events."""
+
+    hookEventName: Literal["SessionEnd"]
+
+
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
     | UserPromptSubmitHookSpecificOutput
     | SessionStartHookSpecificOutput
+    | SessionEndHookSpecificOutput
 )
 
 

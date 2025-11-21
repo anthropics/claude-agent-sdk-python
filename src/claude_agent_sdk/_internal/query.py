@@ -72,6 +72,7 @@ class Query:
         | None = None,
         hooks: dict[str, list[dict[str, Any]]] | None = None,
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
+        initialize_timeout: float = 60.0,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -81,7 +82,9 @@ class Query:
             can_use_tool: Optional callback for tool permission requests
             hooks: Optional hook configurations
             sdk_mcp_servers: Optional SDK MCP server instances
+            initialize_timeout: Timeout in seconds for the initialize request
         """
+        self._initialize_timeout = initialize_timeout
         self.transport = transport
         self.is_streaming_mode = is_streaming_mode
         self.can_use_tool = can_use_tool
@@ -140,7 +143,10 @@ class Query:
             "hooks": hooks_config if hooks_config else None,
         }
 
-        response = await self._send_control_request(request)
+        # Use longer timeout for initialize since MCP servers may take time to start
+        response = await self._send_control_request(
+            request, timeout=self._initialize_timeout
+        )
         self._initialized = True
         self._initialization_result = response  # Store for later access
         return response
@@ -315,8 +321,15 @@ class Query:
             }
             await self.transport.write(json.dumps(error_response) + "\n")
 
-    async def _send_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Send control request to CLI and wait for response."""
+    async def _send_control_request(
+        self, request: dict[str, Any], timeout: float = 60.0
+    ) -> dict[str, Any]:
+        """Send control request to CLI and wait for response.
+
+        Args:
+            request: The control request to send
+            timeout: Timeout in seconds to wait for response (default 60s)
+        """
         if not self.is_streaming_mode:
             raise Exception("Control requests require streaming mode")
 
@@ -339,7 +352,7 @@ class Query:
 
         # Wait for response
         try:
-            with anyio.fail_after(60.0):
+            with anyio.fail_after(timeout):
                 await event.wait()
 
             result = self.pending_control_results.pop(request_id)

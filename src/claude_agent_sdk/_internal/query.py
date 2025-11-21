@@ -83,7 +83,6 @@ class Query:
             hooks: Optional hook configurations
             sdk_mcp_servers: Optional SDK MCP server instances
             initialize_timeout: Timeout in seconds for the initialize request
-                (should match MCP_TIMEOUT if MCP servers need time to start)
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport

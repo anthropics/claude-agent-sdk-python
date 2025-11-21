@@ -140,10 +140,12 @@ class ClaudeSDKClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Calculate initialize timeout from MCP_TIMEOUT env var if set
-        # MCP_TIMEOUT is in milliseconds, convert to seconds
-        mcp_timeout_ms = int(options.env.get("MCP_TIMEOUT", "60000"))
-        initialize_timeout = max(mcp_timeout_ms / 1000.0, 60.0)
+        # Calculate initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT env var if set
+        # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is in milliseconds, convert to seconds
+        stream_close_timeout_ms = int(
+            options.env.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
+        )
+        initialize_timeout = max(stream_close_timeout_ms / 1000.0, 60.0)
 
         # Create Query to handle control protocol
         self._query = Query(

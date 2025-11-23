@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from typing_extensions import NotRequired
+try:
+    # Python >= 3.11
+    from typing import NotRequired
+except ImportError:
+    # Python < 3.11
+    from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer

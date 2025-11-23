@@ -15,7 +15,7 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "channel": "claude-agent-sdk-feedback",
+              "channel": "C09HY5E0K60",
               "text": "New issue opened in ${{ github.repository }}",
               "blocks": [
                 {

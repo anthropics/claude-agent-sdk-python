@@ -367,7 +367,7 @@ class HookMatcher:
     hooks: list[HookCallback] = field(default_factory=list)
 
     # Timeout in seconds for all hooks in this matcher (default: 60)
-    timeout: int | None = None
+    timeout: float | None = None
 
 
 # MCP Server config

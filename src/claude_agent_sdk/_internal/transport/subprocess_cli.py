@@ -57,6 +57,8 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_stop_event: anyio.Event | None = None
+        self._stderr_started_event: anyio.Event | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -340,10 +342,13 @@ class SubprocessCLITransport(Transport):
             # Setup stderr stream if piped
             if should_pipe_stderr and self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
+                # Start async task to read stderr using owner task pattern
+                self._stderr_stop_event = anyio.Event()
+                self._stderr_started_event = anyio.Event()
                 self._stderr_task_group = anyio.create_task_group()
                 await self._stderr_task_group.__aenter__()
-                self._stderr_task_group.start_soon(self._handle_stderr)
+                self._stderr_task_group.start_soon(self._stderr_owner_task)
+                await self._stderr_started_event.wait()
 
             # Setup stdin for streaming mode
             if self._is_streaming and self._process.stdin:
@@ -369,6 +374,26 @@ class SubprocessCLITransport(Transport):
             error = CLIConnectionError(f"Failed to start Claude Code: {e}")
             self._exit_error = error
             raise error from e
+
+    async def _stderr_owner_task(self) -> None:
+        """Owner task that manages the stderr reader task group.
+
+        This task owns the task group for its entire lifetime, ensuring that
+        the same task that enters the cancel scope also exits it. This is
+        required for trio compatibility.
+        """
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(self._handle_stderr)
+                self._stderr_started_event.set()  # type: ignore[union-attr]
+
+                # Wait until close() signals us to stop
+                await self._stderr_stop_event.wait()  # type: ignore[union-attr]
+
+                # Cancel child tasks
+                tg.cancel_scope.cancel()
+        except Exception:
+            pass  # Ignore errors during stderr task cleanup
 
     async def _handle_stderr(self) -> None:
         """Handle stderr stream - read and invoke callbacks."""
@@ -411,10 +436,13 @@ class SubprocessCLITransport(Transport):
         if not self._process:
             return
 
-        # Close stderr task group if active
+        # Signal stderr owner task to stop
+        if self._stderr_stop_event:
+            self._stderr_stop_event.set()
+
+        # Wait for stderr task group to finish (owner will exit after stop event)
         if self._stderr_task_group:
             with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
                 await self._stderr_task_group.__aexit__(None, None, None)
             self._stderr_task_group = None
 

@@ -107,6 +107,11 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
+        # Owner task pattern: events for coordinating lifecycle
+        self._owner_stop_event: anyio.Event | None = None
+        self._owner_started_event: anyio.Event | None = None
+        self._outer_tg: anyio.abc.TaskGroup | None = None
+
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
 
@@ -152,11 +157,43 @@ class Query:
         return response
 
     async def start(self) -> None:
-        """Start reading messages from transport."""
+        """Start reading messages from transport.
+
+        Uses the owner task pattern to ensure the inner task group is properly
+        managed by a single task, which is required for trio compatibility.
+        """
         if self._tg is None:
-            self._tg = anyio.create_task_group()
-            await self._tg.__aenter__()
-            self._tg.start_soon(self._read_messages)
+            self._owner_stop_event = anyio.Event()
+            self._owner_started_event = anyio.Event()
+
+            # Outer task group spawns the owner task
+            self._outer_tg = anyio.create_task_group()
+            await self._outer_tg.__aenter__()
+            self._outer_tg.start_soon(self._task_group_owner)
+
+            # Wait for owner to signal it's ready
+            await self._owner_started_event.wait()
+
+    async def _task_group_owner(self) -> None:
+        """Owner task that manages the inner task group.
+
+        This task owns the task group for its entire lifetime, ensuring that
+        the same task that enters the cancel scope also exits it. This is
+        required for trio compatibility.
+        """
+        try:
+            async with anyio.create_task_group() as tg:
+                self._tg = tg
+                tg.start_soon(self._read_messages)
+                self._owner_started_event.set()  # type: ignore[union-attr]
+
+                # Wait until close() signals us to stop
+                await self._owner_stop_event.wait()  # type: ignore[union-attr]
+
+                # Cancel child tasks
+                tg.cancel_scope.cancel()
+        finally:
+            self._tg = None
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
@@ -550,11 +587,17 @@ class Query:
     async def close(self) -> None:
         """Close the query and transport."""
         self._closed = True
-        if self._tg:
-            self._tg.cancel_scope.cancel()
-            # Wait for task group to complete cancellation
+
+        # Signal owner task to stop
+        if self._owner_stop_event:
+            self._owner_stop_event.set()
+
+        # Wait for outer task group to finish (owner will exit after stop event)
+        if self._outer_tg:
             with suppress(anyio.get_cancelled_exc_class()):
-                await self._tg.__aexit__(None, None, None)
+                await self._outer_tg.__aexit__(None, None, None)
+            self._outer_tg = None
+
         await self.transport.close()
 
     # Make Query an async iterator

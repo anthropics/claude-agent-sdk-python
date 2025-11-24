@@ -14,7 +14,6 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
-import pytest
 
 from claude_agent_sdk import ClaudeSDKClient
 from claude_agent_sdk._internal.query import Query

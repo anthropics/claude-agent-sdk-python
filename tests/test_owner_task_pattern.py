@@ -34,7 +34,7 @@ def create_mock_transport(with_init_response: bool = True) -> AsyncMock:
 
     written_messages: list[str] = []
 
-    async def mock_write(data: str) -> None:
+    async def mock_write(data: str) -> None:  # noqa: ASYNC124
         written_messages.append(data)
 
     mock_transport.write.side_effect = mock_write
@@ -353,6 +353,7 @@ class TestTrioBackend:
 
             await query.start()
             assert query._tg is not None
+            assert query._owner_started_event is not None
             assert query._owner_started_event.is_set()
 
             await query.close()

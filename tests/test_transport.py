@@ -654,40 +654,45 @@ class TestSubprocessCLITransport:
         When parallel subagents invoke MCP tools, they trigger concurrent write()
         calls. Without the _write_lock, trio raises BusyResourceError.
 
-        Uses the exact same stream chain as production:
-        FdStream -> SendStreamWrapper -> TextSendStream
+        Uses a real subprocess with the same stream setup as production:
+        process.stdin -> TextSendStream
         """
 
         async def _test():
-            from anyio._backends._trio import SendStreamWrapper
-            from anyio.streams.text import TextSendStream
-            from trio.lowlevel import FdStream
+            import sys
+            from subprocess import PIPE
 
-            transport = SubprocessCLITransport(
-                prompt="test",
-                options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+            from anyio.streams.text import TextSendStream
+
+            # Create a real subprocess that consumes stdin (cross-platform)
+            process = await anyio.open_process(
+                [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                stdin=PIPE,
+                stdout=PIPE,
+                stderr=PIPE,
             )
 
-            # Create a pipe - FdStream is the same type used for process stdin
-            read_fd, write_fd = os.pipe()
-
-            # Exact same wrapping as production: FdStream -> SendStreamWrapper -> TextSendStream
-            fd_stream = FdStream(write_fd)
-            transport._ready = True
-            transport._process = MagicMock(returncode=None)
-            transport._stdin_stream = TextSendStream(SendStreamWrapper(fd_stream))
-
-            # Spawn concurrent writes - the lock should serialize them
-            num_writes = 10
-            errors: list[Exception] = []
-
-            async def do_write(i: int):
-                try:
-                    await transport.write(f'{{"msg": {i}}}\n')
-                except Exception as e:
-                    errors.append(e)
-
             try:
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+                )
+
+                # Same setup as production: TextSendStream wrapping process.stdin
+                transport._ready = True
+                transport._process = MagicMock(returncode=None)
+                transport._stdin_stream = TextSendStream(process.stdin)
+
+                # Spawn concurrent writes - the lock should serialize them
+                num_writes = 10
+                errors: list[Exception] = []
+
+                async def do_write(i: int):
+                    try:
+                        await transport.write(f'{{"msg": {i}}}\n')
+                    except Exception as e:
+                        errors.append(e)
+
                 async with anyio.create_task_group() as tg:
                     for i in range(num_writes):
                         tg.start_soon(do_write, i)
@@ -695,63 +700,67 @@ class TestSubprocessCLITransport:
                 # All writes should succeed - the lock serializes them
                 assert len(errors) == 0, f"Got errors: {errors}"
             finally:
-                os.close(read_fd)
-                await fd_stream.aclose()
+                process.terminate()
+                await process.wait()
 
         anyio.run(_test, backend="trio")
 
     def test_concurrent_writes_fail_without_lock(self):
         """Verify that without the lock, concurrent writes cause BusyResourceError.
 
-        Uses the exact same stream chain as production to prove the lock is necessary.
+        Uses a real subprocess with the same stream setup as production.
         """
 
         async def _test():
+            import sys
             from contextlib import asynccontextmanager
+            from subprocess import PIPE
 
-            from anyio._backends._trio import SendStreamWrapper
             from anyio.streams.text import TextSendStream
-            from trio.lowlevel import FdStream
 
-            transport = SubprocessCLITransport(
-                prompt="test",
-                options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+            # Create a real subprocess that consumes stdin (cross-platform)
+            process = await anyio.open_process(
+                [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                stdin=PIPE,
+                stdout=PIPE,
+                stderr=PIPE,
             )
 
-            # Create a pipe - FdStream is the same type used for process stdin
-            read_fd, write_fd = os.pipe()
-
-            # Exact same wrapping as production
-            fd_stream = FdStream(write_fd)
-            transport._ready = True
-            transport._process = MagicMock(returncode=None)
-            transport._stdin_stream = TextSendStream(SendStreamWrapper(fd_stream))
-
-            # Replace lock with no-op to trigger the race condition
-            class NoOpLock:
-                @asynccontextmanager
-                async def __call__(self):
-                    yield
-
-                async def __aenter__(self):
-                    return self
-
-                async def __aexit__(self, *args):
-                    pass
-
-            transport._write_lock = NoOpLock()
-
-            # Spawn concurrent writes - should fail without lock
-            num_writes = 10
-            errors: list[Exception] = []
-
-            async def do_write(i: int):
-                try:
-                    await transport.write(f'{{"msg": {i}}}\n')
-                except Exception as e:
-                    errors.append(e)
-
             try:
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+                )
+
+                # Same setup as production
+                transport._ready = True
+                transport._process = MagicMock(returncode=None)
+                transport._stdin_stream = TextSendStream(process.stdin)
+
+                # Replace lock with no-op to trigger the race condition
+                class NoOpLock:
+                    @asynccontextmanager
+                    async def __call__(self):
+                        yield
+
+                    async def __aenter__(self):
+                        return self
+
+                    async def __aexit__(self, *args):
+                        pass
+
+                transport._write_lock = NoOpLock()
+
+                # Spawn concurrent writes - should fail without lock
+                num_writes = 10
+                errors: list[Exception] = []
+
+                async def do_write(i: int):
+                    try:
+                        await transport.write(f'{{"msg": {i}}}\n')
+                    except Exception as e:
+                        errors.append(e)
+
                 async with anyio.create_task_group() as tg:
                     for i in range(num_writes):
                         tg.start_soon(do_write, i)
@@ -767,7 +776,7 @@ class TestSubprocessCLITransport:
                     f"Expected 'another task' error, got: {error_strs}"
                 )
             finally:
-                os.close(read_fd)
-                await fd_stream.aclose()
+                process.terminate()
+                await process.wait()
 
         anyio.run(_test, backend="trio")

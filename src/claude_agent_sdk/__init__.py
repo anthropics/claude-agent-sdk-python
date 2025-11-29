@@ -39,6 +39,9 @@ from .types import (
     PreCompactHookInput,
     PreToolUseHookInput,
     ResultMessage,
+    SandboxIgnoreViolations,
+    SandboxNetworkConfig,
+    SandboxSettings,
     SdkPluginConfig,
     SettingSource,
     StopHookInput,
@@ -342,6 +345,10 @@ __all__ = [
     "SettingSource",
     # Plugin support
     "SdkPluginConfig",
+    # Sandbox support
+    "SandboxSettings",
+    "SandboxNetworkConfig",
+    "SandboxIgnoreViolations",
     # MCP Server Support
     "create_sdk_mcp_server",
     "tool",

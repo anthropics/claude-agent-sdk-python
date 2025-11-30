@@ -500,3 +500,110 @@ class TestSubprocessCLITransport:
                 assert user_passed == "claude"
 
         anyio.run(_test)
+
+    def test_flush_stdin_on_windows(self):
+        """Test that flush_stdin calls drain() on Windows (issue #208)."""
+
+        async def _test():
+            # Mock platform.system to return Windows
+            with patch("platform.system", return_value="Windows"):
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=ClaudeAgentOptions(),
+                    cli_path="/usr/bin/claude",
+                )
+
+                # Create a mock process with stdin that has drain method
+                mock_process = MagicMock()
+                mock_stdin = AsyncMock()
+                mock_stdin.drain = AsyncMock()
+                mock_process.stdin = mock_stdin
+                transport._process = mock_process
+
+                # Call flush_stdin
+                await transport.flush_stdin()
+
+                # Verify drain was called on Windows
+                mock_stdin.drain.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_flush_stdin_on_non_windows(self):
+        """Test that flush_stdin does nothing on non-Windows platforms."""
+
+        async def _test():
+            # Mock platform.system to return Linux
+            with patch("platform.system", return_value="Linux"):
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=ClaudeAgentOptions(),
+                    cli_path="/usr/bin/claude",
+                )
+
+                # Create a mock process with stdin
+                mock_process = MagicMock()
+                mock_stdin = AsyncMock()
+                mock_stdin.drain = AsyncMock()
+                mock_process.stdin = mock_stdin
+                transport._process = mock_process
+
+                # Call flush_stdin
+                await transport.flush_stdin()
+
+                # Verify drain was NOT called on non-Windows
+                mock_stdin.drain.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_flush_stdin_without_process(self):
+        """Test that flush_stdin handles missing process gracefully."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(),
+                cli_path="/usr/bin/claude",
+            )
+
+            # Don't set up a process
+            transport._process = None
+
+            # Should not raise an error
+            await transport.flush_stdin()
+
+        anyio.run(_test)
+
+    def test_flush_stdin_fallback_to_inner_stream(self):
+        """Test that flush_stdin tries to find drain() in wrapped streams."""
+
+        async def _test():
+            # Mock platform.system to return Windows
+            with patch("platform.system", return_value="Windows"):
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=ClaudeAgentOptions(),
+                    cli_path="/usr/bin/claude",
+                )
+
+                # Create a mock process with stdin that doesn't have drain,
+                # but has an inner _stream that does
+                mock_process = MagicMock()
+                mock_stdin = MagicMock()
+                # Remove drain from stdin itself
+                del mock_stdin.drain
+
+                # Add inner stream with drain
+                mock_inner_stream = AsyncMock()
+                mock_inner_stream.drain = AsyncMock()
+                mock_stdin._stream = mock_inner_stream
+
+                mock_process.stdin = mock_stdin
+                transport._process = mock_process
+
+                # Call flush_stdin
+                await transport.flush_stdin()
+
+                # Verify drain was called on the inner stream
+                mock_inner_stream.drain.assert_called_once()
+
+        anyio.run(_test)

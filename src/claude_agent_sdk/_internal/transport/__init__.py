@@ -64,5 +64,17 @@ class Transport(ABC):
         """End the input stream (close stdin for process transports)."""
         pass
 
+    async def flush_stdin(self) -> None:
+        """Flush the stdin stream to ensure data is sent immediately.
+
+        This is primarily needed on Windows where subprocess stdin buffering
+        can prevent data from being sent to the child process immediately.
+
+        Default implementation does nothing. Transports that support stdin
+        flushing should override this method.
+        """
+        # Default implementation - subclasses can override for platform-specific flushing
+        return None
+
 
 __all__ = ["Transport"]

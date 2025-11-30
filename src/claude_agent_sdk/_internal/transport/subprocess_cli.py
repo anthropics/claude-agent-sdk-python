@@ -597,3 +597,46 @@ class SubprocessCLITransport(Transport):
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""
         return self._ready
+
+    async def flush_stdin(self) -> None:
+        """Flush stdin to ensure data is sent immediately to the subprocess.
+
+        This is particularly important on Windows where subprocess stdin buffering
+        can prevent data from reaching the child process immediately.
+
+        This method attempts to drain the stdin stream if using asyncio backend,
+        which is the primary fix for Windows subprocess communication issues.
+        """
+        # Only flush if we have a process and stdin stream
+        if not self._process or not self._process.stdin:
+            return
+
+        # On Windows, we need to explicitly flush/drain the stdin stream
+        # to ensure data reaches the subprocess immediately
+        if platform.system() == "Windows":
+            try:
+                # anyio wraps subprocess stdin in a ByteSendStream
+                # When using asyncio backend, the underlying stream is a StreamWriter
+                # which has a drain() method that we need to call
+                stdin_stream = self._process.stdin
+
+                # Check if this is an asyncio StreamWriter (has drain method)
+                if hasattr(stdin_stream, "drain") and callable(stdin_stream.drain):
+                    await stdin_stream.drain()
+                    logger.debug("Flushed stdin stream on Windows")
+                else:
+                    # If not a StreamWriter, try to access wrapped/inner stream
+                    # anyio may wrap the stream in various ways depending on backend
+                    for attr in ["_stream", "_transport_stream", "transport_stream"]:
+                        if hasattr(stdin_stream, attr):
+                            inner = getattr(stdin_stream, attr)
+                            if hasattr(inner, "drain") and callable(inner.drain):
+                                await inner.drain()
+                                logger.debug(
+                                    f"Flushed stdin inner stream via {attr} on Windows"
+                                )
+                                break
+            except Exception as e:
+                # Log but don't fail - flushing is a best-effort optimization
+                logger.debug(f"Could not flush stdin on Windows: {e}")
+                pass

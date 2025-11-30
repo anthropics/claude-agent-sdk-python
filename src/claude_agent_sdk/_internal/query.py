@@ -308,6 +308,7 @@ class Query:
                 },
             }
             await self.transport.write(json.dumps(success_response) + "\n")
+            await self.transport.flush_stdin()
 
         except Exception as e:
             # Send error response
@@ -320,6 +321,7 @@ class Query:
                 },
             }
             await self.transport.write(json.dumps(error_response) + "\n")
+            await self.transport.flush_stdin()
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0
@@ -349,6 +351,11 @@ class Query:
         }
 
         await self.transport.write(json.dumps(control_request) + "\n")
+
+        # Flush stdin to ensure the request is sent immediately
+        # This is critical on Windows where buffering can prevent the subprocess
+        # from receiving the data
+        await self.transport.flush_stdin()
 
         # Wait for response
         try:

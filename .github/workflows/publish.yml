@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 0.1.0)'
+        description: 'Package version to publish (e.g., 0.1.4)'
         required: true
         type: string
 jobs:
@@ -12,89 +12,142 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13']
-    
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-    
-    - name: Run tests
-      run: |
-        python -m pytest tests/ -v
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v
 
   lint:
     runs-on: ubuntu-latest
-    
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run ruff
+        run: |
+          ruff check src/ tests/
+          ruff format --check src/ tests/
+
+      - name: Run mypy
+        run: |
+          mypy src/
+
+  build-wheels:
+    needs: [test, lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
     - uses: actions/checkout@v4
-    
+      with:
+        fetch-depth: 0 # Fetch all history including tags (necessary for changelog generation)
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    
-    - name: Install dependencies
+
+    - name: Install build dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-    
-    - name: Run ruff
+        pip install build twine wheel
+      shell: bash
+
+    - name: Build wheel with bundled CLI
       run: |
-        ruff check src/ tests/
-        ruff format --check src/ tests/
-    
-    - name: Run mypy
-      run: |
-        mypy src/
+        python scripts/build_wheel.py \
+          --version "${{ github.event.inputs.version }}" \
+          --skip-sdist \
+          --clean
+      shell: bash
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}
+        path: dist/*.whl
+        if-no-files-found: error
+        compression-level: 0
 
   publish:
-    needs: [test, lint]
+    needs: [build-wheels]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
-    
+
     steps:
     - uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    
+
     - name: Set version
       id: version
       run: |
         VERSION="${{ github.event.inputs.version }}"
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "version=$VERSION" >> $GITHUB_OUTPUT
-    
+
     - name: Update version
       run: |
         python scripts/update_version.py "${{ env.VERSION }}"
-    
+
+    - name: Read CLI version from code
+      id: cli_version
+      run: |
+        CLI_VERSION=$(python -c "import re; print(re.search(r'__cli_version__ = \"([^\"]+)\"', open('src/claude_agent_sdk/_cli_version.py').read()).group(1))")
+        echo "cli_version=$CLI_VERSION" >> $GITHUB_OUTPUT
+        echo "Bundled CLI version: $CLI_VERSION"
+
+    - name: Download all wheel artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: wheel-*
+        merge-multiple: true
+
     - name: Install build dependencies
       run: |
         python -m pip install --upgrade pip
         pip install build twine
-    
-    - name: Build package
-      run: python -m build
-    
-    - name: Check package
-      run: twine check dist/*
-    
+
+    - name: Build source distribution
+      run: python -m build --sdist
+
     - name: Publish to PyPI
       env:
         TWINE_USERNAME: __token__
@@ -126,27 +179,13 @@ jobs:
 
         # Commit version changes
         git add pyproject.toml src/claude_agent_sdk/_version.py
-        git commit -m "chore: bump version to ${{ env.VERSION }}"
+        git commit -m "chore: release v${{ env.VERSION }}"
 
     - name: Update changelog with Claude
       continue-on-error: true
       uses: anthropics/claude-code-action@v1
       with:
-        prompt: |
-          You are updating the changelog for the new release v${{ env.VERSION }}.
-
-          Update CHANGELOG.md to add a new section for version ${{ env.VERSION }} at the top of the file, right after the '# Changelog' heading.
-
-          Review the recent commits and merged pull requests since the last release (${{ steps.previous_tag.outputs.previous_tag }}) to generate meaningful changelog content for v${{ env.VERSION }}. Follow the existing format in CHANGELOG.md with sections like:
-          - Breaking Changes (if any)
-          - New Features
-          - Bug Fixes
-          - Documentation
-          - Internal/Other changes
-
-          Include only the sections that are relevant based on the actual changes. Write clear, user-focused descriptions.
-
-          After updating CHANGELOG.md, commit the changes with the message "docs: update changelog for v${{ env.VERSION }}".
+        prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ steps.previous_tag.outputs.previous_tag }}"
         anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
         github_token: ${{ secrets.GITHUB_TOKEN }}
         claude_args: |
@@ -163,12 +202,13 @@ jobs:
         PR_BODY="This PR updates the version to ${{ env.VERSION }} after publishing to PyPI.
 
         ## Changes
-        - Updated version in \`pyproject.toml\`
-        - Updated version in \`src/claude_agent_sdk/_version.py\`
+        - Updated version in \`pyproject.toml\` to ${{ env.VERSION }}
+        - Updated version in \`src/claude_agent_sdk/_version.py\` to ${{ env.VERSION }}
         - Updated \`CHANGELOG.md\` with release notes
 
         ## Release Information
         - Published to PyPI: https://pypi.org/project/claude-agent-sdk/${{ env.VERSION }}/
+        - Bundled CLI version: ${{ steps.cli_version.outputs.cli_version }}
         - Install with: \`pip install claude-agent-sdk==${{ env.VERSION }}\`
 
         🤖 Generated by GitHub Actions"

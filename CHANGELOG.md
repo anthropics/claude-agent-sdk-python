@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.10
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.53
+
+## 0.1.9
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.49
+
+## 0.1.8
+
+### Features
+
+- Claude Code is now included by default in the package, removing the requirement to install it separately. If you do wish to use a separately installed build, use the `cli_path` field in `Options`.
+
+## 0.1.7
+
+### Features
+
+- **Structured outputs support**: Agents can now return validated JSON matching your schema. See https://docs.claude.com/en/docs/agent-sdk/structured-outputs. (#340)
+- **Fallback model handling**: Added automatic fallback model handling for improved reliability and parity with the TypeScript SDK. When the primary model is unavailable, the SDK will automatically use a fallback model (#317)
+- **Local Claude CLI support**: Added support for using a locally installed Claude CLI from `~/.claude/local/claude`, enabling development and testing with custom Claude CLI builds (#302)
+
+## 0.1.6
+
+### Features
+
+- **Max budget control**: Added `max_budget_usd` option to set a maximum spending limit in USD for SDK sessions. When the budget is exceeded, the session will automatically terminate, helping prevent unexpected costs (#293)
+- **Extended thinking configuration**: Added `max_thinking_tokens` option to control the maximum number of tokens allocated for Claude's internal reasoning process. This allows fine-tuning of the balance between response quality and token usage (#298)
+
+### Bug Fixes
+
+- **System prompt defaults**: Fixed issue where a default system prompt was being used when none was specified. The SDK now correctly uses an empty system prompt by default, giving users full control over agent behavior (#290)
+
+## 0.1.5
+
+### Features
+
+- **Plugin support**: Added the ability to load Claude Code plugins programmatically through the SDK. Plugins can be specified using the new `plugins` field in `ClaudeAgentOptions` with a `SdkPluginConfig` type that supports loading local plugins by path. This enables SDK applications to extend functionality with custom commands and capabilities defined in plugin directories
+
+## 0.1.4
+
+### Features
+
+- **Skip version check**: Added `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` environment variable to allow users to disable the Claude Code version check. Set this environment variable to skip the minimum version validation when the SDK connects to Claude Code. (Only recommended if you already have Claude Code 2.0.0 or higher installed, otherwise some functionality may break)
+- SDK MCP server tool calls can now return image content blocks
+
 ## 0.1.3
 
 ### Features

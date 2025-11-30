@@ -366,6 +366,9 @@ class HookMatcher:
     # A list of Python functions with function signature HookCallback
     hooks: list[HookCallback] = field(default_factory=list)
 
+    # Timeout in seconds for all hooks in this matcher (default: 60)
+    timeout: float | None = None
+
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):
@@ -406,6 +409,16 @@ McpServerConfig = (
 )
 
 
+class SdkPluginConfig(TypedDict):
+    """SDK plugin configuration.
+
+    Currently only local plugins are supported via the 'local' type.
+    """
+
+    type: Literal["local"]
+    path: str
+
+
 # Content block types
 @dataclass
 class TextBlock:
@@ -444,6 +457,16 @@ ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
 
 
 # Message types
+AssistantMessageError = Literal[
+    "authentication_failed",
+    "billing_error",
+    "rate_limit",
+    "invalid_request",
+    "server_error",
+    "unknown",
+]
+
+
 @dataclass
 class UserMessage:
     """User message."""
@@ -459,6 +482,7 @@ class AssistantMessage:
     content: list[ContentBlock]
     model: str
     parent_tool_use_id: str | None = None
+    error: AssistantMessageError | None = None
 
 
 @dataclass
@@ -482,6 +506,7 @@ class ResultMessage:
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None
+    structured_output: Any = None
 
 
 @dataclass
@@ -508,8 +533,10 @@ class ClaudeAgentOptions:
     continue_conversation: bool = False
     resume: str | None = None
     max_turns: int | None = None
+    max_budget_usd: float | None = None
     disallowed_tools: list[str] = field(default_factory=list)
     model: str | None = None
+    fallback_model: str | None = None
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
     cli_path: str | Path | None = None
@@ -547,6 +574,13 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
+    # Plugin configurations for custom plugins
+    plugins: list[SdkPluginConfig] = field(default_factory=list)
+    # Max tokens for thinking blocks
+    max_thinking_tokens: int | None = None
+    # Output format for structured outputs (matches Messages API structure)
+    # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
+    output_format: dict[str, Any] | None = None
 
 
 # SDK Control Protocol

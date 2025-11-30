@@ -86,7 +86,7 @@ jobs:
     needs: test-e2e # Run after e2e tests
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@v4

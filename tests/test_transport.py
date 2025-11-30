@@ -46,6 +46,8 @@ class TestSubprocessCLITransport:
         assert "stream-json" in cmd
         assert "--print" in cmd
         assert "Hello" in cmd
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == ""
 
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
@@ -128,6 +130,33 @@ class TestSubprocessCLITransport:
         assert "acceptEdits" in cmd
         assert "--max-turns" in cmd
         assert "5" in cmd
+
+    def test_build_command_with_fallback_model(self):
+        """Test building CLI command with fallback_model option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                model="opus",
+                fallback_model="sonnet",
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--model" in cmd
+        assert "opus" in cmd
+        assert "--fallback-model" in cmd
+        assert "sonnet" in cmd
+
+    def test_build_command_with_max_thinking_tokens(self):
+        """Test building CLI command with max_thinking_tokens option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(max_thinking_tokens=5000),
+        )
+
+        cmd = transport._build_command()
+        assert "--max-thinking-tokens" in cmd
+        assert "5000" in cmd
 
     def test_build_command_with_add_dirs(self):
         """Test building CLI command with add_dirs option."""

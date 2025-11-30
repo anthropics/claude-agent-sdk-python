@@ -3,9 +3,11 @@
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from dataclasses import asdict
@@ -28,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Platform-specific command line length limits
+# Windows cmd.exe has a limit of 8191 characters, use 8000 for safety
+# Other platforms have much higher limits
+_CMD_LENGTH_LIMIT = 8000 if platform.system() == "Windows" else 100000
 
 
 class SubprocessCLITransport(Transport):
@@ -57,9 +64,16 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._temp_files: list[str] = []  # Track temporary files for cleanup
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
+        # First, check for bundled CLI
+        bundled_cli = self._find_bundled_cli()
+        if bundled_cli:
+            return bundled_cli
+
+        # Fall back to system-wide search
         if cli := shutil.which("claude"):
             return cli
 
@@ -69,6 +83,7 @@ class SubprocessCLITransport(Transport):
             Path.home() / ".local/bin/claude",
             Path.home() / "node_modules/.bin/claude",
             Path.home() / ".yarn/bin/claude",
+            Path.home() / ".claude/local/claude",
         ]
 
         for path in locations:
@@ -84,12 +99,27 @@ class SubprocessCLITransport(Transport):
             "  ClaudeAgentOptions(cli_path='/path/to/claude')"
         )
 
+    def _find_bundled_cli(self) -> str | None:
+        """Find bundled CLI binary if it exists."""
+        # Determine the CLI binary name based on platform
+        cli_name = "claude.exe" if platform.system() == "Windows" else "claude"
+
+        # Get the path to the bundled CLI
+        # The _bundled directory is in the same package as this module
+        bundled_path = Path(__file__).parent.parent.parent / "_bundled" / cli_name
+
+        if bundled_path.exists() and bundled_path.is_file():
+            logger.info(f"Using bundled Claude Code CLI: {bundled_path}")
+            return str(bundled_path)
+
+        return None
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
-            pass
+            cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
@@ -107,11 +137,17 @@ class SubprocessCLITransport(Transport):
         if self._options.max_turns:
             cmd.extend(["--max-turns", str(self._options.max_turns)])
 
+        if self._options.max_budget_usd is not None:
+            cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
+
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
         if self._options.model:
             cmd.extend(["--model", self._options.model])
+
+        if self._options.fallback_model:
+            cmd.extend(["--fallback-model", self._options.fallback_model])
 
         if self._options.permission_prompt_tool_name:
             cmd.extend(
@@ -173,7 +209,8 @@ class SubprocessCLITransport(Transport):
                 name: {k: v for k, v in asdict(agent_def).items() if v is not None}
                 for name, agent_def in self._options.agents.items()
             }
-            cmd.extend(["--agents", json.dumps(agents_dict)])
+            agents_json = json.dumps(agents_dict)
+            cmd.extend(["--agents", agents_json])
 
         sources_value = (
             ",".join(self._options.setting_sources)
@@ -181,6 +218,14 @@ class SubprocessCLITransport(Transport):
             else ""
         )
         cmd.extend(["--setting-sources", sources_value])
+
+        # Add plugin directories
+        if self._options.plugins:
+            for plugin in self._options.plugins:
+                if plugin["type"] == "local":
+                    cmd.extend(["--plugin-dir", plugin["path"]])
+                else:
+                    raise ValueError(f"Unsupported plugin type: {plugin['type']}")
 
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
@@ -191,13 +236,61 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
+        if self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
+
+        # Extract schema from output_format structure if provided
+        # Expected: {"type": "json_schema", "schema": {...}}
+        if (
+            self._options.output_format is not None
+            and isinstance(self._options.output_format, dict)
+            and self._options.output_format.get("type") == "json_schema"
+        ):
+            schema = self._options.output_format.get("schema")
+            if schema is not None:
+                cmd.extend(["--json-schema", json.dumps(schema)])
+
         # Add prompt handling based on mode
+        # IMPORTANT: This must come AFTER all flags because everything after "--" is treated as arguments
         if self._is_streaming:
             # Streaming mode: use --input-format stream-json
             cmd.extend(["--input-format", "stream-json"])
         else:
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
+
+        # Check if command line is too long (Windows limitation)
+        cmd_str = " ".join(cmd)
+        if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:
+            # Command is too long - use temp file for agents
+            # Find the --agents argument and replace its value with @filepath
+            try:
+                agents_idx = cmd.index("--agents")
+                agents_json_value = cmd[agents_idx + 1]
+
+                # Create a temporary file
+                # ruff: noqa: SIM115
+                temp_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False, encoding="utf-8"
+                )
+                temp_file.write(agents_json_value)
+                temp_file.close()
+
+                # Track for cleanup
+                self._temp_files.append(temp_file.name)
+
+                # Replace agents JSON with @filepath reference
+                cmd[agents_idx + 1] = f"@{temp_file.name}"
+
+                logger.info(
+                    f"Command line length ({len(cmd_str)}) exceeds limit ({_CMD_LENGTH_LIMIT}). "
+                    f"Using temp file for --agents: {temp_file.name}"
+                )
+            except (ValueError, IndexError) as e:
+                # This shouldn't happen, but log it just in case
+                logger.warning(f"Failed to optimize command line length: {e}")
 
         return cmd
 
@@ -308,6 +401,12 @@ class SubprocessCLITransport(Transport):
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         self._ready = False
+
+        # Clean up temporary files first (before early return)
+        for temp_file in self._temp_files:
+            with suppress(Exception):
+                Path(temp_file).unlink(missing_ok=True)
+        self._temp_files.clear()
 
         if not self._process:
             return

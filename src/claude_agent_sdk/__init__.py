@@ -218,7 +218,7 @@ def create_sdk_mcp_server(
         tool_map = {tool_def.name: tool_def for tool_def in tools}
 
         # Register list_tools handler to expose available tools
-        @server.list_tools()  # type: ignore[no-untyped-call,misc]
+        @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
         async def list_tools() -> list[Tool]:
             """Return the list of available tools."""
             tool_list = []
@@ -264,7 +264,7 @@ def create_sdk_mcp_server(
             return tool_list
 
         # Register call_tool handler to execute tools
-        @server.call_tool()  # type: ignore[misc]
+        @server.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             """Execute a tool by name with given arguments."""
             if name not in tool_map:

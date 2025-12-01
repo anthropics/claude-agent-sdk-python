@@ -639,6 +639,11 @@ class ClaudeAgentOptions:
 
     # Partial message streaming support
     include_partial_messages: bool = False
+    # When true, accumulates text/thinking deltas from stream events into
+    # TextBlock/ThinkingBlock objects within AssistantMessage. Only works when
+    # include_partial_messages is True. Emits updated AssistantMessage objects
+    # as content streams in from the LLM.
+    accumulate_streaming_content: bool = False
     # When true resumed sessions will fork to a new session ID rather than
     # continuing the previous session.
     fork_session: bool = False

@@ -72,6 +72,7 @@ class Query:
         | None = None,
         hooks: dict[str, list[dict[str, Any]]] | None = None,
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
+        accumulate_streaming_content: bool = False,
         initialize_timeout: float = 60.0,
     ):
         """Initialize Query with transport and callbacks.
@@ -82,6 +83,7 @@ class Query:
             can_use_tool: Optional callback for tool permission requests
             hooks: Optional hook configurations
             sdk_mcp_servers: Optional SDK MCP server instances
+            accumulate_streaming_content: Whether to accumulate stream deltas into content blocks
             initialize_timeout: Timeout in seconds for the initialize request
         """
         self._initialize_timeout = initialize_timeout
@@ -90,6 +92,7 @@ class Query:
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
+        self.accumulate_streaming_content = accumulate_streaming_content
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -106,6 +109,13 @@ class Query:
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
+
+        # Stream accumulator for building partial messages
+        self._stream_accumulator: Any = None
+        if self.accumulate_streaming_content:
+            from .stream_accumulator import StreamAccumulator
+
+            self._stream_accumulator = StreamAccumulator()
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -195,8 +205,56 @@ class Query:
                     # TODO: Implement cancellation support
                     continue
 
-                # Regular SDK messages go to the stream
-                await self._message_send.send(message)
+                # Process stream events through accumulator if enabled
+                if msg_type == "stream_event" and self._stream_accumulator:
+                    # Try to accumulate into AssistantMessage
+                    accumulated_message = self._stream_accumulator.process_stream_event(
+                        message
+                    )
+                    if accumulated_message:
+                        # Convert AssistantMessage to message dict format
+                        from ..types import TextBlock, ThinkingBlock, ToolUseBlock
+
+                        content_blocks: list[dict[str, Any]] = []
+                        for block in accumulated_message.content:
+                            if isinstance(block, TextBlock):
+                                content_blocks.append(
+                                    {"type": "text", "text": block.text}
+                                )
+                            elif isinstance(block, ThinkingBlock):
+                                content_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": block.thinking,
+                                        "signature": block.signature,
+                                    }
+                                )
+                            elif isinstance(block, ToolUseBlock):
+                                content_blocks.append(
+                                    {
+                                        "type": "tool_use",
+                                        "id": block.id,
+                                        "name": block.name,
+                                        "input": block.input,
+                                    }
+                                )
+
+                        # Send as assistant message
+                        assistant_msg: dict[str, Any] = {
+                            "type": "assistant",
+                            "message": {
+                                "role": "assistant",
+                                "content": content_blocks,
+                                "model": accumulated_message.model,
+                            },
+                            "parent_tool_use_id": accumulated_message.parent_tool_use_id,
+                        }
+                        await self._message_send.send(assistant_msg)
+                    # Still send the original stream event for users who want raw events
+                    await self._message_send.send(message)
+                else:
+                    # Regular SDK messages go to the stream
+                    await self._message_send.send(message)
 
         except anyio.get_cancelled_exc_class():
             # Task was cancelled - this is expected behavior

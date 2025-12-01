@@ -99,6 +99,7 @@ class InternalClient:
             if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
+            accumulate_streaming_content=configured_options.accumulate_streaming_content,
         )
 
         try:

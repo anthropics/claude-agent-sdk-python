@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
+# SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
+SdkBeta = Literal["context-1m-2025-08-07"]
+
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
 
@@ -614,6 +617,8 @@ class ClaudeAgentOptions:
     disallowed_tools: list[str] = field(default_factory=list)
     model: str | None = None
     fallback_model: str | None = None
+    # Beta features - see https://docs.anthropic.com/en/api/beta-headers
+    betas: list[SdkBeta] = field(default_factory=list)
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
     cli_path: str | Path | None = None

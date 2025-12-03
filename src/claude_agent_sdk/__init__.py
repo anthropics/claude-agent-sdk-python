@@ -42,6 +42,7 @@ from .types import (
     SandboxIgnoreViolations,
     SandboxNetworkConfig,
     SandboxSettings,
+    SdkBeta,
     SdkPluginConfig,
     SettingSource,
     StopHookInput,
@@ -345,6 +346,8 @@ __all__ = [
     "SettingSource",
     # Plugin support
     "SdkPluginConfig",
+    # Beta support
+    "SdkBeta",
     # Sandbox support
     "SandboxSettings",
     "SandboxNetworkConfig",

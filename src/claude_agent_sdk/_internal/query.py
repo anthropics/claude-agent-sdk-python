@@ -214,6 +214,11 @@ class Query:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             logger.error(f"Fatal error in message reader: {e}")
+            # Signal all pending control requests so they fail fast instead of timing out
+            for request_id, event in list(self.pending_control_responses.items()):
+                if request_id not in self.pending_control_results:
+                    self.pending_control_results[request_id] = e
+                    event.set()
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": str(e)})
         finally:

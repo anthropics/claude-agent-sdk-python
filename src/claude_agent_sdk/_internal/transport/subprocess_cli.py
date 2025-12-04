@@ -185,6 +185,18 @@ class SubprocessCLITransport(Transport):
                     ["--append-system-prompt", self._options.system_prompt["append"]]
                 )
 
+        # Handle tools option (base set of tools)
+        if self._options.tools is not None:
+            tools = self._options.tools
+            if isinstance(tools, list):
+                if len(tools) == 0:
+                    cmd.extend(["--tools", ""])
+                else:
+                    cmd.extend(["--tools", ",".join(tools)])
+            else:
+                # Preset object - 'claude_code' preset maps to 'default'
+                cmd.extend(["--tools", "default"])
+
         if self._options.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
 

@@ -647,3 +647,49 @@ class TestSubprocessCLITransport:
         assert network["allowLocalBinding"] is True
         assert network["httpProxyPort"] == 8080
         assert network["socksProxyPort"] == 8081
+
+    def test_build_command_with_tools_array(self):
+        """Test building CLI command with tools as array of tool names."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=["Read", "Edit", "Bash"]),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "Read,Edit,Bash"
+
+    def test_build_command_with_tools_empty_array(self):
+        """Test building CLI command with tools as empty array (disables all tools)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=[]),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == ""
+
+    def test_build_command_with_tools_preset(self):
+        """Test building CLI command with tools preset."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools={"type": "preset", "preset": "claude_code"}),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "default"
+
+    def test_build_command_without_tools(self):
+        """Test building CLI command without tools option (default None)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" not in cmd

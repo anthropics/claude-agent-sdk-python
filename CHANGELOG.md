@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.12
+
+### New Features
+
+- **Tools option**: Added `tools` option to `ClaudeAgentOptions` for controlling the base set of available tools, matching the TypeScript SDK functionality. Supports three modes:
+  - Array of tool names to specify which tools should be available (e.g., `["Read", "Edit", "Bash"]`)
+  - Empty array `[]` to disable all built-in tools
+  - Preset object `{"type": "preset", "preset": "claude_code"}` to use the default Claude Code toolset
+- **SDK beta support**: Added `betas` option to `ClaudeAgentOptions` for enabling Anthropic API beta features. Currently supports `"context-1m-2025-08-07"` for extended context window
+
 ## 0.1.11
 
 ### Internal/Other Changes

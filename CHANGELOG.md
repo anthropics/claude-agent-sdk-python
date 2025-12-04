@@ -8,6 +8,7 @@
   - Array of tool names to specify which tools should be available (e.g., `["Read", "Edit", "Bash"]`)
   - Empty array `[]` to disable all built-in tools
   - Preset object `{"type": "preset", "preset": "claude_code"}` to use the default Claude Code toolset
+- **SDK beta support**: Added `betas` option to `ClaudeAgentOptions` for enabling Anthropic API beta features. Currently supports `"context-1m-2025-08-07"` for extended context window
 
 ## 0.1.11
 

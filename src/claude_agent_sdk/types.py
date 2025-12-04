@@ -10,6 +10,9 @@ from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+else:
+    # Runtime placeholder for forward reference resolution in Pydantic 2.12+
+    McpServer = Any
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]

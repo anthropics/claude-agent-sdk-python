@@ -29,6 +29,13 @@ class SystemPromptPreset(TypedDict):
     append: NotRequired[str]
 
 
+class ToolsPreset(TypedDict):
+    """Tools preset configuration."""
+
+    type: Literal["preset"]
+    preset: Literal["claude_code"]
+
+
 @dataclass
 class AgentDefinition:
     """Agent definition configuration."""
@@ -606,6 +613,7 @@ Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | Strea
 class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
+    tools: list[str] | ToolsPreset | None = None
     allowed_tools: list[str] = field(default_factory=list)
     system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)

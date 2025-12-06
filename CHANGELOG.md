@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.13
+
+### Bug Fixes
+
+- **Faster error handling**: CLI errors (e.g., invalid session ID) now propagate to pending requests immediately instead of waiting for the 60-second timeout (#388)
+- **Pydantic 2.12+ compatibility**: Fixed `PydanticUserError` caused by `McpServer` type only being imported under `TYPE_CHECKING` (#385)
+- **Concurrent subagent writes**: Added write lock to prevent `BusyResourceError` when multiple subagents invoke MCP tools in parallel (#391)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.59
+
 ## 0.1.12
 
 ### New Features

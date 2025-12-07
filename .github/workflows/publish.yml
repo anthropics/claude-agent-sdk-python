@@ -68,8 +68,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0 # Fetch all history including tags (necessary for changelog generation)
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -109,6 +107,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0  # Fetch all history including tags for changelog generation
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -189,6 +188,7 @@ jobs:
         anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
         github_token: ${{ secrets.GITHUB_TOKEN }}
         claude_args: |
+          --model claude-opus-4-5
           --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
 
     - name: Push branch and create PR

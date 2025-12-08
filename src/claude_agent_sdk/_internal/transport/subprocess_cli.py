@@ -650,6 +650,7 @@ class SubprocessCLITransport(Transport):
                             warning = (
                                 f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
                                 f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
+                                f"Found CLI at: {self._cli_path}. "
                                 "Some features may not work correctly."
                             )
                             logger.warning(warning)

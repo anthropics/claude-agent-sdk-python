@@ -261,6 +261,33 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.set_model(model)
 
+    async def rewind_files(self, user_message_id: str) -> None:
+        """Rewind tracked files to their state at a specific user message.
+
+        Requires file checkpointing to be enabled via the `enable_file_checkpointing` option
+        when creating the ClaudeSDKClient.
+
+        Args:
+            user_message_id: UUID of the user message to rewind to. This should be
+                the `uuid` field from a `UserMessage` received during the conversation.
+
+        Example:
+            ```python
+            options = ClaudeAgentOptions(enable_file_checkpointing=True)
+            async with ClaudeSDKClient(options) as client:
+                await client.query("Make some changes to my files")
+                async for msg in client.receive_response():
+                    if isinstance(msg, UserMessage):
+                        checkpoint_id = msg.uuid  # Save this for later
+
+                # Later, rewind to that point
+                await client.rewind_files(checkpoint_id)
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.rewind_files(user_message_id)
+
     async def get_server_info(self) -> dict[str, Any] | None:
         """Get server initialization info including available commands and output styles.
 

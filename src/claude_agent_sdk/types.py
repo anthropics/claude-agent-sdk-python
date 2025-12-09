@@ -673,6 +673,10 @@ class ClaudeAgentOptions:
     # Output format for structured outputs (matches Messages API structure)
     # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
     output_format: dict[str, Any] | None = None
+    # Enable file checkpointing to track file changes during the session.
+    # When enabled, files can be rewound to their state at any user message
+    # using `ClaudeSDKClient.rewind_files()`.
+    enable_file_checkpointing: bool = False
 
 
 # SDK Control Protocol
@@ -713,6 +717,11 @@ class SDKControlMcpMessageRequest(TypedDict):
     message: Any
 
 
+class SDKControlRewindFilesRequest(TypedDict):
+    subtype: Literal["rewind_files"]
+    user_message_id: str
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -723,6 +732,7 @@ class SDKControlRequest(TypedDict):
         | SDKControlSetPermissionModeRequest
         | SDKHookCallbackRequest
         | SDKControlMcpMessageRequest
+        | SDKControlRewindFilesRequest
     )
 
 

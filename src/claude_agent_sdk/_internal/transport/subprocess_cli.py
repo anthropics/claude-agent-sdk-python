@@ -384,6 +384,10 @@ class SubprocessCLITransport(Transport):
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
+            # Enable file checkpointing if requested
+            if self._options.enable_file_checkpointing:
+                process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+
             if self._cwd:
                 process_env["PWD"] = self._cwd
 

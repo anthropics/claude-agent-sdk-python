@@ -539,6 +539,21 @@ class Query:
             }
         )
 
+    async def rewind_files(self, user_message_id: str) -> None:
+        """Rewind tracked files to their state at a specific user message.
+
+        Requires file checkpointing to be enabled via the `enable_file_checkpointing` option.
+
+        Args:
+            user_message_id: UUID of the user message to rewind to
+        """
+        await self._send_control_request(
+            {
+                "subtype": "rewind_files",
+                "user_message_id": user_message_id,
+            }
+        )
+
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 

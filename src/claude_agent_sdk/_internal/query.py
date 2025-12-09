@@ -549,7 +549,7 @@ class Query:
         """
         await self._send_control_request(
             {
-                "subtype": "rewind_code",
+                "subtype": "rewind_files",
                 "user_message_id": user_message_id,
             }
         )

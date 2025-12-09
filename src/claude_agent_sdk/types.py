@@ -39,14 +39,88 @@ class ToolsPreset(TypedDict):
     preset: Literal["claude_code"]
 
 
+# Subagent execution modes
+SubagentExecutionMode = Literal["sequential", "parallel", "auto"]
+
+# Multi-invocation handling modes
+MultiInvocationMode = Literal["sequential", "parallel", "error"]
+
+# Error handling modes for subagent execution
+SubagentErrorHandling = Literal["fail_fast", "continue"]
+
+
+@dataclass
+class SubagentExecutionConfig:
+    """Configuration for subagent execution behavior.
+
+    This controls how the SDK handles multiple Task tool calls (subagent invocations)
+    when they occur in the same turn.
+
+    Attributes:
+        multi_invocation: How to handle multiple Task tool calls in the same turn.
+            - "sequential": Execute subagents one at a time in order (default)
+            - "parallel": Execute subagents concurrently
+            - "error": Raise an error if multiple Task tools are invoked in same turn
+        max_concurrent: Maximum number of subagents to run concurrently when
+            multi_invocation is "parallel". Default is 3.
+        error_handling: How to handle errors from individual subagents.
+            - "fail_fast": Stop execution on first subagent error
+            - "continue": Continue executing remaining subagents on error (default)
+
+    Example:
+        >>> config = SubagentExecutionConfig(
+        ...     multi_invocation="parallel",
+        ...     max_concurrent=5,
+        ...     error_handling="fail_fast"
+        ... )
+        >>> options = ClaudeAgentOptions(subagent_execution=config)
+    """
+
+    multi_invocation: MultiInvocationMode = "sequential"
+    max_concurrent: int = 3
+    error_handling: SubagentErrorHandling = "continue"
+
+
 @dataclass
 class AgentDefinition:
-    """Agent definition configuration."""
+    """Agent definition configuration.
+
+    Defines a custom agent (subagent) that can be invoked via the Task tool.
+
+    Attributes:
+        description: A short description of what this agent does. This is shown
+            to the parent agent to help it decide when to use this subagent.
+        prompt: The system prompt or instructions for this agent.
+        tools: Optional list of tool names this agent can use. If None, inherits
+            from parent agent.
+        model: Optional model override for this agent.
+            - "sonnet": Use Claude Sonnet
+            - "opus": Use Claude Opus
+            - "haiku": Use Claude Haiku (faster, lower cost)
+            - "inherit": Use the same model as the parent agent
+            - None: Use default model
+        execution_mode: How this agent should be executed when invoked alongside
+            other subagents in the same turn.
+            - "sequential": This agent must complete before the next starts
+            - "parallel": This agent can run concurrently with others
+            - "auto": SDK decides based on global SubagentExecutionConfig (default)
+            - None: Same as "auto"
+
+    Example:
+        >>> agent = AgentDefinition(
+        ...     description="Analyzes code for security issues",
+        ...     prompt="You are a security analyst...",
+        ...     tools=["Read", "Grep", "Glob"],
+        ...     model="haiku",
+        ...     execution_mode="parallel"
+        ... )
+    """
 
     description: str
     prompt: str
     tools: list[str] | None = None
     model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    execution_mode: SubagentExecutionMode | None = None
 
 
 # Permission Update types (matching TypeScript SDK)
@@ -368,18 +442,62 @@ HookCallback = Callable[
 # Hook matcher configuration
 @dataclass
 class HookMatcher:
-    """Hook matcher configuration."""
+    """Hook matcher configuration for matching tool invocations.
 
-    # See https://docs.anthropic.com/en/docs/claude-code/hooks#structure for the
-    # expected string value. For example, for PreToolUse, the matcher can be
-    # a tool name like "Bash" or a combination of tool names like
-    # "Write|MultiEdit|Edit".
+    The matcher field supports regex patterns for filtering which tools trigger
+    the associated hooks. This is particularly useful for PreToolUse and
+    PostToolUse hook events.
+
+    Attributes:
+        matcher: Regex pattern for matching tool names. If None, matches all tools.
+        hooks: List of async callback functions to execute when a tool matches.
+        timeout: Timeout in seconds for all hooks in this matcher (default: 60).
+
+    Pattern Examples:
+        Built-in tools:
+            - "Bash" - Match only the Bash tool
+            - "Read" - Match only the Read tool
+            - "Write|Edit" - Match Write OR Edit tools
+            - "Write|MultiEdit|Edit" - Match any file writing tool
+
+        MCP tools (format: mcp__<server>__<tool>):
+            - "mcp__.*" - Match all MCP tools from any server
+            - "mcp__slack__.*" - Match all tools from the slack MCP server
+            - "mcp__github__create_issue" - Match specific github tool
+            - "mcp__.*__delete.*" - Match any MCP tool with "delete" in the name
+            - "mcp__db__.*write.*" - Match db server tools containing "write"
+
+        Combined patterns:
+            - "Bash|mcp__.*__execute.*" - Match Bash or any MCP execute tools
+            - None - Match all tools (universal matcher)
+
+    Example:
+        >>> from claude_agent_sdk import HookMatcher, HookCallback
+        >>>
+        >>> async def log_mcp_calls(input, tool_use_id, context):
+        ...     print(f"MCP tool called: {input['tool_name']}")
+        ...     return {"continue_": True}
+        >>>
+        >>> # Match all MCP tools
+        >>> mcp_matcher = HookMatcher(
+        ...     matcher="mcp__.*",
+        ...     hooks=[log_mcp_calls],
+        ...     timeout=30.0
+        ... )
+        >>>
+        >>> # Match dangerous operations
+        >>> dangerous_matcher = HookMatcher(
+        ...     matcher="mcp__.*__delete.*|mcp__.*__drop.*",
+        ...     hooks=[confirm_dangerous_operation],
+        ...     timeout=60.0
+        ... )
+
+    See Also:
+        https://docs.anthropic.com/en/docs/claude-code/hooks#structure
+    """
+
     matcher: str | None = None
-
-    # A list of Python functions with function signature HookCallback
     hooks: list[HookCallback] = field(default_factory=list)
-
-    # Timeout in seconds for all hooks in this matcher (default: 60)
     timeout: float | None = None
 
 
@@ -660,6 +778,8 @@ class ClaudeAgentOptions:
     fork_session: bool = False
     # Agent definitions for custom agents
     agents: dict[str, AgentDefinition] | None = None
+    # Subagent execution configuration (controls parallel vs sequential execution)
+    subagent_execution: SubagentExecutionConfig | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
     # Sandbox configuration for bash command isolation.

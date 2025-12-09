@@ -30,6 +30,7 @@ from .types import (
     McpSdkServerConfig,
     McpServerConfig,
     Message,
+    MultiInvocationMode,
     PermissionMode,
     PermissionResult,
     PermissionResultAllow,
@@ -46,6 +47,9 @@ from .types import (
     SdkPluginConfig,
     SettingSource,
     StopHookInput,
+    SubagentErrorHandling,
+    SubagentExecutionConfig,
+    SubagentExecutionMode,
     SubagentStopHookInput,
     SystemMessage,
     TextBlock,
@@ -344,6 +348,11 @@ __all__ = [
     # Agent support
     "AgentDefinition",
     "SettingSource",
+    # Subagent execution support
+    "SubagentExecutionConfig",
+    "SubagentExecutionMode",
+    "MultiInvocationMode",
+    "SubagentErrorHandling",
     # Plugin support
     "SdkPluginConfig",
     # Beta support

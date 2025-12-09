@@ -718,7 +718,7 @@ class SDKControlMcpMessageRequest(TypedDict):
 
 
 class SDKControlRewindFilesRequest(TypedDict):
-    subtype: Literal["rewind_code"]
+    subtype: Literal["rewind_files"]
     user_message_id: str
 
 

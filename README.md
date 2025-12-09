@@ -351,6 +351,6 @@ The package is published to PyPI via the GitHub Actions workflow in `.github/wor
 
 The workflow tracks both the package version and the bundled CLI version separately, allowing you to release a new package version with an updated CLI without code changes.
 
-## License
+## License and terms
 
-MIT
+Use of this SDK is governed by Anthropic's [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms), including when you use it to power products and services that you make available to your own customers and end users, except to the extent a specific component or dependency is covered by a different license as indicated in that component's LICENSE file.

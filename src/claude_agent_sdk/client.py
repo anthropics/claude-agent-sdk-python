@@ -173,9 +173,25 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
         from ._internal.message_parser import parse_message
+        from .types import AssistantMessage, StreamEvent, UserMessage
 
         async for data in self._query.receive_messages():
-            yield parse_message(data)
+            message = parse_message(data)
+
+            # Filter out sub-agent messages when include_partial_messages is False
+            # Sub-agent messages have parent_tool_use_id set, indicating they are
+            # internal orchestrator-to-subagent communication
+            if not self.options.include_partial_messages:
+                # Check if this message is from a sub-agent (has parent_tool_use_id)
+                has_parent = False
+                if isinstance(message, (UserMessage, AssistantMessage, StreamEvent)):
+                    has_parent = message.parent_tool_use_id is not None
+
+                # Skip sub-agent messages
+                if has_parent:
+                    continue
+
+            yield message
 
     async def query(
         self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"

@@ -120,6 +120,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     content=content_blocks,
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
+                    error=data["message"].get("error"),
                 )
             except KeyError as e:
                 raise MessageParseError(

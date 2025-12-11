@@ -263,3 +263,69 @@ async def test_image_content_support():
     assert len(tool_executions) == 1
     assert tool_executions[0]["name"] == "generate_chart"
     assert tool_executions[0]["args"]["title"] == "Sales Report"
+
+
+@pytest.mark.asyncio
+async def test_error_handling_through_jsonrpc():
+    """Test that tool errors are properly handled through the JSONRPC handler."""
+
+    @tool("fail", "Always fails", {})
+    async def fail_tool(args: dict[str, Any]) -> dict[str, Any]:
+        raise ValueError("Expected error")
+
+    server_config = create_sdk_mcp_server(name="error-test", tools=[fail_tool])
+
+    # Import the Query class to test the JSONRPC handler
+    from claude_agent_sdk._internal.query import Query
+    from claude_agent_sdk._internal.transport import Transport
+
+    # Extract the SDK MCP server instance
+    sdk_mcp_servers = {"error": server_config["instance"]}
+
+    # We need a mock transport
+    class MockTransport(Transport):
+        async def connect(self) -> None:
+            pass
+
+        async def write(self, data: str) -> None:
+            pass
+
+        async def read_messages(self):
+            # AsyncIterator that yields nothing
+            if False:
+                yield
+
+        async def close(self) -> None:
+            pass
+
+        def is_ready(self) -> bool:
+            return True
+
+        async def end_input(self) -> None:
+            pass
+
+    transport = MockTransport()
+    query = Query(
+        transport=transport,
+        is_streaming_mode=False,
+        sdk_mcp_servers=sdk_mcp_servers,
+    )
+
+    # Manually invoke the SDK MCP request handler
+    jsonrpc_message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "fail", "arguments": {}},
+    }
+
+    response = await query._handle_sdk_mcp_request("error", jsonrpc_message)
+
+    # The response should include is_error: true
+    assert response is not None
+    assert response["jsonrpc"] == "2.0"
+    assert response["id"] == 1
+    assert "result" in response
+    assert "is_error" in response["result"]
+    assert response["result"]["is_error"] is True
+    assert "Expected error" in str(response["result"]["content"])

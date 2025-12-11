@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.15
+
+### New Features
+
+- **File checkpointing and rewind**: Added `enable_file_checkpointing` option to `ClaudeAgentOptions` and `rewind_files(user_message_id)` method to `ClaudeSDKClient` and `Query`. This enables reverting file changes made during a session back to a specific checkpoint, useful for exploring different approaches or recovering from unwanted modifications (#395)
+
+### Documentation
+
+- Added license and terms section to README (#399)
+
 ## 0.1.14
 
 ### Internal/Other Changes

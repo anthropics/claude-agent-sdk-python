@@ -7,6 +7,7 @@ binary using the official install script and place it in the package directory.
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -14,8 +15,25 @@ from pathlib import Path
 
 
 def get_cli_version() -> str:
-    """Get the CLI version to download from environment or default."""
-    return os.environ.get("CLAUDE_CLI_VERSION", "latest")
+    """Get the CLI version to download from environment or default.
+
+    Validates the version string to prevent command injection.
+    Only allows semantic version format (e.g., "1.2.3") or "latest".
+
+    Raises:
+        ValueError: If version string contains invalid characters.
+    """
+    version = os.environ.get("CLAUDE_CLI_VERSION", "latest")
+
+    # Validate version string to prevent command injection
+    # Only allow semantic versioning (X.Y.Z) or "latest"
+    if not re.match(r'^([0-9]+\.[0-9]+\.[0-9]+|latest)$', version):
+        raise ValueError(
+            f"Invalid CLAUDE_CLI_VERSION: '{version}'. "
+            f"Must be 'latest' or semantic version (e.g., '1.2.3')"
+        )
+
+    return version
 
 
 def find_installed_cli() -> Path | None:

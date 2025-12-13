@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.16
+
+### Bug Fixes
+
+- **Rate limit detection**: Fixed parsing of the `error` field in `AssistantMessage`, enabling applications to detect and handle API errors like rate limits. Previously, the `error` field was defined but never populated from CLI responses (#405)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.68
+
 ## 0.1.15
 
 ### New Features

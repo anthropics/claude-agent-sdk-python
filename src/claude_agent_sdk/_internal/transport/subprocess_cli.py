@@ -28,7 +28,10 @@ from . import Transport
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+# Default buffer size increased from 1MB to 10MB to accommodate modern MCP tools
+# that may return large responses (e.g., Puppeteer evaluate() with DOM data,
+# large file contents, etc.). Users can override via ClaudeAgentOptions.max_buffer_size
+_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 # Platform-specific command line length limits
@@ -582,11 +585,22 @@ class SubprocessCLITransport(Transport):
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
-                    if len(json_buffer) > self._max_buffer_size:
-                        buffer_length = len(json_buffer)
+                    buffer_length = len(json_buffer)
+
+                    # Warn when buffer reaches 80% capacity
+                    if buffer_length > self._max_buffer_size * 0.8 and buffer_length <= self._max_buffer_size:
+                        logger.warning(
+                            f"JSON buffer size ({buffer_length:,} bytes) is approaching the limit "
+                            f"({self._max_buffer_size:,} bytes). Consider increasing max_buffer_size "
+                            f"in ClaudeAgentOptions if you encounter buffer overflow errors."
+                        )
+
+                    if buffer_length > self._max_buffer_size:
                         json_buffer = ""
                         raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
+                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size:,} bytes. "
+                            f"Actual size: {buffer_length:,} bytes. "
+                            f"Increase max_buffer_size in ClaudeAgentOptions to handle larger responses.",
                             ValueError(
                                 f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
                             ),

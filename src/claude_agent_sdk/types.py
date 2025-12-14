@@ -639,7 +639,9 @@ class ClaudeAgentOptions:
     extra_args: dict[str, str | None] = field(
         default_factory=dict
     )  # Pass arbitrary CLI flags
-    max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout
+    max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout (default: 10MB).
+    # Increase this if you use MCP tools that return large responses (e.g., Puppeteer with DOM extraction,
+    # large file contents). Example: max_buffer_size=20*1024*1024 for 20MB limit.
     debug_stderr: Any = (
         sys.stderr
     )  # Deprecated: File-like object for debug output. Use stderr callback instead.

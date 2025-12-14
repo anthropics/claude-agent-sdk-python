@@ -826,3 +826,52 @@ class TestSubprocessCLITransport:
                 await process.wait()
 
         anyio.run(_test, backend="trio")
+
+    def test_unsupported_version_warning_includes_cli_path(self):
+        """Test that version warning includes the CLI path for debugging."""
+
+        async def _test():
+            from io import StringIO
+
+            # Create a transport with a specific CLI path
+            cli_path = "/custom/path/to/claude"
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(cli_path=cli_path),
+            )
+
+            # Mock the version check to simulate an old version
+            mock_process = MagicMock()
+            mock_stdout = AsyncMock()
+            mock_stdout.receive = AsyncMock(return_value=b"1.0.0\n")
+            mock_process.stdout = mock_stdout
+            mock_process.terminate = MagicMock()
+            mock_process.wait = AsyncMock()
+
+            # Capture stderr output
+            import sys
+
+            captured_stderr = StringIO()
+            original_stderr = sys.stderr
+
+            try:
+                sys.stderr = captured_stderr
+
+                with patch("anyio.open_process", return_value=mock_process):
+                    await transport._check_claude_version()
+
+                # Verify warning was printed to stderr
+                stderr_output = captured_stderr.getvalue()
+                assert (
+                    "Warning: Claude Code version 1.0.0 is unsupported" in stderr_output
+                )
+                assert cli_path in stderr_output, (
+                    f"Expected CLI path '{cli_path}' in warning, "
+                    f"but got: {stderr_output}"
+                )
+                assert "Found CLI at:" in stderr_output
+
+            finally:
+                sys.stderr = original_stderr
+
+        anyio.run(_test, backend="asyncio")

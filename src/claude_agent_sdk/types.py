@@ -47,6 +47,7 @@ class AgentDefinition:
     prompt: str
     tools: list[str] | None = None
     model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    skills: list[str] | None = None
 
 
 # Permission Update types (matching TypeScript SDK)

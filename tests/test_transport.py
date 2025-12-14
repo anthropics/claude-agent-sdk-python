@@ -694,6 +694,99 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--tools" not in cmd
 
+    def test_build_command_with_agents(self):
+        """Test building CLI command with agent definitions."""
+        import json
+
+        from claude_agent_sdk import AgentDefinition
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                agents={
+                    "test-agent": AgentDefinition(
+                        description="A test agent",
+                        prompt="You are a test agent",
+                        tools=["Read", "Write"],
+                        model="sonnet",
+                    )
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--agents" in cmd
+        agents_idx = cmd.index("--agents")
+        agents_json = cmd[agents_idx + 1]
+
+        # Parse and verify agent structure
+        agents = json.loads(agents_json)
+        assert "test-agent" in agents
+        assert agents["test-agent"]["description"] == "A test agent"
+        assert agents["test-agent"]["prompt"] == "You are a test agent"
+        assert agents["test-agent"]["tools"] == ["Read", "Write"]
+        assert agents["test-agent"]["model"] == "sonnet"
+
+    def test_build_command_with_agents_and_skills(self):
+        """Test building CLI command with agent definitions including skills."""
+        import json
+
+        from claude_agent_sdk import AgentDefinition
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                agents={
+                    "skilled-agent": AgentDefinition(
+                        description="An agent with skills",
+                        prompt="You are a skilled agent",
+                        tools=["Read", "Write", "Skill"],
+                        model="sonnet",
+                        skills=["code-review", "documentation"],
+                    )
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--agents" in cmd
+        agents_idx = cmd.index("--agents")
+        agents_json = cmd[agents_idx + 1]
+
+        # Parse and verify agent structure includes skills
+        agents = json.loads(agents_json)
+        assert "skilled-agent" in agents
+        assert agents["skilled-agent"]["description"] == "An agent with skills"
+        assert agents["skilled-agent"]["tools"] == ["Read", "Write", "Skill"]
+        assert agents["skilled-agent"]["skills"] == ["code-review", "documentation"]
+
+    def test_build_command_with_agents_skills_omitted_when_none(self):
+        """Test that skills field is omitted from JSON when not specified."""
+        import json
+
+        from claude_agent_sdk import AgentDefinition
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                agents={
+                    "basic-agent": AgentDefinition(
+                        description="A basic agent",
+                        prompt="You are a basic agent",
+                        tools=["Read"],
+                    )
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        agents_idx = cmd.index("--agents")
+        agents_json = cmd[agents_idx + 1]
+
+        # Parse and verify skills is NOT in the output (since it's None)
+        agents = json.loads(agents_json)
+        assert "skills" not in agents["basic-agent"]
+
     def test_concurrent_writes_are_serialized(self):
         """Test that concurrent write() calls are serialized by the lock.
 

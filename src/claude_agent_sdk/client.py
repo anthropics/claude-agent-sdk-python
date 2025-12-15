@@ -264,8 +264,10 @@ class ClaudeSDKClient:
     async def rewind_files(self, user_message_id: str) -> None:
         """Rewind tracked files to their state at a specific user message.
 
-        Requires file checkpointing to be enabled via the `enable_file_checkpointing` option
-        when creating the ClaudeSDKClient.
+        Requires:
+            - `enable_file_checkpointing=True` to track file changes
+            - `extra_args={"replay-user-messages": None}` to receive UserMessage
+              objects with `uuid` in the response stream
 
         Args:
             user_message_id: UUID of the user message to rewind to. This should be
@@ -273,11 +275,14 @@ class ClaudeSDKClient:
 
         Example:
             ```python
-            options = ClaudeAgentOptions(enable_file_checkpointing=True)
+            options = ClaudeAgentOptions(
+                enable_file_checkpointing=True,
+                extra_args={"replay-user-messages": None},
+            )
             async with ClaudeSDKClient(options) as client:
                 await client.query("Make some changes to my files")
                 async for msg in client.receive_response():
-                    if isinstance(msg, UserMessage):
+                    if isinstance(msg, UserMessage) and msg.uuid:
                         checkpoint_id = msg.uuid  # Save this for later
 
                 # Later, rewind to that point

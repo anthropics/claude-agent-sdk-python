@@ -31,6 +31,21 @@ class TestMessageParser:
         assert isinstance(message.content[0], TextBlock)
         assert message.content[0].text == "Hello"
 
+    def test_parse_user_message_with_uuid(self):
+        """Test parsing a user message with uuid field (issue #414).
+
+        The uuid field is needed for file checkpointing with rewind_files().
+        """
+        data = {
+            "type": "user",
+            "uuid": "msg-abc123-def456",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.uuid == "msg-abc123-def456"
+        assert len(message.content) == 1
+
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
         data = {

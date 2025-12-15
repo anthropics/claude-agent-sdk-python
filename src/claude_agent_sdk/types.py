@@ -562,6 +562,7 @@ class UserMessage:
     """User message."""
 
     content: str | list[ContentBlock]
+    uuid: str | None = None
     parent_tool_use_id: str | None = None
 
 

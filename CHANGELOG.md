@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.17
+
+### New Features
+
+- **UserMessage UUID field**: Added `uuid` field to `UserMessage` response type, making it easier to use the `rewind_files()` method by providing direct access to message identifiers needed for file checkpointing (#418)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.70
+
 ## 0.1.16
 
 ### Bug Fixes

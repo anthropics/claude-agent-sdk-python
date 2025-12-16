@@ -1,0 +1,29 @@
+# Dockerfile for running SDK tests in a containerized environment
+# This helps catch Docker-specific issues like #406
+
+FROM python:3.12-slim
+
+# Install dependencies for Claude CLI and git (needed for some tests)
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set up working directory
+WORKDIR /app
+
+# Copy the SDK source
+COPY . .
+
+# Install SDK with dev dependencies
+RUN pip install -e ".[dev]"
+
+# Verify CLI installation
+RUN claude -v
+
+# Default: run unit tests
+CMD ["python", "-m", "pytest", "tests/", "-v"]

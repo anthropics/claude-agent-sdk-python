@@ -38,13 +38,86 @@ async def test_agent_definition():
         async for message in client.receive_response():
             if isinstance(message, SystemMessage) and message.subtype == "init":
                 agents = message.data.get("agents", [])
-                assert isinstance(
-                    agents, list
-                ), f"agents should be a list of strings, got: {type(agents)}"
-                assert (
-                    "test-agent" in agents
-                ), f"test-agent should be available, got: {agents}"
+                assert isinstance(agents, list), (
+                    f"agents should be a list of strings, got: {type(agents)}"
+                )
+                assert "test-agent" in agents, (
+                    f"test-agent should be available, got: {agents}"
+                )
                 break
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_filesystem_agent_loading():
+    """Test that filesystem-based agents load via setting_sources and produce full response.
+
+    This is the core test for issue #406. It verifies that when using
+    setting_sources=["project"] with a .claude/agents/ directory containing
+    agent definitions, the SDK:
+    1. Loads the agents (they appear in init message)
+    2. Produces a full response with AssistantMessage
+    3. Completes with a ResultMessage
+
+    The bug in #406 causes the iterator to complete after only the
+    init SystemMessage, never yielding AssistantMessage or ResultMessage.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a temporary project with a filesystem agent
+        project_dir = Path(tmpdir)
+        agents_dir = project_dir / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+
+        # Create a test agent file
+        agent_file = agents_dir / "fs-test-agent.md"
+        agent_file.write_text(
+            """---
+name: fs-test-agent
+description: A filesystem test agent for SDK testing
+tools: Read
+---
+
+# Filesystem Test Agent
+
+You are a simple test agent. When asked a question, provide a brief, helpful answer.
+"""
+        )
+
+        options = ClaudeAgentOptions(
+            setting_sources=["project"],
+            cwd=project_dir,
+            max_turns=1,
+        )
+
+        messages = []
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query("Say hello in exactly 3 words")
+            async for msg in client.receive_response():
+                messages.append(msg)
+
+        # Must have at least init, assistant, result
+        message_types = [type(m).__name__ for m in messages]
+
+        assert "SystemMessage" in message_types, "Missing SystemMessage (init)"
+        assert "AssistantMessage" in message_types, (
+            f"Missing AssistantMessage - got only: {message_types}. "
+            "This may indicate issue #406 (silent failure with filesystem agents)."
+        )
+        assert "ResultMessage" in message_types, "Missing ResultMessage"
+
+        # Find the init message and check for the filesystem agent
+        for msg in messages:
+            if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                agents = msg.data.get("agents", [])
+                # Agents are returned as strings (just names)
+                assert "fs-test-agent" in agents, (
+                    f"fs-test-agent not loaded from filesystem. Found: {agents}"
+                )
+                break
+
+        # On Windows, wait for file handles to be released before cleanup
+        if sys.platform == "win32":
+            await asyncio.sleep(0.5)
 
 
 @pytest.mark.e2e
@@ -74,12 +147,12 @@ async def test_setting_sources_default():
             async for message in client.receive_response():
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     output_style = message.data.get("output_style")
-                    assert (
-                        output_style != "local-test-style"
-                    ), f"outputStyle should NOT be from local settings (default is no settings), got: {output_style}"
-                    assert (
-                        output_style == "default"
-                    ), f"outputStyle should be 'default', got: {output_style}"
+                    assert output_style != "local-test-style", (
+                        f"outputStyle should NOT be from local settings (default is no settings), got: {output_style}"
+                    )
+                    assert output_style == "default", (
+                        f"outputStyle should be 'default', got: {output_style}"
+                    )
                     break
 
         # On Windows, wait for file handles to be released before cleanup
@@ -121,9 +194,9 @@ This is a test command.
             async for message in client.receive_response():
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     commands = message.data.get("slash_commands", [])
-                    assert (
-                        "testcmd" not in commands
-                    ), f"testcmd should NOT be available with user-only sources, got: {commands}"
+                    assert "testcmd" not in commands, (
+                        f"testcmd should NOT be available with user-only sources, got: {commands}"
+                    )
                     break
 
         # On Windows, wait for file handles to be released before cleanup
@@ -159,9 +232,9 @@ async def test_setting_sources_project_included():
             async for message in client.receive_response():
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     output_style = message.data.get("output_style")
-                    assert (
-                        output_style == "local-test-style"
-                    ), f"outputStyle should be from local settings, got: {output_style}"
+                    assert output_style == "local-test-style", (
+                        f"outputStyle should be from local settings, got: {output_style}"
+                    )
                     break
 
         # On Windows, wait for file handles to be released before cleanup

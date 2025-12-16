@@ -24,12 +24,6 @@ jobs:
         VERSION="${BRANCH_NAME#release/v}"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
     
-    - name: Get previous release tag
-      id: previous_tag
-      run: |
-        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-        echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-
     - name: Create and push tag
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -46,14 +40,34 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Create release with auto-generated notes
-        gh release create "v${{ steps.extract_version.outputs.version }}" \
-          --title "Release v${{ steps.extract_version.outputs.version }}" \
-          --generate-notes \
-          --notes-start-tag "${{ steps.previous_tag.outputs.previous_tag }}" \
-          --notes "Published to PyPI: https://pypi.org/project/claude-agent-sdk/${{ steps.extract_version.outputs.version }}/
+        VERSION="${{ steps.extract_version.outputs.version }}"
 
-        ### Installation
-        \`\`\`bash
-        pip install claude-agent-sdk==${{ steps.extract_version.outputs.version }}
-        \`\`\`"
+        # Extract changelog section for this version to a temp file
+        awk -v ver="$VERSION" '
+          /^## / {
+            if (found) exit
+            if ($2 == ver) found=1
+            next
+          }
+          found { print }
+        ' CHANGELOG.md > release_notes.md
+
+        # Append install instructions
+        cat >> release_notes.md << 'EOF'
+
+---
+
+**PyPI:** https://pypi.org/project/claude-agent-sdk/VERSION/
+
+```bash
+pip install claude-agent-sdk==VERSION
+```
+EOF
+
+        # Replace VERSION placeholder
+        sed -i "s/VERSION/$VERSION/g" release_notes.md
+
+        # Create release with notes from file
+        gh release create "v$VERSION" \
+          --title "v$VERSION" \
+          --notes-file release_notes.md

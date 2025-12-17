@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -169,8 +170,13 @@ class SubprocessCLITransport(Transport):
 
         return json.dumps(settings_obj)
 
-    def _build_command(self) -> list[str]:
-        """Build CLI command with arguments."""
+    def _build_command(self) -> list[str] | str:
+        """Build CLI command with arguments.
+
+        Returns either a list of command arguments (for direct execution)
+        or a shell command string (when command line is too long and
+        shell command substitution is needed on Unix systems).
+        """
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
@@ -333,11 +339,12 @@ class SubprocessCLITransport(Transport):
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
 
-        # Check if command line is too long (Windows limitation)
+        # Check if command line is too long (platform-specific limits)
         cmd_str = " ".join(cmd)
         if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:
-            # Command is too long - use temp file for agents
-            # Find the --agents argument and replace its value with @filepath
+            # Command is too long - use temp file for agents with shell command substitution
+            # Note: The @filepath syntax is not supported by the CLI, so we use
+            # shell command substitution $(cat filepath) on Unix systems instead.
             try:
                 agents_idx = cmd.index("--agents")
                 agents_json_value = cmd[agents_idx + 1]
@@ -353,13 +360,37 @@ class SubprocessCLITransport(Transport):
                 # Track for cleanup
                 self._temp_files.append(temp_file.name)
 
-                # Replace agents JSON with @filepath reference
-                cmd[agents_idx + 1] = f"@{temp_file.name}"
+                if platform.system() != "Windows":
+                    # Unix: use shell command substitution $(cat filepath)
+                    # Build shell command with proper quoting
+                    quoted_parts = []
+                    for i, arg in enumerate(cmd):
+                        if i == agents_idx + 1:
+                            # Replace agents JSON with cat command substitution
+                            # Use double quotes around $(...) to preserve JSON whitespace
+                            quoted_parts.append(
+                                f'"$(cat {shlex.quote(temp_file.name)})"'
+                            )
+                        else:
+                            quoted_parts.append(shlex.quote(arg))
 
-                logger.info(
-                    f"Command line length ({len(cmd_str)}) exceeds limit ({_CMD_LENGTH_LIMIT}). "
-                    f"Using temp file for --agents: {temp_file.name}"
-                )
+                    shell_cmd = " ".join(quoted_parts)
+
+                    logger.info(
+                        f"Command line length ({len(cmd_str)}) exceeds limit "
+                        f"({_CMD_LENGTH_LIMIT}). Using shell command substitution "
+                        f"for --agents: {temp_file.name}"
+                    )
+
+                    return shell_cmd
+                else:
+                    # Windows: command line limits are stricter and shell substitution
+                    # is not as straightforward. Log a warning.
+                    logger.warning(
+                        f"Command line length ({len(cmd_str)}) exceeds Windows limit "
+                        f"({_CMD_LENGTH_LIMIT}). Large agent configurations may not "
+                        f"work correctly on Windows."
+                    )
             except (ValueError, IndexError) as e:
                 # This shouldn't happen, but log it just in case
                 logger.warning(f"Failed to optimize command line length: {e}")

@@ -340,20 +340,19 @@ class SubprocessCLITransport(Transport):
             try:
                 sp_idx = cmd.index("--system-prompt")
                 sp_value = cmd[sp_idx + 1]
-                if len(sp_value) > _CMD_LENGTH_LIMIT // 2:
-                    temp_file = tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".txt", delete=False, encoding="utf-8"
-                    )
-                    temp_file.write(sp_value)
-                    temp_file.close()
-                    self._temp_files.append(temp_file.name)
-                    # Replace --system-prompt with --system-prompt-file
-                    cmd[sp_idx] = "--system-prompt-file"
-                    cmd[sp_idx + 1] = temp_file.name
-                    logger.info(
-                        f"System prompt length ({len(sp_value)}) exceeds limit. "
-                        f"Using --system-prompt-file: {temp_file.name}"
-                    )
+                temp_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                )
+                temp_file.write(sp_value)
+                temp_file.close()
+                self._temp_files.append(temp_file.name)
+                # Replace --system-prompt with --system-prompt-file
+                cmd[sp_idx] = "--system-prompt-file"
+                cmd[sp_idx + 1] = temp_file.name
+                logger.info(
+                    f"System prompt length ({len(sp_value)}) exceeds limit. "
+                    f"Using --system-prompt-file: {temp_file.name}"
+                )
             except (ValueError, IndexError) as e:
                 logger.warning(f"Failed to optimize system prompt length: {e}")
 

@@ -87,11 +87,91 @@ Code. See [src/claude_agent_sdk/client.py](src/claude_agent_sdk/client.py).
 
 Unlike `query()`, `ClaudeSDKClient` additionally enables **custom tools** and **hooks**, both of which can be defined as Python functions.
 
+### MCP Server Configuration
+
+The SDK supports multiple ways to configure [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers that provide tools to Claude:
+
+#### External Stdio Servers
+
+For existing MCP servers that run as separate processes, use dictionary-based configuration. **You don't need to manually run these servers** - Claude Code automatically spawns and manages them:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+options = ClaudeAgentOptions(
+    mcp_servers={
+        "filesystem": {
+            "type": "stdio",  # Optional, "stdio" is the default
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
+            "env": {"DEBUG": "true"}  # Optional environment variables
+        },
+        "github": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": {"GITHUB_TOKEN": "your-token"}
+        }
+    },
+    # Pre-approve specific MCP tools to avoid permission prompts
+    allowed_tools=["mcp__filesystem__read_file", "mcp__github__list_repos"]
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("List files in the allowed directory")
+    async for msg in client.receive_response():
+        print(msg)
+```
+
+MCP tool names follow the pattern `mcp__<server-name>__<tool-name>`.
+
+#### SSE and HTTP Servers
+
+For remote MCP servers accessible via HTTP:
+
+```python
+options = ClaudeAgentOptions(
+    mcp_servers={
+        "remote-sse": {
+            "type": "sse",
+            "url": "https://example.com/mcp/sse",
+            "headers": {"Authorization": "Bearer token"}  # Optional
+        },
+        "remote-http": {
+            "type": "http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer token"}  # Optional
+        }
+    }
+)
+```
+
+#### Using a Config File
+
+You can also pass a path to an MCP configuration file:
+
+```python
+options = ClaudeAgentOptions(
+    mcp_servers="/path/to/mcp-config.json"  # or Path object
+)
+```
+
+The config file should follow the MCP configuration format:
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
+
 ### Custom Tools (as In-Process SDK MCP Servers)
 
 A **custom tool** is a Python function that you can offer to Claude, for Claude to invoke as needed.
 
-Custom tools are implemented in-process MCP servers that run directly within your Python application, eliminating the need for separate processes that regular MCP servers require.
+Custom tools are implemented as in-process MCP servers that run directly within your Python application, eliminating the need for separate processes that regular MCP servers require.
 
 For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
 

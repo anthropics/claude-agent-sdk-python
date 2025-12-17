@@ -167,6 +167,25 @@ The config file should follow the MCP configuration format:
 }
 ```
 
+#### Using Project Settings
+
+By default, the SDK **does not** read MCP servers from project settings files (like `.claude/settings.json`). This is intentional for isolation.
+
+To use MCP servers configured in your project settings, enable setting sources:
+
+```python
+options = ClaudeAgentOptions(
+    setting_sources=["project"]  # Read MCP servers from project settings
+)
+
+# Or combine multiple sources
+options = ClaudeAgentOptions(
+    setting_sources=["user", "project", "local"]
+)
+```
+
+Available sources: `"user"` (global), `"project"` (repo-level), `"local"` (gitignored local settings).
+
 ### Custom Tools (as In-Process SDK MCP Servers)
 
 A **custom tool** is a Python function that you can offer to Claude, for Claude to invoke as needed.

@@ -233,6 +233,100 @@ async with ClaudeSDKClient(options=options) as client:
         print(msg)
 ```
 
+### Tool Permission Callbacks
+
+A **tool permission callback** (`can_use_tool`) lets you programmatically control which tools Claude can use at runtime. Unlike hooks which run after permission is granted, `can_use_tool` intercepts tool requests _before_ execution, allowing you to:
+
+- Allow or deny specific tools based on their inputs
+- Modify tool inputs before execution (e.g., redirect file paths)
+- Implement custom security policies
+- Log tool usage for auditing
+
+**Important:** Without a `can_use_tool` callback, the SDK assumes "Denied" by default for operations outside the allowed working directory.
+
+#### Basic Example
+
+```python
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ToolPermissionContext,
+)
+
+async def my_permission_callback(
+    tool_name: str,
+    input_data: dict,
+    context: ToolPermissionContext
+) -> PermissionResultAllow | PermissionResultDeny:
+    """Control tool permissions based on tool type and input."""
+
+    # Always allow read-only operations
+    if tool_name in ["Read", "Glob", "Grep"]:
+        return PermissionResultAllow()
+
+    # Deny writes to system directories
+    if tool_name in ["Write", "Edit"]:
+        file_path = input_data.get("file_path", "")
+        if file_path.startswith("/etc/") or file_path.startswith("/usr/"):
+            return PermissionResultDeny(
+                message=f"Cannot write to system directory: {file_path}"
+            )
+
+    # Block dangerous bash commands
+    if tool_name == "Bash":
+        command = input_data.get("command", "")
+        if "rm -rf" in command or "sudo" in command:
+            return PermissionResultDeny(
+                message="Dangerous command pattern detected"
+            )
+
+    # Allow everything else
+    return PermissionResultAllow()
+
+# Use the callback
+options = ClaudeAgentOptions(
+    can_use_tool=my_permission_callback,
+    permission_mode="default"
+)
+
+async with ClaudeSDKClient(options) as client:
+    await client.query("List files in /var/log")
+    async for msg in client.receive_response():
+        print(msg)
+```
+
+#### Modifying Tool Inputs
+
+You can also modify tool inputs before execution:
+
+```python
+async def redirect_writes(
+    tool_name: str,
+    input_data: dict,
+    context: ToolPermissionContext
+) -> PermissionResultAllow | PermissionResultDeny:
+    if tool_name == "Write":
+        # Redirect all writes to a safe directory
+        modified_input = input_data.copy()
+        original_path = input_data.get("file_path", "")
+        modified_input["file_path"] = f"./safe_output/{original_path.split('/')[-1]}"
+        return PermissionResultAllow(updated_input=modified_input)
+    return PermissionResultAllow()
+```
+
+#### When to Use Tool Permission Callbacks vs Hooks
+
+| Feature | `can_use_tool` Callback | `PreToolUse` Hook |
+|---------|-------------------------|-------------------|
+| **Timing** | Before permission is granted | After tool is approved |
+| **Can deny execution** | Yes | Yes (via `permissionDecision`) |
+| **Can modify inputs** | Yes (`updated_input`) | No |
+| **Use case** | Security policies, input sanitization | Logging, validation, side effects |
+
+For a complete example with logging and interactive prompts, see [examples/tool_permission_callback.py](examples/tool_permission_callback.py).
+
 ## Types
 
 See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:

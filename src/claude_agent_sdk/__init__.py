@@ -34,6 +34,7 @@ from .types import (
     PermissionResult,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionRuleValue,
     PermissionUpdate,
     PostToolUseHookInput,
     PreCompactHookInput,
@@ -327,6 +328,7 @@ __all__ = [
     "PermissionResult",
     "PermissionResultAllow",
     "PermissionResultDeny",
+    "PermissionRuleValue",
     "PermissionUpdate",
     # Hook support
     "HookCallback",

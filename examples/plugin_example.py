@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example demonstrating how to use plugins with Claude Code SDK.
+"""Example demonstrating how to use plugins with Claude Agent SDK.
 
 Plugins allow you to extend Claude Code with custom commands, agents, skills,
 and hooks. This example shows how to load a local plugin and verify it's

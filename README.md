@@ -96,6 +96,7 @@ The SDK supports multiple ways to configure [MCP (Model Context Protocol)](https
 For existing MCP servers that run as separate processes, use dictionary-based configuration. **You don't need to manually run these servers** - Claude Code automatically spawns and manages them:
 
 ```python
+import os
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
 options = ClaudeAgentOptions(
@@ -109,7 +110,7 @@ options = ClaudeAgentOptions(
         "github": {
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-github"],
-            "env": {"GITHUB_TOKEN": "your-token"}
+            "env": {"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]}
         }
     },
     # Pre-approve specific MCP tools to avoid permission prompts
@@ -129,17 +130,19 @@ MCP tool names follow the pattern `mcp__<server-name>__<tool-name>`.
 For remote MCP servers accessible via HTTP:
 
 ```python
+import os
+
 options = ClaudeAgentOptions(
     mcp_servers={
         "remote-sse": {
             "type": "sse",
             "url": "https://example.com/mcp/sse",
-            "headers": {"Authorization": "Bearer token"}  # Optional
+            "headers": {"Authorization": f"Bearer {os.environ['MCP_API_TOKEN']}"}
         },
         "remote-http": {
             "type": "http",
             "url": "https://example.com/mcp",
-            "headers": {"Authorization": "Bearer token"}  # Optional
+            "headers": {"Authorization": f"Bearer {os.environ['MCP_API_TOKEN']}"}
         }
     }
 )

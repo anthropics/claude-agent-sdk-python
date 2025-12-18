@@ -31,6 +31,45 @@ class TestChangelog:
 
         assert len(versions) > 0, "Changelog should contain at least one version"
 
+    def test_new_versions_have_dates(self):
+        """Versions >= 0.1.19 should have dates in the format (YYYY-MM-DD)."""
+        content = self.changelog_path.read_text()
+        lines = content.split("\n")
+
+        # Version threshold for requiring dates (0.1.19 and above)
+        date_required_threshold = (0, 1, 19)
+
+        version_with_date_pattern = re.compile(
+            r"^## (\d+)\.(\d+)\.(\d+)\s+\((\d{4})-(\d{2})-(\d{2})\)$"
+        )
+        version_without_date_pattern = re.compile(r"^## (\d+)\.(\d+)\.(\d+)$")
+
+        for line in lines:
+            if line.startswith("## "):
+                # Try to match version with date first
+                match_with_date = version_with_date_pattern.match(line)
+                if match_with_date:
+                    # Validate date components
+                    year, month, day = (
+                        int(match_with_date.group(4)),
+                        int(match_with_date.group(5)),
+                        int(match_with_date.group(6)),
+                    )
+                    assert 2020 <= year <= 2100, f"Invalid year in date: {line}"
+                    assert 1 <= month <= 12, f"Invalid month in date: {line}"
+                    assert 1 <= day <= 31, f"Invalid day in date: {line}"
+                    continue
+
+                # Check if version without date
+                match_without_date = version_without_date_pattern.match(line)
+                if match_without_date:
+                    version_tuple = tuple(int(x) for x in match_without_date.groups())
+                    if version_tuple >= date_required_threshold:
+                        raise AssertionError(
+                            f"Version {line} is >= 0.1.19 and must have a date "
+                            f"in the format '## X.Y.Z (YYYY-MM-DD)'"
+                        )
+
     def test_changelog_has_bullet_points(self):
         content = self.changelog_path.read_text()
         lines = content.split("\n")

@@ -5,7 +5,7 @@ description: Generate changelog for a new release version
 
 You are updating the changelog for the new release.
 
-Update CHANGELOG.md to add a new section for the new version at the top of the file, right after the '# Changelog' heading.
+Update CHANGELOG.md to add a new section for the new version at the top of the file, right after the '# Changelog' heading. Use today's date in the version header in the format `## X.Y.Z (YYYY-MM-DD)` (e.g., `## 0.1.19 (2025-01-15)`).
 
 Review the recent commits and merged pull requests since the last release to generate meaningful changelog content for the new version. Follow the existing format in CHANGELOG.md with sections like:
 - Breaking Changes (if any)

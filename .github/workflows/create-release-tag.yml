@@ -43,6 +43,8 @@ jobs:
         VERSION="${{ steps.extract_version.outputs.version }}"
 
         # Extract changelog section for this version to a temp file
+        # Works with both "## X.Y.Z" and "## X.Y.Z (YYYY-MM-DD)" formats
+        # since awk splits on whitespace ($2 is just the version number)
         awk -v ver="$VERSION" '
           /^## / {
             if (found) exit

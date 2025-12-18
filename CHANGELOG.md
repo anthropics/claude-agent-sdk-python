@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.18
+
+### Internal/Other Changes
+
+- **Docker-based test infrastructure**: Added Docker support for running e2e tests in containerized environments, helping catch Docker-specific issues (#424)
+- Updated bundled Claude CLI to version 2.0.72
+
 ## 0.1.17
 
 ### New Features

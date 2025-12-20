@@ -6,7 +6,6 @@ import os
 import platform
 import re
 import shutil
-import sys
 import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
@@ -657,7 +656,6 @@ class SubprocessCLITransport(Transport):
                                 "Some features may not work correctly."
                             )
                             logger.warning(warning)
-                            print(warning, file=sys.stderr)
         except Exception:
             pass
         finally:

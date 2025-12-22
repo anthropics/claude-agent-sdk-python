@@ -467,7 +467,9 @@ class Query:
                 call_request = CallToolRequest(
                     method=method,
                     params=CallToolRequestParams(
-                        name=params.get("name"), arguments=params.get("arguments", {})
+                        name=params.get("name"),
+                        arguments=params.get("arguments", {}),
+                        _meta=params.get("_meta"),
                     ),
                 )
                 handler = server.request_handlers.get(CallToolRequest)

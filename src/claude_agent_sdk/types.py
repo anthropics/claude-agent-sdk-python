@@ -622,6 +622,7 @@ class ClaudeAgentOptions:
     system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
+    session_id: str | None = None
     continue_conversation: bool = False
     resume: str | None = None
     max_turns: int | None = None

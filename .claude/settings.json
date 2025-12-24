@@ -1,25 +1,45 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m ruff check src/ tests/ --fix)",
-      "Bash(python -m ruff format src/ tests/)",
-      "Bash(python -m mypy src/)",
-      "Bash(python -m pytest tests/)",
-      "Bash(python -m pytest tests/*)"
+      "Read",
+      "Write",
+      "Edit",
+      "Grep",
+      "Glob",
+      "Bash"
     ],
     "deny": []
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "type": "prompt",
+        "prompt": "Before modifying code, ensure:\n1. Type hints are present\n2. Changes follow PEP 8\n3. Ruff/mypy will pass\n\nRespond with 'PROCEED' if ready."
+      }
+    ],
     "PostToolUse": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python -m ruff check src/ tests/ --fix && python -m ruff format src/ tests/"
-          }
-        ],
-        "matcher": "Edit|Write|MultiEdit"
+        "matcher": "Write|Edit",
+        "type": "command",
+        "command": "python -m ruff check --fix --quiet \"$FILE_PATH\" 2>/dev/null || true"
+      },
+      {
+        "matcher": "Write|Edit",
+        "type": "command",
+        "command": "python -m ruff format --quiet \"$FILE_PATH\" 2>/dev/null || true"
+      }
+    ],
+    "SessionStart": [
+      {
+        "type": "prompt",
+        "prompt": "Remember: This is the Claude Agent SDK Python project. Always use type hints, follow strict mypy rules, and maintain async patterns. Use pytest-asyncio for tests."
       }
     ]
+  },
+  "env": {
+    "PROJECT_NAME": "claude-agent-sdk",
+    "PYTHON_VERSION": "3.10+",
+    "RUFF_OUTPUT_FORMAT": "concise"
   }
 }

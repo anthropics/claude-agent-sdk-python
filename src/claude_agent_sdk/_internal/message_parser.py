@@ -124,6 +124,9 @@ def parse_message(data: dict[str, Any]) -> Message:
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data["message"].get("error"),
+                    # Per-step fields from Anthropic API response
+                    message_id=data["message"].get("id"),
+                    usage=data["message"].get("usage"),
                 )
             except KeyError as e:
                 raise MessageParseError(

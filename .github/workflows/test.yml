@@ -66,7 +66,13 @@ jobs:
         run: |
           irm https://claude.ai/install.ps1 | iex
           $claudePath = "$env:USERPROFILE\.local\bin"
-          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if (Test-Path "$claudePath\claude.exe") {
+            Write-Host "Claude installed at: $claudePath\claude.exe"
+          } else {
+            Write-Error "Claude executable not found at $claudePath\claude.exe"
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation
@@ -131,7 +137,13 @@ jobs:
         run: |
           irm https://claude.ai/install.ps1 | iex
           $claudePath = "$env:USERPROFILE\.local\bin"
-          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if (Test-Path "$claudePath\claude.exe") {
+            Write-Host "Claude installed at: $claudePath\claude.exe"
+          } else {
+            Write-Error "Claude executable not found at $claudePath\claude.exe"
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation

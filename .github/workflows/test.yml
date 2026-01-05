@@ -96,21 +96,20 @@ jobs:
             Write-Host ".cache\claude directory does not exist"
           }
 
-          # Try to manually copy the file and see what error we get
-          Write-Host "=== Debug: Attempting manual copy ==="
-          $versionFile = "$env:USERPROFILE\.local\share\claude\versions\2.0.67"
-          $destFile = "$env:USERPROFILE\.local\bin\claude.exe"
-          if (Test-Path $versionFile) {
-            Write-Host "Source exists: $versionFile"
-            Write-Host "Source size: $((Get-Item $versionFile).Length) bytes"
-            try {
-              Copy-Item $versionFile $destFile -Force
-              Write-Host "Manual copy succeeded!"
-            } catch {
-              Write-Host "Manual copy failed: $_"
+          # Check if .local\bin is a file or directory
+          Write-Host "=== Debug: Checking .local\bin type ==="
+          $binPath = "$env:USERPROFILE\.local\bin"
+          if (Test-Path $binPath) {
+            $item = Get-Item $binPath
+            Write-Host "Path exists: $binPath"
+            Write-Host "Is directory: $($item.PSIsContainer)"
+            Write-Host "Type: $($item.GetType().Name)"
+            if (-not $item.PSIsContainer) {
+              Write-Host "Size: $($item.Length) bytes"
+              Write-Host "ERROR: .local\bin is a FILE, not a directory!"
             }
           } else {
-            Write-Host "Source file does not exist: $versionFile"
+            Write-Host ".local\bin does not exist"
           }
 
           $claudePath = "$env:USERPROFILE\.local\bin"
@@ -209,21 +208,20 @@ jobs:
             Write-Host ".cache\claude directory does not exist"
           }
 
-          # Try to manually copy the file and see what error we get
-          Write-Host "=== Debug: Attempting manual copy ==="
-          $versionFile = "$env:USERPROFILE\.local\share\claude\versions\2.0.67"
-          $destFile = "$env:USERPROFILE\.local\bin\claude.exe"
-          if (Test-Path $versionFile) {
-            Write-Host "Source exists: $versionFile"
-            Write-Host "Source size: $((Get-Item $versionFile).Length) bytes"
-            try {
-              Copy-Item $versionFile $destFile -Force
-              Write-Host "Manual copy succeeded!"
-            } catch {
-              Write-Host "Manual copy failed: $_"
+          # Check if .local\bin is a file or directory
+          Write-Host "=== Debug: Checking .local\bin type ==="
+          $binPath = "$env:USERPROFILE\.local\bin"
+          if (Test-Path $binPath) {
+            $item = Get-Item $binPath
+            Write-Host "Path exists: $binPath"
+            Write-Host "Is directory: $($item.PSIsContainer)"
+            Write-Host "Type: $($item.GetType().Name)"
+            if (-not $item.PSIsContainer) {
+              Write-Host "Size: $($item.Length) bytes"
+              Write-Host "ERROR: .local\bin is a FILE, not a directory!"
             }
           } else {
-            Write-Host "Source file does not exist: $versionFile"
+            Write-Host ".local\bin does not exist"
           }
 
           $claudePath = "$env:USERPROFILE\.local\bin"

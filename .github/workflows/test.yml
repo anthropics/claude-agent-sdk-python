@@ -65,43 +65,33 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+
+          Write-Host "=== Debug: Listing all files under .local ==="
+          $localDir = "$env:USERPROFILE\.local"
+          if (Test-Path $localDir) {
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".local directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .claude ==="
+          $claudeDir = "$env:USERPROFILE\.claude"
+          if (Test-Path $claudeDir) {
+            Get-ChildItem $claudeDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".claude directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .cache\claude ==="
+          $cacheDir = "$env:USERPROFILE\.cache\claude"
+          if (Test-Path $cacheDir) {
+            Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".cache\claude directory does not exist"
+          }
+
           $claudePath = "$env:USERPROFILE\.local\bin"
-          # Debug: show what's in the installation directory
-          Write-Host "Checking $claudePath..."
-          if (Test-Path $claudePath) {
-            Get-ChildItem $claudePath | ForEach-Object { Write-Host "  $_" }
-          } else {
-            Write-Host "  Directory does not exist"
-          }
-          # Search common locations for claude.exe
-          $searchPaths = @(
-            "$env:USERPROFILE\.local\bin\claude.exe",
-            "$env:LOCALAPPDATA\Programs\claude\claude.exe",
-            "$env:APPDATA\Claude\claude.exe",
-            "$env:ProgramFiles\Claude\claude.exe"
-          )
-          $foundPath = $null
-          foreach ($path in $searchPaths) {
-            if (Test-Path $path) {
-              $foundPath = Split-Path $path -Parent
-              Write-Host "Found claude at: $path"
-              break
-            }
-          }
-          if ($foundPath) {
-            Add-Content -Path $env:GITHUB_PATH -Value $foundPath
-          } else {
-            # Try to find it anywhere
-            Write-Host "Searching for claude.exe..."
-            $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter "claude.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              Write-Host "Found claude at: $($found.FullName)"
-              Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
-            } else {
-              Write-Error "Could not find claude.exe anywhere"
-              exit 1
-            }
-          }
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation
@@ -165,43 +155,33 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+
+          Write-Host "=== Debug: Listing all files under .local ==="
+          $localDir = "$env:USERPROFILE\.local"
+          if (Test-Path $localDir) {
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".local directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .claude ==="
+          $claudeDir = "$env:USERPROFILE\.claude"
+          if (Test-Path $claudeDir) {
+            Get-ChildItem $claudeDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".claude directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .cache\claude ==="
+          $cacheDir = "$env:USERPROFILE\.cache\claude"
+          if (Test-Path $cacheDir) {
+            Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".cache\claude directory does not exist"
+          }
+
           $claudePath = "$env:USERPROFILE\.local\bin"
-          # Debug: show what's in the installation directory
-          Write-Host "Checking $claudePath..."
-          if (Test-Path $claudePath) {
-            Get-ChildItem $claudePath | ForEach-Object { Write-Host "  $_" }
-          } else {
-            Write-Host "  Directory does not exist"
-          }
-          # Search common locations for claude.exe
-          $searchPaths = @(
-            "$env:USERPROFILE\.local\bin\claude.exe",
-            "$env:LOCALAPPDATA\Programs\claude\claude.exe",
-            "$env:APPDATA\Claude\claude.exe",
-            "$env:ProgramFiles\Claude\claude.exe"
-          )
-          $foundPath = $null
-          foreach ($path in $searchPaths) {
-            if (Test-Path $path) {
-              $foundPath = Split-Path $path -Parent
-              Write-Host "Found claude at: $path"
-              break
-            }
-          }
-          if ($foundPath) {
-            Add-Content -Path $env:GITHUB_PATH -Value $foundPath
-          } else {
-            # Try to find it anywhere
-            Write-Host "Searching for claude.exe..."
-            $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter "claude.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              Write-Host "Found claude at: $($found.FullName)"
-              Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
-            } else {
-              Write-Error "Could not find claude.exe anywhere"
-              exit 1
-            }
-          }
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation

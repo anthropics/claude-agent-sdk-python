@@ -38,6 +38,8 @@ jobs:
           fail_ci_if_error: false
 
   test-e2e:
+    # Skip on forks since they don't have access to secrets
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ matrix.os }}
     needs: test # Run after unit tests pass
     strategy:
@@ -82,6 +84,8 @@ jobs:
           python -m pytest e2e-tests/ -v -m e2e
 
   test-e2e-docker:
+    # Skip on forks since they don't have access to secrets
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: test # Run after unit tests pass
     # Run e2e tests in Docker to catch container-specific issues like #406
@@ -100,6 +104,8 @@ jobs:
             claude-sdk-test python -m pytest e2e-tests/ -v -m e2e
 
   test-examples:
+    # Skip on forks since they don't have access to secrets
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: test-e2e # Run after e2e tests
     strategy:

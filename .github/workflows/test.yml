@@ -66,10 +66,16 @@ jobs:
         run: |
           irm https://claude.ai/install.ps1 | iex
 
-          Write-Host "=== Debug: Listing all files under .local ==="
+          Write-Host "=== Debug: Listing all files under .local (with sizes) ==="
           $localDir = "$env:USERPROFILE\.local"
           if (Test-Path $localDir) {
-            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "[DIR] $($_.FullName)"
+              } else {
+                Write-Host "[FILE $($_.Length) bytes] $($_.FullName)"
+              }
+            }
           } else {
             Write-Host ".local directory does not exist"
           }
@@ -88,6 +94,23 @@ jobs:
             Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
           } else {
             Write-Host ".cache\claude directory does not exist"
+          }
+
+          # Try to manually copy the file and see what error we get
+          Write-Host "=== Debug: Attempting manual copy ==="
+          $versionFile = "$env:USERPROFILE\.local\share\claude\versions\2.0.67"
+          $destFile = "$env:USERPROFILE\.local\bin\claude.exe"
+          if (Test-Path $versionFile) {
+            Write-Host "Source exists: $versionFile"
+            Write-Host "Source size: $((Get-Item $versionFile).Length) bytes"
+            try {
+              Copy-Item $versionFile $destFile -Force
+              Write-Host "Manual copy succeeded!"
+            } catch {
+              Write-Host "Manual copy failed: $_"
+            }
+          } else {
+            Write-Host "Source file does not exist: $versionFile"
           }
 
           $claudePath = "$env:USERPROFILE\.local\bin"
@@ -156,10 +179,16 @@ jobs:
         run: |
           irm https://claude.ai/install.ps1 | iex
 
-          Write-Host "=== Debug: Listing all files under .local ==="
+          Write-Host "=== Debug: Listing all files under .local (with sizes) ==="
           $localDir = "$env:USERPROFILE\.local"
           if (Test-Path $localDir) {
-            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "[DIR] $($_.FullName)"
+              } else {
+                Write-Host "[FILE $($_.Length) bytes] $($_.FullName)"
+              }
+            }
           } else {
             Write-Host ".local directory does not exist"
           }
@@ -178,6 +207,23 @@ jobs:
             Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
           } else {
             Write-Host ".cache\claude directory does not exist"
+          }
+
+          # Try to manually copy the file and see what error we get
+          Write-Host "=== Debug: Attempting manual copy ==="
+          $versionFile = "$env:USERPROFILE\.local\share\claude\versions\2.0.67"
+          $destFile = "$env:USERPROFILE\.local\bin\claude.exe"
+          if (Test-Path $versionFile) {
+            Write-Host "Source exists: $versionFile"
+            Write-Host "Source size: $((Get-Item $versionFile).Length) bytes"
+            try {
+              Copy-Item $versionFile $destFile -Force
+              Write-Host "Manual copy succeeded!"
+            } catch {
+              Write-Host "Manual copy failed: $_"
+            }
+          } else {
+            Write-Host "Source file does not exist: $versionFile"
           }
 
           $claudePath = "$env:USERPROFILE\.local\bin"

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.19
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.1
+- **CI improvements**: Jobs requiring secrets now skip when running from forks (#451)
+- Fixed YAML syntax error in create-release-tag workflow (#429)
+
 ## 0.1.18
 
 ### Internal/Other Changes

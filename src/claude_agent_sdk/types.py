@@ -10,9 +10,12 @@ from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+
+    from .session_storage import SessionStorage
 else:
     # Runtime placeholder for forward reference resolution in Pydantic 2.12+
     McpServer = Any
+    SessionStorage = Any
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
@@ -678,6 +681,15 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+
+    # Session storage backend for cloud persistence.
+    # Enables horizontal scaling and ephemeral filesystem support.
+    # WARNING: Cloud storage adds latency (50-500ms per operation).
+    # For production at scale, consider wrapping with a caching layer.
+    session_storage: "SessionStorage | None" = None
+    # Local directory for transcript files when using session_storage.
+    # Defaults to system temp directory if not specified.
+    transcript_dir: str | Path | None = None
 
 
 # SDK Control Protocol

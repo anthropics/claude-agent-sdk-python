@@ -233,6 +233,90 @@ async with ClaudeSDKClient(options=options) as client:
         print(msg)
 ```
 
+## Session Storage (Cloud Persistence)
+
+Session storage enables cloud persistence for session transcripts, supporting:
+- **Horizontal scaling** across multiple servers with shared sessions
+- **Ephemeral filesystems** (containers, serverless)
+- **Extensible backends** (S3, GCS, or custom implementations)
+
+> **WARNING:** Cloud storage operations add latency (50-500ms per operation). For production at scale, consider wrapping with a caching layer.
+
+### Installation
+
+```bash
+# For AWS S3 (also works with S3-compatible: DigitalOcean Spaces, Cloudflare R2, MinIO)
+pip install claude-agent-sdk[s3]
+
+# For Google Cloud Storage
+pip install claude-agent-sdk[gcs]
+
+# For both
+pip install claude-agent-sdk[cloud]
+```
+
+### Basic Usage
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk.session_storage import S3SessionStorage, S3Config
+
+# Configure S3 storage
+storage = S3SessionStorage(S3Config(
+    bucket="my-sessions",
+    prefix="claude",
+    region="us-east-1",
+))
+
+# Sessions automatically sync to S3
+options = ClaudeAgentOptions(session_storage=storage)
+
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Hello!")
+    async for msg in client.receive_response():
+        print(msg)
+    # Transcript automatically uploaded to S3 on session end
+
+# Resume from S3 (on any server)
+options = ClaudeAgentOptions(
+    session_storage=storage,
+    resume="session-abc123",  # Downloads from S3 first
+)
+```
+
+### S3-Compatible Services
+
+```python
+# DigitalOcean Spaces
+storage = S3SessionStorage(S3Config(
+    bucket="my-bucket",
+    endpoint_url="https://nyc3.digitaloceanspaces.com",
+    region="nyc3",
+))
+
+# Cloudflare R2
+storage = S3SessionStorage(S3Config(
+    bucket="my-bucket",
+    endpoint_url="https://<account_id>.r2.cloudflarestorage.com",
+))
+```
+
+### Custom Backends
+
+Implement the `SessionStorage` protocol for custom backends (Azure Blob, etc.):
+
+```python
+from claude_agent_sdk.session_storage import BaseSessionStorage
+
+class AzureBlobSessionStorage(BaseSessionStorage):
+    async def _do_upload(self, key, local_path):
+        # Your Azure Blob SDK calls
+        ...
+    # Implement other abstract methods
+```
+
+See [examples/session_storage_example.py](examples/session_storage_example.py) for more examples and [examples/session_storage_cached.py](examples/session_storage_cached.py) for caching patterns.
+
 ## Types
 
 See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
@@ -245,11 +329,12 @@ See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete 
 
 ```python
 from claude_agent_sdk import (
-    ClaudeSDKError,      # Base error
-    CLINotFoundError,    # Claude Code not installed
-    CLIConnectionError,  # Connection issues
-    ProcessError,        # Process failed
-    CLIJSONDecodeError,  # JSON parsing issues
+    ClaudeSDKError,         # Base error
+    CLINotFoundError,       # Claude Code not installed
+    CLIConnectionError,     # Connection issues
+    ProcessError,           # Process failed
+    CLIJSONDecodeError,     # JSON parsing issues
+    SessionStorageError,    # Cloud storage failures
 )
 
 try:
@@ -274,6 +359,8 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
 
 See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
+
+See [examples/session_storage_example.py](examples/session_storage_example.py) for cloud session storage examples and [examples/session_storage_cached.py](examples/session_storage_cached.py) for caching patterns.
 
 ## Migrating from Claude Code SDK
 

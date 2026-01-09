@@ -123,12 +123,26 @@ class PermissionUpdate:
 # Tool callback types
 @dataclass
 class ToolPermissionContext:
-    """Context information for tool permission callbacks."""
+    """Context information for tool permission callbacks.
 
+    Attributes:
+        tool_use_id: Unique identifier for this specific tool call within the
+            assistant message. Multiple tool calls in the same assistant message
+            will have different tool_use_ids.
+        signal: Reserved for future abort signal support. Currently always None.
+        suggestions: Permission suggestions from CLI for updating permissions
+            so the user won't be prompted again for this tool during this session.
+        blocked_path: The file path that triggered the permission request, if
+            applicable. For example, when a Bash command tries to access a path
+            outside allowed directories.
+    """
+
+    tool_use_id: str
     signal: Any | None = None  # Future: abort signal support
     suggestions: list[PermissionUpdate] = field(
         default_factory=list
     )  # Permission suggestions from CLI
+    blocked_path: str | None = None
 
 
 # Match TypeScript's PermissionResult structure
@@ -689,6 +703,7 @@ class SDKControlPermissionRequest(TypedDict):
     subtype: Literal["can_use_tool"]
     tool_name: str
     input: dict[str, Any]
+    tool_use_id: str  # Unique identifier for this tool call
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None

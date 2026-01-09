@@ -35,14 +35,12 @@ anyio.run(main)
 `query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).
 
 ```python
-from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage
 
 # Simple query
 async for message in query(prompt="Hello Claude"):
     if isinstance(message, AssistantMessage):
-        for block in message.content:
-            if isinstance(block, TextBlock):
-                print(block.text)
+        print(message)
 
 # With options
 options = ClaudeAgentOptions(

@@ -48,22 +48,9 @@ jobs:
           Be constructive and helpful in your feedback.
 
         # Optional: Customize review based on file types
-        # direct_prompt: |
-        # Review this PR focusing on:
-        # - For TypeScript files: Type safety and proper interface usage
-        # - For API endpoints: Security, input validation, and error handling
-        # - For React components: Performance, accessibility, and reusability
-        # - For test files: Coverage, edge cases, and test quality
-
-        # Optional: If automated review posts public comments
-        # no_comments: true
-
-        # Optional: Create a summary comment on the PR
-        # summary_comment: true
-
-        # Optional: Allow Claude to suggest code changes
-        # allow_code_suggestions: true
-
-        # Optional: Limit Claude review scope
-        # max_files_to_review: 10
-        # max_lines_per_file: 500
+        # prompt: |
+        #   Review this PR focusing on:
+        #   - For TypeScript files: Type safety and proper interface usage
+        #   - For API endpoints: Security, input validation, and error handling
+        #   - For React components: Performance, accessibility, and reusability
+        #   - For test files: Coverage, edge cases, and test quality

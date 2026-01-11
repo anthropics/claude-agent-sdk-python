@@ -697,6 +697,7 @@ class SDKControlPermissionRequest(TypedDict):
 class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
+    agents: NotRequired[dict[str, dict[str, Any]]]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

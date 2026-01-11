@@ -25,9 +25,15 @@ class TestIntegration:
         """Test a simple query with text response."""
 
         async def _test():
-            with patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_transport_class:
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -83,9 +89,15 @@ class TestIntegration:
         """Test query that uses tools."""
 
         async def _test():
-            with patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_transport_class:
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -169,9 +181,15 @@ class TestIntegration:
         """Test query with continue_conversation option."""
 
         async def _test():
-            with patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_transport_class:
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 
@@ -217,9 +235,15 @@ class TestIntegration:
         """Test query with max_budget_usd option."""
 
         async def _test():
-            with patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_transport_class:
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 

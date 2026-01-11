@@ -1,7 +1,7 @@
 """Internal client implementation."""
 
 from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 from ..types import (
@@ -89,32 +89,52 @@ class InternalClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
+        # Convert agents to dict format for initialize request
+        agents_dict = None
+        if configured_options.agents:
+            agents_dict = {
+                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                for name, agent_def in configured_options.agents.items()
+            }
+
         # Create Query to handle control protocol
-        is_streaming = not isinstance(prompt, str)
+        # Always use streaming mode internally (matching TypeScript SDK)
+        # This ensures agents are always sent via initialize request
         query = Query(
             transport=chosen_transport,
-            is_streaming_mode=is_streaming,
+            is_streaming_mode=True,  # Always streaming internally
             can_use_tool=configured_options.can_use_tool,
             hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
             if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
+            agents=agents_dict,
         )
 
         try:
             # Start reading messages
             await query.start()
 
-            # Initialize if streaming
-            if is_streaming:
-                await query.initialize()
+            # Always initialize to send agents via stdin (matching TypeScript SDK)
+            await query.initialize()
 
-            # Stream input if it's an AsyncIterable
-            if isinstance(prompt, AsyncIterable) and query._tg:
-                # Start streaming in background
-                # Create a task that will run in the background
+            # Handle prompt input
+            if isinstance(prompt, str):
+                # For string prompts, write user message to stdin after initialize
+                # (matching TypeScript SDK behavior)
+                import json
+
+                user_message = {
+                    "type": "user",
+                    "session_id": "",
+                    "message": {"role": "user", "content": prompt},
+                    "parent_tool_use_id": None,
+                }
+                await chosen_transport.write(json.dumps(user_message) + "\n")
+                await chosen_transport.end_input()
+            elif isinstance(prompt, AsyncIterable) and query._tg:
+                # Stream input in background for async iterables
                 query._tg.start_soon(query.stream_input, prompt)
-            # For string prompts, the prompt is already passed via CLI args
 
             # Yield parsed messages
             async for data in query.receive_messages():

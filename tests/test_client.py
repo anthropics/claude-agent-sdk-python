@@ -75,9 +75,15 @@ class TestQueryFunction:
         """Test query with custom working directory."""
 
         async def _test():
-            with patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_transport_class:
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
                 mock_transport = AsyncMock()
                 mock_transport_class.return_value = mock_transport
 

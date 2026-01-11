@@ -73,6 +73,7 @@ class Query:
         hooks: dict[str, list[dict[str, Any]]] | None = None,
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
         initialize_timeout: float = 60.0,
+        agents: dict[str, dict[str, Any]] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -83,6 +84,7 @@ class Query:
             hooks: Optional hook configurations
             sdk_mcp_servers: Optional SDK MCP server instances
             initialize_timeout: Timeout in seconds for the initialize request
+            agents: Optional agent definitions to send via initialize
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -90,6 +92,7 @@ class Query:
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
+        self._agents = agents
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -144,10 +147,12 @@ class Query:
                         hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request
-        request = {
+        request: dict[str, Any] = {
             "subtype": "initialize",
             "hooks": hooks_config if hooks_config else None,
         }
+        if self._agents:
+            request["agents"] = self._agents
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

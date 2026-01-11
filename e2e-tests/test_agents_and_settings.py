@@ -1,6 +1,7 @@
 """End-to-end tests for agents and setting sources with real Claude API calls."""
 
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -15,10 +16,33 @@ from claude_agent_sdk import (
 )
 
 
+def generate_large_agents(
+    num_agents: int = 20, prompt_size_kb: int = 12
+) -> dict[str, AgentDefinition]:
+    """Generate multiple agents with large prompts for testing.
+
+    Args:
+        num_agents: Number of agents to generate
+        prompt_size_kb: Size of each agent's prompt in KB
+
+    Returns:
+        Dictionary of agent name -> AgentDefinition
+    """
+    agents = {}
+    for i in range(num_agents):
+        # Generate a large prompt with some structure
+        prompt_content = f"You are test agent #{i}. " + ("x" * (prompt_size_kb * 1024))
+        agents[f"large-agent-{i}"] = AgentDefinition(
+            description=f"Large test agent #{i} for stress testing",
+            prompt=prompt_content,
+        )
+    return agents
+
+
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_agent_definition():
-    """Test that custom agent definitions work."""
+    """Test that custom agent definitions work in streaming mode."""
     options = ClaudeAgentOptions(
         agents={
             "test-agent": AgentDefinition(
@@ -45,6 +69,74 @@ async def test_agent_definition():
                     f"test-agent should be available, got: {agents}"
                 )
                 break
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_agent_definition_with_query_function():
+    """Test that custom agent definitions work with the query() function.
+
+    Both ClaudeSDKClient and query() now use streaming mode internally,
+    sending agents via the initialize request.
+    """
+    from claude_agent_sdk import query
+
+    options = ClaudeAgentOptions(
+        agents={
+            "test-agent-query": AgentDefinition(
+                description="A test agent for query function verification",
+                prompt="You are a test agent.",
+            )
+        },
+        max_turns=1,
+    )
+
+    # Use query() with string prompt
+    found_agent = False
+    async for message in query(prompt="What is 2 + 2?", options=options):
+        if isinstance(message, SystemMessage) and message.subtype == "init":
+            agents = message.data.get("agents", [])
+            assert "test-agent-query" in agents, (
+                f"test-agent-query should be available, got: {agents}"
+            )
+            found_agent = True
+            break
+
+    assert found_agent, "Should have received init message with agents"
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_large_agents_with_query_function():
+    """Test large agent definitions (260KB+) work with query() function.
+
+    Since we now always use streaming mode internally (matching TypeScript SDK),
+    large agents are sent via the initialize request through stdin with no
+    size limits.
+    """
+    from claude_agent_sdk import query
+
+    # Generate 20 agents with 13KB prompts each = ~260KB total
+    agents = generate_large_agents(num_agents=20, prompt_size_kb=13)
+
+    options = ClaudeAgentOptions(
+        agents=agents,
+        max_turns=1,
+    )
+
+    # Use query() with string prompt - agents still go via initialize
+    found_agents = []
+    async for message in query(prompt="What is 2 + 2?", options=options):
+        if isinstance(message, SystemMessage) and message.subtype == "init":
+            found_agents = message.data.get("agents", [])
+            break
+
+    # Check all our agents are registered
+    for agent_name in agents:
+        assert agent_name in found_agents, (
+            f"{agent_name} should be registered. "
+            f"Found: {found_agents[:5]}... ({len(found_agents)} total)"
+        )
 
 
 @pytest.mark.e2e
@@ -240,3 +332,62 @@ async def test_setting_sources_project_included():
         # On Windows, wait for file handles to be released before cleanup
         if sys.platform == "win32":
             await asyncio.sleep(0.5)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_large_agent_definitions_via_initialize():
+    """Test that large agent definitions (250KB+) are sent via initialize request.
+
+    This test verifies the fix for the issue where large agent definitions
+    would previously trigger a temp file workaround with @filepath. Now they
+    are sent via the initialize control request through stdin, which has no
+    size limit.
+
+    The test:
+    1. Generates 20 agents with ~13KB prompts each (~260KB total)
+    2. Creates an SDK client with these agents
+    3. Verifies all agents are registered and available
+    """
+    from dataclasses import asdict
+
+    # Generate 20 agents with 13KB prompts each = ~260KB total
+    agents = generate_large_agents(num_agents=20, prompt_size_kb=13)
+
+    # Calculate total size to verify we're testing the right thing
+    total_size = sum(
+        len(json.dumps({k: v for k, v in asdict(agent).items() if v is not None}))
+        for agent in agents.values()
+    )
+    assert total_size > 250_000, (
+        f"Test agents should be >250KB, got {total_size / 1024:.1f}KB"
+    )
+
+    options = ClaudeAgentOptions(
+        agents=agents,
+        max_turns=1,
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query("List available agents")
+
+        # Check that all agents are available in init message
+        async for message in client.receive_response():
+            if isinstance(message, SystemMessage) and message.subtype == "init":
+                registered_agents = message.data.get("agents", [])
+                assert isinstance(registered_agents, list), (
+                    f"agents should be a list, got: {type(registered_agents)}"
+                )
+
+                # Verify all our agents are registered
+                for agent_name in agents:
+                    assert agent_name in registered_agents, (
+                        f"{agent_name} should be registered. "
+                        f"Found: {registered_agents[:5]}... ({len(registered_agents)} total)"
+                    )
+
+                # All agents should be there
+                assert len(registered_agents) >= len(agents), (
+                    f"Expected at least {len(agents)} agents, got {len(registered_agents)}"
+                )
+                break

@@ -41,12 +41,12 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          
+
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
-          # model: "claude-opus-4-20250514"
+          # claude_args: --model claude-opus-4-20250514
           
           # Optional: Customize the trigger phrase (default: @claude)
           # trigger_phrase: "/claude"
@@ -55,18 +55,8 @@ jobs:
           # assignee_trigger: "claude-bot"
           
           # Allow Claude to run linters, typecheckers, and tests
-          allowed_tools: |
-            Bash(python -m ruff check:*)
-            Bash(python -m ruff format:*)
-            Bash(python -m mypy:*)
-            Bash(python -m pytest:*)
-          
+          claude_args: |
+            --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"
+
           # Optional: Add custom instructions for Claude to customize its behavior for your project
-          # custom_instructions: |
-          #   Follow our coding standards
-          #   Ensure all new code has tests
-          #   Use TypeScript for new files
-          
-          # Optional: Custom environment variables for Claude
-          # claude_env: |
-          #   NODE_ENV: test
+          # claude_args: --system-prompt "Follow our coding standards"

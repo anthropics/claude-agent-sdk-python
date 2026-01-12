@@ -29,15 +29,15 @@ jobs:
 
     - name: Run Claude Code Review
       id: claude-review
-      uses: anthropics/claude-code-action@beta
+      uses: anthropics/claude-code-action@v1
       with:
         anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
         # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
-        # model: "claude-opus-4-20250514"
+        # claude_args: --model claude-opus-4-20250514
 
         # Direct prompt for automated review (no @claude mention needed)
-        direct_prompt: |
+        prompt: |
           Please review this pull request and provide feedback on:
           - Code quality and best practices
           - Potential bugs or issues
@@ -48,22 +48,9 @@ jobs:
           Be constructive and helpful in your feedback.
 
         # Optional: Customize review based on file types
-        # direct_prompt: |
-        # Review this PR focusing on:
-        # - For TypeScript files: Type safety and proper interface usage
-        # - For API endpoints: Security, input validation, and error handling
-        # - For React components: Performance, accessibility, and reusability
-        # - For test files: Coverage, edge cases, and test quality
-
-        # Optional: If automated review posts public comments
-        # no_comments: true
-
-        # Optional: Create a summary comment on the PR
-        # summary_comment: true
-
-        # Optional: Allow Claude to suggest code changes
-        # allow_code_suggestions: true
-
-        # Optional: Limit Claude review scope
-        # max_files_to_review: 10
-        # max_lines_per_file: 500
+        # prompt: |
+        #   Review this PR focusing on:
+        #   - For TypeScript files: Type safety and proper interface usage
+        #   - For API endpoints: Security, input validation, and error handling
+        #   - For React components: Performance, accessibility, and reusability
+        #   - For test files: Coverage, edge cases, and test quality

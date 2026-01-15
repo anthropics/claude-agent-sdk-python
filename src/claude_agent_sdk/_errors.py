@@ -54,3 +54,41 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class APIError(ClaudeSDKError):
+    """Base exception for API errors from the Anthropic API.
+
+    Raised when the API returns an error (400, 401, 429, 529, etc.) instead of
+    being silently returned as a text message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        error_type: str | None = None,
+        error_text: str | None = None,
+    ):
+        self.error_type = error_type
+        self.error_text = error_text
+        super().__init__(message)
+
+
+class AuthenticationError(APIError):
+    """Raised when API authentication fails (401)."""
+
+
+class BillingError(APIError):
+    """Raised when there's a billing issue with the API account."""
+
+
+class RateLimitError(APIError):
+    """Raised when API rate limits are exceeded (429)."""
+
+
+class InvalidRequestError(APIError):
+    """Raised when the API request is invalid (400)."""
+
+
+class ServerError(APIError):
+    """Raised when the API server encounters an error (500, 529)."""

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.20
+
+### Bug Fixes
+
+- **Permission callback test reliability**: Improved robustness of permission callback end-to-end tests (#485)
+
+### Documentation
+
+- Updated Claude Agent SDK documentation link (#442)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.9
+- **CI improvements**: Updated claude-code actions from @beta to @v1 (#467)
+
 ## 0.1.19
 
 ### Internal/Other Changes

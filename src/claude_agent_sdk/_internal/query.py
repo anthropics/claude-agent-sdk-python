@@ -488,7 +488,7 @@ class Query:
                             )
 
                     response_data = {"content": content}
-                    if hasattr(result.root, "is_error") and result.root.is_error:
+                    if hasattr(result.root, "isError") and result.root.isError:
                         response_data["is_error"] = True  # type: ignore[assignment]
 
                     return {

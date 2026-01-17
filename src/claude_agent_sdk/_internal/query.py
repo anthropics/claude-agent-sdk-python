@@ -15,6 +15,7 @@ from mcp.types import (
 )
 
 from ..types import (
+    PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
     SDKControlPermissionRequest,
@@ -521,7 +522,7 @@ class Query:
         """Send interrupt control request."""
         await self._send_control_request({"subtype": "interrupt"})
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode."""
         await self._send_control_request(
             {

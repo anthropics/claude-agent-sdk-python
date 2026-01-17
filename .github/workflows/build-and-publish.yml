@@ -1,0 +1,170 @@
+name: Build and Publish
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to publish'
+        required: true
+        type: string
+      previous_tag:
+        description: 'Previous release tag for changelog generation'
+        required: false
+        type: string
+        default: ''
+      push_directly:
+        description: 'Push directly to main (true) or create PR (false)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-wheels:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install build twine wheel
+        shell: bash
+
+      - name: Build wheel with bundled CLI
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        if: inputs.push_directly
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - uses: actions/checkout@v4
+        if: ${{ !inputs.push_directly }}
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update version files
+        run: python scripts/update_version.py "$VERSION"
+
+      - name: Read CLI version from code
+        id: cli_version
+        run: |
+          CLI_VERSION=$(python -c "import re; print(re.search(r'__cli_version__ = \"([^\"]+)\"', open('src/claude_agent_sdk/_cli_version.py').read()).group(1))")
+          echo "cli_version=$CLI_VERSION" >> $GITHUB_OUTPUT
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Build sdist and publish to PyPI
+        run: |
+          pip install build twine
+          python -m build --sdist
+          twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Commit version changes
+        run: |
+          git add pyproject.toml src/claude_agent_sdk/_version.py
+          git commit -m "chore: release v$VERSION"
+
+      - name: Update changelog with Claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ inputs.previous_tag }}"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model claude-opus-4-5
+            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+
+      # Direct push flow (auto-release)
+      - name: Push to main
+        if: inputs.push_directly
+        run: git push origin main
+
+      - name: Create tag and GitHub Release
+        if: inputs.push_directly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+
+          awk -v ver="$VERSION" '/^## / { if (found) exit; if ($2 == ver) found=1; next } found { print }' CHANGELOG.md > release_notes.md
+          echo -e "\n---\n\n**PyPI:** https://pypi.org/project/claude-agent-sdk/$VERSION/\n\n\`\`\`bash\npip install claude-agent-sdk==$VERSION\n\`\`\`" >> release_notes.md
+
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file release_notes.md
+
+      # PR flow (manual publish)
+      - name: Create release branch
+        if: ${{ !inputs.push_directly }}
+        run: |
+          BRANCH_NAME="release/v$VERSION"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          git checkout -b "$BRANCH_NAME"
+
+      - name: Push branch and create PR
+        if: ${{ !inputs.push_directly }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin "$BRANCH_NAME"
+
+          PR_BODY="This PR updates the version to $VERSION after publishing to PyPI.
+
+          ## Changes
+          - Updated version in \`pyproject.toml\` to $VERSION
+          - Updated version in \`src/claude_agent_sdk/_version.py\` to $VERSION
+          - Updated \`CHANGELOG.md\` with release notes
+
+          ## Release Information
+          - Published to PyPI: https://pypi.org/project/claude-agent-sdk/$VERSION/
+          - Bundled CLI version: ${{ steps.cli_version.outputs.cli_version }}
+          - Install with: \`pip install claude-agent-sdk==$VERSION\`
+
+          🤖 Generated by GitHub Actions"
+
+          gh pr create \
+            --title "chore: release v$VERSION" \
+            --body "$PR_BODY" \
+            --base main \
+            --head "$BRANCH_NAME"

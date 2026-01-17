@@ -15,7 +15,15 @@ else:
     McpServer = Any
 
 # Permission modes
-PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
+# - 'default': Standard behavior, prompts for dangerous operations
+# - 'acceptEdits': Auto-accept file edit operations
+# - 'bypassPermissions': Bypass all permission checks (requires allowDangerouslySkipPermissions)
+# - 'plan': Planning mode, no actual tool execution
+# - 'delegate': Delegate mode, restricts to only Teammate and Task tools
+# - 'dontAsk': Don't prompt for permissions, deny if not pre-approved
+PermissionMode = Literal[
+    "default", "acceptEdits", "bypassPermissions", "plan", "delegate", "dontAsk"
+]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
 SdkBeta = Literal["context-1m-2025-08-07"]

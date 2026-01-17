@@ -826,3 +826,33 @@ class TestSubprocessCLITransport:
                 await process.wait()
 
         anyio.run(_test, backend="trio")
+
+    def test_sandbox_watcher_error_pattern_detection(self):
+        """Test that sandbox file watcher error patterns are correctly detected."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox={"enabled": True}),
+        )
+
+        # Test EOPNOTSUPP error pattern
+        pattern = transport._SANDBOX_WATCHER_ERROR_PATTERN
+
+        # Test cases that should match
+        eopnotsupp_line = "EOPNOTSUPP: unknown error, watch '/var/folders/abc/T/vscode-git-123.sock'"
+        match = pattern.search(eopnotsupp_line)
+        assert match is not None
+        assert match.group(1) == "EOPNOTSUPP"
+        assert match.group(2) == "/var/folders/abc/T/vscode-git-123.sock"
+
+        eintr_line = "EINTR: interrupted system call, watch '/var/folders/pq/9xtx/T/python-test-discovery-5c4f'"
+        match = pattern.search(eintr_line)
+        assert match is not None
+        assert match.group(1) == "EINTR"
+        assert match.group(2) == "/var/folders/pq/9xtx/T/python-test-discovery-5c4f"
+
+        # Test cases that should NOT match
+        normal_error = "Error: Something went wrong"
+        assert pattern.search(normal_error) is None
+
+        other_syscall = "ENOENT: no such file or directory, open '/path/to/file'"
+        assert pattern.search(other_syscall) is None

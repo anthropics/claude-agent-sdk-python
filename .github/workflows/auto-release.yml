@@ -1,0 +1,53 @@
+name: Auto Release on CLI Bump
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'chore: bump bundled CLI version to')
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous_tag: ${{ steps.previous_tag.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify CLI version file was changed
+        run: |
+          if ! git diff --name-only HEAD~1 | grep -q '_cli_version.py'; then
+            echo "::error::CLI version file not changed in this commit"
+            exit 1
+          fi
+
+      - name: Get current SDK version and calculate next
+        id: version
+        run: |
+          CURRENT=$(python -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('src/claude_agent_sdk/_version.py').read()).group(1))")
+          IFS='.' read -ra PARTS <<< "$CURRENT"
+          NEXT="${PARTS[0]}.${PARTS[1]}.$((PARTS[2] + 1))"
+          echo "version=$NEXT" >> $GITHUB_OUTPUT
+          echo "Current: $CURRENT -> Next: $NEXT"
+
+      - name: Get previous release tag
+        id: previous_tag
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+
+  release:
+    needs: check-trigger
+    uses: ./.github/workflows/build-and-publish.yml
+    with:
+      version: ${{ needs.check-trigger.outputs.version }}
+      previous_tag: ${{ needs.check-trigger.outputs.previous_tag }}
+      push_directly: true
+    secrets: inherit

@@ -826,3 +826,152 @@ class TestSubprocessCLITransport:
                 await process.wait()
 
         anyio.run(_test, backend="trio")
+
+    def test_has_sdk_mcp_servers_detection_no_servers(self):
+        """Test SDK MCP server detection with no servers."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert transport._has_sdk_mcp_servers(transport._options) is False
+
+    def test_has_sdk_mcp_servers_detection_external_only(self):
+        """Test SDK MCP server detection with only external servers."""
+        external_server = {"type": "stdio", "command": "echo"}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers={"ext": external_server}),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is False
+
+    def test_has_sdk_mcp_servers_detection_sdk_present(self):
+        """Test SDK MCP server detection with SDK server present."""
+        # Mock SDK server config (instance field would normally have McpServer)
+        sdk_server = {"type": "sdk", "name": "test", "instance": MagicMock()}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers={"sdk": sdk_server}),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is True
+
+    def test_streaming_mode_forced_with_sdk_mcp_servers(self):
+        """Test that SDK MCP servers force streaming mode even with string prompt."""
+        sdk_server = {"type": "sdk", "name": "test", "instance": MagicMock()}
+        transport = SubprocessCLITransport(
+            prompt="Hello",  # String prompt
+            options=make_options(mcp_servers={"test": sdk_server}),
+        )
+
+        # Should force streaming mode due to SDK MCP server
+        assert transport._is_streaming is True
+
+        cmd = transport._build_command()
+        assert "--input-format" in cmd
+        assert "stream-json" in cmd
+        assert "--print" not in cmd
+
+    def test_string_prompt_without_sdk_mcp_stays_non_streaming(self):
+        """Test that string prompts without SDK MCP servers use non-streaming mode."""
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(),
+        )
+
+        assert transport._is_streaming is False
+
+        cmd = transport._build_command()
+        assert "--print" in cmd
+
+    def test_string_prompt_with_external_mcp_stays_non_streaming(self):
+        """Test that external MCP servers don't force streaming mode."""
+        external_server = {"type": "stdio", "command": "echo", "args": ["test"]}
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(mcp_servers={"external": external_server}),
+        )
+
+        # External servers don't need bidirectional communication
+        assert transport._is_streaming is False
+
+        cmd = transport._build_command()
+        assert "--print" in cmd
+
+    def test_string_to_async_iterable_output_format(self):
+        """Test that _string_to_async_iterable produces correct stream-json format."""
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            _string_to_async_iterable,
+        )
+
+        async def _test():
+            messages = [msg async for msg in _string_to_async_iterable("Hello world")]
+
+            assert len(messages) == 1
+            msg = messages[0]
+            assert msg["type"] == "user"
+            assert msg["message"]["role"] == "user"
+            assert msg["message"]["content"] == "Hello world"
+            assert msg["parent_tool_use_id"] is None
+            assert msg["session_id"] == "default"
+
+        anyio.run(_test)
+
+    def test_string_prompt_converted_to_async_iterable_with_sdk_mcp(self):
+        """Test that string prompt is converted to AsyncIterable with SDK MCP servers."""
+        from collections.abc import AsyncIterable
+
+        sdk_server = {"type": "sdk", "name": "test", "instance": MagicMock()}
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(mcp_servers={"test": sdk_server}),
+        )
+
+        # _prompt should be an AsyncIterable, not a string
+        assert isinstance(transport._prompt, AsyncIterable)
+        assert not isinstance(transport._prompt, str)
+
+    def test_mixed_sdk_and_external_mcp_servers_forces_streaming(self):
+        """Test that mixed SDK + external MCP servers force streaming mode."""
+        sdk_server = {"type": "sdk", "name": "test", "instance": MagicMock()}
+        external_server = {"type": "stdio", "command": "echo", "args": ["test"]}
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(
+                mcp_servers={"sdk": sdk_server, "external": external_server}
+            ),
+        )
+
+        # SDK server presence should force streaming mode
+        assert transport._is_streaming is True
+
+        cmd = transport._build_command()
+        assert "--input-format" in cmd
+        assert "stream-json" in cmd
+        assert "--print" not in cmd
+
+    def test_has_sdk_mcp_servers_with_file_path_returns_false(self):
+        """Test that mcp_servers as file path returns False for SDK detection."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers="/path/to/mcp-config.json"),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is False
+
+    def test_has_sdk_mcp_servers_with_invalid_config_values(self):
+        """Test SDK detection with various invalid config values."""
+        # Config value is None
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers={"server": None}),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is False
+
+        # Config value is a string
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers={"server": "invalid"}),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is False
+
+        # Config value is a dict without type field
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(mcp_servers={"server": {"command": "echo"}}),
+        )
+        assert transport._has_sdk_mcp_servers(transport._options) is False

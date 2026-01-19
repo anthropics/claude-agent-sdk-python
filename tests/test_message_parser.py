@@ -156,6 +156,72 @@ class TestMessageParser:
         assert isinstance(message, UserMessage)
         assert message.parent_tool_use_id == "toolu_01Xrwd5Y13sEHtzScxR77So8"
 
+    def test_parse_user_message_with_tool_use_result(self):
+        """Test parsing a user message with tool_use_result field.
+
+        The tool_use_result field contains metadata about tool execution results,
+        including file edit details like oldString, newString, and structuredPatch.
+        """
+        tool_result_data = {
+            "filePath": "/path/to/file.py",
+            "oldString": "old code",
+            "newString": "new code",
+            "originalFile": "full file contents",
+            "structuredPatch": [
+                {
+                    "oldStart": 33,
+                    "oldLines": 7,
+                    "newStart": 33,
+                    "newLines": 7,
+                    "lines": [
+                        "   # comment",
+                        "-      old line",
+                        "+      new line",
+                    ],
+                }
+            ],
+            "userModified": False,
+            "replaceAll": False,
+        }
+        data = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "tool_use_id": "toolu_vrtx_01KXWexk3NJdwkjWzPMGQ2F1",
+                        "type": "tool_result",
+                        "content": "The file has been updated.",
+                    }
+                ],
+            },
+            "parent_tool_use_id": None,
+            "session_id": "84afb479-17ae-49af-8f2b-666ac2530c3a",
+            "uuid": "2ace3375-1879-48a0-a421-6bce25a9295a",
+            "tool_use_result": tool_result_data,
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.tool_use_result == tool_result_data
+        assert message.tool_use_result["filePath"] == "/path/to/file.py"
+        assert message.tool_use_result["oldString"] == "old code"
+        assert message.tool_use_result["newString"] == "new code"
+        assert message.tool_use_result["structuredPatch"][0]["oldStart"] == 33
+        assert message.uuid == "2ace3375-1879-48a0-a421-6bce25a9295a"
+
+    def test_parse_user_message_with_string_content_and_tool_use_result(self):
+        """Test parsing a user message with string content and tool_use_result."""
+        tool_result_data = {"filePath": "/path/to/file.py", "userModified": True}
+        data = {
+            "type": "user",
+            "message": {"content": "Simple string content"},
+            "tool_use_result": tool_result_data,
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.content == "Simple string content"
+        assert message.tool_use_result == tool_result_data
+
     def test_parse_valid_assistant_message(self):
         """Test parsing a valid assistant message."""
         data = {

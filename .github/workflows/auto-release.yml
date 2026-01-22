@@ -45,6 +45,9 @@ jobs:
 
   release:
     needs: check-trigger
+    permissions:
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/build-and-publish.yml
     with:
       version: ${{ needs.check-trigger.outputs.version }}

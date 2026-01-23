@@ -119,7 +119,9 @@ jobs:
       # Direct push flow (auto-release)
       - name: Push to main
         if: inputs.push_directly
-        run: git push origin main
+        run: |
+          git remote set-url origin git@github.com:anthropics/claude-agent-sdk-python.git
+          git push origin main
 
       - name: Create tag and GitHub Release
         if: inputs.push_directly

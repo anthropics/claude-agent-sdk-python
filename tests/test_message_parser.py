@@ -233,6 +233,54 @@ class TestMessageParser:
         assert isinstance(message, AssistantMessage)
         assert message.parent_tool_use_id == "toolu_01Xrwd5Y13sEHtzScxR77So8"
 
+    def test_parse_assistant_message_with_error(self):
+        """Test parsing an assistant message with error field (issue #505).
+
+        The error field is at the top-level of the JSON, not inside the message object.
+        This enables applications to detect API errors like rate limits.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "API Error: 404 ..."}],
+                "model": "<synthetic>",
+            },
+            "session_id": "test-session",
+            "uuid": "test-uuid",
+            "error": "unknown",  # error is at top level, not inside message
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "unknown"
+
+    def test_parse_assistant_message_with_rate_limit_error(self):
+        """Test parsing an assistant message with rate_limit error."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Rate limit exceeded"}],
+                "model": "<synthetic>",
+            },
+            "error": "rate_limit",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_with_auth_error(self):
+        """Test parsing an assistant message with authentication_failed error."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Invalid API key"}],
+                "model": "<synthetic>",
+            },
+            "error": "authentication_failed",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "authentication_failed"
+
     def test_parse_valid_result_message(self):
         """Test parsing a valid result message."""
         data = {

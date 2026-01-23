@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.22
+
+### Features
+
+- Added `tool_use_result` field to `UserMessage` (#495)
+
+### Bug Fixes
+
+- Added permissions to release job in auto-release workflow (#504)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.19
+- Extracted build-and-publish workflow into reusable component (#488)
+
 ## 0.1.21
 
 ### Internal/Other Changes

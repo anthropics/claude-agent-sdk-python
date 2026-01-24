@@ -8,6 +8,23 @@
 - Use `yaml.safe_load()` for secure YAML parsing (never `yaml.load()` without Loader)
 - GitHub Contents API: use `Accept: application/vnd.github.raw+json` to get raw file content
 - Webhook handler should fetch config dynamically per request using installation token and head SHA
+- Use Protocol for typing queue interfaces, don't inherit ABC for concrete implementations (ruff B024)
+- Job ID pattern: `{repo_full_name}#{pr_number}#{reviewer_username}` for unique (PR, reviewer) identification
+- Duplicate detection should only consider QUEUED and IN_PROGRESS jobs, not COMPLETED/FAILED (allow re-queueing)
+
+---
+
+## 2026-01-24 - US-005
+- What was implemented: Review queue with FIFO ordering, duplicate detection, and job status tracking
+- Files changed:
+  - `tasks/ai_pr_reviewer/review_queue.py` - JobStatus enum, ReviewJob dataclass, generate_job_id() function, ReviewQueueProtocol and InMemoryReviewQueue class
+- **Learnings for future iterations:**
+  - Use Protocol for defining queue interface, concrete class for implementation (no ABC inheritance)
+  - Job ID should be deterministic based on (repo, PR number, reviewer) to enable duplicate detection
+  - Store jobs by ID in dict for O(1) lookup, use deque for FIFO queue order
+  - Duplicate detection only blocks QUEUED/IN_PROGRESS jobs - completed/failed can be re-queued
+  - The dequeue operation atomically removes from queue and marks as IN_PROGRESS
+  - clear_completed() method helps manage memory by removing finished jobs
 
 ---
 

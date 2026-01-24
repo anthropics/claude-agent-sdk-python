@@ -1,0 +1,10 @@
+reviewers:
+  claude-pr-review-team:
+    prompt: |
+      Review this PR for code quality and best practices.
+      Focus on:
+      - Code readability and maintainability
+      - Potential bugs or edge cases
+      - Security concerns
+      - Performance implications
+    language: en

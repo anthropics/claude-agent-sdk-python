@@ -1,0 +1,208 @@
+{
+  "project": "AI PR Reviewer GitHub App",
+  "branchName": "ralph/ai-pr-reviewer",
+  "description": "GitHub App that performs AI-powered PR reviews on behalf of configured users using Claude Code Python SDK",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "GitHub App webhook server setup",
+      "description": "As a developer, I need a webhook server that receives GitHub events so that the app can respond to PR reviewer assignments.",
+      "acceptanceCriteria": [
+        "FastAPI server with /webhook endpoint",
+        "HMAC-SHA256 signature verification for incoming webhooks",
+        "Support for pull_request events (specifically review_requested action)",
+        "Health check endpoint at /health",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "GitHub App authentication",
+      "description": "As a developer, I need the app to authenticate with GitHub API so that it can read PRs and post reviews.",
+      "acceptanceCriteria": [
+        "GitHub App JWT generation from private key",
+        "Installation access token retrieval per repository",
+        "Token caching with expiration handling",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Reviewer configuration via repo config file",
+      "description": "As a repo maintainer, I want to configure AI reviewers via a YAML file so that I can map GitHub usernames to AI prompts.",
+      "acceptanceCriteria": [
+        "Parse .ai-reviewer.yml from repo root",
+        "Support reviewer mapping: GitHub username to custom prompt",
+        "Support optional language setting per reviewer",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Review trigger detection",
+      "description": "As a user, I want AI reviews triggered when I request specific users as reviewers.",
+      "acceptanceCriteria": [
+        "Detect review_requested webhook action",
+        "Check if requested reviewer is in configured AI reviewer list",
+        "Support multiple AI reviewers requested simultaneously",
+        "Ignore non-configured reviewers",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Review queue implementation",
+      "description": "As a developer, I need a queue system for reviews so that they process in order without duplicates.",
+      "acceptanceCriteria": [
+        "Queue data structure (in-memory with optional Redis)",
+        "Unique job ID per (PR, reviewer) combination",
+        "FIFO processing order",
+        "Duplicate detection: skip if same (PR, reviewer) already queued or in-progress",
+        "Job status tracking: queued, in_progress, completed, failed",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Queue worker for review processing",
+      "description": "As a developer, I need a worker that processes queued reviews sequentially.",
+      "acceptanceCriteria": [
+        "Background worker consuming from queue",
+        "Lock mechanism to prevent concurrent reviews on same PR",
+        "Basic retry logic for transient failures",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "PR context gathering",
+      "description": "As the AI reviewer, I need full PR context to provide informed reviews.",
+      "acceptanceCriteria": [
+        "Fetch PR metadata (title, body, author, base/head branches)",
+        "Fetch all changed files with diffs",
+        "Fetch commit history for the PR",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Claude Code Python SDK integration",
+      "description": "As a developer, I need to integrate with Claude Code Python SDK for review generation.",
+      "acceptanceCriteria": [
+        "Initialize Claude Code SDK client",
+        "Pass PR context and user-specific prompt to Claude",
+        "Parse structured review output (summary + inline comments)",
+        "Handle SDK errors gracefully",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Review prompt construction",
+      "description": "As a developer, I need to construct review prompts with user customization and PR context.",
+      "acceptanceCriteria": [
+        "Base review prompt template",
+        "Inject user-specific custom instructions from config",
+        "Include PR diff context in prompt",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Review summary generation",
+      "description": "As a PR author, I want a summary comment on my PR with the AI's overall feedback.",
+      "acceptanceCriteria": [
+        "Generate markdown summary from Claude response",
+        "Include persona label header (e.g., Review on behalf of @alice-ai)",
+        "Include overall assessment (approve, request changes, comment)",
+        "List key findings",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Inline comment generation",
+      "description": "As a PR author, I want inline comments on specific code lines.",
+      "acceptanceCriteria": [
+        "Parse Claude response for file-specific suggestions",
+        "Map suggestions to correct file paths and line numbers",
+        "Support code suggestion blocks (```suggestion format)",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Post review to GitHub",
+      "description": "As a developer, I need to post the complete review to GitHub.",
+      "acceptanceCriteria": [
+        "Create PR review with summary body",
+        "Attach inline comments to the review",
+        "Set review state (COMMENT, APPROVE, REQUEST_CHANGES)",
+        "Handle GitHub API rate limits",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Review deduplication",
+      "description": "As a PR author, I don't want duplicate reviews from the same AI persona.",
+      "acceptanceCriteria": [
+        "Track completed reviews per (PR, reviewer, commit SHA)",
+        "Skip review if already reviewed at current HEAD",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Error handling",
+      "description": "As a PR author, I want to be notified if the AI review fails.",
+      "acceptanceCriteria": [
+        "Post comment on PR if review fails after retries",
+        "Include actionable error message",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

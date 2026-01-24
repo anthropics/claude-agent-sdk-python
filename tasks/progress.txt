@@ -1,0 +1,21 @@
+## Codebase Patterns
+- Use FastAPI for webhook servers with signature verification
+- All exceptions should use `raise ... from e` pattern for proper exception chaining (ruff B904)
+- Use `hmac.compare_digest()` for constant-time signature comparison to prevent timing attacks
+- Load configuration from environment variables using a dataclass with `@classmethod from_env()`
+
+---
+
+## 2026-01-24 - US-001
+- What was implemented: GitHub App webhook server with FastAPI
+- Files changed:
+  - `tasks/ai_pr_reviewer/__init__.py` - Package init
+  - `tasks/ai_pr_reviewer/config.py` - AppConfig dataclass for environment-based configuration
+  - `tasks/ai_pr_reviewer/webhook.py` - FastAPI server with /webhook and /health endpoints
+  - `tasks/ai_pr_reviewer/py.typed` - PEP 561 marker for typed package
+- **Learnings for future iterations:**
+  - Use `from e` pattern when re-raising exceptions (ruff B904 check)
+  - GitHub webhook signature format is `sha256=<hex_digest>`
+  - FastAPI Header() parameters automatically convert header names (X-Hub-Signature-256 -> x_hub_signature_256)
+
+---

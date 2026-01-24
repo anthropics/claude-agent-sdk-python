@@ -11,6 +11,26 @@
 - Use Protocol for typing queue interfaces, don't inherit ABC for concrete implementations (ruff B024)
 - Job ID pattern: `{repo_full_name}#{pr_number}#{reviewer_username}` for unique (PR, reviewer) identification
 - Duplicate detection should only consider QUEUED and IN_PROGRESS jobs, not COMPLETED/FAILED (allow re-queueing)
+- Use `contextlib.suppress()` instead of try-except-pass (ruff SIM105)
+- PRLockManager for PR-level locking: creates/cleans up asyncio.Lock per PR key
+- TransientError exception class to distinguish retryable errors from non-retryable ones
+- QueueWorker uses exponential backoff with RetryConfig dataclass
+
+---
+
+## 2026-01-24 - US-006
+- What was implemented: Background queue worker with PR-level locking and retry logic
+- Files changed:
+  - `tasks/ai_pr_reviewer/queue_worker.py` - QueueWorker class, PRLockManager, RetryConfig, TransientError, ReviewProcessorProtocol
+- **Learnings for future iterations:**
+  - Use Protocol for ReviewProcessorProtocol to define the interface for review processing
+  - PRLockManager uses a dict of asyncio.Lock objects keyed by `{repo}#{pr_number}` for per-PR locking
+  - Track lock usage counts to clean up locks when no longer needed (prevents memory growth)
+  - TransientError allows callers to signal retryable failures vs permanent failures
+  - RetryConfig dataclass with exponential backoff: `delay = initial * (multiplier ** attempt)` capped at max_delay
+  - Worker loop polls queue at configurable interval when empty
+  - Recursive _process_job call for retries (already holds lock, just retry the processor call)
+  - Use `contextlib.suppress(asyncio.CancelledError)` instead of try-except-pass pattern
 
 ---
 

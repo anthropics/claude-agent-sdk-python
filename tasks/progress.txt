@@ -20,6 +20,23 @@
 - Claude SDK: use `query()` function for one-shot review generation, collect TextBlocks from AssistantMessage
 - For structured JSON output from Claude: use regex to extract JSON from markdown code blocks or find raw JSON braces
 - Custom exceptions hierarchy: ClaudeIntegrationError as base, ClaudeSDKError for SDK errors, ReviewParseError for parsing
+- Use PromptConfig dataclass to configure prompt building behavior (include_commit_history, max_diff_lines, include_file_stats)
+- Use template strings with named placeholders for modular prompt construction
+
+---
+
+## 2026-01-24 - US-009
+- What was implemented: Modular review prompt construction with base template and customization
+- Files changed:
+  - `tasks/ai_pr_reviewer/prompt_builder.py` - PromptConfig dataclass, BASE_REVIEW_TEMPLATE, build_review_prompt() and helper functions
+  - `tasks/ai_pr_reviewer/claude_integration.py` - Updated to delegate prompt building to prompt_builder module
+- **Learnings for future iterations:**
+  - Use named placeholders in template strings for maintainable prompt construction
+  - PromptConfig dataclass allows optional behavior configuration (truncation, stats, commit history)
+  - Language injection appends to custom instructions when reviewer has language preference set
+  - Separate diff formatting handles binary files, truncation, and optional stats per file
+  - Commit history is formatted as single-line summary with abbreviated SHA
+  - Keep base template as module constant for visibility and easy modification
 
 ---
 

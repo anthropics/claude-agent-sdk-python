@@ -15,6 +15,22 @@
 - PRLockManager for PR-level locking: creates/cleans up asyncio.Lock per PR key
 - TransientError exception class to distinguish retryable errors from non-retryable ones
 - QueueWorker uses exponential backoff with RetryConfig dataclass
+- PR context: use pagination for commits/files endpoints (GitHub limits to 100 per page)
+- Use asyncio.gather for parallel API requests when fetching independent data
+
+---
+
+## 2026-01-24 - US-007
+- What was implemented: PR context gathering module to fetch full PR information from GitHub API
+- Files changed:
+  - `tasks/ai_pr_reviewer/pr_context.py` - PRMetadata, PRCommit, FileChange, PRContext dataclasses and fetch functions
+- **Learnings for future iterations:**
+  - GitHub PR API endpoints: `/pulls/{number}` for metadata, `/pulls/{number}/commits` for commits, `/pulls/{number}/files` for files with diffs
+  - Both commits and files endpoints are paginated (max 100 per page) - must loop with `page` parameter
+  - File diffs are in the `patch` field - may be None for binary files
+  - Renamed files have `previous_filename` field to track the old name
+  - Use `asyncio.gather()` to fetch metadata, commits, and files in parallel for efficiency
+  - PRContext dataclass with computed properties (`total_additions`, `total_deletions`) for convenient access
 
 ---
 

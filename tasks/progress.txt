@@ -25,6 +25,19 @@
 
 ---
 
+## 2026-01-24 - US-010
+- What was implemented: Markdown review summary generation from Claude's review output
+- Files changed:
+  - `tasks/ai_pr_reviewer/review_summary.py` - ReviewSummary dataclass, generate_review_summary() function, ASSESSMENT_LABELS and ASSESSMENT_ICONS constants
+- **Learnings for future iterations:**
+  - Use dictionary constants for mapping assessment codes to human-readable labels and icons
+  - ReviewSummary dataclass holds both the formatted markdown and metadata (persona username, assessment)
+  - Format sections as separate functions for modularity: _format_persona_header, _format_assessment_section, _format_summary_section, _format_key_findings_section
+  - Key findings section is conditionally included only if there are findings
+  - Persona header format: "## :robot: Review on behalf of @{username}"
+
+---
+
 ## 2026-01-24 - US-009
 - What was implemented: Modular review prompt construction with base template and customization
 - Files changed:

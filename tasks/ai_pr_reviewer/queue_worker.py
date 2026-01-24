@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .review_queue import InMemoryReviewQueue, JobStatus, ReviewJob
+from .review_tracker import InMemoryReviewTracker
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ class QueueWorker:
         processor: ReviewProcessorProtocol,
         retry_config: RetryConfig | None = None,
         poll_interval_seconds: float = 1.0,
+        review_tracker: InMemoryReviewTracker | None = None,
     ) -> None:
         """
         Initialize the queue worker.
@@ -149,12 +151,14 @@ class QueueWorker:
             processor: The review processor implementation.
             retry_config: Configuration for retry behavior.
             poll_interval_seconds: How often to poll the queue when empty.
+            review_tracker: Tracker for deduplicating completed reviews.
         """
         self._queue = queue
         self._processor = processor
         self._retry_config = retry_config or RetryConfig()
         self._poll_interval = poll_interval_seconds
         self._lock_manager = PRLockManager()
+        self._review_tracker = review_tracker
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._retry_counts: dict[str, int] = {}
@@ -211,7 +215,7 @@ class QueueWorker:
 
     async def _process_job(self, job: ReviewJob) -> None:
         """
-        Process a single job with locking and retry logic.
+        Process a single job with locking, deduplication, and retry logic.
 
         Args:
             job: The job to process.
@@ -223,16 +227,37 @@ class QueueWorker:
             f"in {trigger.repository_full_name}"
         )
 
+        # Check for duplicate review before acquiring lock
+        if self._should_skip_duplicate(job):
+            logger.info(
+                f"Skipping job {job.job_id}: already reviewed at commit "
+                f"{trigger.head_sha[:8]}"
+            )
+            self._queue.mark_completed(job.job_id)
+            return
+
         # Acquire lock for this PR
         await self._lock_manager.acquire(
             trigger.repository_full_name, trigger.pr_number
         )
 
         try:
+            # Re-check for duplicate after acquiring lock
+            # (another worker might have completed the review while we waited)
+            if self._should_skip_duplicate(job):
+                logger.info(
+                    f"Skipping job {job.job_id}: already reviewed at commit "
+                    f"{trigger.head_sha[:8]} (detected after lock)"
+                )
+                self._queue.mark_completed(job.job_id)
+                return
+
             await self._process_with_retry(job)
             self._queue.mark_completed(job.job_id)
             # Clear retry count on success
             self._retry_counts.pop(job.job_id, None)
+            # Mark as reviewed to prevent future duplicates
+            self._mark_as_reviewed(job)
             logger.info(f"Job {job.job_id} completed successfully")
         except TransientError as e:
             # Handle transient error with retry
@@ -248,6 +273,48 @@ class QueueWorker:
             await self._lock_manager.release(
                 trigger.repository_full_name, trigger.pr_number
             )
+
+    def _should_skip_duplicate(self, job: ReviewJob) -> bool:
+        """
+        Check if this job should be skipped due to duplicate review.
+
+        A job is a duplicate if the same (PR, reviewer, commit) combination
+        has already been reviewed.
+
+        Args:
+            job: The job to check.
+
+        Returns:
+            True if the job should be skipped, False otherwise.
+        """
+        if self._review_tracker is None:
+            return False
+
+        trigger = job.trigger
+        return self._review_tracker.has_reviewed(
+            repository_full_name=trigger.repository_full_name,
+            pr_number=trigger.pr_number,
+            reviewer_username=trigger.reviewer.username,
+            commit_sha=trigger.head_sha,
+        )
+
+    def _mark_as_reviewed(self, job: ReviewJob) -> None:
+        """
+        Mark a job's (PR, reviewer, commit) combination as reviewed.
+
+        Args:
+            job: The job that was successfully processed.
+        """
+        if self._review_tracker is None:
+            return
+
+        trigger = job.trigger
+        self._review_tracker.mark_reviewed(
+            repository_full_name=trigger.repository_full_name,
+            pr_number=trigger.pr_number,
+            reviewer_username=trigger.reviewer.username,
+            commit_sha=trigger.head_sha,
+        )
 
     async def _process_with_retry(self, job: ReviewJob) -> None:
         """

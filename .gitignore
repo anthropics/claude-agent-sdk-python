@@ -49,3 +49,9 @@ htmlcov/
 .dmypy.json
 dmypy.json
 .pyre/
+
+# Environment files
+.env
+.env.local
+*.pem
+cert/

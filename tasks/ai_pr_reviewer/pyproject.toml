@@ -1,0 +1,35 @@
+[project]
+name = "ai-pr-reviewer"
+version = "0.1.0"
+description = "AI-powered GitHub PR Reviewer using Claude Code SDK"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "httpx>=0.26.0",
+    "pyjwt[crypto]>=2.8.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "claude-agent-sdk",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.20.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+    "types-PyYAML>=6.0.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.20.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+    "types-PyYAML>=6.0.0",
+]
+
+[tool.uv.sources]
+claude-agent-sdk = { path = "../..", editable = true }

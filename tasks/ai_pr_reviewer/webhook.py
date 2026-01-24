@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from .config import AppConfig
 from .github_auth import GitHubAppAuth
+from .review_queue import InMemoryReviewQueue
 from .reviewer_config import (
     ConfigNotFoundError,
     ConfigParseError,
@@ -27,6 +28,21 @@ app = FastAPI(title="AI PR Reviewer", version="1.0.0")
 # Global config - loaded at startup
 _config: AppConfig | None = None
 _github_auth: GitHubAppAuth | None = None
+_review_queue: InMemoryReviewQueue | None = None
+
+
+def get_review_queue() -> InMemoryReviewQueue:
+    """Get the global review queue instance."""
+    global _review_queue
+    if _review_queue is None:
+        _review_queue = InMemoryReviewQueue()
+    return _review_queue
+
+
+def set_review_queue(queue: InMemoryReviewQueue) -> None:
+    """Set the global review queue instance (for dependency injection)."""
+    global _review_queue
+    _review_queue = queue
 
 
 def get_config() -> AppConfig:
@@ -86,6 +102,85 @@ def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> boo
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/queue/status")
+async def queue_status() -> dict[str, Any]:
+    """Get current queue status (for debugging)."""
+    queue = get_review_queue()
+    jobs = queue.get_all_jobs()
+    return {
+        "queue_size": queue.queue_size(),
+        "total_jobs": len(jobs),
+        "jobs": [
+            {
+                "job_id": job.job_id,
+                "status": job.status.value,
+                "reviewer": job.trigger.reviewer.username,
+                "pr_number": job.trigger.pr_number,
+                "created_at": job.created_at.isoformat(),
+            }
+            for job in jobs
+        ],
+    }
+
+
+@app.post("/test/enqueue")
+async def test_enqueue(
+    pr_number: int = 1,
+    reviewer: str = "test-ai",
+    repo: str = "dingkwang/test",
+) -> dict[str, Any]:
+    """
+    Test endpoint to enqueue a mock review job.
+
+    This bypasses GitHub API calls for local testing.
+    Usage: curl -X POST "http://localhost:8000/test/enqueue?pr_number=1&reviewer=test-ai"
+    """
+    from .reviewer_config import ReviewerSettings
+    from .trigger_detection import ReviewTrigger
+
+    # Create mock reviewer settings
+    mock_reviewer = ReviewerSettings(
+        username=reviewer,
+        prompt="Review this PR for code quality and best practices.",
+        language="en",
+    )
+
+    # Create mock trigger
+    owner, repo_name = repo.split("/") if "/" in repo else ("test", repo)
+    mock_trigger = ReviewTrigger(
+        pr_number=pr_number,
+        pr_title=f"Test PR #{pr_number}",
+        pr_url=f"https://github.com/{repo}/pull/{pr_number}",
+        head_sha="abc123def456",
+        base_ref="main",
+        head_ref="feature-branch",
+        repository_owner=owner,
+        repository_name=repo_name,
+        repository_full_name=repo,
+        installation_id=0,  # Mock installation
+        reviewer=mock_reviewer,
+    )
+
+    # Enqueue the job
+    queue = get_review_queue()
+    job = queue.enqueue(mock_trigger)
+
+    if job is None:
+        return {
+            "status": "skipped",
+            "reason": "duplicate",
+            "message": f"Review for PR #{pr_number} by {reviewer} already queued",
+        }
+
+    return {
+        "status": "queued",
+        "job_id": job.job_id,
+        "pr_number": pr_number,
+        "reviewer": reviewer,
+        "queue_size": queue.queue_size(),
+    }
 
 
 @app.post("/webhook")
@@ -206,21 +301,39 @@ async def handle_pull_request_event(payload: dict[str, Any]) -> dict[str, Any]:
             "repository": repo_full_name,
         }
 
-    # Return information about triggered reviews
-    # (Actual queueing will be handled in a future user story)
-    triggered_info = [
-        {
-            "reviewer": trigger.reviewer.username,
-            "pr_number": trigger.pr_number,
-            "pr_title": trigger.pr_title,
-        }
-        for trigger in result.triggered_reviews
-    ]
+    # Enqueue reviews for processing
+    queue = get_review_queue()
+    queued_jobs: list[dict[str, Any]] = []
+    skipped_duplicates: list[str] = []
+
+    for trigger in result.triggered_reviews:
+        job = queue.enqueue(trigger)
+        if job is not None:
+            queued_jobs.append(
+                {
+                    "job_id": job.job_id,
+                    "reviewer": trigger.reviewer.username,
+                    "pr_number": trigger.pr_number,
+                    "pr_title": trigger.pr_title,
+                }
+            )
+            logger.info(
+                f"Queued review job {job.job_id} for PR #{trigger.pr_number} "
+                f"by reviewer '{trigger.reviewer.username}'"
+            )
+        else:
+            skipped_duplicates.append(trigger.reviewer.username)
+            logger.info(
+                f"Skipped duplicate review for PR #{trigger.pr_number} "
+                f"by reviewer '{trigger.reviewer.username}'"
+            )
 
     return {
         "status": "accepted",
         "action": action,
         "repository": repo_full_name,
-        "triggered_reviews": triggered_info,
+        "queued_reviews": queued_jobs,
+        "skipped_duplicates": skipped_duplicates,
         "ignored_reviewers": result.ignored_reviewers,
+        "queue_size": queue.queue_size(),
     }

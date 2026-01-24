@@ -517,6 +517,10 @@ class Query:
                 "error": {"code": -32603, "message": str(e)},
             }
 
+    async def get_mcp_status(self) -> dict[str, Any]:
+        """Get current MCP server connection status."""
+        return await self._send_control_request({"subtype": "mcp_status"})
+
     async def interrupt(self) -> None:
         """Send interrupt control request."""
         await self._send_control_request({"subtype": "interrupt"})

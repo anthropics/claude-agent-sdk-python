@@ -293,6 +293,32 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.rewind_files(user_message_id)
 
+    async def get_mcp_status(self) -> dict[str, Any]:
+        """Get current MCP server connection status (only works with streaming mode).
+
+        Queries the Claude Code CLI for the live connection status of all
+        configured MCP servers.
+
+        Returns:
+            Dictionary with MCP server status information. Contains a
+            'mcpServers' key with a list of server status objects, each having:
+            - 'name': Server name (str)
+            - 'status': Connection status ('connected', 'pending', 'failed',
+              'needs-auth', 'disabled')
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                status = await client.get_mcp_status()
+                for server in status.get("mcpServers", []):
+                    print(f"{server['name']}: {server['status']}")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: dict[str, Any] = await self._query.get_mcp_status()
+        return result
+
     async def get_server_info(self) -> dict[str, Any] | None:
         """Get server initialization info including available commands and output styles.
 

@@ -7,6 +7,21 @@
 - Use httpx.AsyncClient for async HTTP requests
 - Use `yaml.safe_load()` for secure YAML parsing (never `yaml.load()` without Loader)
 - GitHub Contents API: use `Accept: application/vnd.github.raw+json` to get raw file content
+- Webhook handler should fetch config dynamically per request using installation token and head SHA
+
+---
+
+## 2026-01-24 - US-004
+- What was implemented: Review trigger detection to identify when configured AI reviewers are requested
+- Files changed:
+  - `tasks/ai_pr_reviewer/trigger_detection.py` - ReviewTrigger and TriggerDetectionResult dataclasses, detect_review_triggers() and helper functions
+  - `tasks/ai_pr_reviewer/webhook.py` - Updated handle_pull_request_event() to integrate with reviewer config and trigger detection
+- **Learnings for future iterations:**
+  - GitHub review_requested webhook includes a single `requested_reviewer` object (not a list) for individual requests
+  - The webhook handler flow: authenticate -> fetch config -> detect triggers -> return result
+  - Use dataclasses with properties (e.g., `has_triggers`) to provide convenient helper methods
+  - Separate trigger detection logic from webhook handling for testability and reuse
+  - Return structured response with both triggered reviews and ignored reviewers for transparency
 
 ---
 

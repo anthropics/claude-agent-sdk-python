@@ -17,6 +17,25 @@
 - QueueWorker uses exponential backoff with RetryConfig dataclass
 - PR context: use pagination for commits/files endpoints (GitHub limits to 100 per page)
 - Use asyncio.gather for parallel API requests when fetching independent data
+- Claude SDK: use `query()` function for one-shot review generation, collect TextBlocks from AssistantMessage
+- For structured JSON output from Claude: use regex to extract JSON from markdown code blocks or find raw JSON braces
+- Custom exceptions hierarchy: ClaudeIntegrationError as base, ClaudeSDKError for SDK errors, ReviewParseError for parsing
+
+---
+
+## 2026-01-24 - US-008
+- What was implemented: Claude Code Python SDK integration for AI-powered code review generation
+- Files changed:
+  - `tasks/ai_pr_reviewer/claude_integration.py` - InlineComment, ReviewOutput dataclasses, generate_review() function, review processor factory
+- **Learnings for future iterations:**
+  - Use `query()` function for one-shot interactions (simpler than ClaudeSDKClient for this use case)
+  - AssistantMessage contains a list of ContentBlock (TextBlock, ToolUseBlock, etc.)
+  - ResultMessage indicates completion - check `is_error` for failures and `total_cost_usd` for cost tracking
+  - Claude returns structured JSON in markdown code blocks - use regex to extract JSON content
+  - Build comprehensive prompts with PR metadata, commit history, and file diffs for context
+  - Separate error types: ClaudeSDKError (SDK/connection issues) vs ReviewParseError (response parsing)
+  - Cast `re.findall()` match results to `str()` to satisfy mypy's no-any-return check
+  - ReviewOutput structure: summary, overall_assessment, key_findings, inline_comments for GitHub review
 
 ---
 

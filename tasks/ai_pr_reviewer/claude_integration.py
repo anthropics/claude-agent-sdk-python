@@ -16,6 +16,7 @@ from claude_agent_sdk.types import (
 )
 
 from .pr_context import PRContext
+from .prompt_builder import PromptConfig, build_review_prompt
 from .reviewer_config import ReviewerSettings
 
 logger = logging.getLogger(__name__)
@@ -64,82 +65,23 @@ class ReviewParseError(ClaudeIntegrationError):
 def _build_review_prompt(
     context: PRContext,
     reviewer_settings: ReviewerSettings,
+    prompt_config: PromptConfig | None = None,
 ) -> str:
     """
     Build the prompt for Claude to generate a code review.
 
+    This function delegates to the prompt_builder module for modular,
+    configurable prompt construction.
+
     Args:
         context: Complete PR context including metadata, commits, and files.
         reviewer_settings: The reviewer's custom settings including prompt.
+        prompt_config: Optional configuration for prompt building behavior.
 
     Returns:
         The formatted prompt string.
     """
-    # Build diff section
-    diff_sections: list[str] = []
-    for file in context.files:
-        if file.patch:
-            diff_sections.append(
-                f"### File: {file.filename}\n```diff\n{file.patch}\n```"
-            )
-        else:
-            diff_sections.append(
-                f"### File: {file.filename}\n(Binary file or no diff available)"
-            )
-
-    diff_content = "\n\n".join(diff_sections)
-
-    # Build commit history section
-    commit_lines = [
-        f"- {commit.sha[:7]}: {commit.message.split(chr(10))[0]}"
-        for commit in context.commits
-    ]
-    commit_history = "\n".join(commit_lines) if commit_lines else "No commits"
-
-    # Build the prompt
-    prompt = f"""You are a code reviewer. Review this pull request and provide structured feedback.
-
-## Pull Request Information
-- **Title**: {context.metadata.title}
-- **Author**: {context.metadata.author}
-- **Branch**: {context.metadata.head_branch} → {context.metadata.base_branch}
-- **Description**: {context.metadata.body or "(No description provided)"}
-
-## Commit History
-{commit_history}
-
-## Changed Files ({len(context.files)} files, +{context.total_additions}/-{context.total_deletions} lines)
-{diff_content}
-
-## Reviewer Instructions
-{reviewer_settings.prompt}
-
-## Response Format
-Respond with a JSON object in the following format:
-```json
-{{
-  "summary": "A concise summary of your overall review",
-  "overall_assessment": "approve" | "request_changes" | "comment",
-  "key_findings": ["Finding 1", "Finding 2", ...],
-  "inline_comments": [
-    {{
-      "file_path": "path/to/file.py",
-      "line_number": 42,
-      "body": "Comment about this line",
-      "suggestion": "optional code suggestion"
-    }}
-  ]
-}}
-```
-
-Important:
-- overall_assessment must be one of: "approve", "request_changes", "comment"
-- line_number must reference lines in the diff (the right side line numbers for additions/modifications)
-- suggestion is optional and should only be provided when you have a specific code fix
-- Keep inline_comments focused on important issues, not minor style nitpicks
-"""
-
-    return prompt
+    return build_review_prompt(context, reviewer_settings, prompt_config)
 
 
 def _parse_review_response(response_text: str) -> ReviewOutput:
@@ -271,6 +213,7 @@ async def generate_review(
     reviewer_settings: ReviewerSettings,
     model: str | None = None,
     max_tokens: int | None = None,
+    prompt_config: PromptConfig | None = None,
 ) -> ReviewOutput:
     """
     Generate a code review using Claude Code SDK.
@@ -280,6 +223,7 @@ async def generate_review(
         reviewer_settings: The reviewer's custom settings including prompt.
         model: Optional model override (defaults to SDK default).
         max_tokens: Optional max tokens for response.
+        prompt_config: Optional configuration for prompt building behavior.
 
     Returns:
         A ReviewOutput with the structured review.
@@ -288,7 +232,7 @@ async def generate_review(
         ClaudeSDKError: If the Claude SDK returns an error.
         ReviewParseError: If the response cannot be parsed.
     """
-    prompt = _build_review_prompt(context, reviewer_settings)
+    prompt = _build_review_prompt(context, reviewer_settings, prompt_config)
 
     # Configure SDK options
     options = ClaudeAgentOptions(

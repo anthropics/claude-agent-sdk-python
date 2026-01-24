@@ -3,6 +3,23 @@
 - All exceptions should use `raise ... from e` pattern for proper exception chaining (ruff B904)
 - Use `hmac.compare_digest()` for constant-time signature comparison to prevent timing attacks
 - Load configuration from environment variables using a dataclass with `@classmethod from_env()`
+- Use explicit type annotations when extracting values from JSON to satisfy mypy (e.g., `token: str = data["token"]`)
+- Use httpx.AsyncClient for async HTTP requests
+
+---
+
+## 2026-01-24 - US-002
+- What was implemented: GitHub App authentication with JWT generation and installation token management
+- Files changed:
+  - `tasks/ai_pr_reviewer/github_auth.py` - GitHubAppAuth class with JWT generation, installation token retrieval, and caching
+- **Learnings for future iterations:**
+  - GitHub App JWT requires RS256 algorithm with private key
+  - JWT payload needs `iat` (issued at, 60s in past for clock drift), `exp` (expires in 10 min max), `iss` (app ID)
+  - Installation tokens are obtained by POSTing to `/app/installations/{id}/access_tokens` with JWT auth
+  - GitHub returns token expiration in ISO 8601 format with "Z" suffix (needs conversion to +00:00 for fromisoformat)
+  - Use explicit type annotations like `token: str = data["token"]` to satisfy mypy when extracting from JSON response (avoids `Any` return type)
+  - PyJWT library's `jwt.encode()` returns a string directly (not bytes in newer versions)
+  - Use httpx.AsyncClient for async HTTP requests to GitHub API
 
 ---
 

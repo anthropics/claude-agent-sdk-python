@@ -22,6 +22,26 @@
 - Custom exceptions hierarchy: ClaudeIntegrationError as base, ClaudeSDKError for SDK errors, ReviewParseError for parsing
 - Use PromptConfig dataclass to configure prompt building behavior (include_commit_history, max_diff_lines, include_file_stats)
 - Use template strings with named placeholders for modular prompt construction
+- Parse unified diff patches with hunk headers: `@@ -start,count +start,count @@`
+- Use `_variable` naming for unused loop variables to satisfy ruff B007
+- Combine nested `if` statements using `and` (ruff SIM102)
+- For diff line mapping: track (line_type, old_line, new_line) tuples in hunks
+
+---
+
+## 2026-01-24 - US-011
+- What was implemented: Inline comment generation module for mapping Claude's suggestions to GitHub's review API format
+- Files changed:
+  - `tasks/ai_pr_reviewer/inline_comments.py` - DiffHunk dataclass, MappedInlineComment dataclass, parse_diff_hunks(), map_inline_comment(), format_suggestion_block(), normalize_inline_comment()
+- **Learnings for future iterations:**
+  - GitHub PR review API uses `path` (filename), `line` (line number in diff), and `side` (RIGHT for new lines, LEFT for old lines)
+  - Parse unified diff hunk headers with regex: `^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`
+  - Track line numbers by type: `+` lines have new_line only, `-` lines have old_line only, context lines have both
+  - Handle ```suggestion blocks by appending them to the comment body
+  - Validate that line numbers are actually in the diff before attempting to post
+  - find_closest_valid_line() helps recover from slightly off line numbers
+  - normalize_inline_comment() extracts embedded ```suggestion blocks from body text
+  - File path matching should be case-insensitive and handle partial paths (suffix matching)
 
 ---
 

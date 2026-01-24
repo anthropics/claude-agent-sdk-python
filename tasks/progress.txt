@@ -26,6 +26,26 @@
 - Use `_variable` naming for unused loop variables to satisfy ruff B007
 - Combine nested `if` statements using `and` (ruff SIM102)
 - For diff line mapping: track (line_type, old_line, new_line) tuples in hunks
+- GitHub PR Review API: POST to `/repos/{owner}/{repo}/pulls/{pr_number}/reviews` with body, event, commit_id, and comments array
+- Review event types: APPROVE, REQUEST_CHANGES, COMMENT (must be uppercase for GitHub API)
+- Rate limit headers: x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, x-ratelimit-used
+- Handle secondary rate limits via retry-after header on 403 responses
+- Use exponential backoff for 5xx server errors with retry logic
+
+---
+
+## 2026-01-24 - US-012
+- What was implemented: Module to post complete PR reviews to GitHub including summary body, inline comments, and review state
+- Files changed:
+  - `tasks/ai_pr_reviewer/github_review.py` - GitHubReviewError, GitHubRateLimitError, ReviewComment, PostedReview, RateLimitInfo dataclasses, post_review(), get_rate_limit_status(), check_rate_limit_before_review() functions
+- **Learnings for future iterations:**
+  - GitHub PR Review API requires commit_id (the HEAD SHA) to associate comments with correct file versions
+  - The comments array must include path, line, body, and side fields for inline comments
+  - Multi-line comments use start_line and start_side in addition to line and side
+  - Rate limiting: 403 with x-ratelimit-remaining=0 means primary rate limit hit; 403 with retry-after header means secondary (abuse) limit
+  - The /rate_limit endpoint returns structured data in resources.core for API rate limits
+  - Use asyncio.sleep() with slight buffer (+1 second) after rate limit resets for safety
+  - Validation errors return 422 with an errors array containing message fields
 
 ---
 

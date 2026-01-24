@@ -5,6 +5,21 @@
 - Load configuration from environment variables using a dataclass with `@classmethod from_env()`
 - Use explicit type annotations when extracting values from JSON to satisfy mypy (e.g., `token: str = data["token"]`)
 - Use httpx.AsyncClient for async HTTP requests
+- Use `yaml.safe_load()` for secure YAML parsing (never `yaml.load()` without Loader)
+- GitHub Contents API: use `Accept: application/vnd.github.raw+json` to get raw file content
+
+---
+
+## 2026-01-24 - US-003
+- What was implemented: Reviewer configuration parser for .ai-reviewer.yml files
+- Files changed:
+  - `tasks/ai_pr_reviewer/reviewer_config.py` - ReviewerSettings, RepoReviewerConfig dataclasses, parse_reviewer_config() and fetch_reviewer_config() functions
+- **Learnings for future iterations:**
+  - Use `yaml.safe_load()` for secure YAML parsing (never use `yaml.load()` without Loader)
+  - GitHub Contents API returns raw file content when using `Accept: application/vnd.github.raw+json` header
+  - Required types-PyYAML for mypy type checking with PyYAML
+  - YAML config structure: `reviewers:` section with username keys mapping to `prompt` (required) and `language` (optional)
+  - Custom exceptions (ConfigNotFoundError, ConfigParseError) help distinguish between missing files and invalid content
 
 ---
 

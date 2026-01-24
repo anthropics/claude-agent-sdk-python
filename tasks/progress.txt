@@ -31,6 +31,22 @@
 - Rate limit headers: x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, x-ratelimit-used
 - Handle secondary rate limits via retry-after header on 403 responses
 - Use exponential backoff for 5xx server errors with retry logic
+- Review key pattern: `{repo_full_name}#{pr_number}#{reviewer_username}#{commit_sha}` for (PR, reviewer, commit) deduplication
+- Use double-check pattern: check before lock acquisition, then re-check after to handle race conditions
+
+---
+
+## 2026-01-24 - US-013
+- What was implemented: Review deduplication module to track completed reviews and skip duplicates at the same commit
+- Files changed:
+  - `tasks/ai_pr_reviewer/review_tracker.py` - CompletedReview dataclass, generate_review_key(), ReviewTrackerProtocol, InMemoryReviewTracker class
+  - `tasks/ai_pr_reviewer/queue_worker.py` - Added review_tracker parameter, _should_skip_duplicate(), _mark_as_reviewed() methods
+- **Learnings for future iterations:**
+  - Review deduplication key includes commit SHA to allow re-reviews when new commits are pushed
+  - Check for duplicates both before and after acquiring PR lock to handle race conditions
+  - Keep tracker separate from queue (different concerns: queue tracks pending work, tracker tracks completed work)
+  - InMemoryReviewTracker provides helper methods like get_reviews_for_pr() and clear_old_reviews() for maintenance
+  - Marking review as complete happens after successful processing, not before
 
 ---
 

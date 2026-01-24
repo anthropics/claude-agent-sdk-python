@@ -2,16 +2,31 @@
 
 import hashlib
 import hmac
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from .config import AppConfig
+from .github_auth import GitHubAppAuth
+from .reviewer_config import (
+    ConfigNotFoundError,
+    ConfigParseError,
+    fetch_reviewer_config,
+)
+from .trigger_detection import (
+    TriggerDetectionResult,
+    detect_review_triggers,
+    is_review_requested_event,
+)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI PR Reviewer", version="1.0.0")
 
 # Global config - loaded at startup
 _config: AppConfig | None = None
+_github_auth: GitHubAppAuth | None = None
 
 
 def get_config() -> AppConfig:
@@ -20,6 +35,18 @@ def get_config() -> AppConfig:
     if _config is None:
         _config = AppConfig.from_env()
     return _config
+
+
+def get_github_auth() -> GitHubAppAuth:
+    """Get the GitHub App authentication handler."""
+    global _github_auth
+    if _github_auth is None:
+        config = get_config()
+        _github_auth = GitHubAppAuth(
+            app_id=config.github_app_id,
+            private_key=config.github_private_key,
+        )
+    return _github_auth
 
 
 def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -109,23 +136,91 @@ async def handle_pull_request_event(payload: dict[str, Any]) -> dict[str, Any]:
     Handle pull_request webhook events.
 
     Specifically looks for the review_requested action to trigger AI reviews.
+    Fetches the repository's reviewer config and detects which configured
+    AI reviewers were requested.
     """
     action = payload.get("action")
 
-    if action == "review_requested":
-        # Extract relevant information
-        pr = payload.get("pull_request", {})
-        requested_reviewer = payload.get("requested_reviewer", {})
-        repository = payload.get("repository", {})
+    if not is_review_requested_event(payload):
+        # Other pull_request actions are acknowledged but not processed
+        return {"status": "ignored", "action": action}
 
+    # Extract repository and installation info for fetching config
+    repository = payload.get("repository", {})
+    installation = payload.get("installation", {})
+    pr = payload.get("pull_request", {})
+
+    repo_owner: str = repository.get("owner", {}).get("login", "")
+    repo_name: str = repository.get("name", "")
+    repo_full_name: str = repository.get("full_name", "")
+    installation_id: int = installation.get("id", 0)
+    head_sha: str = pr.get("head", {}).get("sha", "")
+
+    # Get GitHub access token for this installation
+    github_auth = get_github_auth()
+    try:
+        token = await github_auth.get_installation_token(installation_id)
+    except Exception as e:
+        logger.error(f"Failed to get installation token: {e}")
         return {
-            "status": "accepted",
+            "status": "error",
             "action": action,
-            "pr_number": pr.get("number"),
-            "pr_title": pr.get("title"),
-            "requested_reviewer": requested_reviewer.get("login"),
-            "repository": repository.get("full_name"),
+            "error": "Failed to authenticate with GitHub",
         }
 
-    # Other pull_request actions are acknowledged but not processed
-    return {"status": "ignored", "action": action}
+    # Fetch repository's reviewer configuration
+    try:
+        config = await fetch_reviewer_config(
+            owner=repo_owner,
+            repo=repo_name,
+            ref=head_sha,
+            token=token,
+        )
+    except ConfigNotFoundError:
+        # No config file means no AI reviewers configured
+        logger.info(f"No .ai-reviewer.yml found in {repo_full_name}")
+        return {
+            "status": "ignored",
+            "action": action,
+            "reason": "no_config",
+            "repository": repo_full_name,
+        }
+    except ConfigParseError as e:
+        logger.warning(f"Invalid .ai-reviewer.yml in {repo_full_name}: {e}")
+        return {
+            "status": "error",
+            "action": action,
+            "error": f"Invalid reviewer configuration: {e}",
+        }
+
+    # Detect which AI reviewers were requested
+    result: TriggerDetectionResult = detect_review_triggers(payload, config)
+
+    if not result.has_triggers:
+        # No configured AI reviewers were requested
+        return {
+            "status": "ignored",
+            "action": action,
+            "reason": "no_ai_reviewers_requested",
+            "ignored_reviewers": result.ignored_reviewers,
+            "repository": repo_full_name,
+        }
+
+    # Return information about triggered reviews
+    # (Actual queueing will be handled in a future user story)
+    triggered_info = [
+        {
+            "reviewer": trigger.reviewer.username,
+            "pr_number": trigger.pr_number,
+            "pr_title": trigger.pr_title,
+        }
+        for trigger in result.triggered_reviews
+    ]
+
+    return {
+        "status": "accepted",
+        "action": action,
+        "repository": repo_full_name,
+        "triggered_reviews": triggered_info,
+        "ignored_reviewers": result.ignored_reviewers,
+    }

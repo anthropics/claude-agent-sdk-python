@@ -151,3 +151,50 @@ def is_review_requested_event(payload: dict[str, Any]) -> bool:
     """
     action = payload.get("action")
     return action == "review_requested"
+
+
+def is_pr_opened_event(payload: dict[str, Any]) -> bool:
+    """
+    Check if a payload is a pull_request opened or synchronize event.
+
+    Args:
+        payload: The GitHub webhook payload.
+
+    Returns:
+        True if this is an opened or synchronize action, False otherwise.
+    """
+    action = payload.get("action")
+    return action in ("opened", "synchronize")
+
+
+def create_auto_review_trigger(
+    payload: dict[str, Any],
+    reviewer_settings: "ReviewerSettings",
+) -> ReviewTrigger:
+    """
+    Create a ReviewTrigger for auto-review on PR open.
+
+    Args:
+        payload: The GitHub webhook payload.
+        reviewer_settings: The default reviewer settings from config.
+
+    Returns:
+        A ReviewTrigger for the auto-review.
+    """
+    pr = payload.get("pull_request", {})
+    repository = payload.get("repository", {})
+    installation = payload.get("installation", {})
+
+    return ReviewTrigger(
+        pr_number=pr.get("number", 0),
+        pr_title=pr.get("title", ""),
+        pr_url=pr.get("html_url", ""),
+        head_sha=pr.get("head", {}).get("sha", ""),
+        base_ref=pr.get("base", {}).get("ref", ""),
+        head_ref=pr.get("head", {}).get("ref", ""),
+        repository_owner=repository.get("owner", {}).get("login", ""),
+        repository_name=repository.get("name", ""),
+        repository_full_name=repository.get("full_name", ""),
+        installation_id=installation.get("id", 0),
+        reviewer=reviewer_settings,
+    )

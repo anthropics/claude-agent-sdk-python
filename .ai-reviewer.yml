@@ -1,5 +1,8 @@
+# Auto-review all new PRs
+auto_review: true
+
 reviewers:
-  claude-pr-review-team:
+  default:
     prompt: |
       Review this PR for code quality and best practices.
       Focus on:

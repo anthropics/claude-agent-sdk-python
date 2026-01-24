@@ -24,6 +24,7 @@ class RepoReviewerConfig:
     """Repository-level reviewer configuration."""
 
     reviewers: dict[str, ReviewerSettings]
+    auto_review: bool = False  # Enable auto-review on PR open/synchronize
 
     def get_reviewer(self, username: str) -> ReviewerSettings | None:
         """
@@ -48,6 +49,18 @@ class RepoReviewerConfig:
             True if the username is configured as an AI reviewer.
         """
         return username in self.reviewers
+
+    def get_default_reviewer(self) -> ReviewerSettings | None:
+        """
+        Get the first configured reviewer as the default for auto-review.
+
+        Returns:
+            The first ReviewerSettings, or None if no reviewers configured.
+        """
+        if not self.reviewers:
+            return None
+        # Return the first reviewer
+        return next(iter(self.reviewers.values()))
 
 
 class ConfigNotFoundError(Exception):
@@ -126,7 +139,12 @@ def parse_reviewer_config(yaml_content: str) -> RepoReviewerConfig:
             language=language,
         )
 
-    return RepoReviewerConfig(reviewers=reviewers)
+    # Parse auto_review setting
+    auto_review = data.get("auto_review", False)
+    if not isinstance(auto_review, bool):
+        raise ConfigParseError("'auto_review' must be a boolean (true/false)")
+
+    return RepoReviewerConfig(reviewers=reviewers, auto_review=auto_review)
 
 
 async def fetch_reviewer_config(

@@ -13,11 +13,14 @@ from .review_queue import InMemoryReviewQueue
 from .reviewer_config import (
     ConfigNotFoundError,
     ConfigParseError,
+    RepoReviewerConfig,
     fetch_reviewer_config,
 )
 from .trigger_detection import (
     TriggerDetectionResult,
+    create_auto_review_trigger,
     detect_review_triggers,
+    is_pr_opened_event,
     is_review_requested_event,
 )
 
@@ -230,13 +233,15 @@ async def handle_pull_request_event(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Handle pull_request webhook events.
 
-    Specifically looks for the review_requested action to trigger AI reviews.
-    Fetches the repository's reviewer config and detects which configured
-    AI reviewers were requested.
+    Supports two trigger modes:
+    1. review_requested: Trigger when specific AI reviewers are requested
+    2. opened/synchronize: Auto-review on PR creation or update (if configured)
     """
     action = payload.get("action")
+    is_review_request = is_review_requested_event(payload)
+    is_pr_open = is_pr_opened_event(payload)
 
-    if not is_review_requested_event(payload):
+    if not is_review_request and not is_pr_open:
         # Other pull_request actions are acknowledged but not processed
         return {"status": "ignored", "action": action}
 
@@ -288,20 +293,85 @@ async def handle_pull_request_event(payload: dict[str, Any]) -> dict[str, Any]:
             "error": f"Invalid reviewer configuration: {e}",
         }
 
-    # Detect which AI reviewers were requested
-    result: TriggerDetectionResult = detect_review_triggers(payload, config)
+    # Handle based on trigger type
+    if is_pr_open and config.auto_review:
+        # Auto-review on PR open/synchronize
+        return await handle_auto_review(payload, config, repo_full_name, action)
 
-    if not result.has_triggers:
-        # No configured AI reviewers were requested
+    if is_review_request:
+        # Detect which AI reviewers were requested
+        result: TriggerDetectionResult = detect_review_triggers(payload, config)
+
+        if not result.has_triggers:
+            # No configured AI reviewers were requested
+            return {
+                "status": "ignored",
+                "action": action,
+                "reason": "no_ai_reviewers_requested",
+                "ignored_reviewers": result.ignored_reviewers,
+                "repository": repo_full_name,
+            }
+
+        # Enqueue the triggered reviews
+        return await enqueue_triggered_reviews(result, repo_full_name, action)
+
+    return {"status": "ignored", "action": action, "reason": "no_trigger_match"}
+
+
+async def handle_auto_review(
+    payload: dict[str, Any],
+    config: RepoReviewerConfig,
+    repo_full_name: str,
+    action: str | None,
+) -> dict[str, Any]:
+    """Handle auto-review on PR open/synchronize."""
+    # Get the default reviewer for auto-review
+    default_reviewer = config.get_default_reviewer()
+    if default_reviewer is None:
         return {
             "status": "ignored",
             "action": action,
-            "reason": "no_ai_reviewers_requested",
-            "ignored_reviewers": result.ignored_reviewers,
+            "reason": "no_default_reviewer_for_auto_review",
             "repository": repo_full_name,
         }
 
-    # Enqueue reviews for processing
+    # Create trigger for auto-review
+    trigger = create_auto_review_trigger(payload, default_reviewer)
+
+    # Enqueue the review
+    queue = get_review_queue()
+    job = queue.enqueue(trigger)
+
+    if job is None:
+        return {
+            "status": "skipped",
+            "action": action,
+            "reason": "duplicate",
+            "repository": repo_full_name,
+        }
+
+    logger.info(
+        f"Queued auto-review job {job.job_id} for PR #{trigger.pr_number} "
+        f"in {repo_full_name}"
+    )
+
+    return {
+        "status": "accepted",
+        "action": action,
+        "trigger_type": "auto_review",
+        "repository": repo_full_name,
+        "job_id": job.job_id,
+        "pr_number": trigger.pr_number,
+        "queue_size": queue.queue_size(),
+    }
+
+
+async def enqueue_triggered_reviews(
+    result: TriggerDetectionResult,
+    repo_full_name: str,
+    action: str | None,
+) -> dict[str, Any]:
+    """Enqueue reviews from detected triggers."""
     queue = get_review_queue()
     queued_jobs: list[dict[str, Any]] = []
     skipped_duplicates: list[str] = []

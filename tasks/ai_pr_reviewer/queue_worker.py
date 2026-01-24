@@ -10,10 +10,27 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
+from .error_handler import ErrorPostingError, post_error_comment
 from .review_queue import InMemoryReviewQueue, JobStatus, ReviewJob
 from .review_tracker import InMemoryReviewTracker
 
 logger = logging.getLogger(__name__)
+
+
+class TokenProviderProtocol(Protocol):
+    """Protocol for providing GitHub access tokens."""
+
+    async def get_token(self, installation_id: int) -> str:
+        """
+        Get a GitHub access token for an installation.
+
+        Args:
+            installation_id: The GitHub App installation ID.
+
+        Returns:
+            A valid access token for the installation.
+        """
+        ...
 
 
 class ReviewProcessorProtocol(Protocol):
@@ -142,6 +159,8 @@ class QueueWorker:
         retry_config: RetryConfig | None = None,
         poll_interval_seconds: float = 1.0,
         review_tracker: InMemoryReviewTracker | None = None,
+        token_provider: TokenProviderProtocol | None = None,
+        post_error_notifications: bool = True,
     ) -> None:
         """
         Initialize the queue worker.
@@ -152,6 +171,8 @@ class QueueWorker:
             retry_config: Configuration for retry behavior.
             poll_interval_seconds: How often to poll the queue when empty.
             review_tracker: Tracker for deduplicating completed reviews.
+            token_provider: Provider for GitHub access tokens (required for error notifications).
+            post_error_notifications: Whether to post error comments to PRs on failure.
         """
         self._queue = queue
         self._processor = processor
@@ -159,6 +180,8 @@ class QueueWorker:
         self._poll_interval = poll_interval_seconds
         self._lock_manager = PRLockManager()
         self._review_tracker = review_tracker
+        self._token_provider = token_provider
+        self._post_error_notifications = post_error_notifications
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._retry_counts: dict[str, int] = {}
@@ -268,6 +291,8 @@ class QueueWorker:
             self._queue.mark_failed(job.job_id, error_msg)
             self._retry_counts.pop(job.job_id, None)
             logger.error(f"Job {job.job_id} failed: {error_msg}")
+            # Post error notification to PR
+            await self._post_failure_notification(job, error_msg)
         finally:
             # Always release the lock
             await self._lock_manager.release(
@@ -372,6 +397,61 @@ class QueueWorker:
             self._queue.mark_failed(job.job_id, error_msg)
             self._retry_counts.pop(job.job_id, None)
             logger.error(f"Job {job.job_id} failed after max retries: {error_msg}")
+            # Post error notification to PR
+            await self._post_failure_notification(job, error_msg)
+
+    async def _post_failure_notification(
+        self, job: ReviewJob, error_message: str
+    ) -> None:
+        """
+        Post an error notification to the PR when a job fails.
+
+        Attempts to post a comment to the PR notifying the author that
+        the AI review could not be completed.
+
+        Args:
+            job: The failed job.
+            error_message: The error message describing what went wrong.
+        """
+        if not self._post_error_notifications:
+            logger.debug(f"Skipping error notification for job {job.job_id}")
+            return
+
+        if self._token_provider is None:
+            logger.warning(
+                f"Cannot post error notification for job {job.job_id}: "
+                "no token provider configured"
+            )
+            return
+
+        trigger = job.trigger
+
+        try:
+            # Get a token for the installation
+            token = await self._token_provider.get_token(trigger.installation_id)
+
+            # Post the error comment
+            await post_error_comment(
+                owner=trigger.repository_owner,
+                repo=trigger.repository_name,
+                pr_number=trigger.pr_number,
+                reviewer_username=trigger.reviewer.username,
+                error_message=error_message,
+                token=token,
+            )
+
+            logger.info(
+                f"Posted error notification for job {job.job_id} "
+                f"to PR #{trigger.pr_number}"
+            )
+        except ErrorPostingError as e:
+            # Log but don't raise - we don't want to fail further
+            logger.error(f"Failed to post error notification for job {job.job_id}: {e}")
+        except Exception as e:
+            # Catch any other errors to prevent cascade failures
+            logger.error(
+                f"Unexpected error posting notification for job {job.job_id}: {e}"
+            )
 
     def get_retry_count(self, job_id: str) -> int:
         """

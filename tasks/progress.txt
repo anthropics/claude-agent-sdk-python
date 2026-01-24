@@ -33,6 +33,25 @@
 - Use exponential backoff for 5xx server errors with retry logic
 - Review key pattern: `{repo_full_name}#{pr_number}#{reviewer_username}#{commit_sha}` for (PR, reviewer, commit) deduplication
 - Use double-check pattern: check before lock acquisition, then re-check after to handle race conditions
+- Use GitHub Issues Comments API (`/issues/{number}/comments`) for posting error notifications (PRs are issues in GitHub API)
+- Sanitize error messages before posting to GitHub: truncate long messages, redact sensitive patterns (tokens, passwords)
+- TokenProviderProtocol pattern for decoupling token acquisition from error notification posting
+- Error notifications should never raise - catch and log failures to prevent cascade errors
+
+---
+
+## 2026-01-24 - US-014
+- What was implemented: Error notification system that posts comments to PRs when AI reviews fail
+- Files changed:
+  - `tasks/ai_pr_reviewer/error_handler.py` - ErrorPostingError, ErrorNotification dataclass, format_error_message(), _sanitize_error_message(), post_error_comment() functions
+  - `tasks/ai_pr_reviewer/queue_worker.py` - Added TokenProviderProtocol, token_provider and post_error_notifications params, _post_failure_notification() method
+- **Learnings for future iterations:**
+  - Error notifications are posted after job failure, both for non-transient errors and transient errors after max retries
+  - Use a separate protocol (TokenProviderProtocol) for token provider to decouple from GitHubAppAuth
+  - Sanitize error messages to avoid leaking sensitive information (tokens, passwords, API keys)
+  - Truncate long error messages to keep GitHub comments readable
+  - Error notification failures are logged but don't raise - don't want failure-on-failure cascade
+  - Post as issue comment (not review comment) since the review didn't complete
 
 ---
 

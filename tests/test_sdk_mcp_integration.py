@@ -263,3 +263,72 @@ async def test_image_content_support():
     assert len(tool_executions) == 1
     assert tool_executions[0]["name"] == "generate_chart"
     assert tool_executions[0]["args"]["title"] == "Sales Report"
+
+
+@pytest.mark.asyncio
+async def test_document_content_support():
+    """Test that tools can return document content (e.g., PDFs) via EmbeddedResource."""
+
+    # Create sample base64 PDF data (minimal valid PDF)
+    pdf_data = base64.b64encode(
+        b"%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+        b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n"
+        b"0000000052 00000 n \n0000000101 00000 n \n"
+        b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF"
+    ).decode("utf-8")
+
+    tool_executions: list[dict[str, Any]] = []
+
+    @tool("read_document", "Reads a PDF document", {"filename": str})
+    async def read_document(args: dict[str, Any]) -> dict[str, Any]:
+        tool_executions.append({"name": "read_document", "args": args})
+        return {
+            "content": [
+                {"type": "text", "text": f"Document: {args['filename']}"},
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_data,
+                    },
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="document-test-server", version="1.0.0", tools=[read_document]
+    )
+
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    doc_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(
+            name="read_document", arguments={"filename": "report.pdf"}
+        ),
+    )
+    result = await call_handler(doc_request)
+
+    # Verify the result contains both text and document (as EmbeddedResource)
+    assert len(result.root.content) == 2
+
+    # Check text content
+    text_content = result.root.content[0]
+    assert text_content.type == "text"
+    assert text_content.text == "Document: report.pdf"
+
+    # Check document content (stored as EmbeddedResource with BlobResourceContents)
+    doc_content = result.root.content[1]
+    assert doc_content.type == "resource"
+    assert hasattr(doc_content, "resource")
+    assert str(doc_content.resource.uri) == "document://base64"
+    assert doc_content.resource.mimeType == "application/pdf"
+    assert doc_content.resource.blob == pdf_data
+
+    # Verify tool execution
+    assert len(tool_executions) == 1
+    assert tool_executions[0]["name"] == "read_document"

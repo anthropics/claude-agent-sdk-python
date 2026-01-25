@@ -486,6 +486,24 @@ class Query:
                                     "mimeType": item.mimeType,
                                 }
                             )
+                        elif hasattr(item, "resource") and getattr(item, "type", None) == "resource":
+                            # EmbeddedResource - check if it's a document (PDF, etc.)
+                            resource = item.resource
+                            uri = getattr(resource, "uri", "")
+                            mime_type = getattr(resource, "mimeType", "")
+                            if uri.startswith("document://") or mime_type == "application/pdf":
+                                # Convert EmbeddedResource to Anthropic document format
+                                source_type = uri.replace("document://", "") if uri.startswith("document://") else "base64"
+                                content.append(
+                                    {
+                                        "type": "document",
+                                        "source": {
+                                            "type": source_type,
+                                            "media_type": mime_type,
+                                            "data": getattr(resource, "blob", ""),
+                                        },
+                                    }
+                                )
 
                     response_data = {"content": content}
                     if hasattr(result.root, "is_error") and result.root.is_error:

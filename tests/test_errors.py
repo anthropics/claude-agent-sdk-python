@@ -6,6 +6,7 @@ from claude_agent_sdk import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    SandboxFileWatcherError,
 )
 
 
@@ -50,3 +51,17 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_sandbox_file_watcher_error(self):
+        """Test SandboxFileWatcherError."""
+        error = SandboxFileWatcherError(
+            path="/var/folders/abc/T/vscode-git-123.sock",
+            error_code="EOPNOTSUPP"
+        )
+        assert isinstance(error, ClaudeSDKError)
+        assert error.path == "/var/folders/abc/T/vscode-git-123.sock"
+        assert error.error_code == "EOPNOTSUPP"
+        assert "Sandbox file watcher failed" in str(error)
+        assert "vscode-git-123.sock" in str(error)
+        assert "EOPNOTSUPP" in str(error)
+        assert "socket files" in str(error)  # Helpful message

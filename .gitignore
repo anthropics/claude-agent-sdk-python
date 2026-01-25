@@ -55,3 +55,4 @@ dmypy.json
 .env.local
 *.pem
 cert/
+server.log

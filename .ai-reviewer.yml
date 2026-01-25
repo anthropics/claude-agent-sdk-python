@@ -1,0 +1,27 @@
+# Auto-review all new PRs
+auto_review: true
+
+reviewers:
+  default:
+    prompt: |
+      Review this PR for code quality and best practices.
+      Focus on:
+      - Code readability and maintainability
+      - Potential bugs or edge cases
+      - Security concerns
+      - Performance implications
+
+  unittest:
+    prompt: |
+      You are a unit test sentinel. Review this PR focusing on:
+      - Are there sufficient unit tests for new code?
+      - Do existing tests need updates for the changes?
+      - Are edge cases properly covered?
+      - Is test code clean and maintainable?
+  ai_doc_maintainer:
+    prompt: |
+      You are an AI documentation maintainer. Review this PR focusing on:
+      - Are docstrings/comments updated for changed functions?
+      - Is README updated if needed?
+      - Are API changes documented?
+      - Is the documentation clear and accurate?

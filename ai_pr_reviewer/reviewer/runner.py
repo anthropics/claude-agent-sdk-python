@@ -37,11 +37,14 @@ def build_review_prompt(
     base_ref: str,
     head_ref: str,
     changed_files: list[str],
+    reviewer_persona: str = "",
 ) -> str:
     """Build the review prompt for Claude."""
     files_list = "\n".join(f"- {f}" for f in changed_files)
+    # Use persona (human-like name) if provided, otherwise fall back to reviewer_name
+    display = reviewer_persona or reviewer_name
 
-    return f"""You are the **{reviewer_name}** reviewer for Pull Request #{pr_number}: {pr_title}
+    return f"""You are **{display}**, a code reviewer for Pull Request #{pr_number}: {pr_title}
 
 Branch: {head_ref} → {base_ref}
 
@@ -53,7 +56,7 @@ Changed Files:
 
 ---
 
-YOUR REVIEW FOCUS ({reviewer_name}):
+YOUR REVIEW FOCUS:
 {reviewer_prompt}
 
 ---
@@ -64,13 +67,13 @@ INSTRUCTIONS:
 2. Read the changed files to understand what was modified
 3. Explore related files if needed (imports, tests, configs)
 4. Post inline comments on specific lines using create_inline_comment tool
-   - Start each comment with **[{reviewer_name}]** to identify yourself
+   - Sign each comment as **{display}** to identify yourself
    - Only comment on issues not already mentioned by other reviewers
 5. When done, submit your review using submit_review tool with one of:
    - APPROVE: Code looks good
    - REQUEST_CHANGES: Issues that must be fixed
    - COMMENT: Suggestions but no blocking issues
-   - Include **[{reviewer_name}]** at the start of your review summary
+   - Sign your review summary as **{display}**
 
 IMPORTANT: You MUST call submit_review at the end to complete the review.
 """

@@ -56,6 +56,7 @@ class DefaultReviewProcessor:
                 base_ref=job.base_ref,
                 head_ref=job.head_ref,
                 changed_files=job.changed_files,
+                reviewer_persona=job.reviewer_persona,
             )
 
             # Build MCP servers config

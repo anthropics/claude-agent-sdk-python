@@ -24,7 +24,15 @@ class Reviewer:
 
     name: str
     prompt: str
+    display_name: str = ""  # Human-like name, e.g. "Stella [Unittest Sentinel]"
+    avatar: str = ""  # Emoji avatar, e.g. "🔒" or "🧪"
     triggers: list[TriggerCondition] = field(default_factory=list)
+
+    @property
+    def persona(self) -> str:
+        """Get avatar + display name, or fall back to name."""
+        name = self.display_name or self.name
+        return f"{self.avatar} {name}" if self.avatar else name
 
     def matches(
         self, changed_files: list[str], labels: list[str], is_default: bool = False
@@ -111,6 +119,10 @@ def load_reviewer_config(yaml_content: str) -> ReviewerConfig:
                     )
                 )
 
-        reviewers[name] = Reviewer(name=name, prompt=prompt, triggers=triggers)
+        display_name = config.get("display_name", "")
+        avatar = config.get("avatar", "")
+        reviewers[name] = Reviewer(
+            name=name, prompt=prompt, display_name=display_name, avatar=avatar, triggers=triggers
+        )
 
     return ReviewerConfig(auto_review=auto_review, reviewers=reviewers)

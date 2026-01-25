@@ -212,6 +212,7 @@ async def handle_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
             installation_id=installation_id,
             reviewer_name=reviewer.name,
             reviewer_prompt=reviewer.prompt,
+            reviewer_persona=reviewer.persona,
             changed_files=changed_files,
             labels=labels,
         )

@@ -35,6 +35,7 @@ class ReviewJob:
     installation_id: int
     reviewer_name: str
     reviewer_prompt: str
+    reviewer_persona: str  # Human-like display name
     changed_files: list[str]
     labels: list[str]
     status: JobStatus = JobStatus.PENDING

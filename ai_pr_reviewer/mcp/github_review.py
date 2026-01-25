@@ -50,6 +50,15 @@ async def list_tools() -> list[Tool]:
     """List available tools."""
     return [
         Tool(
+            name="get_existing_reviews",
+            description="Get existing reviews and comments on this PR to avoid duplicates",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
             name="create_inline_comment",
             description="Create an inline comment on a specific line in a pull request file",
             inputSchema={
@@ -108,7 +117,43 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     head_sha = get_env("HEAD_SHA")
 
     async with httpx.AsyncClient() as client:
-        if name == "create_inline_comment":
+        if name == "get_existing_reviews":
+            # Fetch existing reviews
+            reviews_resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                headers=get_headers(),
+            )
+
+            # Fetch existing review comments (inline comments)
+            comments_resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+                headers=get_headers(),
+            )
+
+            result_parts = []
+
+            if reviews_resp.status_code == 200:
+                reviews = reviews_resp.json()
+                result_parts.append(f"=== EXISTING REVIEWS ({len(reviews)}) ===")
+                for review in reviews:
+                    user = review.get("user", {}).get("login", "unknown")
+                    state = review.get("state", "unknown")
+                    body = review.get("body", "")[:200]
+                    result_parts.append(f"- [{state}] by {user}: {body}")
+
+            if comments_resp.status_code == 200:
+                comments = comments_resp.json()
+                result_parts.append(f"\n=== EXISTING INLINE COMMENTS ({len(comments)}) ===")
+                for comment in comments:
+                    user = comment.get("user", {}).get("login", "unknown")
+                    path = comment.get("path", "unknown")
+                    line = comment.get("line") or comment.get("original_line", "?")
+                    body = comment.get("body", "")[:150]
+                    result_parts.append(f"- {path}:{line} by {user}: {body}")
+
+            return [TextContent(type="text", text="\n".join(result_parts))]
+
+        elif name == "create_inline_comment":
             response = await client.post(
                 f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments",
                 headers=get_headers(),

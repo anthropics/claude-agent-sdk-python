@@ -1,12 +1,19 @@
-"""Claude Code CLI runner for PR reviews."""
+"""Claude Code SDK runner for PR reviews."""
 
-import asyncio
-import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from claude_agent_sdk import query
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    McpStdioServerConfig,
+    ResultMessage,
+    TextBlock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +29,7 @@ class ReviewResult:
 
 
 def build_review_prompt(
+    reviewer_name: str,
     reviewer_prompt: str,
     pr_title: str,
     pr_body: str,
@@ -33,7 +41,7 @@ def build_review_prompt(
     """Build the review prompt for Claude."""
     files_list = "\n".join(f"- {f}" for f in changed_files)
 
-    return f"""You are reviewing Pull Request #{pr_number}: {pr_title}
+    return f"""You are the **{reviewer_name}** reviewer for Pull Request #{pr_number}: {pr_title}
 
 Branch: {head_ref} → {base_ref}
 
@@ -45,111 +53,144 @@ Changed Files:
 
 ---
 
+YOUR REVIEW FOCUS ({reviewer_name}):
 {reviewer_prompt}
 
 ---
 
 INSTRUCTIONS:
-1. Read the changed files to understand what was modified
-2. Explore related files if needed (imports, tests, configs)
-3. Post inline comments on specific lines using create_inline_comment tool
-4. When done, submit your review using submit_review tool with one of:
+1. First, call get_existing_reviews to see what other reviewers have already commented
+   - Avoid duplicating issues already raised by other reviewers
+2. Read the changed files to understand what was modified
+3. Explore related files if needed (imports, tests, configs)
+4. Post inline comments on specific lines using create_inline_comment tool
+   - Start each comment with **[{reviewer_name}]** to identify yourself
+   - Only comment on issues not already mentioned by other reviewers
+5. When done, submit your review using submit_review tool with one of:
    - APPROVE: Code looks good
    - REQUEST_CHANGES: Issues that must be fixed
    - COMMENT: Suggestions but no blocking issues
+   - Include **[{reviewer_name}]** at the start of your review summary
 
 IMPORTANT: You MUST call submit_review at the end to complete the review.
 """
 
 
-def build_mcp_config(
+def build_mcp_servers(
     github_token: str,
     owner: str,
     repo: str,
     pr_number: int,
     head_sha: str,
-) -> dict[str, Any]:
-    """Build MCP configuration for the review."""
+) -> dict[str, McpStdioServerConfig]:
+    """Build MCP servers configuration for the review."""
     # Get the path to the MCP server module
     mcp_server_path = Path(__file__).parent.parent / "mcp" / "github_review.py"
 
     return {
-        "mcpServers": {
-            "github_review": {
-                "command": "python",
-                "args": [str(mcp_server_path)],
-                "env": {
-                    "GITHUB_TOKEN": github_token,
-                    "GITHUB_OWNER": owner,
-                    "GITHUB_REPO": repo,
-                    "PR_NUMBER": str(pr_number),
-                    "HEAD_SHA": head_sha,
-                },
-            }
-        }
+        "github_review": McpStdioServerConfig(
+            type="stdio",
+            command="python3",
+            args=[str(mcp_server_path)],
+            env={
+                "GITHUB_TOKEN": github_token,
+                "GITHUB_OWNER": owner,
+                "GITHUB_REPO": repo,
+                "PR_NUMBER": str(pr_number),
+                "HEAD_SHA": head_sha,
+            },
+        )
     }
 
 
 async def run_claude_review(
     repo_path: Path,
     prompt: str,
-    mcp_config: dict[str, Any],
+    mcp_servers: dict[str, McpStdioServerConfig],
     anthropic_api_key: str,
 ) -> ReviewResult:
-    """Run Claude Code CLI to perform the review."""
-    # Write MCP config to a temporary file in the repo
-    claude_dir = repo_path / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    mcp_config_path = claude_dir / "mcp-review.json"
-    mcp_config_path.write_text(json.dumps(mcp_config, indent=2))
+    """Run Claude Code SDK to perform the review."""
+    logger.info(f"Running Claude Code SDK review in {repo_path}")
 
-    # Write prompt to a file
-    prompt_path = claude_dir / "review-prompt.md"
-    prompt_path.write_text(prompt)
+    # Stderr callback for debugging
+    def log_stderr(line: str) -> None:
+        if line.strip():
+            logger.warning(f"Claude stderr: {line.rstrip()}")
 
-    # Build Claude CLI command
-    cmd = [
-        "claude",
-        "--print",  # Print output instead of interactive mode
-        "--dangerously-skip-permissions",  # Skip permission prompts
-        "--mcp-config",
-        str(mcp_config_path),
-        "--allowedTools",
-        "Read,Glob,Grep,mcp__github_review__create_inline_comment,mcp__github_review__submit_review",
-        "-p",
-        prompt,
-    ]
+    # Build environment with all Claude Code related vars from current process
+    # This includes Vertex AI config, auth tokens, etc.
+    claude_env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith(("CLAUDE_", "ANTHROPIC_", "NODE_"))
+    }
+    logger.info(f"Passing {len(claude_env)} Claude-related env vars to SDK")
 
-    logger.info(f"Running Claude Code CLI in {repo_path}")
-    logger.debug(f"Command: {' '.join(cmd)}")
-
-    # Set up environment
-    env = os.environ.copy()
-    env["ANTHROPIC_API_KEY"] = anthropic_api_key
-
-    # Run Claude CLI
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=repo_path,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    # Configure SDK options with MCP for GitHub review
+    options = ClaudeAgentOptions(
+        cwd=str(repo_path),
+        mcp_servers=mcp_servers,  # Enable MCP for GitHub review tools
+        allowed_tools=[
+            "Read",
+            "Glob",
+            "Grep",
+            "mcp__github_review__get_existing_reviews",
+            "mcp__github_review__create_inline_comment",
+            "mcp__github_review__submit_review",
+        ],
+        permission_mode="bypassPermissions",  # Skip permission prompts
+        stderr=log_stderr,  # Capture stderr for debugging
+        env=claude_env,  # Pass all Claude/Anthropic env vars
+        setting_sources=["user"],  # Load user settings for auth
     )
 
-    stdout, stderr = await process.communicate()
+    output_text = ""
+    is_error = False
+    error_message = ""
 
-    stdout_str = stdout.decode() if stdout else ""
-    stderr_str = stderr.decode() if stderr else ""
+    try:
+        msg_count = 0
+        async for message in query(prompt=prompt, options=options):
+            msg_count += 1
+            msg_type = type(message).__name__
 
-    if process.returncode == 0:
-        logger.info("Claude Code review completed successfully")
-    else:
-        logger.error(f"Claude Code review failed with code {process.returncode}")
-        logger.error(f"stderr: {stderr_str}")
+            # Log message content preview (max 200 chars)
+            content_preview = ""
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        content_preview = block.text[:200].replace("\n", " ")
+                        output_text += block.text + "\n"
+                        break
+            elif hasattr(message, "content") and isinstance(message.content, str):
+                content_preview = message.content[:200].replace("\n", " ")
 
-    return ReviewResult(
-        success=process.returncode == 0,
-        stdout=stdout_str,
-        stderr=stderr_str,
-        return_code=process.returncode or 0,
-    )
+            if isinstance(message, ResultMessage):
+                logger.info(
+                    f"#{msg_count} ResultMessage: turns={message.num_turns}, "
+                    f"cost=${message.total_cost_usd or 0:.4f}, "
+                    f"duration={message.duration_ms}ms, "
+                    f"is_error={message.is_error}"
+                )
+                is_error = message.is_error
+                if is_error and message.result:
+                    error_message = message.result
+                    logger.error(f"Error result: {message.result}")
+            else:
+                logger.info(f"#{msg_count} {msg_type}: {content_preview[:200] if content_preview else '(no text)'}")
+
+        logger.info(f"Query iteration complete. Total messages: {msg_count}")
+        return ReviewResult(
+            success=not is_error,
+            stdout=output_text,
+            stderr=error_message,
+            return_code=1 if is_error else 0,
+        )
+
+    except Exception as e:
+        logger.error(f"Claude Code review failed: {e}")
+        return ReviewResult(
+            success=False,
+            stdout=output_text,
+            stderr=str(e),
+            return_code=1,
+        )

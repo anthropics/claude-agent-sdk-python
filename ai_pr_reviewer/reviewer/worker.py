@@ -8,7 +8,7 @@ from ..config import Config
 from ..github.auth import GitHubAuth
 from ..repo.manager import RepoManager
 from .queue import ReviewJob, ReviewQueue
-from .runner import build_mcp_config, build_review_prompt, run_claude_review
+from .runner import build_mcp_servers, build_review_prompt, run_claude_review
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class ReviewProcessor(Protocol):
 
 
 class DefaultReviewProcessor:
-    """Default review processor using Claude Code CLI."""
+    """Default review processor using Claude Code SDK."""
 
     def __init__(self, config: Config, repo_manager: RepoManager) -> None:
         """Initialize the processor."""
@@ -48,6 +48,7 @@ class DefaultReviewProcessor:
         try:
             # Build the review prompt
             prompt = build_review_prompt(
+                reviewer_name=job.reviewer_name,
                 reviewer_prompt=job.reviewer_prompt,
                 pr_title=job.pr_title,
                 pr_body=job.pr_body,
@@ -57,8 +58,8 @@ class DefaultReviewProcessor:
                 changed_files=job.changed_files,
             )
 
-            # Build MCP config
-            mcp_config = build_mcp_config(
+            # Build MCP servers config
+            mcp_servers = build_mcp_servers(
                 github_token=token,
                 owner=job.owner,
                 repo=job.repo,
@@ -70,7 +71,7 @@ class DefaultReviewProcessor:
             result = await run_claude_review(
                 repo_path=cloned_repo.path,
                 prompt=prompt,
-                mcp_config=mcp_config,
+                mcp_servers=mcp_servers,
                 anthropic_api_key=self.config.anthropic_api_key,
             )
 

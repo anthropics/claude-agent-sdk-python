@@ -69,14 +69,13 @@ class ReviewerConfig:
         triggered = []
 
         for name, reviewer in self.reviewers.items():
-            is_default = name == "default"
-
-            # For auto_review, always trigger default reviewer
-            if self.auto_review and is_default:
+            # For auto_review, trigger all reviewers without specific triggers
+            # This allows all configured reviewers to run on every PR
+            if self.auto_review and not reviewer.triggers:
                 triggered.append(reviewer)
                 continue
 
-            # Check if reviewer matches conditions
+            # Check if reviewer matches conditions (path patterns or labels)
             if reviewer.matches(changed_files, labels):
                 triggered.append(reviewer)
 

@@ -3,7 +3,7 @@
 from .config import ReviewerConfig, Reviewer, load_reviewer_config
 from .queue import ReviewJob, ReviewQueue, create_job_id
 from .worker import ReviewWorker
-from .runner import run_claude_review, build_review_prompt, build_mcp_config
+from .runner import run_claude_review, build_review_prompt, build_mcp_servers
 
 __all__ = [
     "ReviewerConfig",
@@ -15,5 +15,5 @@ __all__ = [
     "ReviewWorker",
     "run_claude_review",
     "build_review_prompt",
-    "build_mcp_config",
+    "build_mcp_servers",
 ]

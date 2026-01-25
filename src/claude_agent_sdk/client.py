@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 from . import Transport
@@ -147,6 +147,14 @@ class ClaudeSDKClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
+        # Convert agents to dict format for initialize request
+        agents_dict: dict[str, dict[str, Any]] | None = None
+        if self.options.agents:
+            agents_dict = {
+                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                for name, agent_def in self.options.agents.items()
+            }
+
         # Create Query to handle control protocol
         self._query = Query(
             transport=self._transport,
@@ -157,6 +165,7 @@ class ClaudeSDKClient:
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
+            agents=agents_dict,
         )
 
         # Start reading messages and initialize

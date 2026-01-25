@@ -702,8 +702,7 @@ class SDKControlInitializeRequest(TypedDict):
 
 class SDKControlSetPermissionModeRequest(TypedDict):
     subtype: Literal["set_permission_mode"]
-    # TODO: Add PermissionMode
-    mode: str
+    mode: PermissionMode
 
 
 class SDKHookCallbackRequest(TypedDict):

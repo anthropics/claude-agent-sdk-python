@@ -24,4 +24,3 @@ reviewers:
       - Are docstrings/comments updated for changed functions?
       - Is README updated if needed?
       - Are API changes documented?
-      - Is the documentation clear and accurate?

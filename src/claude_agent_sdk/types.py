@@ -18,7 +18,10 @@ else:
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
-SdkBeta = Literal["context-1m-2025-08-07"]
+SdkBeta = Literal[
+    "context-1m-2025-08-07",  # Extended 1M context window
+    "clear-thinking-20250115",  # Clear thinking blocks from previous turns to reduce token usage
+]
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]

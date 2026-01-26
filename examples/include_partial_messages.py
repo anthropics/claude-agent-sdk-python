@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Example of using the "include_partial_messages" option to stream partial messages
-from Claude Code SDK.
+from Claude Agent SDK.
 
 This feature allows you to receive stream events that contain incremental
 updates as Claude generates responses. This is useful for:

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.23
+
+### Features
+
+- **MCP status querying**: Added public `get_mcp_status()` method to `ClaudeSDKClient` for querying MCP server connection status without accessing private internals (#516)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.20
+
 ## 0.1.22
 
 ### Features

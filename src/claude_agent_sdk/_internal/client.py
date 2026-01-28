@@ -4,16 +4,82 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import replace
 from typing import Any
 
+from .._errors import (
+    APIError,
+    AuthenticationError,
+    BillingError,
+    InvalidRequestError,
+    RateLimitError,
+    ServerError,
+)
 from ..types import (
+    AssistantMessage,
+    AssistantMessageError,
     ClaudeAgentOptions,
     HookEvent,
     HookMatcher,
     Message,
+    TextBlock,
 )
 from .message_parser import parse_message
 from .query import Query
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+
+def _extract_error_message(message: AssistantMessage) -> str:
+    """Extract the error message text from an AssistantMessage.
+
+    When the API returns an error, the error text is typically in the
+    first TextBlock of the message content.
+
+    Args:
+        message: The AssistantMessage containing the error.
+
+    Returns:
+        The error message text, or a default message if none found.
+    """
+    for block in message.content:
+        if isinstance(block, TextBlock):
+            return block.text
+    return "An API error occurred"
+
+
+def _raise_api_error(message: AssistantMessage) -> None:
+    """Raise the appropriate API exception for an AssistantMessage with an error.
+
+    This function converts the error field on an AssistantMessage into a proper
+    Python exception that can be caught and handled programmatically.
+
+    Args:
+        message: The AssistantMessage with error field set.
+
+    Raises:
+        AuthenticationError: For authentication_failed errors (401).
+        BillingError: For billing_error errors.
+        RateLimitError: For rate_limit errors (429).
+        InvalidRequestError: For invalid_request errors (400).
+        ServerError: For server_error errors (500/529).
+        APIError: For unknown error types.
+    """
+    error_type: AssistantMessageError = message.error  # type: ignore[assignment]
+    error_message = _extract_error_message(message)
+    model = message.model
+
+    match error_type:
+        case "authentication_failed":
+            raise AuthenticationError(error_message, model)
+        case "billing_error":
+            raise BillingError(error_message, model)
+        case "rate_limit":
+            raise RateLimitError(error_message, model)
+        case "invalid_request":
+            raise InvalidRequestError(error_message, model)
+        case "server_error":
+            raise ServerError(error_message, model)
+        case _:
+            # Handle "unknown" or any future error types
+            raise APIError(error_message, error_type, model)
 
 
 class InternalClient:
@@ -116,9 +182,15 @@ class InternalClient:
                 query._tg.start_soon(query.stream_input, prompt)
             # For string prompts, the prompt is already passed via CLI args
 
-            # Yield parsed messages
+            # Yield parsed messages, checking for API errors
             async for data in query.receive_messages():
-                yield parse_message(data)
+                message = parse_message(data)
+
+                # Check if this is an AssistantMessage with an API error
+                if isinstance(message, AssistantMessage) and message.error is not None:
+                    _raise_api_error(message)
+
+                yield message
 
         finally:
             await query.close()

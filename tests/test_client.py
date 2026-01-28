@@ -121,3 +121,229 @@ class TestQueryFunction:
                 assert call_kwargs["options"].cwd == "/custom/path"
 
         anyio.run(_test)
+
+
+class TestAPIErrorHandling:
+    """Test that API errors are raised as exceptions (issue #472)."""
+
+    def test_invalid_request_error_raised(self):
+        """Test that invalid_request errors are raised as InvalidRequestError."""
+        import pytest
+
+        from claude_agent_sdk import InvalidRequestError
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                # Mock an API error response with invalid model
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "API Error (claude-invalid-model): 400 The provided model identifier is invalid.",
+                                }
+                            ],
+                            "model": "claude-invalid-model",
+                            "error": "invalid_request",
+                        },
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                with pytest.raises(InvalidRequestError) as exc_info:
+                    async for _ in query(prompt="Hello"):
+                        pass
+
+                assert "model identifier is invalid" in str(exc_info.value)
+                assert exc_info.value.error_type == "invalid_request"
+                assert exc_info.value.model == "claude-invalid-model"
+
+        anyio.run(_test)
+
+    def test_rate_limit_error_raised(self):
+        """Test that rate_limit errors are raised as RateLimitError."""
+        import pytest
+
+        from claude_agent_sdk import RateLimitError
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "API Error: 429 Rate limit exceeded"}
+                            ],
+                            "model": "claude-sonnet-4-5",
+                            "error": "rate_limit",
+                        },
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                with pytest.raises(RateLimitError) as exc_info:
+                    async for _ in query(prompt="Hello"):
+                        pass
+
+                assert exc_info.value.error_type == "rate_limit"
+
+        anyio.run(_test)
+
+    def test_authentication_error_raised(self):
+        """Test that authentication_failed errors are raised as AuthenticationError."""
+        import pytest
+
+        from claude_agent_sdk import AuthenticationError
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "API Error: 401 Invalid API key"}
+                            ],
+                            "model": "claude-sonnet-4-5",
+                            "error": "authentication_failed",
+                        },
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                with pytest.raises(AuthenticationError) as exc_info:
+                    async for _ in query(prompt="Hello"):
+                        pass
+
+                assert exc_info.value.error_type == "authentication_failed"
+
+        anyio.run(_test)
+
+    def test_server_error_raised(self):
+        """Test that server_error errors are raised as ServerError."""
+        import pytest
+
+        from claude_agent_sdk import ServerError
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "API Error: Repeated 529 Overloaded errors",
+                                }
+                            ],
+                            "model": "claude-sonnet-4-5",
+                            "error": "server_error",
+                        },
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                with pytest.raises(ServerError) as exc_info:
+                    async for _ in query(prompt="Hello"):
+                        pass
+
+                assert exc_info.value.error_type == "server_error"
+                assert "529 Overloaded" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_normal_message_not_raised(self):
+        """Test that normal assistant messages without error field are yielded normally."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+
+                # Normal message without error field
+                async def mock_receive():
+                    yield {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Hello! How can I help?"}],
+                            "model": "claude-sonnet-4-5",
+                        },
+                    }
+                    yield {
+                        "type": "result",
+                        "subtype": "success",
+                        "duration_ms": 1000,
+                        "duration_api_ms": 800,
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "test-session",
+                    }
+
+                mock_transport.read_messages = mock_receive
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                messages = []
+                async for msg in query(prompt="Hello"):
+                    messages.append(msg)
+
+                # Should receive both messages without exception
+                assert len(messages) == 2
+                assert isinstance(messages[0], AssistantMessage)
+                assert messages[0].error is None
+
+        anyio.run(_test)

@@ -192,7 +192,7 @@ class SubprocessCLITransport(Transport):
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
 
-        if self._options.allowed_tools:
+        if self._options.allowed_tools is not None:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
 
         if self._options.max_turns:

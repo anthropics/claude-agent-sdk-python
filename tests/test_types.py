@@ -87,7 +87,7 @@ class TestOptions:
     def test_default_options(self):
         """Test Options with default values."""
         options = ClaudeAgentOptions()
-        assert options.allowed_tools == []
+        assert options.allowed_tools is None
         assert options.system_prompt is None
         assert options.permission_mode is None
         assert options.continue_conversation is False

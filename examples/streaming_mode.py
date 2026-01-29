@@ -42,13 +42,9 @@ def display_message(msg):
     - ResultMessage: "Result ended" + cost if available
     """
     if isinstance(msg, UserMessage):
-        for block in msg.content:
-            if isinstance(block, TextBlock):
-                print(f"User: {block.text}")
+        print(f"User: {msg}")
     elif isinstance(msg, AssistantMessage):
-        for block in msg.content:
-            if isinstance(block, TextBlock):
-                print(f"Claude: {block.text}")
+        print(f"Claude: {msg}")
     elif isinstance(msg, SystemMessage):
         # Ignore system messages
         pass

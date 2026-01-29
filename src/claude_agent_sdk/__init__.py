@@ -208,7 +208,13 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
-    from mcp.types import ImageContent, TextContent, Tool
+    from mcp.types import (
+        BlobResourceContents,
+        EmbeddedResource,
+        ImageContent,
+        TextContent,
+        Tool,
+    )
 
     # Create MCP server instance
     server = Server(name, version=version)
@@ -278,17 +284,32 @@ def create_sdk_mcp_server(
             # Convert result to MCP format
             # The decorator expects us to return the content, not a CallToolResult
             # It will wrap our return value in CallToolResult
-            content: list[TextContent | ImageContent] = []
+            content: list[TextContent | ImageContent | EmbeddedResource] = []
             if "content" in result:
                 for item in result["content"]:
                     if item.get("type") == "text":
                         content.append(TextContent(type="text", text=item["text"]))
-                    if item.get("type") == "image":
+                    elif item.get("type") == "image":
                         content.append(
                             ImageContent(
                                 type="image",
                                 data=item["data"],
                                 mimeType=item["mimeType"],
+                            )
+                        )
+                    elif item.get("type") == "document":
+                        # Convert document to EmbeddedResource with BlobResourceContents
+                        # This preserves document data through MCP for conversion to
+                        # Anthropic document format in query.py
+                        source = item.get("source", {})
+                        content.append(
+                            EmbeddedResource(
+                                type="resource",
+                                resource=BlobResourceContents(
+                                    uri=f"document://{source.get('type', 'base64')}",
+                                    mimeType=source.get("media_type", "application/pdf"),
+                                    blob=source.get("data", ""),
+                                ),
                             )
                         )
 

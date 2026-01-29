@@ -1,8 +1,10 @@
 """Internal client implementation."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..types import (
     ClaudeAgentOptions,
@@ -12,8 +14,18 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
+from .tracing import (
+    SPAN_QUERY,
+    TracingContext,
+    end_span,
+    record_exception,
+    set_span_attributes,
+)
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span
 
 
 class InternalClient:
@@ -48,6 +60,10 @@ class InternalClient:
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""
 
+        # Set up tracing
+        tracing = TracingContext(options.tracer)
+        span: Span | None = None
+
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
@@ -67,6 +83,15 @@ class InternalClient:
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")
+
+        # Start query span
+        span = tracing.start_span(
+            SPAN_QUERY,
+            attributes={
+                "query.streaming_mode": not isinstance(prompt, str),
+                "query.model": configured_options.model or "default",
+            },
+        )
 
         # Use provided transport or create subprocess transport
         if transport is not None:
@@ -99,6 +124,7 @@ class InternalClient:
             if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
+            tracer=configured_options.tracer,
         )
 
         try:
@@ -117,8 +143,28 @@ class InternalClient:
             # For string prompts, the prompt is already passed via CLI args
 
             # Yield parsed messages
+            message_count = 0
             async for data in query.receive_messages():
-                yield parse_message(data)
+                message_count += 1
+                msg = parse_message(data)
 
+                # Track result message info in span
+                if data.get("type") == "result":
+                    set_span_attributes(
+                        span,
+                        {
+                            "query.message_count": message_count,
+                            "query.is_error": data.get("is_error", False),
+                            "query.num_turns": data.get("num_turns"),
+                            "query.total_cost_usd": data.get("total_cost_usd"),
+                        },
+                    )
+
+                yield msg
+
+        except Exception as e:
+            record_exception(span, e)
+            raise
         finally:
+            end_span(span)
             await query.close()

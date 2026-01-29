@@ -157,6 +157,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                     usage=data.get("usage"),
                     result=data.get("result"),
                     structured_output=data.get("structured_output"),
+                    errors=data.get("errors"),
                 )
             except KeyError as e:
                 raise MessageParseError(

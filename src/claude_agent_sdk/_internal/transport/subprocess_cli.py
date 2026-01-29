@@ -64,6 +64,7 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._stderr_lines: list[str] = []
         self._temp_files: list[str] = []  # Track temporary files for cleanup
         self._write_lock: anyio.Lock = anyio.Lock()
 
@@ -391,11 +392,10 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
-            should_pipe_stderr = (
-                self._options.stderr is not None
-                or "debug-to-stderr" in self._options.extra_args
-            )
+            # Always pipe stderr so we can capture it for error reporting.
+            # The callback and debug mode flags control whether lines are
+            # forwarded in real-time, but we always collect them.
+            should_pipe_stderr = True
 
             # For backward compat: use debug_stderr file object if no callback and debug is on
             stderr_dest = PIPE if should_pipe_stderr else None
@@ -456,6 +456,9 @@ class SubprocessCLITransport(Transport):
                 line_str = line.rstrip()
                 if not line_str:
                     continue
+
+                # Always collect stderr lines for error reporting
+                self._stderr_lines.append(line_str)
 
                 # Call the stderr callback if provided
                 if self._options.stderr:
@@ -618,12 +621,21 @@ class SubprocessCLITransport(Transport):
         except Exception:
             returncode = -1
 
+        # Wait for stderr reader to finish draining
+        if self._stderr_task_group:
+            with suppress(Exception):
+                with anyio.move_on_after(5):
+                    self._stderr_task_group.cancel_scope.cancel()
+                    await self._stderr_task_group.__aexit__(None, None, None)
+            self._stderr_task_group = None
+
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            stderr_output = "\n".join(self._stderr_lines) if self._stderr_lines else None
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=stderr_output,
             )
             raise self._exit_error
 

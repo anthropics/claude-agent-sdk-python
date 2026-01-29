@@ -1,6 +1,8 @@
 """Internal client implementation."""
 
+import logging
 from collections.abc import AsyncIterable, AsyncIterator
+from contextlib import aclosing
 from dataclasses import replace
 from typing import Any
 
@@ -14,6 +16,8 @@ from .message_parser import parse_message
 from .query import Query
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+logger = logging.getLogger(__name__)
 
 
 class InternalClient:
@@ -117,8 +121,14 @@ class InternalClient:
             # For string prompts, the prompt is already passed via CLI args
 
             # Yield parsed messages
-            async for data in query.receive_messages():
-                yield parse_message(data)
+            # Use aclosing() for proper async generator cleanup
+            async with aclosing(query.receive_messages()) as messages:
+                async for data in messages:
+                    yield parse_message(data)
 
+        except GeneratorExit:
+            # Handle early termination of the async generator gracefully
+            # This occurs when the caller breaks out of the async for loop
+            logger.debug("process_query generator closed early by caller")
         finally:
             await query.close()

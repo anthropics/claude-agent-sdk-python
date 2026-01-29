@@ -335,6 +335,27 @@ class SubprocessCLITransport(Transport):
 
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)
+        if len(cmd_str) > _CMD_LENGTH_LIMIT and "--system-prompt" in cmd:
+            # Handle large --system-prompt by switching to --system-prompt-file
+            try:
+                sp_idx = cmd.index("--system-prompt")
+                sp_value = cmd[sp_idx + 1]
+                temp_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                )
+                temp_file.write(sp_value)
+                temp_file.close()
+                self._temp_files.append(temp_file.name)
+                # Replace --system-prompt with --system-prompt-file
+                cmd[sp_idx] = "--system-prompt-file"
+                cmd[sp_idx + 1] = temp_file.name
+                logger.info(
+                    f"System prompt length ({len(sp_value)}) exceeds limit. "
+                    f"Using --system-prompt-file: {temp_file.name}"
+                )
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Failed to optimize system prompt length: {e}")
+
         if len(cmd_str) > _CMD_LENGTH_LIMIT and self._options.agents:
             # Command is too long - use temp file for agents
             # Find the --agents argument and replace its value with @filepath

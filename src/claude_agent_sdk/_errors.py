@@ -54,3 +54,26 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class SandboxFileWatcherError(ClaudeSDKError):
+    """Raised when the CLI's sandbox file watcher fails.
+
+    This typically happens on macOS when the sandbox tries to watch
+    system temp directories containing socket files or other unwatchable
+    file types. The CLI's file watcher throws EOPNOTSUPP or EINTR errors
+    on these files.
+    """
+
+    def __init__(self, path: str, error_code: str):
+        self.path = path
+        self.error_code = error_code
+        message = (
+            f"Sandbox file watcher failed on '{path}' ({error_code}). "
+            "This is a known issue with the Claude CLI's sandbox on macOS. "
+            "The sandbox tries to watch system temp directories that contain "
+            "socket files (from VSCode, Docker, etc.) which cannot be watched. "
+            "Workarounds: 1) Disable sandbox (sandbox=None), "
+            "2) Run in a container with a clean /tmp directory."
+        )
+        super().__init__(message)

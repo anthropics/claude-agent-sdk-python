@@ -9,6 +9,7 @@ from ._errors import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    HookCallbackError,
     ProcessError,
 )
 from ._internal.transport import Transport
@@ -360,6 +361,7 @@ __all__ = [
     "ClaudeSDKError",
     "CLIConnectionError",
     "CLINotFoundError",
+    "HookCallbackError",
     "ProcessError",
     "CLIJSONDecodeError",
 ]

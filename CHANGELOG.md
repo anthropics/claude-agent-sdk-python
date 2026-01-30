@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.26
+
+### New Features
+
+- **PostToolUseFailure hook event**: Added `PostToolUseFailure` hook event type for handling tool use failures, including `PostToolUseFailureHookInput` and `PostToolUseFailureHookSpecificOutput` types (#535)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.27
+
 ## 0.1.25
 
 ### Internal/Other Changes

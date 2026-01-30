@@ -47,10 +47,8 @@ jobs:
     needs: check-trigger
     permissions:
       contents: write
-      pull-requests: write
     uses: ./.github/workflows/build-and-publish.yml
     with:
       version: ${{ needs.check-trigger.outputs.version }}
       previous_tag: ${{ needs.check-trigger.outputs.previous_tag }}
-      push_directly: true
     secrets: inherit

@@ -74,9 +74,10 @@ jobs:
 
   release:
     needs: [test, lint, get-previous-tag]
+    permissions:
+      contents: write
     uses: ./.github/workflows/build-and-publish.yml
     with:
       version: ${{ github.event.inputs.version }}
       previous_tag: ${{ needs.get-previous-tag.outputs.previous_tag }}
-      push_directly: false
     secrets: inherit

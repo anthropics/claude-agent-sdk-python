@@ -43,7 +43,7 @@ async def test_sdk_mcp_tool_execution():
         await client.query("Call the mcp__test__echo tool with any text")
 
         async for message in client.receive_response():
-            pass  # Just consume messages
+            print(f"  [{type(message).__name__}] {message}")
 
     # Check if the actual Python function was called
     assert "echo" in executions, "Echo tool function was not executed"
@@ -74,6 +74,7 @@ async def test_sdk_mcp_permission_enforcement():
     )
 
     options = ClaudeAgentOptions(
+        model="claude-opus-4-5",
         mcp_servers={"test": server},
         disallowed_tools=["mcp__test__echo"],  # Block echo tool
         allowed_tools=["mcp__test__greet"],  # But allow greet
@@ -85,9 +86,10 @@ async def test_sdk_mcp_permission_enforcement():
         )
 
         async for message in client.receive_response():
-            pass  # Just consume messages
+            print(f"  [{type(message).__name__}] {message}")
 
     # Check actual function executions
+    print(f"  Executions: {executions}")
     assert "echo" not in executions, "Disallowed echo tool was executed"
     assert "greet" in executions, "Allowed greet tool was not executed"
 
@@ -127,7 +129,7 @@ async def test_sdk_mcp_multiple_tools():
         )
 
         async for message in client.receive_response():
-            pass  # Just consume messages
+            print(f"  [{type(message).__name__}] {message}")
 
     # Both tools should have been executed
     assert "echo" in executions, "Echo tool was not executed"
@@ -161,6 +163,6 @@ async def test_sdk_mcp_without_permissions():
         await client.query("Call the mcp__noperm__echo tool")
 
         async for message in client.receive_response():
-            pass  # Just consume messages
+            print(f"  [{type(message).__name__}] {message}")
 
     assert "echo" not in executions, "SDK MCP tool was executed"

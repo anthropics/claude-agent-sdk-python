@@ -163,6 +163,7 @@ CanUseTool = Callable[
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]
+    | Literal["PostToolUseFailure"]
     | Literal["UserPromptSubmit"]
     | Literal["Stop"]
     | Literal["SubagentStop"]
@@ -195,6 +196,17 @@ class PostToolUseHookInput(BaseHookInput):
     tool_name: str
     tool_input: dict[str, Any]
     tool_response: Any
+
+
+class PostToolUseFailureHookInput(BaseHookInput):
+    """Input data for PostToolUseFailure hook events."""
+
+    hook_event_name: Literal["PostToolUseFailure"]
+    tool_name: str
+    tool_input: dict[str, Any]
+    tool_use_id: str
+    error: str
+    is_interrupt: NotRequired[bool]
 
 
 class UserPromptSubmitHookInput(BaseHookInput):
@@ -230,6 +242,7 @@ class PreCompactHookInput(BaseHookInput):
 HookInput = (
     PreToolUseHookInput
     | PostToolUseHookInput
+    | PostToolUseFailureHookInput
     | UserPromptSubmitHookInput
     | StopHookInput
     | SubagentStopHookInput
@@ -254,6 +267,13 @@ class PostToolUseHookSpecificOutput(TypedDict):
     additionalContext: NotRequired[str]
 
 
+class PostToolUseFailureHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostToolUseFailure events."""
+
+    hookEventName: Literal["PostToolUseFailure"]
+    additionalContext: NotRequired[str]
+
+
 class UserPromptSubmitHookSpecificOutput(TypedDict):
     """Hook-specific output for UserPromptSubmit events."""
 
@@ -271,6 +291,7 @@ class SessionStartHookSpecificOutput(TypedDict):
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
+    | PostToolUseFailureHookSpecificOutput
     | UserPromptSubmitHookSpecificOutput
     | SessionStartHookSpecificOutput
 )

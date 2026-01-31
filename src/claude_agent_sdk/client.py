@@ -1,14 +1,24 @@
 """Claude SDK Client for interacting with Claude Code."""
 
+from __future__ import annotations
+
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import Transport
 from ._errors import CLIConnectionError
+from ._internal.tracing import (
+    SPAN_SESSION,
+    TracingContext,
+    end_span,
+)
 from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span
 
 
 class ClaudeSDKClient:
@@ -66,6 +76,10 @@ class ClaudeSDKClient:
         self._query: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
+        # Set up tracing
+        self._tracing = TracingContext(options.tracer)
+        self._session_span: Span | None = None
+
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
     ) -> dict[str, list[dict[str, Any]]]:
@@ -91,6 +105,15 @@ class ClaudeSDKClient:
 
         from ._internal.query import Query
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
+
+        # Start session span for tracing
+        self._session_span = self._tracing.start_span(
+            SPAN_SESSION,
+            attributes={
+                "session.model": self.options.model or "default",
+                "session.permission_mode": self.options.permission_mode or "default",
+            },
+        )
 
         # Auto-connect with empty async iterable if no prompt is provided
         async def _empty_stream() -> AsyncIterator[dict[str, Any]]:
@@ -157,6 +180,7 @@ class ClaudeSDKClient:
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
+            tracer=self.options.tracer,
         )
 
         # Start reading messages and initialize
@@ -392,7 +416,11 @@ class ClaudeSDKClient:
             self._query = None
         self._transport = None
 
-    async def __aenter__(self) -> "ClaudeSDKClient":
+        # End session span
+        end_span(self._session_span)
+        self._session_span = None
+
+    async def __aenter__(self) -> ClaudeSDKClient:
         """Enter async context - automatically connects with empty stream for interactive use."""
         await self.connect()
         return self

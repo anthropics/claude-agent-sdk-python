@@ -23,10 +23,21 @@ from ..types import (
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from .tracing import (
+    SPAN_CONTROL,
+    SPAN_HOOK,
+    SPAN_MCP,
+    SPAN_PERMISSION,
+    TracingContext,
+    end_span,
+    record_exception,
+    set_span_attributes,
+)
 from .transport import Transport
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+    from opentelemetry.trace import Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +84,7 @@ class Query:
         hooks: dict[str, list[dict[str, Any]]] | None = None,
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
         initialize_timeout: float = 60.0,
+        tracer: "Tracer | None" = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -83,6 +95,7 @@ class Query:
             hooks: Optional hook configurations
             sdk_mcp_servers: Optional SDK MCP server instances
             initialize_timeout: Timeout in seconds for the initialize request
+            tracer: Optional OpenTelemetry tracer for observability
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -90,6 +103,9 @@ class Query:
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
+
+        # Tracing context
+        self._tracing = TracingContext(tracer)
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -231,67 +247,108 @@ class Query:
         request_data = request["request"]
         subtype = request_data["subtype"]
 
+        # Create span for control request handling
+        span = self._tracing.start_span(
+            SPAN_CONTROL,
+            attributes={"control.subtype": subtype, "control.request_id": request_id},
+        )
+
         try:
             response_data: dict[str, Any] = {}
 
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
                 original_input = permission_request["input"]
-                # Handle tool permission request
-                if not self.can_use_tool:
-                    raise Exception("canUseTool callback is not provided")
+                tool_name = permission_request["tool_name"]
 
-                context = ToolPermissionContext(
-                    signal=None,  # TODO: Add abort signal support
-                    suggestions=permission_request.get("permission_suggestions", [])
-                    or [],
+                # Create permission span
+                perm_span = self._tracing.start_span(
+                    SPAN_PERMISSION,
+                    attributes={"permission.tool_name": tool_name},
                 )
 
-                response = await self.can_use_tool(
-                    permission_request["tool_name"],
-                    permission_request["input"],
-                    context,
-                )
+                try:
+                    # Handle tool permission request
+                    if not self.can_use_tool:
+                        raise Exception("canUseTool callback is not provided")
 
-                # Convert PermissionResult to expected dict format
-                if isinstance(response, PermissionResultAllow):
-                    response_data = {
-                        "behavior": "allow",
-                        "updatedInput": (
-                            response.updated_input
-                            if response.updated_input is not None
-                            else original_input
-                        ),
-                    }
-                    if response.updated_permissions is not None:
-                        response_data["updatedPermissions"] = [
-                            permission.to_dict()
-                            for permission in response.updated_permissions
-                        ]
-                elif isinstance(response, PermissionResultDeny):
-                    response_data = {"behavior": "deny", "message": response.message}
-                    if response.interrupt:
-                        response_data["interrupt"] = response.interrupt
-                else:
-                    raise TypeError(
-                        f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}"
+                    context = ToolPermissionContext(
+                        signal=None,  # TODO: Add abort signal support
+                        suggestions=permission_request.get("permission_suggestions", [])
+                        or [],
                     )
+
+                    response = await self.can_use_tool(
+                        tool_name,
+                        permission_request["input"],
+                        context,
+                    )
+
+                    # Convert PermissionResult to expected dict format
+                    if isinstance(response, PermissionResultAllow):
+                        response_data = {
+                            "behavior": "allow",
+                            "updatedInput": (
+                                response.updated_input
+                                if response.updated_input is not None
+                                else original_input
+                            ),
+                        }
+                        if response.updated_permissions is not None:
+                            response_data["updatedPermissions"] = [
+                                permission.to_dict()
+                                for permission in response.updated_permissions
+                            ]
+                        set_span_attributes(perm_span, {"permission.result": "allow"})
+                    elif isinstance(response, PermissionResultDeny):
+                        response_data = {"behavior": "deny", "message": response.message}
+                        if response.interrupt:
+                            response_data["interrupt"] = response.interrupt
+                        set_span_attributes(perm_span, {"permission.result": "deny"})
+                    else:
+                        raise TypeError(
+                            f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}"
+                        )
+                except Exception as e:
+                    record_exception(perm_span, e)
+                    raise
+                finally:
+                    end_span(perm_span)
 
             elif subtype == "hook_callback":
                 hook_callback_request: SDKHookCallbackRequest = request_data  # type: ignore[assignment]
-                # Handle hook callback
                 callback_id = hook_callback_request["callback_id"]
-                callback = self.hook_callbacks.get(callback_id)
-                if not callback:
-                    raise Exception(f"No hook callback found for ID: {callback_id}")
 
-                hook_output = await callback(
-                    request_data.get("input"),
-                    request_data.get("tool_use_id"),
-                    {"signal": None},  # TODO: Add abort signal support
+                # Create hook span
+                hook_span = self._tracing.start_span(
+                    SPAN_HOOK,
+                    attributes={"hook.callback_id": callback_id},
                 )
-                # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
-                response_data = _convert_hook_output_for_cli(hook_output)
+
+                try:
+                    # Handle hook callback
+                    callback = self.hook_callbacks.get(callback_id)
+                    if not callback:
+                        raise Exception(f"No hook callback found for ID: {callback_id}")
+
+                    hook_input = request_data.get("input")
+                    if hook_input and isinstance(hook_input, dict):
+                        hook_event = hook_input.get("hook_event_name")
+                        if hook_event:
+                            set_span_attributes(hook_span, {"hook.event": hook_event})
+
+                    hook_output = await callback(
+                        hook_input,
+                        request_data.get("tool_use_id"),
+                        {"signal": None},  # TODO: Add abort signal support
+                    )
+                    # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
+                    response_data = _convert_hook_output_for_cli(hook_output)
+                except Exception as e:
+                    record_exception(hook_span, e)
+                    raise
+                finally:
+                    end_span(hook_span)
 
             elif subtype == "mcp_message":
                 # Handle SDK MCP request
@@ -304,11 +361,35 @@ class Query:
                 # Type narrowing - we've verified these are not None above
                 assert isinstance(server_name, str)
                 assert isinstance(mcp_message, dict)
-                mcp_response = await self._handle_sdk_mcp_request(
-                    server_name, mcp_message
+
+                # Create MCP span
+                mcp_method = mcp_message.get("method", "unknown")
+                mcp_span = self._tracing.start_span(
+                    SPAN_MCP,
+                    attributes={
+                        "mcp.server_name": server_name,
+                        "mcp.method": mcp_method,
+                    },
                 )
-                # Wrap the MCP response as expected by the control protocol
-                response_data = {"mcp_response": mcp_response}
+
+                try:
+                    mcp_response = await self._handle_sdk_mcp_request(
+                        server_name, mcp_message
+                    )
+                    # Wrap the MCP response as expected by the control protocol
+                    response_data = {"mcp_response": mcp_response}
+
+                    # Record if MCP call had an error
+                    if mcp_response.get("error"):
+                        set_span_attributes(
+                            mcp_span,
+                            {"mcp.error": str(mcp_response.get("error"))},
+                        )
+                except Exception as e:
+                    record_exception(mcp_span, e)
+                    raise
+                finally:
+                    end_span(mcp_span)
 
             else:
                 raise Exception(f"Unsupported control request subtype: {subtype}")
@@ -325,6 +406,7 @@ class Query:
             await self.transport.write(json.dumps(success_response) + "\n")
 
         except Exception as e:
+            record_exception(span, e)
             # Send error response
             error_response: SDKControlResponse = {
                 "type": "control_response",
@@ -335,6 +417,8 @@ class Query:
                 },
             }
             await self.transport.write(json.dumps(error_response) + "\n")
+        finally:
+            end_span(span)
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

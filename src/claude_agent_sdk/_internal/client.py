@@ -90,7 +90,8 @@ class InternalClient:
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
         # Create Query to handle control protocol
-        is_streaming = not isinstance(prompt, str)
+        # Force streaming mode if SDK MCP servers are present (they require bidirectional communication)
+        is_streaming = not isinstance(prompt, str) or bool(sdk_mcp_servers)
         query = Query(
             transport=chosen_transport,
             is_streaming_mode=is_streaming,
@@ -109,11 +110,12 @@ class InternalClient:
             if is_streaming:
                 await query.initialize()
 
-            # Stream input if it's an AsyncIterable
-            if isinstance(prompt, AsyncIterable) and query._tg:
-                # Start streaming in background
-                # Create a task that will run in the background
-                query._tg.start_soon(query.stream_input, prompt)
+            # Stream input if in streaming mode
+            if query._tg:
+                # Use the (possibly converted) prompt from transport
+                stream_prompt = getattr(chosen_transport, "_prompt", prompt)
+                if isinstance(stream_prompt, AsyncIterable):
+                    query._tg.start_soon(query.stream_input, stream_prompt)
             # For string prompts, the prompt is already passed via CLI args
 
             # Yield parsed messages

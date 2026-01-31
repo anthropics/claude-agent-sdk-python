@@ -10,6 +10,7 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    SessionStorageError,
 )
 from ._internal.transport import Transport
 from ._version import __version__
@@ -366,4 +367,5 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    "SessionStorageError",
 ]

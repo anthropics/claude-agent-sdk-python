@@ -14,6 +14,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import HookCallbackError
 from ..types import (
     PermissionResultAllow,
     PermissionResultDeny,
@@ -290,6 +291,21 @@ class Query:
                     request_data.get("tool_use_id"),
                     {"signal": None},  # TODO: Add abort signal support
                 )
+
+                # Validate hook callback return type
+                if hook_output is None:
+                    raise HookCallbackError(
+                        "Hook callback returned None. Expected a dict "
+                        "(HookJSONOutput). Did you forget to return a value?",
+                        callback_id=callback_id,
+                    )
+                if not isinstance(hook_output, dict):
+                    raise HookCallbackError(
+                        f"Hook callback returned {type(hook_output).__name__}, "
+                        f"expected dict (HookJSONOutput)",
+                        callback_id=callback_id,
+                    )
+
                 # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
                 response_data = _convert_hook_output_for_cli(hook_output)
 

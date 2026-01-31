@@ -486,3 +486,192 @@ class TestClaudeAgentOptionsIntegration:
         assert "tool_use_start" in options.hooks
         assert len(options.hooks["tool_use_start"]) == 1
         assert options.hooks["tool_use_start"][0].hooks[0] == my_hook
+
+
+class TestHookCallbackReturnValidation:
+    """Test validation of hook callback return values."""
+
+    @pytest.mark.asyncio
+    async def test_hook_callback_returns_none_raises_error(self):
+        """Test that returning None from a hook callback raises HookCallbackError."""
+
+        async def bad_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ):
+            # Oops, forgot to return a value
+            pass
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_none_hook"
+        query.hook_callbacks[callback_id] = bad_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-none-return",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check that an error response was sent
+        assert len(transport.written_messages) > 0
+        last_response = json.loads(transport.written_messages[-1])
+        assert last_response["response"]["subtype"] == "error"
+        assert "returned None" in last_response["response"]["error"]
+        assert "callback_id: test_none_hook" in last_response["response"]["error"]
+
+    @pytest.mark.asyncio
+    async def test_hook_callback_returns_string_raises_error(self):
+        """Test that returning a string from a hook callback raises HookCallbackError."""
+
+        async def bad_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ):
+            return "this is not a dict"
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_string_hook"
+        query.hook_callbacks[callback_id] = bad_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-string-return",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check that an error response was sent
+        assert len(transport.written_messages) > 0
+        last_response = json.loads(transport.written_messages[-1])
+        assert last_response["response"]["subtype"] == "error"
+        assert "returned str" in last_response["response"]["error"]
+        assert "expected dict" in last_response["response"]["error"]
+
+    @pytest.mark.asyncio
+    async def test_hook_callback_returns_list_raises_error(self):
+        """Test that returning a list from a hook callback raises HookCallbackError."""
+
+        async def bad_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ):
+            return ["not", "a", "dict"]
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_list_hook"
+        query.hook_callbacks[callback_id] = bad_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-list-return",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check that an error response was sent
+        assert len(transport.written_messages) > 0
+        last_response = json.loads(transport.written_messages[-1])
+        assert last_response["response"]["subtype"] == "error"
+        assert "returned list" in last_response["response"]["error"]
+
+    @pytest.mark.asyncio
+    async def test_hook_callback_valid_dict_succeeds(self):
+        """Test that returning a valid dict from a hook callback succeeds."""
+
+        async def good_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {"continue_": True}
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_valid_hook"
+        query.hook_callbacks[callback_id] = good_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-valid-return",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check that a success response was sent (not an error)
+        assert len(transport.written_messages) > 0
+        last_response = json.loads(transport.written_messages[-1])
+        assert last_response["response"]["subtype"] == "success"
+        # The converted output should have "continue" (not "continue_")
+        assert last_response["response"]["response"]["continue"] is True
+
+    @pytest.mark.asyncio
+    async def test_hook_callback_empty_dict_succeeds(self):
+        """Test that returning an empty dict from a hook callback succeeds."""
+
+        async def minimal_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {}
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_empty_hook"
+        query.hook_callbacks[callback_id] = minimal_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-empty-return",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {"test": "data"},
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        # Check that a success response was sent (not an error)
+        assert len(transport.written_messages) > 0
+        last_response = json.loads(transport.written_messages[-1])
+        assert last_response["response"]["subtype"] == "success"
+        # Empty dict is valid - response should contain an empty dict
+        assert last_response["response"]["response"] == {}

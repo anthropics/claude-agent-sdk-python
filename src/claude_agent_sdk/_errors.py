@@ -54,3 +54,13 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class HookCallbackError(ClaudeSDKError):
+    """Raised when a hook callback returns an invalid value."""
+
+    def __init__(self, message: str, callback_id: str | None = None):
+        self.callback_id = callback_id
+        if callback_id:
+            message = f"{message} (callback_id: {callback_id})"
+        super().__init__(message)

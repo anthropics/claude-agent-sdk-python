@@ -596,6 +596,9 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    # Per-step fields from Anthropic API response
+    message_id: str | None = None  # API message ID (e.g., "msg_...")
+    usage: dict[str, Any] | None = None  # Per-step token usage
 
 
 @dataclass

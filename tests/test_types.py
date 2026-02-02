@@ -3,9 +3,21 @@
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    NotificationHookInput,
+    NotificationHookSpecificOutput,
+    PermissionRequestHookInput,
+    PermissionRequestHookSpecificOutput,
     ResultMessage,
+    SessionEndHookInput,
+    SessionStartHookInput,
+    SetupHookInput,
+    SetupHookSpecificOutput,
+    SubagentStartHookInput,
+    SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    PostToolUseHookSpecificOutput,
+    PreToolUseHookSpecificOutput,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -149,3 +161,189 @@ class TestOptions:
         )
         assert options.model == "claude-sonnet-4-5"
         assert options.permission_prompt_tool_name == "CustomTool"
+
+
+class TestHookInputTypes:
+    """Test hook input type definitions."""
+
+    def test_notification_hook_input(self):
+        """Test NotificationHookInput construction."""
+        hook_input: NotificationHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Notification",
+            "message": "Task completed",
+            "notification_type": "info",
+        }
+        assert hook_input["hook_event_name"] == "Notification"
+        assert hook_input["message"] == "Task completed"
+        assert hook_input["notification_type"] == "info"
+
+    def test_notification_hook_input_with_title(self):
+        """Test NotificationHookInput with optional title."""
+        hook_input: NotificationHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Notification",
+            "message": "Task completed",
+            "notification_type": "info",
+            "title": "Success",
+        }
+        assert hook_input["title"] == "Success"
+
+    def test_session_start_hook_input(self):
+        """Test SessionStartHookInput construction."""
+        hook_input: SessionStartHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+        }
+        assert hook_input["hook_event_name"] == "SessionStart"
+        assert hook_input["source"] == "startup"
+
+    def test_session_start_hook_input_with_optional_fields(self):
+        """Test SessionStartHookInput with optional agent_type and model."""
+        hook_input: SessionStartHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionStart",
+            "source": "resume",
+            "agent_type": "researcher",
+            "model": "claude-sonnet-4-5",
+        }
+        assert hook_input["agent_type"] == "researcher"
+        assert hook_input["model"] == "claude-sonnet-4-5"
+
+    def test_session_end_hook_input(self):
+        """Test SessionEndHookInput construction."""
+        hook_input: SessionEndHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionEnd",
+            "reason": "prompt_input_exit",
+        }
+        assert hook_input["hook_event_name"] == "SessionEnd"
+        assert hook_input["reason"] == "prompt_input_exit"
+
+    def test_subagent_start_hook_input(self):
+        """Test SubagentStartHookInput construction."""
+        hook_input: SubagentStartHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-42",
+            "agent_type": "researcher",
+        }
+        assert hook_input["hook_event_name"] == "SubagentStart"
+        assert hook_input["agent_id"] == "agent-42"
+        assert hook_input["agent_type"] == "researcher"
+
+    def test_permission_request_hook_input(self):
+        """Test PermissionRequestHookInput construction."""
+        hook_input: PermissionRequestHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+        assert hook_input["hook_event_name"] == "PermissionRequest"
+        assert hook_input["tool_name"] == "Bash"
+        assert hook_input["tool_input"] == {"command": "ls"}
+
+    def test_permission_request_hook_input_with_suggestions(self):
+        """Test PermissionRequestHookInput with optional permission_suggestions."""
+        hook_input: PermissionRequestHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "permission_suggestions": [{"type": "allow", "rule": "Bash(*)"}],
+        }
+        assert len(hook_input["permission_suggestions"]) == 1
+
+    def test_setup_hook_input(self):
+        """Test SetupHookInput construction."""
+        hook_input: SetupHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Setup",
+            "trigger": "init",
+        }
+        assert hook_input["hook_event_name"] == "Setup"
+        assert hook_input["trigger"] == "init"
+
+    def test_setup_hook_input_maintenance(self):
+        """Test SetupHookInput with maintenance trigger."""
+        hook_input: SetupHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Setup",
+            "trigger": "maintenance",
+        }
+        assert hook_input["trigger"] == "maintenance"
+
+
+class TestHookSpecificOutputTypes:
+    """Test hook-specific output type definitions."""
+
+    def test_notification_hook_specific_output(self):
+        """Test NotificationHookSpecificOutput construction."""
+        output: NotificationHookSpecificOutput = {
+            "hookEventName": "Notification",
+            "additionalContext": "Extra info",
+        }
+        assert output["hookEventName"] == "Notification"
+        assert output["additionalContext"] == "Extra info"
+
+    def test_setup_hook_specific_output(self):
+        """Test SetupHookSpecificOutput construction."""
+        output: SetupHookSpecificOutput = {
+            "hookEventName": "Setup",
+        }
+        assert output["hookEventName"] == "Setup"
+
+    def test_subagent_start_hook_specific_output(self):
+        """Test SubagentStartHookSpecificOutput construction."""
+        output: SubagentStartHookSpecificOutput = {
+            "hookEventName": "SubagentStart",
+            "additionalContext": "Starting subagent for research",
+        }
+        assert output["hookEventName"] == "SubagentStart"
+
+    def test_permission_request_hook_specific_output(self):
+        """Test PermissionRequestHookSpecificOutput construction."""
+        output: PermissionRequestHookSpecificOutput = {
+            "hookEventName": "PermissionRequest",
+            "decision": {"type": "allow"},
+        }
+        assert output["hookEventName"] == "PermissionRequest"
+        assert output["decision"] == {"type": "allow"}
+
+    def test_pre_tool_use_output_has_additional_context(self):
+        """Test PreToolUseHookSpecificOutput includes additionalContext field."""
+        output: PreToolUseHookSpecificOutput = {
+            "hookEventName": "PreToolUse",
+            "additionalContext": "context for claude",
+        }
+        assert output["additionalContext"] == "context for claude"
+
+    def test_post_tool_use_output_has_updated_mcp_tool_output(self):
+        """Test PostToolUseHookSpecificOutput includes updatedMCPToolOutput field."""
+        output: PostToolUseHookSpecificOutput = {
+            "hookEventName": "PostToolUse",
+            "updatedMCPToolOutput": {"result": "modified"},
+        }
+        assert output["updatedMCPToolOutput"] == {"result": "modified"}

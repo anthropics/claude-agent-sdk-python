@@ -12,6 +12,7 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
+from .telemetry import get_otel_tracer, span_kind_client, traced_span_async
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
@@ -48,77 +49,93 @@ class InternalClient:
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""
 
-        # Validate and configure permission settings (matching TypeScript SDK logic)
-        configured_options = options
-        if options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
+        tracer = None
+        if options.telemetry and options.telemetry.enabled:
+            tracer = options.telemetry.tracer or get_otel_tracer("claude_agent_sdk.query")
+        async with traced_span_async(
+            tracer,
+            "claude_agent_sdk.query.lifecycle",
+            kind=span_kind_client(),
+            attributes={
+                "query.streaming": not isinstance(prompt, str),
+                "query.has_hooks": bool(options.hooks),
+                "query.has_mcp_servers": bool(options.mcp_servers),
+            },
+        ) as span:
+            # Validate and configure permission settings (matching TypeScript SDK logic)
+            configured_options = options
+            if options.can_use_tool:
+                # canUseTool callback requires streaming mode (AsyncIterable prompt)
+                if isinstance(prompt, str):
+                    raise ValueError(
+                        "can_use_tool callback requires streaming mode. "
+                        "Please provide prompt as an AsyncIterable instead of a string."
+                    )
+
+                # canUseTool and permission_prompt_tool_name are mutually exclusive
+                if options.permission_prompt_tool_name:
+                    raise ValueError(
+                        "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+                        "Please use one or the other."
+                    )
+
+                # Automatically set permission_prompt_tool_name to "stdio" for control protocol
+                configured_options = replace(options, permission_prompt_tool_name="stdio")
+
+            # Use provided transport or create subprocess transport
+            if transport is not None:
+                chosen_transport = transport
+            else:
+                chosen_transport = SubprocessCLITransport(
+                    prompt=prompt,
+                    options=configured_options,
                 )
+            if span:
+                span.set_attribute("transport.type", type(chosen_transport).__name__)
 
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
+            # Connect transport (instrumentation handled by transport implementation)
+            await chosen_transport.connect()
 
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            configured_options = replace(options, permission_prompt_tool_name="stdio")
+            # Extract SDK MCP servers from configured options
+            sdk_mcp_servers = {}
+            if configured_options.mcp_servers and isinstance(
+                configured_options.mcp_servers, dict
+            ):
+                for name, config in configured_options.mcp_servers.items():
+                    if isinstance(config, dict) and config.get("type") == "sdk":
+                        sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Use provided transport or create subprocess transport
-        if transport is not None:
-            chosen_transport = transport
-        else:
-            chosen_transport = SubprocessCLITransport(
-                prompt=prompt,
-                options=configured_options,
+            # Create Query to handle control protocol
+            is_streaming = not isinstance(prompt, str)
+            query = Query(
+                transport=chosen_transport,
+                is_streaming_mode=is_streaming,
+                can_use_tool=configured_options.can_use_tool,
+                hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
+                if configured_options.hooks
+                else None,
+                sdk_mcp_servers=sdk_mcp_servers,
+                telemetry=configured_options.telemetry,
             )
 
-        # Connect transport
-        await chosen_transport.connect()
+            try:
+                # Start reading messages
+                await query.start()
 
-        # Extract SDK MCP servers from configured options
-        sdk_mcp_servers = {}
-        if configured_options.mcp_servers and isinstance(
-            configured_options.mcp_servers, dict
-        ):
-            for name, config in configured_options.mcp_servers.items():
-                if isinstance(config, dict) and config.get("type") == "sdk":
-                    sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
+                # Initialize if streaming
+                if is_streaming:
+                    await query.initialize()
 
-        # Create Query to handle control protocol
-        is_streaming = not isinstance(prompt, str)
-        query = Query(
-            transport=chosen_transport,
-            is_streaming_mode=is_streaming,
-            can_use_tool=configured_options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
-            if configured_options.hooks
-            else None,
-            sdk_mcp_servers=sdk_mcp_servers,
-        )
+                # Stream input if it's an AsyncIterable
+                if isinstance(prompt, AsyncIterable) and query._tg:
+                    # Start streaming in background
+                    # Create a task that will run in the background
+                    query._tg.start_soon(query.stream_input, prompt)
+                # For string prompts, the prompt is already passed via CLI args
 
-        try:
-            # Start reading messages
-            await query.start()
+                # Yield parsed messages
+                async for data in query.receive_messages():
+                    yield parse_message(data)
 
-            # Initialize if streaming
-            if is_streaming:
-                await query.initialize()
-
-            # Stream input if it's an AsyncIterable
-            if isinstance(prompt, AsyncIterable) and query._tg:
-                # Start streaming in background
-                # Create a task that will run in the background
-                query._tg.start_soon(query.stream_input, prompt)
-            # For string prompts, the prompt is already passed via CLI args
-
-            # Yield parsed messages
-            async for data in query.receive_messages():
-                yield parse_message(data)
-
-        finally:
-            await query.close()
+            finally:
+                await query.close()

@@ -39,6 +39,10 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
 ]
+telemetry = [
+    "opentelemetry-api>=1.0.0",
+    "opentelemetry-sdk>=1.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/anthropics/claude-agent-sdk-python"

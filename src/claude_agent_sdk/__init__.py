@@ -50,6 +50,7 @@ from .types import (
     StopHookInput,
     SubagentStopHookInput,
     SystemMessage,
+    TelemetryOptions,
     TextBlock,
     ThinkingBlock,
     ToolPermissionContext,

@@ -253,24 +253,6 @@ class NotificationHookInput(BaseHookInput):
     notification_type: str
 
 
-class SessionStartHookInput(BaseHookInput):
-    """Input data for SessionStart hook events."""
-
-    hook_event_name: Literal["SessionStart"]
-    source: Literal["startup", "resume", "clear", "compact"]
-    agent_type: NotRequired[str]
-    model: NotRequired[str]
-
-
-class SessionEndHookInput(BaseHookInput):
-    """Input data for SessionEnd hook events."""
-
-    hook_event_name: Literal["SessionEnd"]
-    reason: Literal[
-        "clear", "logout", "prompt_input_exit", "other", "bypass_permissions_disabled"
-    ]
-
-
 class SubagentStartHookInput(BaseHookInput):
     """Input data for SubagentStart hook events."""
 
@@ -288,13 +270,6 @@ class PermissionRequestHookInput(BaseHookInput):
     permission_suggestions: NotRequired[list[Any]]
 
 
-class SetupHookInput(BaseHookInput):
-    """Input data for Setup hook events."""
-
-    hook_event_name: Literal["Setup"]
-    trigger: Literal["init", "maintenance"]
-
-
 # Union type for all hook inputs
 HookInput = (
     PreToolUseHookInput
@@ -305,11 +280,8 @@ HookInput = (
     | SubagentStopHookInput
     | PreCompactHookInput
     | NotificationHookInput
-    | SessionStartHookInput
-    | SessionEndHookInput
     | SubagentStartHookInput
     | PermissionRequestHookInput
-    | SetupHookInput
 )
 
 
@@ -360,13 +332,6 @@ class NotificationHookSpecificOutput(TypedDict):
     additionalContext: NotRequired[str]
 
 
-class SetupHookSpecificOutput(TypedDict):
-    """Hook-specific output for Setup events."""
-
-    hookEventName: Literal["Setup"]
-    additionalContext: NotRequired[str]
-
-
 class SubagentStartHookSpecificOutput(TypedDict):
     """Hook-specific output for SubagentStart events."""
 
@@ -388,7 +353,6 @@ HookSpecificOutput = (
     | UserPromptSubmitHookSpecificOutput
     | SessionStartHookSpecificOutput
     | NotificationHookSpecificOutput
-    | SetupHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PermissionRequestHookSpecificOutput
 )

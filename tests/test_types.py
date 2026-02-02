@@ -8,10 +8,6 @@ from claude_agent_sdk import (
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
     ResultMessage,
-    SessionEndHookInput,
-    SessionStartHookInput,
-    SetupHookInput,
-    SetupHookSpecificOutput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
 )
@@ -193,44 +189,6 @@ class TestHookInputTypes:
         }
         assert hook_input["title"] == "Success"
 
-    def test_session_start_hook_input(self):
-        """Test SessionStartHookInput construction."""
-        hook_input: SessionStartHookInput = {
-            "session_id": "sess-1",
-            "transcript_path": "/tmp/transcript",
-            "cwd": "/home/user",
-            "hook_event_name": "SessionStart",
-            "source": "startup",
-        }
-        assert hook_input["hook_event_name"] == "SessionStart"
-        assert hook_input["source"] == "startup"
-
-    def test_session_start_hook_input_with_optional_fields(self):
-        """Test SessionStartHookInput with optional agent_type and model."""
-        hook_input: SessionStartHookInput = {
-            "session_id": "sess-1",
-            "transcript_path": "/tmp/transcript",
-            "cwd": "/home/user",
-            "hook_event_name": "SessionStart",
-            "source": "resume",
-            "agent_type": "researcher",
-            "model": "claude-sonnet-4-5",
-        }
-        assert hook_input["agent_type"] == "researcher"
-        assert hook_input["model"] == "claude-sonnet-4-5"
-
-    def test_session_end_hook_input(self):
-        """Test SessionEndHookInput construction."""
-        hook_input: SessionEndHookInput = {
-            "session_id": "sess-1",
-            "transcript_path": "/tmp/transcript",
-            "cwd": "/home/user",
-            "hook_event_name": "SessionEnd",
-            "reason": "prompt_input_exit",
-        }
-        assert hook_input["hook_event_name"] == "SessionEnd"
-        assert hook_input["reason"] == "prompt_input_exit"
-
     def test_subagent_start_hook_input(self):
         """Test SubagentStartHookInput construction."""
         hook_input: SubagentStartHookInput = {
@@ -272,29 +230,6 @@ class TestHookInputTypes:
         }
         assert len(hook_input["permission_suggestions"]) == 1
 
-    def test_setup_hook_input(self):
-        """Test SetupHookInput construction."""
-        hook_input: SetupHookInput = {
-            "session_id": "sess-1",
-            "transcript_path": "/tmp/transcript",
-            "cwd": "/home/user",
-            "hook_event_name": "Setup",
-            "trigger": "init",
-        }
-        assert hook_input["hook_event_name"] == "Setup"
-        assert hook_input["trigger"] == "init"
-
-    def test_setup_hook_input_maintenance(self):
-        """Test SetupHookInput with maintenance trigger."""
-        hook_input: SetupHookInput = {
-            "session_id": "sess-1",
-            "transcript_path": "/tmp/transcript",
-            "cwd": "/home/user",
-            "hook_event_name": "Setup",
-            "trigger": "maintenance",
-        }
-        assert hook_input["trigger"] == "maintenance"
-
 
 class TestHookSpecificOutputTypes:
     """Test hook-specific output type definitions."""
@@ -307,13 +242,6 @@ class TestHookSpecificOutputTypes:
         }
         assert output["hookEventName"] == "Notification"
         assert output["additionalContext"] == "Extra info"
-
-    def test_setup_hook_specific_output(self):
-        """Test SetupHookSpecificOutput construction."""
-        output: SetupHookSpecificOutput = {
-            "hookEventName": "Setup",
-        }
-        assert output["hookEventName"] == "Setup"
 
     def test_subagent_start_hook_specific_output(self):
         """Test SubagentStartHookSpecificOutput construction."""

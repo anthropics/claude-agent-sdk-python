@@ -897,18 +897,12 @@ class TestHookInitializeRegistration:
         options = ClaudeAgentOptions(
             hooks={
                 "Notification": [HookMatcher(hooks=[noop_hook])],
-                "SessionStart": [HookMatcher(hooks=[noop_hook])],
-                "SessionEnd": [HookMatcher(hooks=[noop_hook])],
                 "SubagentStart": [HookMatcher(hooks=[noop_hook])],
                 "PermissionRequest": [HookMatcher(hooks=[noop_hook])],
-                "Setup": [HookMatcher(hooks=[noop_hook])],
             }
         )
 
         assert "Notification" in options.hooks
-        assert "SessionStart" in options.hooks
-        assert "SessionEnd" in options.hooks
         assert "SubagentStart" in options.hooks
         assert "PermissionRequest" in options.hooks
-        assert "Setup" in options.hooks
-        assert len(options.hooks) == 6
+        assert len(options.hooks) == 3

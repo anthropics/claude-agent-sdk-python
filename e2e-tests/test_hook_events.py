@@ -158,54 +158,8 @@ async def test_notification_hook():
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_session_start_hook():
-    """Test SessionStart hook fires at session startup end-to-end."""
-    hook_invocations: list[dict[str, Any]] = []
-
-    async def session_start_hook(
-        input_data: HookInput, tool_use_id: str | None, context: HookContext
-    ) -> HookJSONOutput:
-        """SessionStart hook that tracks invocations."""
-        hook_invocations.append(
-            {
-                "hook_event_name": input_data.get("hook_event_name"),
-                "source": input_data.get("source"),
-            }
-        )
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": "Session initialized by test",
-            },
-        }
-
-    options = ClaudeAgentOptions(
-        hooks={
-            "SessionStart": [
-                HookMatcher(hooks=[session_start_hook]),
-            ],
-        },
-    )
-
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query("Say hello in one word.")
-
-        async for message in client.receive_response():
-            print(f"Got message: {message}")
-
-    print(f"SessionStart hook invocations: {hook_invocations}")
-    # SessionStart hooks may or may not fire depending on CLI version and session type.
-    # This test verifies the hook registration doesn't cause errors.
-    # If it fires, verify the shape is correct.
-    for invocation in hook_invocations:
-        assert invocation["hook_event_name"] == "SessionStart"
-        assert invocation["source"] is not None
-
-
-@pytest.mark.e2e
-@pytest.mark.asyncio
-async def test_multiple_new_hooks_together():
-    """Test registering multiple new hook event types together end-to-end."""
+async def test_multiple_hooks_together():
+    """Test registering multiple hook event types together end-to-end."""
     all_invocations: list[dict[str, Any]] = []
 
     async def track_hook(
@@ -222,7 +176,6 @@ async def test_multiple_new_hooks_together():
     options = ClaudeAgentOptions(
         allowed_tools=["Bash"],
         hooks={
-            "SessionStart": [HookMatcher(hooks=[track_hook])],
             "Notification": [HookMatcher(hooks=[track_hook])],
             "PreToolUse": [HookMatcher(matcher="Bash", hooks=[track_hook])],
             "PostToolUse": [HookMatcher(matcher="Bash", hooks=[track_hook])],

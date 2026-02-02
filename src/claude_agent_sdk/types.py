@@ -167,11 +167,8 @@ HookEvent = (
     | Literal["SubagentStop"]
     | Literal["PreCompact"]
     | Literal["Notification"]
-    | Literal["SessionStart"]
-    | Literal["SessionEnd"]
     | Literal["SubagentStart"]
     | Literal["PermissionRequest"]
-    | Literal["Setup"]
 )
 
 

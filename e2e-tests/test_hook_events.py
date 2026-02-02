@@ -1,4 +1,4 @@
-"""End-to-end tests for newly added hook event types with real Claude API calls."""
+"""End-to-end tests for hook event types with real Claude API calls."""
 
 from typing import Any
 

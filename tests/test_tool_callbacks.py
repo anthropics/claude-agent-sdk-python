@@ -489,8 +489,8 @@ class TestClaudeAgentOptionsIntegration:
         assert options.hooks["tool_use_start"][0].hooks[0] == my_hook
 
 
-class TestNewHookEventCallbacks:
-    """Test hook callbacks for newly added hook event types."""
+class TestHookEventCallbacks:
+    """Test hook callbacks for all hook event types."""
 
     @pytest.mark.asyncio
     async def test_notification_hook_callback(self):

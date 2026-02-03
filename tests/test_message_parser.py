@@ -363,3 +363,77 @@ class TestMessageParser:
         with pytest.raises(MessageParseError) as exc_info:
             parse_message(data)
         assert exc_info.value.data == data
+
+    def test_parse_assistant_message_without_error(self):
+        """Test that assistant message without error has error=None."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-opus-4-5-20251101",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error is None
+
+    def test_parse_assistant_message_with_authentication_error(self):
+        """Test parsing assistant message with authentication_failed error.
+
+        The error field is at the top level of the data, not inside message.
+        This matches the actual CLI output format.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Invalid API key · Fix external API key"}
+                ],
+                "model": "<synthetic>",
+            },
+            "session_id": "test-session",
+            "error": "authentication_failed",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "authentication_failed"
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], TextBlock)
+
+    def test_parse_assistant_message_with_unknown_error(self):
+        """Test parsing assistant message with unknown error (e.g., 404, 500).
+
+        When the CLI encounters API errors like model not found or server errors,
+        it sets error to 'unknown' and includes the error details in the text content.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}',
+                    }
+                ],
+                "model": "<synthetic>",
+            },
+            "session_id": "test-session",
+            "error": "unknown",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "unknown"
+
+    def test_parse_assistant_message_with_rate_limit_error(self):
+        """Test parsing assistant message with rate_limit error."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Rate limit exceeded"}],
+                "model": "<synthetic>",
+            },
+            "error": "rate_limit",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.error == "rate_limit"

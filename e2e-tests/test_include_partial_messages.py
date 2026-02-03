@@ -4,20 +4,19 @@ These tests verify that the SDK properly handles partial message streaming,
 including StreamEvent parsing and message interleaving.
 """
 
-import asyncio
-from typing import List, Any
+from typing import Any
 
 import pytest
 
 from claude_agent_sdk import ClaudeSDKClient
 from claude_agent_sdk.types import (
-    ClaudeAgentOptions,
-    StreamEvent,
     AssistantMessage,
-    SystemMessage,
+    ClaudeAgentOptions,
     ResultMessage,
-    ThinkingBlock,
+    StreamEvent,
+    SystemMessage,
     TextBlock,
+    ThinkingBlock,
 )
 
 
@@ -35,7 +34,7 @@ async def test_include_partial_messages_stream_events():
         },
     )
 
-    collected_messages: List[Any] = []
+    collected_messages: list[Any] = []
 
     async with ClaudeSDKClient(options) as client:
         # Send a simple prompt that will generate streaming response with thinking
@@ -65,7 +64,9 @@ async def test_include_partial_messages_stream_events():
     assert "message_stop" in event_types, "No message_stop StreamEvent"
 
     # Should have AssistantMessage messages with thinking and text
-    assistant_messages = [msg for msg in collected_messages if isinstance(msg, AssistantMessage)]
+    assistant_messages = [
+        msg for msg in collected_messages if isinstance(msg, AssistantMessage)
+    ]
     assert len(assistant_messages) >= 1, "No AssistantMessage received"
 
     # Check for thinking block in at least one AssistantMessage
@@ -136,7 +137,7 @@ async def test_partial_messages_disabled_by_default():
         max_turns=2,
     )
 
-    collected_messages: List[Any] = []
+    collected_messages: list[Any] = []
 
     async with ClaudeSDKClient(options) as client:
         await client.query("Say hello")
@@ -146,7 +147,9 @@ async def test_partial_messages_disabled_by_default():
 
     # Should NOT have any StreamEvent messages
     stream_events = [msg for msg in collected_messages if isinstance(msg, StreamEvent)]
-    assert len(stream_events) == 0, "StreamEvent messages present when partial messages disabled"
+    assert len(stream_events) == 0, (
+        "StreamEvent messages present when partial messages disabled"
+    )
 
     # Should still have the regular messages
     assert any(isinstance(msg, SystemMessage) for msg in collected_messages)

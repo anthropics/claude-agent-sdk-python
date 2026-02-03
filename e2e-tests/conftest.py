@@ -27,4 +27,6 @@ def event_loop_policy():
 
 def pytest_configure(config):
     """Add e2e marker."""
-    config.addinivalue_line("markers", "e2e: marks tests as e2e tests requiring API key")
+    config.addinivalue_line(
+        "markers", "e2e: marks tests as e2e tests requiring API key"
+    )

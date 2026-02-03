@@ -1,6 +1,7 @@
 """Tests for tool permission callbacks and hook callbacks."""
 
 import json
+from typing import Any
 
 import pytest
 
@@ -486,3 +487,286 @@ class TestClaudeAgentOptionsIntegration:
         assert "tool_use_start" in options.hooks
         assert len(options.hooks["tool_use_start"]) == 1
         assert options.hooks["tool_use_start"][0].hooks[0] == my_hook
+
+
+class TestHookEventCallbacks:
+    """Test hook callbacks for all hook event types."""
+
+    @pytest.mark.asyncio
+    async def test_notification_hook_callback(self):
+        """Test that a Notification hook callback receives correct input and returns output."""
+        hook_calls: list[dict[str, Any]] = []
+
+        async def notification_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            hook_calls.append({"input": input_data, "tool_use_id": tool_use_id})
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "Notification",
+                    "additionalContext": "Notification processed",
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_notification_hook"
+        query.hook_callbacks[callback_id] = notification_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-notification",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "Notification",
+                    "message": "Task completed",
+                    "notification_type": "info",
+                },
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(hook_calls) == 1
+        assert hook_calls[0]["input"]["hook_event_name"] == "Notification"
+        assert hook_calls[0]["input"]["message"] == "Task completed"
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert result["hookSpecificOutput"]["hookEventName"] == "Notification"
+        assert (
+            result["hookSpecificOutput"]["additionalContext"]
+            == "Notification processed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_callback(self):
+        """Test that a PermissionRequest hook callback returns a decision."""
+
+        async def permission_request_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"type": "allow"},
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_permission_request_hook"
+        query.hook_callbacks[callback_id] = permission_request_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-perm-req",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "PermissionRequest",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "ls"},
+                },
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert result["hookSpecificOutput"]["hookEventName"] == "PermissionRequest"
+        assert result["hookSpecificOutput"]["decision"] == {"type": "allow"}
+
+    @pytest.mark.asyncio
+    async def test_subagent_start_hook_callback(self):
+        """Test that a SubagentStart hook callback works correctly."""
+
+        async def subagent_start_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "SubagentStart",
+                    "additionalContext": "Subagent approved",
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_subagent_start_hook"
+        query.hook_callbacks[callback_id] = subagent_start_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-subagent-start",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "SubagentStart",
+                    "agent_id": "agent-42",
+                    "agent_type": "researcher",
+                },
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert result["hookSpecificOutput"]["hookEventName"] == "SubagentStart"
+        assert result["hookSpecificOutput"]["additionalContext"] == "Subagent approved"
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_hook_with_updated_mcp_output(self):
+        """Test PostToolUse hook returning updatedMCPToolOutput."""
+
+        async def post_tool_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "updatedMCPToolOutput": {"result": "modified output"},
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_post_tool_mcp_hook"
+        query.hook_callbacks[callback_id] = post_tool_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-post-tool-mcp",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "mcp_tool",
+                    "tool_input": {},
+                    "tool_response": "original output",
+                    "tool_use_id": "tu-123",
+                },
+                "tool_use_id": "tu-123",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert result["hookSpecificOutput"]["updatedMCPToolOutput"] == {
+            "result": "modified output"
+        }
+
+    @pytest.mark.asyncio
+    async def test_pre_tool_use_hook_with_additional_context(self):
+        """Test PreToolUse hook returning additionalContext."""
+
+        async def pre_tool_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "additionalContext": "Extra context for Claude",
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_pre_tool_context_hook"
+        query.hook_callbacks[callback_id] = pre_tool_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-pre-tool-ctx",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "ls"},
+                    "tool_use_id": "tu-456",
+                },
+                "tool_use_id": "tu-456",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert (
+            result["hookSpecificOutput"]["additionalContext"]
+            == "Extra context for Claude"
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+class TestHookInitializeRegistration:
+    """Test that new hook events can be registered through the initialize flow."""
+
+    @pytest.mark.asyncio
+    async def test_new_hook_events_registered_in_hooks_config(self):
+        """Test that all new hook event types can be configured in hooks dict."""
+
+        async def noop_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            return {}
+
+        # Verify all new hook events can be used as keys in the hooks config
+        options = ClaudeAgentOptions(
+            hooks={
+                "Notification": [HookMatcher(hooks=[noop_hook])],
+                "SubagentStart": [HookMatcher(hooks=[noop_hook])],
+                "PermissionRequest": [HookMatcher(hooks=[noop_hook])],
+            }
+        )
+
+        assert "Notification" in options.hooks
+        assert "SubagentStart" in options.hooks
+        assert "PermissionRequest" in options.hooks
+        assert len(options.hooks) == 3

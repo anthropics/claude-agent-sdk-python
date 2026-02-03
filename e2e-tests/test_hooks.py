@@ -64,7 +64,9 @@ async def test_hook_with_permission_decision_and_reason():
 
     print(f"Hook invocations: {hook_invocations}")
     # Verify hook was called
-    assert "Bash" in hook_invocations, f"Hook should have been invoked for Bash tool, got: {hook_invocations}"
+    assert "Bash" in hook_invocations, (
+        f"Hook should have been invoked for Bash tool, got: {hook_invocations}"
+    )
 
 
 @pytest.mark.e2e
@@ -105,7 +107,9 @@ async def test_hook_with_continue_and_stop_reason():
 
     print(f"Hook invocations: {hook_invocations}")
     # Verify hook was called
-    assert "Bash" in hook_invocations, f"PostToolUse hook should have been invoked, got: {hook_invocations}"
+    assert "Bash" in hook_invocations, (
+        f"PostToolUse hook should have been invoked, got: {hook_invocations}"
+    )
 
 
 @pytest.mark.e2e
@@ -147,4 +151,6 @@ async def test_hook_with_additional_context():
 
     print(f"Hook invocations: {hook_invocations}")
     # Verify hook was called
-    assert "context_added" in hook_invocations, "Hook with hookSpecificOutput should have been invoked"
+    assert "context_added" in hook_invocations, (
+        "Hook with hookSpecificOutput should have been invoked"
+    )

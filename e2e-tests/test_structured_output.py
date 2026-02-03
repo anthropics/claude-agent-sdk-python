@@ -52,7 +52,9 @@ async def test_simple_structured_output():
     assert result_message.subtype == "success"
 
     # Verify structured output is present and valid
-    assert result_message.structured_output is not None, "No structured output in result"
+    assert result_message.structured_output is not None, (
+        "No structured output in result"
+    )
     assert "file_count" in result_message.structured_output
     assert "has_tests" in result_message.structured_output
     assert isinstance(result_message.structured_output["file_count"], (int, float))

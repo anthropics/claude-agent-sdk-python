@@ -158,8 +158,6 @@ CanUseTool = Callable[
 
 
 ##### Hook types
-# Supported hook event types. Due to setup limitations, the Python SDK does not
-# support SessionStart, SessionEnd, and Notification hooks.
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]
@@ -168,6 +166,9 @@ HookEvent = (
     | Literal["Stop"]
     | Literal["SubagentStop"]
     | Literal["PreCompact"]
+    | Literal["Notification"]
+    | Literal["SubagentStart"]
+    | Literal["PermissionRequest"]
 )
 
 
@@ -187,6 +188,7 @@ class PreToolUseHookInput(BaseHookInput):
     hook_event_name: Literal["PreToolUse"]
     tool_name: str
     tool_input: dict[str, Any]
+    tool_use_id: str
 
 
 class PostToolUseHookInput(BaseHookInput):
@@ -196,6 +198,7 @@ class PostToolUseHookInput(BaseHookInput):
     tool_name: str
     tool_input: dict[str, Any]
     tool_response: Any
+    tool_use_id: str
 
 
 class PostToolUseFailureHookInput(BaseHookInput):
@@ -228,6 +231,9 @@ class SubagentStopHookInput(BaseHookInput):
 
     hook_event_name: Literal["SubagentStop"]
     stop_hook_active: bool
+    agent_id: str
+    agent_transcript_path: str
+    agent_type: str
 
 
 class PreCompactHookInput(BaseHookInput):
@@ -236,6 +242,32 @@ class PreCompactHookInput(BaseHookInput):
     hook_event_name: Literal["PreCompact"]
     trigger: Literal["manual", "auto"]
     custom_instructions: str | None
+
+
+class NotificationHookInput(BaseHookInput):
+    """Input data for Notification hook events."""
+
+    hook_event_name: Literal["Notification"]
+    message: str
+    title: NotRequired[str]
+    notification_type: str
+
+
+class SubagentStartHookInput(BaseHookInput):
+    """Input data for SubagentStart hook events."""
+
+    hook_event_name: Literal["SubagentStart"]
+    agent_id: str
+    agent_type: str
+
+
+class PermissionRequestHookInput(BaseHookInput):
+    """Input data for PermissionRequest hook events."""
+
+    hook_event_name: Literal["PermissionRequest"]
+    tool_name: str
+    tool_input: dict[str, Any]
+    permission_suggestions: NotRequired[list[Any]]
 
 
 # Union type for all hook inputs
@@ -247,6 +279,9 @@ HookInput = (
     | StopHookInput
     | SubagentStopHookInput
     | PreCompactHookInput
+    | NotificationHookInput
+    | SubagentStartHookInput
+    | PermissionRequestHookInput
 )
 
 
@@ -258,6 +293,7 @@ class PreToolUseHookSpecificOutput(TypedDict):
     permissionDecision: NotRequired[Literal["allow", "deny", "ask"]]
     permissionDecisionReason: NotRequired[str]
     updatedInput: NotRequired[dict[str, Any]]
+    additionalContext: NotRequired[str]
 
 
 class PostToolUseHookSpecificOutput(TypedDict):
@@ -265,6 +301,7 @@ class PostToolUseHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["PostToolUse"]
     additionalContext: NotRequired[str]
+    updatedMCPToolOutput: NotRequired[Any]
 
 
 class PostToolUseFailureHookSpecificOutput(TypedDict):
@@ -288,12 +325,36 @@ class SessionStartHookSpecificOutput(TypedDict):
     additionalContext: NotRequired[str]
 
 
+class NotificationHookSpecificOutput(TypedDict):
+    """Hook-specific output for Notification events."""
+
+    hookEventName: Literal["Notification"]
+    additionalContext: NotRequired[str]
+
+
+class SubagentStartHookSpecificOutput(TypedDict):
+    """Hook-specific output for SubagentStart events."""
+
+    hookEventName: Literal["SubagentStart"]
+    additionalContext: NotRequired[str]
+
+
+class PermissionRequestHookSpecificOutput(TypedDict):
+    """Hook-specific output for PermissionRequest events."""
+
+    hookEventName: Literal["PermissionRequest"]
+    decision: dict[str, Any]
+
+
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
     | PostToolUseFailureHookSpecificOutput
     | UserPromptSubmitHookSpecificOutput
     | SessionStartHookSpecificOutput
+    | NotificationHookSpecificOutput
+    | SubagentStartHookSpecificOutput
+    | PermissionRequestHookSpecificOutput
 )
 
 

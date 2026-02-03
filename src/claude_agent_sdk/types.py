@@ -714,8 +714,8 @@ class TelemetryOptions:
     """Telemetry configuration for tracing and metrics."""
 
     enabled: bool = False
-    tracer: Tracer | None = None
-    meter: Meter | None = None
+    tracer: "Tracer | None" = None
+    meter: "Meter | None" = None
 
     def __post_init__(self) -> None:
         if self.tracer is not None and not hasattr(

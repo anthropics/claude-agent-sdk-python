@@ -19,8 +19,8 @@ WORKDIR /app
 # Copy the SDK source
 COPY . .
 
-# Install SDK with dev dependencies
-RUN pip install -e ".[dev]"
+# Install SDK with dev + telemetry dependencies
+RUN pip install -e ".[dev,telemetry]"
 
 # Verify CLI installation
 RUN claude -v

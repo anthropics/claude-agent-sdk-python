@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.28
+
+### Bug Fixes
+
+- **AssistantMessage error field**: Fixed `AssistantMessage.error` field not being populated due to incorrect data path. The error field is now correctly read from the top level of the response (#506)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.30
+
 ## 0.1.27
 
 ### Internal/Other Changes

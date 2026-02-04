@@ -10,9 +10,13 @@ from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+
+    # OpenTelemetry tracer type for type checking
+    from opentelemetry.trace import Tracer
 else:
     # Runtime placeholder for forward reference resolution in Pydantic 2.12+
     McpServer = Any
+    Tracer = Any
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
@@ -761,6 +765,14 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # OpenTelemetry tracer for observability. When provided, spans are created for
+    # key operations: queries, sessions, tool calls, hooks, and MCP requests.
+    # Install opentelemetry-api to use: pip install claude-agent-sdk[telemetry]
+    # Example:
+    #   from opentelemetry import trace
+    #   tracer = trace.get_tracer("my-app")
+    #   options = ClaudeAgentOptions(tracer=tracer)
+    tracer: "Tracer | None" = None
 
 
 # SDK Control Protocol

@@ -833,3 +833,192 @@ class TestClaudeSDKClientEdgeCases:
                     assert isinstance(messages[-1], ResultMessage)
 
         anyio.run(_test)
+
+
+class TestAsyncGeneratorCleanup:
+    """Tests for async generator cleanup behavior (issue #454).
+
+    These tests verify that the RuntimeError "Attempted to exit cancel scope
+    in a different task" does not occur during async generator cleanup.
+
+    The key behavior we're testing is that cleanup doesn't raise RuntimeError,
+    not that specific mock methods are called (which depends on mock setup).
+    """
+
+    def test_streaming_client_early_disconnect(self):
+        """Test ClaudeSDKClient early disconnect doesn't raise RuntimeError.
+
+        This is the primary test case from issue #454 - breaking out of an
+        async for loop should not cause RuntimeError during cleanup.
+        """
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = create_mock_transport()
+                mock_transport_class.return_value = mock_transport
+
+                async def mock_receive():
+                    # Send init response
+                    await asyncio.sleep(0.01)
+                    written = mock_transport.write.call_args_list
+                    for call in written:
+                        if call:
+                            data = call[0][0]
+                            try:
+                                msg = json.loads(data.strip())
+                                if (
+                                    msg.get("type") == "control_request"
+                                    and msg.get("request", {}).get("subtype")
+                                    == "initialize"
+                                ):
+                                    yield {
+                                        "type": "control_response",
+                                        "response": {
+                                            "request_id": msg.get("request_id"),
+                                            "subtype": "success",
+                                            "commands": [],
+                                        },
+                                    }
+                                    break
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+
+                    # Yield some messages
+                    for i in range(5):
+                        yield {
+                            "type": "assistant",
+                            "message": {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": f"Message {i}"}],
+                                "model": "claude-opus-4-1-20250805",
+                            },
+                        }
+
+                mock_transport.read_messages = mock_receive
+
+                # Connect, get one message, then disconnect early
+                client = ClaudeSDKClient()
+                await client.connect()
+
+                count = 0
+                async for msg in client.receive_messages():
+                    count += 1
+                    if count >= 2:
+                        break  # Early exit - this should NOT raise RuntimeError
+
+                # Early disconnect should not raise RuntimeError
+                # The key assertion is that we reach this point without exception
+                await client.disconnect()
+
+                assert count == 2
+                # Transport close is called by disconnect
+                mock_transport.close.assert_called()
+
+        anyio.run(_test)
+
+    def test_query_cancel_scope_can_be_cancelled(self):
+        """Test that Query's cancel scope can be safely cancelled from any context.
+
+        This verifies the fix for issue #454 where the cancel scope mechanism
+        allows cleanup without RuntimeError.
+        """
+
+        async def _test():
+            from claude_agent_sdk._internal.query import Query
+            from claude_agent_sdk._internal.transport import Transport
+
+            # Create a mock transport
+            mock_transport = AsyncMock(spec=Transport)
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.write = AsyncMock()
+
+            messages_to_yield = [
+                {"type": "system", "subtype": "init"},
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Hello"}],
+                        "model": "test",
+                    },
+                },
+            ]
+            message_index = 0
+
+            async def mock_read():
+                nonlocal message_index
+                while message_index < len(messages_to_yield):
+                    yield messages_to_yield[message_index]
+                    message_index += 1
+                    await asyncio.sleep(0.01)
+
+            mock_transport.read_messages = mock_read
+
+            # Create Query
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=False,
+            )
+
+            # Start the query
+            await q.start()
+
+            # Give reader time to start
+            await asyncio.sleep(0.05)
+
+            # Cancel scope should exist
+            assert q._reader_cancel_scope is not None
+
+            # Close should work without RuntimeError
+            # This is the key test - close() used to raise RuntimeError
+            await q.close()
+
+            # Verify closed state
+            assert q._closed is True
+            mock_transport.close.assert_called()
+
+        anyio.run(_test)
+
+    def test_query_as_async_context_manager(self):
+        """Test using Query as an async context manager for proper cleanup."""
+
+        async def _test():
+            from claude_agent_sdk._internal.query import Query
+            from claude_agent_sdk._internal.transport import Transport
+
+            mock_transport = AsyncMock(spec=Transport)
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.write = AsyncMock()
+
+            async def mock_read():
+                yield {"type": "system", "subtype": "init"}
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Hello"}],
+                        "model": "test",
+                    },
+                }
+
+            mock_transport.read_messages = mock_read
+
+            # Use Query as async context manager
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=False,
+            )
+
+            async with q:
+                # Query should be started
+                assert q._tg is not None
+                # Get one message
+                msg = await q.__anext__()
+                assert msg["type"] == "system"
+
+            # After context exit, should be closed
+            assert q._closed is True
+
+        anyio.run(_test)

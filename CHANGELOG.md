@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.29
+
+### New Features
+
+- **New hook events**: Added support for three new hook event types (#545):
+  - `Notification` — for handling notification events with `NotificationHookInput` and `NotificationHookSpecificOutput`
+  - `SubagentStart` — for handling subagent startup with `SubagentStartHookInput` and `SubagentStartHookSpecificOutput`
+  - `PermissionRequest` — for handling permission requests with `PermissionRequestHookInput` and `PermissionRequestHookSpecificOutput`
+
+- **Enhanced hook input/output types**: Added missing fields to existing hook types (#545):
+  - `PreToolUseHookInput`: added `tool_use_id`
+  - `PostToolUseHookInput`: added `tool_use_id`
+  - `SubagentStopHookInput`: added `agent_id`, `agent_transcript_path`, `agent_type`
+  - `PreToolUseHookSpecificOutput`: added `additionalContext`
+  - `PostToolUseHookSpecificOutput`: added `updatedMCPToolOutput`
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.31
+
 ## 0.1.28
 
 ### Bug Fixes

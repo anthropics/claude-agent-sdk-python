@@ -44,8 +44,10 @@ class TestSubprocessCLITransport:
         assert cmd[0] == "/usr/bin/claude"
         assert "--output-format" in cmd
         assert "stream-json" in cmd
-        assert "--print" in cmd
-        assert "Hello" in cmd
+        # Always use streaming mode (matching TypeScript SDK)
+        assert "--input-format" in cmd
+        assert "--print" not in cmd  # Never use --print anymore
+        # Prompt is sent via stdin, not CLI args
         assert "--system-prompt" in cmd
         assert cmd[cmd.index("--system-prompt") + 1] == ""
 
@@ -826,3 +828,87 @@ class TestSubprocessCLITransport:
                 await process.wait()
 
         anyio.run(_test, backend="trio")
+
+    def test_build_command_agents_always_via_initialize(self):
+        """Test that --agents is NEVER passed via CLI.
+
+        Matching TypeScript SDK behavior, agents are always sent via the
+        initialize request through stdin, regardless of prompt type.
+        """
+        from claude_agent_sdk.types import AgentDefinition
+
+        agents = {
+            "test-agent": AgentDefinition(
+                description="A test agent",
+                prompt="You are a test agent",
+            )
+        }
+
+        # Test with string prompt
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(agents=agents),
+        )
+        cmd = transport._build_command()
+        assert "--agents" not in cmd
+        assert "--input-format" in cmd
+        assert "stream-json" in cmd
+
+        # Test with async iterable prompt
+        async def fake_stream():
+            yield {"type": "user", "message": {"role": "user", "content": "test"}}
+
+        transport2 = SubprocessCLITransport(
+            prompt=fake_stream(),
+            options=make_options(agents=agents),
+        )
+        cmd2 = transport2._build_command()
+        assert "--agents" not in cmd2
+        assert "--input-format" in cmd2
+        assert "stream-json" in cmd2
+
+    def test_build_command_always_uses_streaming(self):
+        """Test that streaming mode is always used, even for string prompts.
+
+        Matching TypeScript SDK behavior, we always use --input-format stream-json
+        so that agents and other large configs can be sent via initialize request.
+        """
+        # String prompt should still use streaming
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--input-format" in cmd
+        assert "stream-json" in cmd
+        assert "--print" not in cmd
+
+    def test_build_command_large_agents_work(self):
+        """Test that large agent definitions work without size limits.
+
+        Since agents are sent via initialize request through stdin,
+        there are no ARG_MAX or command line length limits.
+        """
+        from claude_agent_sdk.types import AgentDefinition
+
+        # Create a large agent definition (50KB prompt)
+        large_prompt = "x" * 50000
+        agents = {
+            "large-agent": AgentDefinition(
+                description="A large agent",
+                prompt=large_prompt,
+            )
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(agents=agents),
+        )
+
+        cmd = transport._build_command()
+
+        # --agents should not be in command (sent via initialize)
+        assert "--agents" not in cmd
+        # No @filepath references should exist
+        cmd_str = " ".join(cmd)
+        assert "@" not in cmd_str

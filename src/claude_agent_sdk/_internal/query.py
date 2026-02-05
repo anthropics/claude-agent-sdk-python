@@ -443,8 +443,9 @@ class Query:
                 if handler:
                     result = await handler(request)
                     # Convert MCP result to JSONRPC response
-                    tools_data = [
-                        {
+                    tools_data = []
+                    for tool in result.root.tools:  # type: ignore[union-attr]
+                        tool_data: dict[str, Any] = {
                             "name": tool.name,
                             "description": tool.description,
                             "inputSchema": (
@@ -455,8 +456,11 @@ class Query:
                             if tool.inputSchema
                             else {},
                         }
-                        for tool in result.root.tools  # type: ignore[union-attr]
-                    ]
+                        if tool.annotations:
+                            tool_data["annotations"] = tool.annotations.model_dump(
+                                exclude_none=True
+                            )
+                        tools_data.append(tool_data)
                     return {
                         "jsonrpc": "2.0",
                         "id": message.get("id"),

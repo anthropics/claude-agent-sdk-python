@@ -37,6 +37,27 @@ MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 _CMD_LENGTH_LIMIT = 8000 if platform.system() == "Windows" else 100000
 
 
+async def _string_to_async_iterable(prompt: str) -> AsyncIterator[dict[str, Any]]:
+    """Convert a string prompt to an async iterable for streaming mode.
+
+    When SDK MCP servers are present, we need streaming mode for bidirectional
+    communication. This helper converts a string prompt to the expected
+    stream-json format.
+
+    Args:
+        prompt: The string prompt to convert
+
+    Yields:
+        A single user message dict in stream-json format
+    """
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": prompt},
+        "parent_tool_use_id": None,
+        "session_id": "default",
+    }
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
@@ -45,8 +66,22 @@ class SubprocessCLITransport(Transport):
         prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeAgentOptions,
     ):
-        self._prompt = prompt
-        self._is_streaming = not isinstance(prompt, str)
+        # Check if SDK MCP servers are present - they require streaming mode
+        # for bidirectional communication
+        has_sdk_mcp = self._has_sdk_mcp_servers(options)
+
+        # Determine streaming mode: either explicit AsyncIterable or
+        # forced by SDK MCP servers presence
+        if isinstance(prompt, str) and has_sdk_mcp:
+            # Convert string prompt to async iterable for SDK MCP support
+            self._prompt: str | AsyncIterable[dict[str, Any]] = (
+                _string_to_async_iterable(prompt)
+            )
+            self._is_streaming = True
+        else:
+            self._prompt = prompt
+            self._is_streaming = not isinstance(prompt, str)
+
         self._options = options
         self._cli_path = (
             str(options.cli_path) if options.cli_path is not None else self._find_cli()
@@ -66,6 +101,27 @@ class SubprocessCLITransport(Transport):
         )
         self._temp_files: list[str] = []  # Track temporary files for cleanup
         self._write_lock: anyio.Lock = anyio.Lock()
+
+    def _has_sdk_mcp_servers(self, options: ClaudeAgentOptions) -> bool:
+        """Check if any SDK MCP servers are configured.
+
+        SDK MCP servers require bidirectional communication through stdin/stdout,
+        so when present, streaming mode must be forced even for string prompts.
+
+        Args:
+            options: The agent options to check
+
+        Returns:
+            True if any SDK MCP server is configured, False otherwise
+        """
+        if not options.mcp_servers:
+            return False
+        if not isinstance(options.mcp_servers, dict):
+            return False
+        return any(
+            isinstance(config, dict) and config.get("type") == "sdk"
+            for config in options.mcp_servers.values()
+        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""

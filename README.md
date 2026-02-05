@@ -8,6 +8,50 @@ Python SDK for Claude Agent. See the [Claude Agent SDK documentation](https://pl
 pip install claude-agent-sdk
 ```
 
+### Telemetry (OpenTelemetry)
+
+Install the optional OpenTelemetry dependencies to enable tracing/metrics:
+
+```bash
+pip install "claude-agent-sdk[telemetry]"
+```
+
+Then enable telemetry in options:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, TelemetryOptions
+
+options = ClaudeAgentOptions(
+    telemetry=TelemetryOptions(enabled=True),
+)
+```
+
+### Telemetry span names
+
+Spans use the `claude_agent_sdk.<layer>.<operation>` convention. Examples:
+
+- `claude_agent_sdk.client.connect`, `claude_agent_sdk.client.query`, `claude_agent_sdk.client.disconnect`
+- `claude_agent_sdk.query.lifecycle`, `claude_agent_sdk.query.initialize`, `claude_agent_sdk.query.read_messages`, `claude_agent_sdk.query.stream_input`, `claude_agent_sdk.query.close`
+- `claude_agent_sdk.transport.connect`, `claude_agent_sdk.transport.read_messages`, `claude_agent_sdk.transport.write`, `claude_agent_sdk.transport.close`
+- `claude_agent_sdk.permission.can_use_tool`, `claude_agent_sdk.hooks.callback`
+- `claude_agent_sdk.mcp.request`, `claude_agent_sdk.mcp.tool_call`
+- `claude_agent_sdk.cli.tool_call`
+
+### Telemetry metrics
+
+When enabled, the SDK emits the following metrics (all prefixed with `claude_agent_sdk.`):
+
+- `messages`, `results`, `errors`
+- `invocations`
+- `tokens.prompt`, `tokens.completion`, `tokens.total`
+- `model.latency_ms`, `model.errors`
+- `result.duration_ms`, `result.cost_usd`
+- `cost.total_usd`
+- `response.size_bytes`
+- `throttled` (rate-limit events)
+
+Most metrics include a `session.id` attribute to allow per-session grouping.
+
 **Prerequisites:**
 
 - Python 3.10+

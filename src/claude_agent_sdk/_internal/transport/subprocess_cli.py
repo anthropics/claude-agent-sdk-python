@@ -24,6 +24,7 @@ from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
 from ...types import ClaudeAgentOptions
+from ..telemetry import get_otel_tracer, span_kind_client, traced_span_async
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,12 @@ class SubprocessCLITransport(Transport):
         )
         self._temp_files: list[str] = []  # Track temporary files for cleanup
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._telemetry = options.telemetry
+        self._tracer = None
+        if self._telemetry and self._telemetry.enabled:
+            self._tracer = self._telemetry.tracer or get_otel_tracer(
+                "claude_agent_sdk.transport"
+            )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -371,80 +378,90 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
-        if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
-            await self._check_claude_version()
+        async with traced_span_async(
+            self._tracer,
+            "claude_agent_sdk.transport.connect",
+            kind=span_kind_client(),
+            attributes={
+                "transport.type": "subprocess_cli",
+                "transport.streaming": self._is_streaming,
+                "transport.cwd": self._cwd,
+            },
+        ):
+            try:
+                if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
+                    await self._check_claude_version()
 
-        cmd = self._build_command()
-        try:
-            # Merge environment variables: system -> user -> SDK required
-            process_env = {
-                **os.environ,
-                **self._options.env,  # User-provided env vars
-                "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-                "CLAUDE_AGENT_SDK_VERSION": __version__,
-            }
+                cmd = self._build_command()
+                # Merge environment variables: system -> user -> SDK required
+                process_env = {
+                    **os.environ,
+                    **self._options.env,  # User-provided env vars
+                    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                    "CLAUDE_AGENT_SDK_VERSION": __version__,
+                }
 
-            # Enable file checkpointing if requested
-            if self._options.enable_file_checkpointing:
-                process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+                # Enable file checkpointing if requested
+                if self._options.enable_file_checkpointing:
+                    process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
 
-            if self._cwd:
-                process_env["PWD"] = self._cwd
+                if self._cwd:
+                    process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
-            should_pipe_stderr = (
-                self._options.stderr is not None
-                or "debug-to-stderr" in self._options.extra_args
-            )
-
-            # For backward compat: use debug_stderr file object if no callback and debug is on
-            stderr_dest = PIPE if should_pipe_stderr else None
-
-            self._process = await anyio.open_process(
-                cmd,
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=stderr_dest,
-                cwd=self._cwd,
-                env=process_env,
-                user=self._options.user,
-            )
-
-            if self._process.stdout:
-                self._stdout_stream = TextReceiveStream(self._process.stdout)
-
-            # Setup stderr stream if piped
-            if should_pipe_stderr and self._process.stderr:
-                self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
-                self._stderr_task_group = anyio.create_task_group()
-                await self._stderr_task_group.__aenter__()
-                self._stderr_task_group.start_soon(self._handle_stderr)
-
-            # Setup stdin for streaming mode
-            if self._is_streaming and self._process.stdin:
-                self._stdin_stream = TextSendStream(self._process.stdin)
-            elif not self._is_streaming and self._process.stdin:
-                # String mode: close stdin immediately
-                await self._process.stdin.aclose()
-
-            self._ready = True
-
-        except FileNotFoundError as e:
-            # Check if the error comes from the working directory or the CLI
-            if self._cwd and not Path(self._cwd).exists():
-                error = CLIConnectionError(
-                    f"Working directory does not exist: {self._cwd}"
+                # Pipe stderr if we have a callback OR debug mode is enabled
+                should_pipe_stderr = (
+                    self._options.stderr is not None
+                    or "debug-to-stderr" in self._options.extra_args
                 )
+
+                # For backward compat: use debug_stderr file object if no callback and debug is on
+                stderr_dest = PIPE if should_pipe_stderr else None
+
+                self._process = await anyio.open_process(
+                    cmd,
+                    stdin=PIPE,
+                    stdout=PIPE,
+                    stderr=stderr_dest,
+                    cwd=self._cwd,
+                    env=process_env,
+                    user=self._options.user,
+                )
+
+                if self._process.stdout:
+                    self._stdout_stream = TextReceiveStream(self._process.stdout)
+
+                # Setup stderr stream if piped
+                if should_pipe_stderr and self._process.stderr:
+                    self._stderr_stream = TextReceiveStream(self._process.stderr)
+                    # Start async task to read stderr
+                    self._stderr_task_group = anyio.create_task_group()
+                    await self._stderr_task_group.__aenter__()
+                    self._stderr_task_group.start_soon(self._handle_stderr)
+
+                # Setup stdin for streaming mode
+                if self._is_streaming and self._process.stdin:
+                    self._stdin_stream = TextSendStream(self._process.stdin)
+                elif not self._is_streaming and self._process.stdin:
+                    # String mode: close stdin immediately
+                    await self._process.stdin.aclose()
+
+                self._ready = True
+
+            except FileNotFoundError as e:
+                # Check if the error comes from the working directory or the CLI
+                if self._cwd and not Path(self._cwd).exists():
+                    error = CLIConnectionError(
+                        f"Working directory does not exist: {self._cwd}"
+                    )
+                    self._exit_error = error
+                    raise error from e
+                error = CLINotFoundError(f"Claude Code not found at: {self._cli_path}")
                 self._exit_error = error
                 raise error from e
-            error = CLINotFoundError(f"Claude Code not found at: {self._cli_path}")
-            self._exit_error = error
-            raise error from e
-        except Exception as e:
-            error = CLIConnectionError(f"Failed to start Claude Code: {e}")
-            self._exit_error = error
-            raise error from e
+            except Exception as e:
+                error = CLIConnectionError(f"Failed to start Claude Code: {e}")
+                self._exit_error = error
+                raise error from e
 
     async def _handle_stderr(self) -> None:
         """Handle stderr stream - read and invoke callbacks."""
@@ -476,76 +493,123 @@ class SubprocessCLITransport(Transport):
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""
-        # Clean up temporary files first (before early return)
-        for temp_file in self._temp_files:
-            with suppress(Exception):
-                Path(temp_file).unlink(missing_ok=True)
-        self._temp_files.clear()
+        async with traced_span_async(
+            self._tracer,
+            "claude_agent_sdk.transport.close",
+            kind=span_kind_client(),
+            attributes={
+                "transport.type": "subprocess_cli",
+                "transport.had_process": self._process is not None,
+            },
+        ) as span:
+            cleanup_failed = False
 
-        if not self._process:
-            self._ready = False
-            return
+            def _record_cleanup_error(err: Exception) -> None:
+                nonlocal cleanup_failed
+                cleanup_failed = True
+                if span:
+                    span.record_exception(err)
 
-        # Close stderr task group if active
-        if self._stderr_task_group:
-            with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
-                await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
+            # Clean up temporary files first (before early return)
+            for temp_file in self._temp_files:
+                try:
+                    Path(temp_file).unlink(missing_ok=True)
+                except Exception as e:
+                    _record_cleanup_error(e)
+            self._temp_files.clear()
 
-        # Close stdin stream (acquire lock to prevent race with concurrent writes)
-        async with self._write_lock:
-            self._ready = False  # Set inside lock to prevent TOCTOU with write()
-            if self._stdin_stream:
-                with suppress(Exception):
-                    await self._stdin_stream.aclose()
-                self._stdin_stream = None
+            if not self._process:
+                self._ready = False
+                return
 
-        if self._stderr_stream:
-            with suppress(Exception):
-                await self._stderr_stream.aclose()
+            # Close stderr task group if active
+            if self._stderr_task_group:
+                try:
+                    self._stderr_task_group.cancel_scope.cancel()
+                    await self._stderr_task_group.__aexit__(None, None, None)
+                except Exception as e:
+                    _record_cleanup_error(e)
+                self._stderr_task_group = None
+
+            # Close stdin stream (acquire lock to prevent race with concurrent writes)
+            async with self._write_lock:
+                self._ready = False  # Set inside lock to prevent TOCTOU with write()
+                if self._stdin_stream:
+                    try:
+                        await self._stdin_stream.aclose()
+                    except Exception as e:
+                        _record_cleanup_error(e)
+                    self._stdin_stream = None
+
+            if self._stderr_stream:
+                try:
+                    await self._stderr_stream.aclose()
+                except Exception as e:
+                    _record_cleanup_error(e)
+                self._stderr_stream = None
+
+            # Terminate and wait for process
+            if self._process.returncode is None:
+                try:
+                    self._process.terminate()
+                    # Wait for process to finish with timeout
+                    try:
+                        # Just try to wait, but don't block if it fails
+                        await self._process.wait()
+                    except Exception as e:
+                        _record_cleanup_error(e)
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    _record_cleanup_error(e)
+
+            self._process = None
+            self._stdout_stream = None
+            self._stdin_stream = None
             self._stderr_stream = None
+            self._exit_error = None
 
-        # Terminate and wait for process
-        if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-                # Wait for process to finish with timeout
-                with suppress(Exception):
-                    # Just try to wait, but don't block if it fails
-                    await self._process.wait()
-
-        self._process = None
-        self._stdout_stream = None
-        self._stdin_stream = None
-        self._stderr_stream = None
-        self._exit_error = None
+            if cleanup_failed and span:
+                span.set_attribute("transport.cleanup_failed", True)
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""
-        async with self._write_lock:
-            # All checks inside lock to prevent TOCTOU races with close()/end_input()
-            if not self._ready or not self._stdin_stream:
-                raise CLIConnectionError("ProcessTransport is not ready for writing")
+        async with traced_span_async(
+            self._tracer,
+            "claude_agent_sdk.transport.write",
+            kind=span_kind_client(),
+            attributes={
+                "transport.type": "subprocess_cli",
+                "transport.write.bytes": len(data),
+            },
+        ):
+            async with self._write_lock:
+                # All checks inside lock to prevent TOCTOU races with close()/end_input()
+                if not self._ready or not self._stdin_stream:
+                    raise CLIConnectionError(
+                        "ProcessTransport is not ready for writing"
+                    )
 
-            if self._process and self._process.returncode is not None:
-                raise CLIConnectionError(
-                    f"Cannot write to terminated process (exit code: {self._process.returncode})"
-                )
+                if self._process and self._process.returncode is not None:
+                    raise CLIConnectionError(
+                        "Cannot write to terminated process "
+                        f"(exit code: {self._process.returncode})"
+                    )
 
-            if self._exit_error:
-                raise CLIConnectionError(
-                    f"Cannot write to process that exited with error: {self._exit_error}"
-                ) from self._exit_error
+                if self._exit_error:
+                    raise CLIConnectionError(
+                        "Cannot write to process that exited with error: "
+                        f"{self._exit_error}"
+                    ) from self._exit_error
 
-            try:
-                await self._stdin_stream.send(data)
-            except Exception as e:
-                self._ready = False
-                self._exit_error = CLIConnectionError(
-                    f"Failed to write to process stdin: {e}"
-                )
-                raise self._exit_error from e
+                try:
+                    await self._stdin_stream.send(data)
+                except Exception as e:
+                    self._ready = False
+                    self._exit_error = CLIConnectionError(
+                        f"Failed to write to process stdin: {e}"
+                    )
+                    raise self._exit_error from e
 
     async def end_input(self) -> None:
         """End the input stream (close stdin)."""
@@ -564,68 +628,79 @@ class SubprocessCLITransport(Transport):
         if not self._process or not self._stdout_stream:
             raise CLIConnectionError("Not connected")
 
-        json_buffer = ""
+        async with traced_span_async(
+            self._tracer,
+            "claude_agent_sdk.transport.read_messages",
+            kind=span_kind_client(),
+            attributes={
+                "transport.type": "subprocess_cli",
+                "transport.max_buffer_size": self._max_buffer_size,
+            },
+        ):
+            json_buffer = ""
 
-        # Process stdout messages
-        try:
-            async for line in self._stdout_stream:
-                line_str = line.strip()
-                if not line_str:
-                    continue
-
-                # Accumulate partial JSON until we can parse it
-                # Note: TextReceiveStream can truncate long lines, so we need to buffer
-                # and speculatively parse until we get a complete JSON object
-                json_lines = line_str.split("\n")
-
-                for json_line in json_lines:
-                    json_line = json_line.strip()
-                    if not json_line:
+            # Process stdout messages
+            try:
+                async for line in self._stdout_stream:
+                    line_str = line.strip()
+                    if not line_str:
                         continue
 
-                    # Keep accumulating partial JSON until we can parse it
-                    json_buffer += json_line
+                    # Accumulate partial JSON until we can parse it
+                    # Note: TextReceiveStream can truncate long lines, so we need to buffer
+                    # and speculatively parse until we get a complete JSON object
+                    json_lines = line_str.split("\n")
 
-                    if len(json_buffer) > self._max_buffer_size:
-                        buffer_length = len(json_buffer)
-                        json_buffer = ""
-                        raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
-                            ValueError(
-                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
-                            ),
-                        )
+                    for json_line in json_lines:
+                        json_line = json_line.strip()
+                        if not json_line:
+                            continue
 
-                    try:
-                        data = json.loads(json_buffer)
-                        json_buffer = ""
-                        yield data
-                    except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
-                        # a full JSON object. If there is an actual issue, we
-                        # raise an error after exceeding the configured limit.
-                        continue
+                        # Keep accumulating partial JSON until we can parse it
+                        json_buffer += json_line
 
-        except anyio.ClosedResourceError:
-            pass
-        except GeneratorExit:
-            # Client disconnected
-            pass
+                        if len(json_buffer) > self._max_buffer_size:
+                            buffer_length = len(json_buffer)
+                            json_buffer = ""
+                            raise SDKJSONDecodeError(
+                                "JSON message exceeded maximum buffer size of "
+                                f"{self._max_buffer_size} bytes",
+                                ValueError(
+                                    "Buffer size "
+                                    f"{buffer_length} exceeds limit {self._max_buffer_size}"
+                                ),
+                            )
 
-        # Check process completion and handle errors
-        try:
-            returncode = await self._process.wait()
-        except Exception:
-            returncode = -1
+                        try:
+                            data = json.loads(json_buffer)
+                            json_buffer = ""
+                            yield data
+                        except json.JSONDecodeError:
+                            # We are speculatively decoding the buffer until we get
+                            # a full JSON object. If there is an actual issue, we
+                            # raise an error after exceeding the configured limit.
+                            continue
 
-        # Use exit code for error detection
-        if returncode is not None and returncode != 0:
-            self._exit_error = ProcessError(
-                f"Command failed with exit code {returncode}",
-                exit_code=returncode,
-                stderr="Check stderr output for details",
-            )
-            raise self._exit_error
+            except anyio.ClosedResourceError:
+                pass
+            except GeneratorExit:
+                # Client disconnected
+                pass
+
+            # Check process completion and handle errors
+            try:
+                returncode = await self._process.wait()
+            except Exception:
+                returncode = -1
+
+            # Use exit code for error detection
+            if returncode is not None and returncode != 0:
+                self._exit_error = ProcessError(
+                    f"Command failed with exit code {returncode}",
+                    exit_code=returncode,
+                    stderr="Check stderr output for details",
+                )
+                raise self._exit_error
 
     async def _check_claude_version(self) -> None:
         """Check Claude Code version and warn if below minimum."""

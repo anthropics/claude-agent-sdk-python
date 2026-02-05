@@ -56,6 +56,7 @@ from .types import (
     SubagentStartHookSpecificOutput,
     SubagentStopHookInput,
     SystemMessage,
+    TelemetryOptions,
     TextBlock,
     ThinkingBlock,
     ToolPermissionContext,

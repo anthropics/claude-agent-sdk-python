@@ -8,6 +8,11 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
+from ._internal.telemetry import (
+    get_otel_tracer,
+    span_kind_client,
+    traced_span_async,
+)
 from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
 
 
@@ -102,70 +107,91 @@ class ClaudeSDKClient:
 
         actual_prompt = _empty_stream() if prompt is None else prompt
 
-        # Validate and configure permission settings (matching TypeScript SDK logic)
-        if self.options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
-                )
-
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if self.options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
-        else:
-            options = self.options
-
-        # Use provided custom transport or create subprocess transport
-        if self._custom_transport:
-            self._transport = self._custom_transport
-        else:
-            self._transport = SubprocessCLITransport(
-                prompt=actual_prompt,
-                options=options,
+        tracer = None
+        if self.options.telemetry and self.options.telemetry.enabled:
+            tracer = self.options.telemetry.tracer or get_otel_tracer(
+                "claude_agent_sdk.client"
             )
-        await self._transport.connect()
+        # Span kind helper handles missing OpenTelemetry dependency.
 
-        # Extract SDK MCP servers from options
-        sdk_mcp_servers = {}
-        if self.options.mcp_servers and isinstance(self.options.mcp_servers, dict):
-            for name, config in self.options.mcp_servers.items():
-                if isinstance(config, dict) and config.get("type") == "sdk":
-                    sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
+        async def _do_connect() -> None:
+            # Validate and configure permission settings (matching TypeScript SDK logic)
+            if self.options.can_use_tool:
+                # canUseTool callback requires streaming mode (AsyncIterable prompt)
+                if isinstance(prompt, str):
+                    raise ValueError(
+                        "can_use_tool callback requires streaming mode. "
+                        "Please provide prompt as an AsyncIterable instead of a string."
+                    )
 
-        # Calculate initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT env var if set
-        # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is in milliseconds, convert to seconds
-        initialize_timeout_ms = int(
-            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
-        )
-        initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+                # canUseTool and permission_prompt_tool_name are mutually exclusive
+                if self.options.permission_prompt_tool_name:
+                    raise ValueError(
+                        "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+                        "Please use one or the other."
+                    )
 
-        # Create Query to handle control protocol
-        self._query = Query(
-            transport=self._transport,
-            is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
-            can_use_tool=self.options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(self.options.hooks)
-            if self.options.hooks
-            else None,
-            sdk_mcp_servers=sdk_mcp_servers,
-            initialize_timeout=initialize_timeout,
-        )
+                # Automatically set permission_prompt_tool_name to "stdio" for control protocol
+                options = replace(self.options, permission_prompt_tool_name="stdio")
+            else:
+                options = self.options
 
-        # Start reading messages and initialize
-        await self._query.start()
-        await self._query.initialize()
+            # Use provided custom transport or create subprocess transport
+            if self._custom_transport:
+                self._transport = self._custom_transport
+            else:
+                self._transport = SubprocessCLITransport(
+                    prompt=actual_prompt,
+                    options=options,
+                )
+            await self._transport.connect()
 
-        # If we have an initial prompt stream, start streaming it
-        if prompt is not None and isinstance(prompt, AsyncIterable) and self._query._tg:
-            self._query._tg.start_soon(self._query.stream_input, prompt)
+            # Extract SDK MCP servers from options
+            sdk_mcp_servers = {}
+            if self.options.mcp_servers and isinstance(self.options.mcp_servers, dict):
+                for name, config in self.options.mcp_servers.items():
+                    if isinstance(config, dict) and config.get("type") == "sdk":
+                        sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
+
+            # Calculate initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT env var if set
+            # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is in milliseconds, convert to seconds
+            initialize_timeout_ms = int(
+                os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
+            )
+            initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+
+            # Create Query to handle control protocol
+            self._query = Query(
+                transport=self._transport,
+                is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
+                can_use_tool=self.options.can_use_tool,
+                hooks=self._convert_hooks_to_internal_format(self.options.hooks)
+                if self.options.hooks
+                else None,
+                sdk_mcp_servers=sdk_mcp_servers,
+                initialize_timeout=initialize_timeout,
+                telemetry=self.options.telemetry,
+            )
+
+            # Start reading messages and initialize
+            await self._query.start()
+            await self._query.initialize()
+
+            # If we have an initial prompt stream, start streaming it
+            if prompt is not None and isinstance(prompt, AsyncIterable) and self._query._tg:
+                self._query._tg.start_soon(self._query.stream_input, prompt)
+
+        async with traced_span_async(
+            tracer,
+            "claude_agent_sdk.client.connect",
+            kind=span_kind_client(),
+            attributes={
+                "client.streaming": not isinstance(actual_prompt, str),
+                "client.has_hooks": bool(self.options.hooks),
+                "client.has_mcp_servers": bool(self.options.mcp_servers),
+            },
+        ):
+            await _do_connect()
 
     async def receive_messages(self) -> AsyncIterator[Message]:
         """Receive all messages from Claude."""
@@ -190,22 +216,40 @@ class ClaudeSDKClient:
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
-        # Handle string prompts
-        if isinstance(prompt, str):
-            message = {
-                "type": "user",
-                "message": {"role": "user", "content": prompt},
-                "parent_tool_use_id": None,
-                "session_id": session_id,
-            }
-            await self._transport.write(json.dumps(message) + "\n")
-        else:
-            # Handle AsyncIterable prompts - stream them
-            async for msg in prompt:
-                # Ensure session_id is set on each message
-                if "session_id" not in msg:
-                    msg["session_id"] = session_id
-                await self._transport.write(json.dumps(msg) + "\n")
+        tracer = None
+        if self.options.telemetry and self.options.telemetry.enabled:
+            tracer = self.options.telemetry.tracer or get_otel_tracer(
+                "claude_agent_sdk.client"
+            )
+
+        async def _do_query() -> None:
+            # Handle string prompts
+            if isinstance(prompt, str):
+                message = {
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                    "parent_tool_use_id": None,
+                    "session_id": session_id,
+                }
+                await self._transport.write(json.dumps(message) + "\n")
+            else:
+                # Handle AsyncIterable prompts - stream them
+                async for msg in prompt:
+                    # Ensure session_id is set on each message
+                    if "session_id" not in msg:
+                        msg["session_id"] = session_id
+                    await self._transport.write(json.dumps(msg) + "\n")
+
+        async with traced_span_async(
+            tracer,
+            "claude_agent_sdk.client.query",
+            kind=span_kind_client(),
+            attributes={
+                "client.streaming": not isinstance(prompt, str),
+                "client.session_id": session_id,
+            },
+        ):
+            await _do_query()
 
     async def interrupt(self) -> None:
         """Send interrupt signal (only works with streaming mode)."""
@@ -387,10 +431,21 @@ class ClaudeSDKClient:
 
     async def disconnect(self) -> None:
         """Disconnect from Claude."""
-        if self._query:
-            await self._query.close()
-            self._query = None
-        self._transport = None
+        tracer = None
+        if self.options.telemetry and self.options.telemetry.enabled:
+            tracer = self.options.telemetry.tracer or get_otel_tracer(
+                "claude_agent_sdk.client"
+            )
+
+        async with traced_span_async(
+            tracer,
+            "claude_agent_sdk.client.disconnect",
+            kind=span_kind_client(),
+        ):
+            if self._query:
+                await self._query.close()
+                self._query = None
+            self._transport = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

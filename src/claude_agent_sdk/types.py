@@ -10,9 +10,13 @@ from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+    from opentelemetry.metrics import Meter
+    from opentelemetry.trace import Tracer
 else:
     # Runtime placeholder for forward reference resolution in Pydantic 2.12+
     McpServer = Any
+    Meter = Any
+    Tracer = Any
 
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
@@ -761,6 +765,33 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+
+    # Telemetry configuration (tracing/metrics).
+    telemetry: "TelemetryOptions | None" = None
+
+
+@dataclass
+class TelemetryOptions:
+    """Telemetry configuration for tracing and metrics."""
+
+    enabled: bool = False
+    tracer: "Tracer | None" = None
+    meter: "Meter | None" = None
+
+    def __post_init__(self) -> None:
+        if self.tracer is not None and not hasattr(
+            self.tracer, "start_as_current_span"
+        ):
+            raise TypeError(
+                "TelemetryOptions.tracer must provide start_as_current_span()"
+            )
+        if self.meter is not None and not (
+            hasattr(self.meter, "create_counter")
+            and hasattr(self.meter, "create_histogram")
+        ):
+            raise TypeError(
+                "TelemetryOptions.meter must provide create_counter() and create_histogram()"
+            )
 
 
 # SDK Control Protocol

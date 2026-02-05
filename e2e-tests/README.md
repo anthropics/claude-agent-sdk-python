@@ -16,11 +16,13 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 
 ### Dependencies
 
-Install the development dependencies:
+Install the development dependencies including telemetry support:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,telemetry]"
 ```
+
+> **Note**: Telemetry tests (`test_telemetry.py`) require the `telemetry` extra. Without it, these tests will be silently skipped via `pytest.importorskip()`.
 
 ## Running the Tests
 
@@ -51,6 +53,24 @@ python -m pytest e2e-tests/test_mcp_calculator.py::test_basic_addition -v
 - The complete test suite should cost less than $0.10 to run
 
 ## Test Coverage
+
+### Telemetry Tests (`test_telemetry.py`)
+
+Tests OpenTelemetry tracing and metrics integration:
+
+- **test_telemetry_tracing_spans_emitted**: Verifies core spans are emitted during SDK session
+- **test_telemetry_metrics_emitted**: Verifies core metrics (messages, tokens, cost) are recorded
+- **test_telemetry_token_metrics_detailed**: Tests prompt/completion token split metrics
+- **test_telemetry_tool_use**: Validates tool use spans for both CLI and SDK MCP tools
+- **test_telemetry_disabled_no_crash**: Ensures SDK works when telemetry is disabled
+- **test_telemetry_not_provided_no_crash**: Ensures SDK works without telemetry config
+- **test_telemetry_enabled_without_tracer_or_meter**: Tests fallback to default tracer/meter
+- **test_telemetry_options_invalid_tracer/meter**: Validates type checking on TelemetryOptions
+- **test_telemetry_hook_spans**: Verifies hook callback spans are emitted
+- **test_telemetry_permission_callback_spans**: Verifies permission callback spans
+- **test_telemetry_error_recording_invalid_cwd**: Tests error recording on spans
+- **test_telemetry_duration_metrics**: Validates duration-related metrics
+- **test_telemetry_invocation_counter**: Verifies invocation counter increments
 
 ### MCP Calculator Tests (`test_mcp_calculator.py`)
 

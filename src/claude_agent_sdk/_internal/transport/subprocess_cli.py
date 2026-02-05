@@ -20,7 +20,12 @@ import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
-from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
+from ..._errors import (
+    CLIConnectionError,
+    CLINotFoundError,
+    ProcessError,
+    SandboxFileWatcherError,
+)
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
 from ...types import ClaudeAgentOptions
@@ -66,6 +71,9 @@ class SubprocessCLITransport(Transport):
         )
         self._temp_files: list[str] = []  # Track temporary files for cleanup
         self._write_lock: anyio.Lock = anyio.Lock()
+        # Track sandbox file watcher errors from stderr
+        self._sandbox_watcher_error: SandboxFileWatcherError | None = None
+        self._sandbox_watcher_error_event: anyio.Event | None = None
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -391,11 +399,23 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
+            # Check if sandbox is enabled - we need stderr to detect file watcher errors
+            sandbox_enabled = (
+                self._options.sandbox is not None
+                and self._options.sandbox.get("enabled", False)
+            )
+
+            # Pipe stderr if we have a callback, debug mode, or sandbox is enabled
+            # (sandbox needs stderr to detect file watcher errors)
             should_pipe_stderr = (
                 self._options.stderr is not None
                 or "debug-to-stderr" in self._options.extra_args
+                or sandbox_enabled
             )
+
+            # Initialize event for sandbox error detection
+            if sandbox_enabled:
+                self._sandbox_watcher_error_event = anyio.Event()
 
             # For backward compat: use debug_stderr file object if no callback and debug is on
             stderr_dest = PIPE if should_pipe_stderr else None
@@ -446,6 +466,13 @@ class SubprocessCLITransport(Transport):
             self._exit_error = error
             raise error from e
 
+    # Regex pattern to detect sandbox file watcher errors from CLI stderr
+    # Matches: "EOPNOTSUPP: unknown error, watch '/path/...'"
+    #          "EINTR: interrupted system call, watch '/path/...'"
+    _SANDBOX_WATCHER_ERROR_PATTERN = re.compile(
+        r"(EOPNOTSUPP|EINTR):[^,]+,\s*watch\s+'([^']+)'"
+    )
+
     async def _handle_stderr(self) -> None:
         """Handle stderr stream - read and invoke callbacks."""
         if not self._stderr_stream:
@@ -456,6 +483,25 @@ class SubprocessCLITransport(Transport):
                 line_str = line.rstrip()
                 if not line_str:
                     continue
+
+                # Check for sandbox file watcher errors
+                match = self._SANDBOX_WATCHER_ERROR_PATTERN.search(line_str)
+                if match and self._sandbox_watcher_error is None:
+                    error_code = match.group(1)
+                    path = match.group(2)
+                    self._sandbox_watcher_error = SandboxFileWatcherError(
+                        path=path, error_code=error_code
+                    )
+                    logger.error(
+                        f"Sandbox file watcher error detected: {error_code} on {path}"
+                    )
+                    # Signal any waiters that an error occurred
+                    if self._sandbox_watcher_error_event:
+                        self._sandbox_watcher_error_event.set()
+                    # Terminate the process since it will hang
+                    if self._process and self._process.returncode is None:
+                        with suppress(ProcessLookupError):
+                            self._process.terminate()
 
                 # Call the stderr callback if provided
                 if self._options.stderr:
@@ -569,6 +615,10 @@ class SubprocessCLITransport(Transport):
         # Process stdout messages
         try:
             async for line in self._stdout_stream:
+                # Check for sandbox file watcher error before processing
+                if self._sandbox_watcher_error is not None:
+                    raise self._sandbox_watcher_error
+
                 line_str = line.strip()
                 if not line_str:
                     continue
@@ -612,6 +662,10 @@ class SubprocessCLITransport(Transport):
             # Client disconnected
             pass
 
+        # Check for sandbox file watcher error after reading
+        if self._sandbox_watcher_error is not None:
+            raise self._sandbox_watcher_error
+
         # Check process completion and handle errors
         try:
             returncode = await self._process.wait()
@@ -620,6 +674,9 @@ class SubprocessCLITransport(Transport):
 
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            # Check if it was due to a sandbox file watcher error
+            if self._sandbox_watcher_error is not None:
+                raise self._sandbox_watcher_error
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,

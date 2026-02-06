@@ -4,16 +4,69 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
+from .._errors import (
+    APIError,
+    AuthenticationError,
+    BillingError,
+    InvalidRequestError,
+    RateLimitError,
+    ServerError,
+)
 from ..types import (
+    AssistantMessage,
     ClaudeAgentOptions,
     HookEvent,
     HookMatcher,
     Message,
+    TextBlock,
 )
 from .message_parser import parse_message
 from .query import Query
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+# Map error types to exception classes
+_ERROR_TYPE_TO_EXCEPTION: dict[str, type[APIError]] = {
+    "authentication_failed": AuthenticationError,
+    "billing_error": BillingError,
+    "rate_limit": RateLimitError,
+    "invalid_request": InvalidRequestError,
+    "server_error": ServerError,
+    "unknown": APIError,
+}
+
+
+def _raise_if_api_error(message: Message) -> None:
+    """Check if a message contains an API error and raise the appropriate exception.
+
+    Args:
+        message: The parsed message to check
+
+    Raises:
+        APIError: If the message contains an API error
+    """
+    if isinstance(message, AssistantMessage) and message.error:
+        # Extract error text from message content
+        error_text = None
+        if message.content:
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    error_text = block.text
+                    break
+
+        # Get the appropriate exception class
+        exc_class = _ERROR_TYPE_TO_EXCEPTION.get(message.error, APIError)
+
+        # Build error message
+        error_message = f"API error ({message.error})"
+        if error_text:
+            error_message = f"{error_message}: {error_text}"
+
+        raise exc_class(
+            message=error_message,
+            error_type=message.error,
+            error_text=error_text,
+        )
 
 
 class InternalClient:
@@ -138,7 +191,10 @@ class InternalClient:
 
             # Yield parsed messages
             async for data in query.receive_messages():
-                yield parse_message(data)
+                message = parse_message(data)
+                # Check for API errors and raise appropriate exceptions
+                _raise_if_api_error(message)
+                yield message
 
         finally:
             await query.close()

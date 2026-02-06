@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.31
+
+### New Features
+
+- **MCP tool annotations support**: Added support for MCP tool annotations via the `@tool` decorator's new `annotations` parameter, allowing developers to specify metadata hints like `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`. Re-exported `ToolAnnotations` from `claude_agent_sdk` for convenience (#551)
+
+### Bug Fixes
+
+- **Large agent definitions**: Fixed an issue where large agent definitions would silently fail to register due to platform-specific CLI argument size limits (ARG_MAX). Agent definitions are now sent via the initialize control request through stdin, matching the TypeScript SDK approach and allowing arbitrarily large agent payloads (#468)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.33
+
 ## 0.1.30
 
 ### Internal/Other Changes

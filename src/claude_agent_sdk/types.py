@@ -47,6 +47,8 @@ class AgentDefinition:
     prompt: str
     tools: list[str] | None = None
     model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    timeout: float | None = None  # Timeout in seconds for subagent execution
+    max_turns: int | None = None  # Maximum turns for this agent
 
 
 # Permission Update types (matching TypeScript SDK)

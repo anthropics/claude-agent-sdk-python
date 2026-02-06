@@ -227,6 +227,9 @@ class SubprocessCLITransport(Transport):
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
 
+        if self._options.session_id:
+            cmd.extend(["--session-id", self._options.session_id])
+
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
         if settings_value:

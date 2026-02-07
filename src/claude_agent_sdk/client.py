@@ -10,6 +10,19 @@ from . import Transport
 from ._errors import CLIConnectionError
 from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
 
+# Lazy import to avoid circular dependency
+_SessionSyncManager = None
+
+
+def _get_sync_manager_class() -> type:
+    """Lazy load SessionSyncManager to avoid circular imports."""
+    global _SessionSyncManager
+    if _SessionSyncManager is None:
+        from .session_storage._sync import SessionSyncManager
+
+        _SessionSyncManager = SessionSyncManager
+    return _SessionSyncManager
+
 
 class ClaudeSDKClient:
     """
@@ -64,6 +77,7 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+        self._sync_manager: Any | None = None
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
     def _convert_hooks_to_internal_format(
@@ -122,6 +136,25 @@ class ClaudeSDKClient:
             options = replace(self.options, permission_prompt_tool_name="stdio")
         else:
             options = self.options
+
+        # Set up session storage if configured
+        if options.session_storage is not None:
+            sync_manager_cls = _get_sync_manager_class()
+            self._sync_manager = sync_manager_cls(
+                storage=options.session_storage,
+                transcript_dir=options.transcript_dir,
+            )
+
+            # If resuming a session, download from cloud storage first
+            if options.resume:
+                await self._sync_manager.prepare_session(options.resume)
+
+            # Add Stop hook for automatic upload
+            stop_hook = self._sync_manager.create_stop_hook()
+            existing_hooks = options.hooks or {}
+            stop_matchers = list(existing_hooks.get("Stop", []))
+            stop_matchers.append(HookMatcher(matcher=None, hooks=[stop_hook]))
+            options = replace(options, hooks={**existing_hooks, "Stop": stop_matchers})
 
         # Use provided custom transport or create subprocess transport
         if self._custom_transport:

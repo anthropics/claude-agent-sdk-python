@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.34
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.38
+- Updated CI workflows to use Claude Opus 4.6 model (#556)
+
 ## 0.1.33
 
 ### Internal/Other Changes

@@ -696,6 +696,22 @@ class StreamEvent:
 Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
 
 
+class ThinkingConfigAdaptive(TypedDict):
+    type: Literal["adaptive"]
+
+
+class ThinkingConfigEnabled(TypedDict):
+    type: Literal["enabled"]
+    budget_tokens: int
+
+
+class ThinkingConfigDisabled(TypedDict):
+    type: Literal["disabled"]
+
+
+ThinkingConfig = ThinkingConfigAdaptive | ThinkingConfigEnabled | ThinkingConfigDisabled
+
+
 @dataclass
 class ClaudeAgentOptions:
     """Query options for Claude SDK."""
@@ -753,7 +769,12 @@ class ClaudeAgentOptions:
     # Plugin configurations for custom plugins
     plugins: list[SdkPluginConfig] = field(default_factory=list)
     # Max tokens for thinking blocks
+    # @deprecated Use `thinking` instead.
     max_thinking_tokens: int | None = None
+    # Controls extended thinking behavior. Takes precedence over max_thinking_tokens.
+    thinking: ThinkingConfig | None = None
+    # Effort level for thinking depth.
+    effort: Literal["low", "medium", "high", "max"] | None = None
     # Output format for structured outputs (matches Messages API structure)
     # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
     output_format: dict[str, Any] | None = None

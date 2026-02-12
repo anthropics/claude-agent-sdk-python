@@ -312,7 +312,16 @@ def create_sdk_mcp_server(
                             )
                         )
 
-            # Return just the content list - the decorator wraps it
+            # Propagate is_error flag by raising, which the MCP decorator
+            # catches and wraps in CallToolResult(isError=True)
+            if result.get("is_error", False):
+                error_text = (
+                    content[0].text
+                    if content and hasattr(content[0], "text")
+                    else "Tool error"
+                )
+                raise ValueError(error_text)
+
             return content
 
     # Return SDK server configuration

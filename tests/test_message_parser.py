@@ -437,3 +437,173 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_preserves_all_fields(self):
+        """Test that AssistantMessage preserves id, usage, stop_reason, session_id, uuid.
+
+        These fields are present in the raw CLI JSON output but were previously
+        dropped during parsing. See issue #562.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-4-5-20250929",
+                "id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi! I'm ready to help.",
+                    }
+                ],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 3,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 20012,
+                    "output_tokens": 1,
+                    "service_tier": "standard",
+                },
+            },
+            "parent_tool_use_id": None,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.model == "claude-sonnet-4-5-20250929"
+        assert message.id == "msg_01HRq7YZE3apPqSHydvG77Ve"
+        assert message.usage is not None
+        assert message.usage["input_tokens"] == 3
+        assert message.usage["cache_read_input_tokens"] == 20012
+        assert message.usage["output_tokens"] == 1
+        assert message.stop_reason == "end_turn"
+        assert message.stop_sequence is None
+        assert message.session_id == "fdf2d90a-fd9e-4736-ae35-806edd13643f"
+        assert message.uuid == "0dbd2453-1209-4fe9-bd51-4102f64e33df"
+
+    def test_parse_assistant_message_optional_fields_default_to_none(self):
+        """Test that new optional fields default to None when not present."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.id is None
+        assert message.usage is None
+        assert message.stop_reason is None
+        assert message.stop_sequence is None
+        assert message.session_id is None
+        assert message.uuid is None
+
+    def test_parse_result_message_preserves_all_fields(self):
+        """Test that ResultMessage preserves model_usage, stop_reason, permission_denials, uuid.
+
+        These fields are present in the raw CLI JSON output but were previously
+        dropped during parsing. See issue #562.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 2995,
+            "duration_api_ms": 2190,
+            "num_turns": 1,
+            "result": "Hi! I'm ready to help.",
+            "stop_reason": None,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "total_cost_usd": 0.010620999999999998,
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 24,
+            },
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 3,
+                    "outputTokens": 24,
+                    "cacheReadInputTokens": 20012,
+                    "cacheCreationInputTokens": 0,
+                    "costUSD": 0.010620999999999998,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 64000,
+                }
+            },
+            "permission_denials": [],
+            "uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.subtype == "success"
+        assert message.total_cost_usd == 0.010620999999999998
+        # New fields
+        assert message.model_usage is not None
+        assert "claude-sonnet-4-5-20250929" in message.model_usage
+        model_data = message.model_usage["claude-sonnet-4-5-20250929"]
+        assert model_data["inputTokens"] == 3
+        assert model_data["outputTokens"] == 24
+        assert model_data["cacheReadInputTokens"] == 20012
+        assert model_data["costUSD"] == 0.010620999999999998
+        assert message.stop_reason is None
+        assert message.permission_denials == []
+        assert message.uuid == "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+
+    def test_parse_result_message_optional_fields_default_to_none(self):
+        """Test that new optional fields default to None when not present."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is None
+        assert message.stop_reason is None
+        assert message.permission_denials is None
+        assert message.uuid is None
+
+    def test_parse_result_message_model_usage_multiple_models(self):
+        """Test ResultMessage with modelUsage containing multiple models.
+
+        When subagents use different models, modelUsage has multiple entries.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 16025,
+            "duration_api_ms": 24144,
+            "num_turns": 9,
+            "result": "Done.",
+            "session_id": "session_456",
+            "total_cost_usd": 0.25,
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 100,
+                    "outputTokens": 200,
+                    "costUSD": 0.15,
+                },
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 50,
+                    "outputTokens": 100,
+                    "costUSD": 0.10,
+                },
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is not None
+        assert len(message.model_usage) == 2
+        assert "claude-sonnet-4-5-20250929" in message.model_usage
+        assert "claude-haiku-4-5-20251001" in message.model_usage
+        assert message.model_usage["claude-sonnet-4-5-20250929"]["costUSD"] == 0.15
+        assert message.model_usage["claude-haiku-4-5-20251001"]["costUSD"] == 0.10

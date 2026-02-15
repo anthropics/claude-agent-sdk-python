@@ -183,7 +183,7 @@ options = ClaudeAgentOptions(
 
 ### Hooks
 
-A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
+A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks).
 
 For more examples, see examples/hooks.py.
 
@@ -267,7 +267,7 @@ See [src/claude_agent_sdk/\_errors.py](src/claude_agent_sdk/_errors.py) for all 
 
 ## Available Tools
 
-See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude) for a complete list of available tools.
+See the [Claude Code documentation](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview) for a complete list of available tools.
 
 ## Examples
 

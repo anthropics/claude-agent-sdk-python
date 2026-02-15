@@ -833,3 +833,53 @@ class TestClaudeSDKClientEdgeCases:
                     assert isinstance(messages[-1], ResultMessage)
 
         anyio.run(_test)
+
+
+class TestStreamInputStdinLifecycle:
+    """Test that stream_input keeps stdin open when hooks need it."""
+
+    @pytest.mark.asyncio
+    async def test_stream_input_calls_end_input_without_hooks(self):
+        """Without hooks, stream_input closes stdin after the generator finishes."""
+        transport = AsyncMock()
+        transport.write = AsyncMock()
+        transport.end_input = AsyncMock()
+
+        from claude_agent_sdk._internal.query import Query
+
+        q = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        async def single_message():
+            yield {"type": "user", "message": {"role": "user", "content": "hello"}}
+
+        await q.stream_input(single_message())
+        transport.end_input.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stream_input_keeps_stdin_open_with_hooks(self):
+        """With hooks, stream_input blocks instead of closing stdin."""
+        transport = AsyncMock()
+        transport.write = AsyncMock()
+        transport.end_input = AsyncMock()
+
+        from claude_agent_sdk._internal.query import Query
+
+        hooks = {
+            "tool_use_start": [{"matcher": {"tool": "Bash"}, "hooks": [AsyncMock()]}]
+        }
+        q = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=hooks
+        )
+
+        async def single_message():
+            yield {"type": "user", "message": {"role": "user", "content": "hello"}}
+
+        # stream_input should block indefinitely with hooks. Cancel it after a
+        # short delay and verify end_input was never called.
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await q.stream_input(single_message())
+
+        transport.end_input.assert_not_called()

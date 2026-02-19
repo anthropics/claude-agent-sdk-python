@@ -495,6 +495,10 @@ class Query:
                                     "mimeType": item.mimeType,
                                 }
                             )
+                        elif hasattr(item, "model_dump"):
+                            # Pass through other block types (e.g., search_result)
+                            # so they reach the Anthropic API intact
+                            content.append(item.model_dump())
 
                     response_data = {"content": content}
                     if hasattr(result.root, "is_error") and result.root.is_error:

@@ -108,6 +108,21 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" in cmd
         assert "Be concise." in cmd
 
+    def test_build_command_with_system_prompt_file(self):
+        """Test building CLI command with system prompt file."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
+        assert "--system-prompt-file" in cmd
+        assert "/path/to/prompt.md" in cmd
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(

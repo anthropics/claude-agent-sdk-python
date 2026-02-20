@@ -113,11 +113,48 @@ async def multiple_agents_example():
     print()
 
 
+async def agent_with_mcp_servers_example():
+    """Example using an agent with MCP servers."""
+    print("=== Agent with MCP Servers Example ===")
+
+    options = ClaudeAgentOptions(
+        agents={
+            "data-analyst": AgentDefinition(
+                description="Analyzes data using PostgreSQL",
+                prompt="You are a data analyst. Use the PostgreSQL MCP server to query and analyze data.",
+                tools=["Bash"],  # Can use Bash + MCP tools
+                mcp_servers={
+                    "postgres": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-postgres"],
+                        "env": {
+                            "POSTGRES_CONNECTION_STRING": "postgresql://localhost:5432/mydb"
+                        },
+                    }
+                },
+            ),
+        },
+    )
+
+    async for message in query(
+        prompt="Use the data-analyst agent to list all tables in the database",
+        options=options,
+    ):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    print(f"Claude: {block.text}")
+        elif isinstance(message, ResultMessage) and message.total_cost_usd and message.total_cost_usd > 0:
+            print(f"\nCost: ${message.total_cost_usd:.4f}")
+    print()
+
+
 async def main():
     """Run all agent examples."""
     await code_reviewer_example()
     await documentation_writer_example()
     await multiple_agents_example()
+    await agent_with_mcp_servers_example()
 
 
 if __name__ == "__main__":

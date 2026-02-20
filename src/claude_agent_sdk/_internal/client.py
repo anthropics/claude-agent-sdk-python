@@ -131,7 +131,31 @@ class InternalClient:
                     "parent_tool_use_id": None,
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
-                await chosen_transport.end_input()
+
+                has_bidirectional_needs = bool(sdk_mcp_servers) or bool(
+                    configured_options.hooks
+                )
+                if not has_bidirectional_needs:
+                    # No bidirectional control protocol needed: close stdin immediately
+                    await chosen_transport.end_input()
+                elif query._tg:
+                    # Defer stdin close until the conversation ends (result message).
+                    # The CLI needs stdin open for the entire conversation to send
+                    # tools/list, tools/call, and hook callbacks via control protocol.
+                    # No timeout needed for string prompts — the result message
+                    # always arrives when the CLI finishes, and task group
+                    # cancellation triggers the finally block on abnormal exit.
+                    async def _deferred_end_input() -> None:
+                        try:
+                            await query._first_result_event.wait()
+                        finally:
+                            await chosen_transport.end_input()
+
+                    query._tg.start_soon(_deferred_end_input)
+                else:
+                    # _tg should always exist after start(), but close stdin
+                    # defensively to prevent resource leaks
+                    await chosen_transport.end_input()
             elif isinstance(prompt, AsyncIterable) and query._tg:
                 # Stream input in background for async iterables
                 query._tg.start_soon(query.stream_input, prompt)

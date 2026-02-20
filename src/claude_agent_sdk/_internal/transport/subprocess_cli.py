@@ -572,22 +572,18 @@ class SubprocessCLITransport(Transport):
             # Client disconnected
             pass
 
-        # Check process completion and handle errors
-        try:
-            returncode = await self._process.wait()
-        except Exception:
-            returncode = -1
-
-        # Wait for stderr reader to finish draining
-        if self._stderr_task_group:
-            with suppress(Exception):
-                with anyio.move_on_after(5):
-                    self._stderr_task_group.cancel_scope.cancel()
-                    await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
+        # Check process exit code (non-blocking if already exited)
+        returncode = self._process.returncode
+        if returncode is None:
+            try:
+                returncode = await self._process.wait()
+            except Exception:
+                returncode = -1
 
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            # Give stderr reader a moment to drain remaining output
+            await anyio.sleep(0.1)
             stderr_output = "\n".join(self._stderr_lines) if self._stderr_lines else None
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",

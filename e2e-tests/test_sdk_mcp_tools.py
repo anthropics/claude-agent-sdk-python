@@ -11,7 +11,9 @@ import pytest
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ResultMessage,
     create_sdk_mcp_server,
+    query,
     tool,
 )
 
@@ -166,3 +168,48 @@ async def test_sdk_mcp_without_permissions():
             print(f"  [{type(message).__name__}] {message}")
 
     assert "echo" not in executions, "SDK MCP tool was executed"
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_string_prompt_with_sdk_mcp_tool():
+    """Test that string prompts work correctly with SDK MCP tools.
+
+    This test verifies the fix for: https://github.com/anthropics/claude-agent-sdk-python/issues/578
+    String prompts should work with SDK MCP tools without CLIConnectionError.
+    """
+    executions = []
+
+    @tool("echo", "Echo back the input text", {"text": str})
+    async def echo_tool(args: dict[str, Any]) -> dict[str, Any]:
+        """Echo back whatever text is provided."""
+        executions.append("echo")
+        return {"content": [{"type": "text", "text": f"Echo: {args['text']}"}]}
+
+    server = create_sdk_mcp_server(
+        name="test",
+        version="1.0.0",
+        tools=[echo_tool],
+    )
+
+    options = ClaudeAgentOptions(
+        mcp_servers={"test": server},
+        allowed_tools=["mcp__test__echo"],
+    )
+
+    # Use query() with string prompt (not ClaudeSDKClient)
+    # This is the exact scenario from issue #578
+    messages = []
+    async for msg in query(
+        prompt="Call the mcp__test__echo tool with text='hello world'",
+        options=options,
+    ):
+        messages.append(msg)
+        if isinstance(msg, ResultMessage):
+            break
+
+    # Verify the tool was executed (no CLIConnectionError)
+    assert "echo" in executions, "SDK MCP tool should have been executed"
+
+    # Verify we got a result message
+    assert any(isinstance(msg, ResultMessage) for msg in messages)

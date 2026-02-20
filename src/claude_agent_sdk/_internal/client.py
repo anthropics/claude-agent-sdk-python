@@ -136,9 +136,11 @@ class InternalClient:
                 # Stream input in background for async iterables
                 query._tg.start_soon(query.stream_input, prompt)
 
-            # Yield parsed messages
+            # Yield parsed messages, skipping unknown message types
             async for data in query.receive_messages():
-                yield parse_message(data)
+                message = parse_message(data)
+                if message is not None:
+                    yield message
 
         finally:
             await query.close()

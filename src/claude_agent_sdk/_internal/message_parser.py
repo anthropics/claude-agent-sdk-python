@@ -21,7 +21,7 @@ from ..types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_message(data: dict[str, Any]) -> Message:
+def parse_message(data: dict[str, Any]) -> Message | None:
     """
     Parse message from CLI output into typed Message objects.
 
@@ -177,4 +177,7 @@ def parse_message(data: dict[str, Any]) -> Message:
                 ) from e
 
         case _:
-            raise MessageParseError(f"Unknown message type: {message_type}", data)
+            # Forward-compatible: skip unrecognized message types so newer
+            # CLI versions don't crash older SDK versions.
+            logger.debug("Skipping unknown message type: %s", message_type)
+            return None

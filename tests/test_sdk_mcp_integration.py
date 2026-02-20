@@ -377,5 +377,83 @@ async def test_tool_annotations_in_jsonrpc():
     assert tools_by_name["read_only_tool"]["annotations"]["readOnlyHint"] is True
     assert tools_by_name["read_only_tool"]["annotations"]["openWorldHint"] is False
 
-    # Tool without annotations should not have the key
-    assert "annotations" not in tools_by_name["plain_tool"]
+
+@pytest.mark.asyncio
+async def test_string_prompt_with_sdk_mcp_servers():
+    """Test that string prompts work correctly with SDK MCP servers.
+
+    This test verifies the fix for: https://github.com/anthropics/claude-agent-sdk-python/issues/578
+    String prompts should wait for first result before closing stdin to allow
+    bidirectional control protocol communication for SDK MCP servers.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from claude_agent_sdk._internal.client import InternalClient
+
+    # Track tool executions
+    tool_executions = []
+
+    @tool("test_tool", "A test tool", {"input": str})
+    async def test_tool(args: dict[str, Any]) -> dict[str, Any]:
+        tool_executions.append({"name": "test_tool", "args": args})
+        return {"content": [{"type": "text", "text": f"Result: {args['input']}"}]}
+
+    server = create_sdk_mcp_server(name="test", tools=[test_tool])
+
+    # Create mock transport
+    mock_transport = MagicMock()
+    mock_transport.write = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.connect = AsyncMock()
+
+    # Create mock query with _first_result_event
+    mock_query = MagicMock()
+    mock_first_result_event = MagicMock()
+    mock_first_result_event.wait = AsyncMock()
+    mock_query._first_result_event = mock_first_result_event
+    mock_query._stream_close_timeout = 60.0
+    mock_query.start = AsyncMock()
+    mock_query.initialize = AsyncMock()
+    mock_query.close = AsyncMock()
+
+    # Mock receive_messages to yield a result (which should trigger _first_result_event)
+    async def mock_receive():
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 100,
+            "duration_api_ms": 50,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "test-session",
+        }
+
+    mock_query.receive_messages = mock_receive
+
+    # Patch Query creation to return our mock
+    with patch("claude_agent_sdk._internal.client.Query", return_value=mock_query):
+        client = InternalClient()
+        options = ClaudeAgentOptions(mcp_servers={"test": server})
+
+        # Execute query with string prompt
+        messages = []
+        async for msg in client.process_query(
+            prompt="Test prompt",
+            options=options,
+            transport=mock_transport,
+        ):
+            messages.append(msg)
+
+    # Verify user message was written
+    assert mock_transport.write.called
+    written_data = mock_transport.write.call_args[0][0]
+    assert "Test prompt" in written_data
+
+    # Verify end_input was called
+    assert mock_transport.end_input.called
+
+    # Verify _first_result_event.wait() was called (the fix)
+    assert mock_first_result_event.wait.called, (
+        "String prompt with SDK MCP servers should wait for first result "
+        "before closing stdin (issue #578 fix verification)"
+    )

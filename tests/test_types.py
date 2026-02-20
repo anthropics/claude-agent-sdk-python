@@ -144,6 +144,16 @@ class TestOptions:
             "append": "Be concise.",
         }
 
+    def test_claude_code_options_with_system_prompt_file(self):
+        """Test Options with system prompt file."""
+        options = ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+        )
+        assert options.system_prompt == {
+            "type": "file",
+            "path": "/path/to/prompt.md",
+        }
+
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""
         options = ClaudeAgentOptions(continue_conversation=True, resume="session-123")

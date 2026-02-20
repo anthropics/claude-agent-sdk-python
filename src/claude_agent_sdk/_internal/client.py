@@ -1,9 +1,11 @@
 """Internal client implementation."""
 
+import logging
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
+from .._errors import MessageParseError
 from ..types import (
     ClaudeAgentOptions,
     HookEvent,
@@ -14,6 +16,8 @@ from .message_parser import parse_message
 from .query import Query
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+logger = logging.getLogger(__name__)
 
 
 class InternalClient:
@@ -138,7 +142,15 @@ class InternalClient:
 
             # Yield parsed messages
             async for data in query.receive_messages():
-                yield parse_message(data)
+                try:
+                    yield parse_message(data)
+                except MessageParseError as e:
+                    logger.warning(
+                        "Skipping unknown message type: %s. "
+                        "This may be due to a newer CLI version. "
+                        "Consider upgrading the SDK.",
+                        e,
+                    )
 
         finally:
             await query.close()

@@ -7,11 +7,17 @@ from typing import Any, Generic, TypeVar
 from mcp.types import ToolAnnotations
 
 from ._errors import (
+    APIError,
+    AuthenticationError,
+    BillingError,
     ClaudeSDKError,
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    InvalidRequestError,
     ProcessError,
+    RateLimitError,
+    ServerError,
 )
 from ._internal.transport import Transport
 from ._version import __version__
@@ -395,4 +401,11 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    # API Errors
+    "APIError",
+    "AuthenticationError",
+    "BillingError",
+    "RateLimitError",
+    "InvalidRequestError",
+    "ServerError",
 ]

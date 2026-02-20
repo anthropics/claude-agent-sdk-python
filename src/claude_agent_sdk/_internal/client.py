@@ -4,6 +4,8 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
+import anyio
+
 from ..types import (
     ClaudeAgentOptions,
     HookEvent,
@@ -131,7 +133,23 @@ class InternalClient:
                     "parent_tool_use_id": None,
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
-                await chosen_transport.end_input()
+
+                if not sdk_mcp_servers:
+                    # No SDK MCP servers: close stdin immediately
+                    await chosen_transport.end_input()
+                elif query._tg:
+                    # With SDK MCP servers: defer stdin close to allow
+                    # CLI to complete tools/list via control protocol.
+                    # Closing stdin too early prevents the SDK from sending
+                    # control responses back to the CLI.
+                    async def _deferred_end_input() -> None:
+                        try:
+                            with anyio.move_on_after(query._stream_close_timeout):
+                                await query._first_result_event.wait()
+                        finally:
+                            await chosen_transport.end_input()
+
+                    query._tg.start_soon(_deferred_end_input)
             elif isinstance(prompt, AsyncIterable) and query._tg:
                 # Stream input in background for async iterables
                 query._tg.start_soon(query.stream_input, prompt)

@@ -110,12 +110,6 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Track first result for proper stream closure with SDK MCP servers
-        self._first_result_event = anyio.Event()
-        self._stream_close_timeout = (
-            float(os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")) / 1000.0
-        )  # Convert ms to seconds
-
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
 
@@ -205,10 +199,6 @@ class Query:
                     # Handle cancel requests
                     # TODO: Implement cancellation support
                     continue
-
-                # Track results for proper stream closure
-                if msg_type == "result":
-                    self._first_result_event.set()
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -570,8 +560,8 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers or hooks are present, keeps stdin open for the
+        entire session so the bidirectional control channel stays alive.
         """
         try:
             async for message in stream:
@@ -579,25 +569,23 @@ class Query:
                     break
                 await self.transport.write(json.dumps(message) + "\n")
 
-            # If we have SDK MCP servers or hooks that need bidirectional communication,
-            # wait for first result before closing the channel
+            # If we have SDK MCP servers or hooks that need bidirectional
+            # communication, keep stdin open for the entire session. Closing
+            # after the first result breaks hook callbacks on subsequent
+            # agent turns. The task group cancellation in close() will break
+            # us out, and transport.close() handles stdin cleanup.
             has_hooks = bool(self.hooks)
             if self.sdk_mcp_servers or has_hooks:
                 logger.debug(
-                    f"Waiting for first result before closing stdin "
+                    f"Keeping stdin open for bidirectional communication "
                     f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, has_hooks={has_hooks})"
                 )
-                try:
-                    with anyio.move_on_after(self._stream_close_timeout):
-                        await self._first_result_event.wait()
-                        logger.debug("Received first result, closing input stream")
-                except Exception:
-                    logger.debug(
-                        "Timed out waiting for first result, closing input stream"
-                    )
+                await anyio.sleep_forever()
 
-            # After all messages sent (and result received if needed), end input
+            # No hooks or MCP servers — safe to close stdin immediately.
             await self.transport.end_input()
+        except anyio.get_cancelled_exc_class():
+            logger.debug("Stream input cancelled")
         except Exception as e:
             logger.debug(f"Error streaming input: {e}")
 

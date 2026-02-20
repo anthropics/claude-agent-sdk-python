@@ -8,7 +8,14 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import (
+    ClaudeAgentOptions,
+    HookEvent,
+    HookMatcher,
+    Message,
+    PermissionMode,
+    ResultMessage,
+)
 
 
 class ClaudeSDKClient:
@@ -222,13 +229,14 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).
 
         Args:
             mode: The permission mode to set. Valid options:
                 - 'default': CLI prompts for dangerous tools
                 - 'acceptEdits': Auto-accept file edits
+                - 'plan': Plan mode for planning tasks
                 - 'bypassPermissions': Allow all tools (use with caution)
 
         Example:

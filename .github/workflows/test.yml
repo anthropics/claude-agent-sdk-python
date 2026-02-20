@@ -63,8 +63,55 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+
+          Write-Host "=== Debug: Listing all files under .local (with sizes) ==="
+          $localDir = "$env:USERPROFILE\.local"
+          if (Test-Path $localDir) {
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "[DIR] $($_.FullName)"
+              } else {
+                Write-Host "[FILE $($_.Length) bytes] $($_.FullName)"
+              }
+            }
+          } else {
+            Write-Host ".local directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .claude ==="
+          $claudeDir = "$env:USERPROFILE\.claude"
+          if (Test-Path $claudeDir) {
+            Get-ChildItem $claudeDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".claude directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .cache\claude ==="
+          $cacheDir = "$env:USERPROFILE\.cache\claude"
+          if (Test-Path $cacheDir) {
+            Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".cache\claude directory does not exist"
+          }
+
+          # Check if .local\bin is a file or directory
+          Write-Host "=== Debug: Checking .local\bin type ==="
+          $binPath = "$env:USERPROFILE\.local\bin"
+          if (Test-Path $binPath) {
+            $item = Get-Item $binPath
+            Write-Host "Path exists: $binPath"
+            Write-Host "Is directory: $($item.PSIsContainer)"
+            Write-Host "Type: $($item.GetType().Name)"
+            if (-not $item.PSIsContainer) {
+              Write-Host "Size: $($item.Length) bytes"
+              Write-Host "ERROR: .local\bin is a FILE, not a directory!"
+            }
+          } else {
+            Write-Host ".local\bin does not exist"
+          }
+
           $claudePath = "$env:USERPROFILE\.local\bin"
-          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation
@@ -125,8 +172,55 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           irm https://claude.ai/install.ps1 | iex
+
+          Write-Host "=== Debug: Listing all files under .local (with sizes) ==="
+          $localDir = "$env:USERPROFILE\.local"
+          if (Test-Path $localDir) {
+            Get-ChildItem $localDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "[DIR] $($_.FullName)"
+              } else {
+                Write-Host "[FILE $($_.Length) bytes] $($_.FullName)"
+              }
+            }
+          } else {
+            Write-Host ".local directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .claude ==="
+          $claudeDir = "$env:USERPROFILE\.claude"
+          if (Test-Path $claudeDir) {
+            Get-ChildItem $claudeDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".claude directory does not exist"
+          }
+
+          Write-Host "=== Debug: Listing all files under .cache\claude ==="
+          $cacheDir = "$env:USERPROFILE\.cache\claude"
+          if (Test-Path $cacheDir) {
+            Get-ChildItem $cacheDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host ".cache\claude directory does not exist"
+          }
+
+          # Check if .local\bin is a file or directory
+          Write-Host "=== Debug: Checking .local\bin type ==="
+          $binPath = "$env:USERPROFILE\.local\bin"
+          if (Test-Path $binPath) {
+            $item = Get-Item $binPath
+            Write-Host "Path exists: $binPath"
+            Write-Host "Is directory: $($item.PSIsContainer)"
+            Write-Host "Type: $($item.GetType().Name)"
+            if (-not $item.PSIsContainer) {
+              Write-Host "Size: $($item.Length) bytes"
+              Write-Host "ERROR: .local\bin is a FILE, not a directory!"
+            }
+          } else {
+            Write-Host ".local\bin does not exist"
+          }
+
           $claudePath = "$env:USERPROFILE\.local\bin"
-          echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Add-Content -Path $env:GITHUB_PATH -Value $claudePath
         shell: pwsh
 
       - name: Verify Claude Code installation

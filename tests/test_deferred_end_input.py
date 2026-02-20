@@ -1,9 +1,9 @@
 """Tests for deferred end_input() with SDK MCP servers on string prompts.
 
-When SDK MCP servers are present and prompt is a string, end_input() must
-be deferred until the first result message is received. Closing stdin
-immediately prevents the CLI from completing tools/list via control protocol,
-making SDK MCP tools invisible to the model.
+When SDK MCP servers or hooks are present and prompt is a string,
+end_input() must be deferred until the first result message is received.
+Closing stdin immediately prevents the CLI from completing tools/list
+via control protocol, making SDK MCP tools invisible to the model.
 
 See: client.py process_query() string prompt handling.
 """
@@ -14,15 +14,31 @@ import anyio
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
+RESULT_MESSAGE = {
+    "type": "result",
+    "subtype": "success",
+    "duration_ms": 100,
+    "duration_api_ms": 80,
+    "is_error": False,
+    "num_turns": 1,
+    "session_id": "test",
+    "total_cost_usd": 0.001,
+}
 
-def _make_mock_transport(end_input_mock: AsyncMock | None = None) -> Mock:
+
+def _make_mock_transport() -> Mock:
     """Create a mock transport with standard async methods."""
     mock_transport = Mock()
     mock_transport.connect = AsyncMock()
     mock_transport.close = AsyncMock()
-    mock_transport.end_input = end_input_mock or AsyncMock()
+    mock_transport.end_input = AsyncMock()
     mock_transport.write = AsyncMock()
     mock_transport.is_ready = Mock(return_value=True)
+
+    async def mock_receive() -> None:  # type: ignore[return]
+        yield RESULT_MESSAGE
+
+    mock_transport.read_messages = mock_receive
     return mock_transport
 
 
@@ -51,20 +67,6 @@ class TestDeferredEndInput:
             mock_transport.write = AsyncMock(side_effect=tracking_write)
             mock_transport.end_input = AsyncMock(side_effect=tracking_end_input)
 
-            async def mock_receive() -> None:  # type: ignore[return]
-                yield {
-                    "type": "result",
-                    "subtype": "success",
-                    "duration_ms": 100,
-                    "duration_api_ms": 80,
-                    "is_error": False,
-                    "num_turns": 1,
-                    "session_id": "test",
-                    "total_cost_usd": 0.001,
-                }
-
-            mock_transport.read_messages = mock_receive
-
             with (
                 patch(
                     "claude_agent_sdk._internal.client.SubprocessCLITransport",
@@ -75,7 +77,6 @@ class TestDeferredEndInput:
                     new_callable=AsyncMock,
                 ),
             ):
-                # No mcp_servers → no SDK MCP servers
                 options = ClaudeAgentOptions()
                 async for _ in query(prompt="test prompt", options=options):
                     pass
@@ -91,39 +92,11 @@ class TestDeferredEndInput:
 
         anyio.run(_test)
 
-    def test_string_prompt_with_sdk_mcp_servers_defers_stdin_close(self) -> None:
-        """With SDK MCP servers, end_input() must NOT be called immediately after write."""
+    def test_string_prompt_with_sdk_mcp_servers_calls_end_input(self) -> None:
+        """With SDK MCP servers, end_input() must be called (deferred via task group)."""
 
         async def _test() -> None:
             mock_transport = _make_mock_transport()
-
-            # Track call order
-            call_order: list[str] = []
-
-            async def tracking_write(data: str) -> None:
-                call_order.append("write")
-
-            async def tracking_end_input() -> None:
-                call_order.append("end_input")
-
-            mock_transport.write = AsyncMock(side_effect=tracking_write)
-            mock_transport.end_input = AsyncMock(side_effect=tracking_end_input)
-
-            # Need a result message so the query completes
-            async def mock_receive() -> None:  # type: ignore[return]
-                yield {
-                    "type": "result",
-                    "subtype": "success",
-                    "duration_ms": 100,
-                    "duration_api_ms": 80,
-                    "is_error": False,
-                    "num_turns": 1,
-                    "session_id": "test",
-                    "total_cost_usd": 0.001,
-                }
-
-            mock_transport.read_messages = mock_receive
-
             mock_mcp_server = Mock()
 
             with (
@@ -142,19 +115,75 @@ class TestDeferredEndInput:
                 async for _ in query(prompt="test prompt", options=options):
                     pass
 
-            # end_input must still be called (deferred, not skipped)
-            assert "end_input" in call_order, "end_input must eventually be called"
-
-            # But it must NOT be immediately after write (there should be something between)
-            # The key assertion: write happens first, then end_input happens later
-            # (not as the very next call after write in synchronous flow)
-            assert "write" in call_order
-            # end_input is deferred via task group, so it's called after the
-            # result event fires or timeout, not in the synchronous flow after write
+            mock_transport.end_input.assert_called_once()
 
         anyio.run(_test)
 
-    def test_end_input_is_always_called_even_with_sdk_mcp_servers(self) -> None:
+    def test_deferred_end_input_waits_for_result_event(self) -> None:
+        """end_input() must not be called before the result event fires.
+
+        Uses a delayed result message to verify that end_input waits
+        for _first_result_event rather than closing stdin immediately.
+        """
+
+        async def _test() -> None:
+            mock_transport = _make_mock_transport()
+            end_input_called_before_result = False
+
+            # Override read_messages to delay the result
+            result_gate = anyio.Event()
+
+            async def delayed_receive() -> None:  # type: ignore[return]
+                await result_gate.wait()
+                yield RESULT_MESSAGE
+
+            mock_transport.read_messages = delayed_receive
+
+            original_end_input = mock_transport.end_input
+
+            async def tracking_end_input() -> None:
+                nonlocal end_input_called_before_result
+                if not result_gate.is_set():
+                    end_input_called_before_result = True
+                return await original_end_input()
+
+            mock_transport.end_input = AsyncMock(side_effect=tracking_end_input)
+
+            mock_mcp_server = Mock()
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport",
+                    return_value=mock_transport,
+                ),
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                options = ClaudeAgentOptions(
+                    mcp_servers={"team": {"type": "sdk", "instance": mock_mcp_server}},  # type: ignore[typeddict-item]
+                )
+
+                async def consume_and_release() -> None:
+                    # Give task group time to start _deferred_end_input
+                    await anyio.sleep(0.05)
+                    # Now release the result — end_input should NOT have been called yet
+                    result_gate.set()
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(consume_and_release)
+                    async for _ in query(prompt="test prompt", options=options):
+                        pass
+
+            assert not end_input_called_before_result, (
+                "end_input must not be called before the result event fires"
+            )
+            mock_transport.end_input.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_end_input_called_even_with_sdk_mcp_servers(self) -> None:
         """end_input() must always eventually be called to avoid resource leaks."""
 
         async def _test() -> None:
@@ -166,21 +195,6 @@ class TestDeferredEndInput:
             mock_transport = _make_mock_transport()
             mock_transport.end_input = AsyncMock(side_effect=tracking_end_input)
 
-            async def mock_receive() -> None:  # type: ignore[return]
-                yield {
-                    "type": "result",
-                    "subtype": "success",
-                    "duration_ms": 100,
-                    "duration_api_ms": 80,
-                    "is_error": False,
-                    "num_turns": 1,
-                    "session_id": "test",
-                    "total_cost_usd": 0.001,
-                }
-
-            mock_transport.read_messages = mock_receive
-            mock_transport.write = AsyncMock()
-
             mock_mcp_server = Mock()
 
             with (
@@ -199,7 +213,6 @@ class TestDeferredEndInput:
                 async for _ in query(prompt="test prompt", options=options):
                     pass
 
-            # Verify end_input was called
             assert end_input_called.is_set(), (
                 "end_input must be called even with SDK MCP servers (deferred, not skipped)"
             )

@@ -802,6 +802,7 @@ class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
+    sdkMcpServers: NotRequired[list[str]]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

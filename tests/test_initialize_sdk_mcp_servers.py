@@ -16,7 +16,7 @@ from claude_agent_sdk._internal.query import Query
 
 
 def _create_recording_transport() -> tuple[MagicMock, list[str]]:
-    """Create a mock transport that records written data and provides responses."""
+    """Create a mock transport that records written data."""
     mock_transport = MagicMock()
     written_data: list[str] = []
 

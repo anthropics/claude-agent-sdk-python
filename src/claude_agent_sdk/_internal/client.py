@@ -4,8 +4,6 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
-import anyio
-
 from ..types import (
     ClaudeAgentOptions,
     HookEvent,
@@ -138,14 +136,16 @@ class InternalClient:
                     # No SDK MCP servers: close stdin immediately
                     await chosen_transport.end_input()
                 elif query._tg:
-                    # With SDK MCP servers: defer stdin close to allow
-                    # CLI to complete tools/list via control protocol.
-                    # Closing stdin too early prevents the SDK from sending
-                    # control responses back to the CLI.
+                    # With SDK MCP servers: defer stdin close until the
+                    # conversation ends (result message received).
+                    # The CLI needs stdin open for the entire conversation
+                    # to send tools/list and tools/call via control protocol.
+                    # Unlike stream_input() for async iterables, string prompts
+                    # don't need a timeout — the result message always arrives
+                    # when the CLI finishes, and transport cleanup handles crashes.
                     async def _deferred_end_input() -> None:
                         try:
-                            with anyio.move_on_after(query._stream_close_timeout):
-                                await query._first_result_event.wait()
+                            await query._first_result_event.wait()
                         finally:
                             await chosen_transport.end_input()
 

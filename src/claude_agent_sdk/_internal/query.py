@@ -247,9 +247,11 @@ class Query:
                     raise Exception("canUseTool callback is not provided")
 
                 context = ToolPermissionContext(
+                    tool_use_id=permission_request.get("tool_use_id", ""),
                     signal=None,  # TODO: Add abort signal support
                     suggestions=permission_request.get("permission_suggestions", [])
                     or [],
+                    blocked_path=permission_request.get("blocked_path"),
                 )
 
                 response = await self.can_use_tool(

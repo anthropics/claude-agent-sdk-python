@@ -105,6 +105,7 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
+        self._owner_task: anyio.TaskInfo | None = None  # Track task that owns this Query
         self._tg: anyio.abc.TaskGroup | None = None
         self._initialized = False
         self._closed = False
@@ -167,6 +168,11 @@ class Query:
         if self._tg is None:
             self._tg = anyio.create_task_group()
             await self._tg.__aenter__()
+
+            # Capture the task that owns this Query instance
+            # AnyIO streams are task-group-bound and will hang if accessed from different task
+            self._owner_task = anyio.get_current_task()
+
             self._tg.start_soon(self._read_messages)
 
     async def _read_messages(self) -> None:
@@ -603,6 +609,22 @@ class Query:
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
+        # Verify we're in the same task that created this Query
+        # The anyio stream is task-group-bound and will hang otherwise
+        if self._owner_task is None:
+            raise RuntimeError("Query.start() must be called before receive_messages()")
+
+        current_task = anyio.get_current_task()
+        if current_task.id != self._owner_task.id:
+            from .._errors import TaskContextError
+            raise TaskContextError(
+                "ClaudeSDKClient cannot be used across different async tasks. "
+                "Each async task must create its own client instance. "
+                "See TaskContextError documentation for details.",
+                connect_task_id=self._owner_task.id,
+                current_task_id=current_task.id,
+            )
+
         async for message in self._message_receive:
             # Check for special messages
             if message.get("type") == "end":

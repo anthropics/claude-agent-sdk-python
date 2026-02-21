@@ -492,84 +492,11 @@ class TestClaudeSDKClientStreaming:
 
         anyio.run(_test)
 
-    def test_concurrent_send_receive(self):
-        """Test concurrent sending and receiving messages."""
-
-        async def _test():
-            with patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
-            ) as mock_transport_class:
-                mock_transport = create_mock_transport()
-                mock_transport_class.return_value = mock_transport
-
-                # Mock receive to wait then yield messages with control protocol support
-                async def mock_receive():
-                    # First handle initialization
-                    await asyncio.sleep(0.01)
-                    written = mock_transport.write.call_args_list
-                    for call in written:
-                        if call:
-                            data = call[0][0]
-                            try:
-                                msg = json.loads(data.strip())
-                                if (
-                                    msg.get("type") == "control_request"
-                                    and msg.get("request", {}).get("subtype")
-                                    == "initialize"
-                                ):
-                                    yield {
-                                        "type": "control_response",
-                                        "response": {
-                                            "request_id": msg.get("request_id"),
-                                            "subtype": "success",
-                                            "commands": [],
-                                            "output_style": "default",
-                                        },
-                                    }
-                                    break
-                            except (json.JSONDecodeError, KeyError, AttributeError):
-                                pass
-
-                    # Then yield the actual messages
-                    await asyncio.sleep(0.1)
-                    yield {
-                        "type": "assistant",
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "Response 1"}],
-                            "model": "claude-opus-4-1-20250805",
-                        },
-                    }
-                    await asyncio.sleep(0.1)
-                    yield {
-                        "type": "result",
-                        "subtype": "success",
-                        "duration_ms": 1000,
-                        "duration_api_ms": 800,
-                        "is_error": False,
-                        "num_turns": 1,
-                        "session_id": "test",
-                        "total_cost_usd": 0.001,
-                    }
-
-                mock_transport.read_messages = mock_receive
-
-                async with ClaudeSDKClient() as client:
-                    # Helper to get next message
-                    async def get_next_message():
-                        return await client.receive_response().__anext__()
-
-                    # Start receiving in background
-                    receive_task = asyncio.create_task(get_next_message())
-
-                    # Send message while receiving
-                    await client.query("Question 1")
-
-                    # Wait for first message
-                    first_msg = await receive_task
-                    assert isinstance(first_msg, AssistantMessage)
-
-        anyio.run(_test)
+    # NOTE: test_concurrent_send_receive was removed because it tested cross-task usage
+    # (using asyncio.create_task to call receive_messages() from a different task than
+    # where connect() was called). This pattern causes silent hangs with anyio streams
+    # and is now prevented by TaskContextError. See test_task_context.py for correct
+    # usage patterns.
 
 
 class TestQueryWithAsyncIterable:

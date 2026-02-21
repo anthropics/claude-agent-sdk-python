@@ -47,9 +47,17 @@ class ClaudeSDKClient:
     different async runtime contexts (e.g., different trio nurseries or asyncio
     task groups). The client internally maintains a persistent anyio task group
     for reading messages that remains active from connect() until disconnect().
+
     This means you must complete all operations with the client within the same
-    async context where it was connected. Ideally, this limitation should not
-    exist.
+    async context where it was connected. Attempting to use it from a different
+    task will raise a TaskContextError with a clear explanation.
+
+    Common scenario where this occurs: FastAPI/Starlette applications that
+    create a global client during startup and try to use it in request handlers.
+    Each request runs in a different task, so the client must be created per-request
+    instead. See examples/fastapi_example.py for correct patterns.
+
+    Ideally, this limitation should not exist.
     """
 
     def __init__(

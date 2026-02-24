@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.40
+
+### Bug Fixes
+
+- **Unknown message type handling**: Fixed an issue where unrecognized CLI message types (e.g., `rate_limit_event`) would crash the session by raising `MessageParseError`. Unknown message types are now silently skipped, making the SDK forward-compatible with future CLI message types (#598)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.51
+
 ## 0.1.39
 
 ### Internal/Other Changes

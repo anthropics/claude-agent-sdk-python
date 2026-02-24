@@ -206,6 +206,10 @@ class Query:
                     # TODO: Implement cancellation support
                     continue
 
+                elif msg_type == "rate_limit_event":
+                    # CLI handles rate limiting internally — skip informational event
+                    continue
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     self._first_result_event.set()

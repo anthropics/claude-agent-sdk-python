@@ -231,6 +231,7 @@ class ClaudeSDKClient:
             mode: The permission mode to set. Valid options:
                 - 'default': CLI prompts for dangerous tools
                 - 'acceptEdits': Auto-accept file edits
+                - 'plan': Claude must get user approval before making changes
                 - 'bypassPermissions': Allow all tools (use with caution)
 
         Example:

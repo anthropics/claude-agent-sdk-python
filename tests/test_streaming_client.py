@@ -621,7 +621,7 @@ while True:
                 sys.stdout.flush()
         else:
             stdin_messages.append(line.strip())
-    except:
+    except Exception:
         stdin_messages.append(line.strip())
 
 # Verify we got 2 user messages

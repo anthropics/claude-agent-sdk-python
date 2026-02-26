@@ -1,3 +1,3 @@
 """Bundled Claude Code CLI version."""
 
-__cli_version__ = "2.1.58"
+__cli_version__ = "2.1.59"

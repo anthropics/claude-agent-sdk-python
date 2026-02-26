@@ -54,3 +54,45 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class SessionStorageError(ClaudeSDKError):
+    """Raised when session storage operations fail.
+
+    This error is raised for cloud storage failures such as upload/download
+    errors, permission issues, or network problems.
+
+    Attributes:
+        session_id: The session ID involved in the failed operation.
+        operation: The operation that failed (upload, download, delete, etc.).
+        original_error: The underlying exception that caused this error.
+
+    Example:
+        >>> try:
+        ...     await storage.upload_transcript("session-123", "/tmp/transcript.jsonl")
+        ... except SessionStorageError as e:
+        ...     print(f"Failed to upload session {e.session_id}: {e}")
+        ...     if e.original_error:
+        ...         print(f"Caused by: {e.original_error}")
+    """
+
+    def __init__(
+        self,
+        message: str,
+        session_id: str | None = None,
+        operation: str | None = None,
+        original_error: Exception | None = None,
+    ):
+        self.session_id = session_id
+        self.operation = operation
+        self.original_error = original_error
+
+        parts = [message]
+        if session_id:
+            parts.append(f"session: {session_id}")
+        if operation:
+            parts.append(f"operation: {operation}")
+        if original_error:
+            parts.append(f"caused by: {original_error}")
+
+        super().__init__(" | ".join(parts))

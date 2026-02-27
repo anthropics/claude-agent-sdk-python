@@ -867,6 +867,33 @@ class TestSubprocessCLITransport:
         assert "--input-format" in cmd2
         assert "stream-json" in cmd2
 
+    def test_build_command_agents_with_mcp_servers(self):
+        """Test that agents with mcp_servers are properly serialized."""
+        from claude_agent_sdk.types import AgentDefinition, McpStdioServerConfig
+
+        # Create agent with MCP servers
+        mcp_config: McpStdioServerConfig = {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-everything"],
+        }
+
+        agents = {
+            "test-agent": AgentDefinition(
+                description="A test agent with MCP servers",
+                prompt="You are a test agent",
+                mcp_servers={"everything": mcp_config},
+            )
+        }
+
+        # Test that agents are sent via initialize (not CLI flag)
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(agents=agents),
+        )
+        cmd = transport._build_command()
+        assert "--agents" not in cmd
+        assert "--input-format" in cmd
+
     def test_build_command_always_uses_streaming(self):
         """Test that streaming mode is always used, even for string prompts.
 

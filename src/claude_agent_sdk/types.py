@@ -717,7 +717,7 @@ class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
     tools: list[str] | ToolsPreset | None = None
-    allowed_tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] | None = None
     system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None

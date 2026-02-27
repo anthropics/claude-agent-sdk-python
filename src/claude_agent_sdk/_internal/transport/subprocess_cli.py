@@ -618,10 +618,21 @@ class SubprocessCLITransport(Transport):
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
+                # Build kwargs for anyio.open_process
+                kwargs = {
+                    "stdout": PIPE,
+                    "stderr": PIPE,
+                }
+
+                # Windows: suppress console window if parent has no console
+                if _should_suppress_console_window():
+                    import subprocess
+
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
-                    stdout=PIPE,
-                    stderr=PIPE,
+                    **kwargs,
                 )
 
                 if version_process.stdout:

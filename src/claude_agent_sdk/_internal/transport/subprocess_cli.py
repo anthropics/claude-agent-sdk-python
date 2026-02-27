@@ -398,11 +398,11 @@ class SubprocessCLITransport(Transport):
             if _should_suppress_console_window():
                 import subprocess
 
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
 
             self._process = await anyio.open_process(
                 cmd,
-                **kwargs,
+                **kwargs,  # type: ignore[arg-type]
             )
 
             if self._process.stdout:
@@ -628,11 +628,11 @@ class SubprocessCLITransport(Transport):
                 if _should_suppress_console_window():
                     import subprocess
 
-                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
 
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
-                    **kwargs,
+                    **kwargs,  # type: ignore[arg-type]
                 )
 
                 if version_process.stdout:

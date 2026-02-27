@@ -384,14 +384,25 @@ class SubprocessCLITransport(Transport):
             # For backward compat: use debug_stderr file object if no callback and debug is on
             stderr_dest = PIPE if should_pipe_stderr else None
 
+            # Build kwargs dict for anyio.open_process
+            kwargs = {
+                "stdin": PIPE,
+                "stdout": PIPE,
+                "stderr": stderr_dest,
+                "cwd": self._cwd,
+                "env": process_env,
+                "user": self._options.user,
+            }
+
+            # Windows: suppress console window if parent has no console
+            if _should_suppress_console_window():
+                import subprocess
+
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
             self._process = await anyio.open_process(
                 cmd,
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=stderr_dest,
-                cwd=self._cwd,
-                env=process_env,
-                user=self._options.user,
+                **kwargs,
             )
 
             if self._process.stdout:

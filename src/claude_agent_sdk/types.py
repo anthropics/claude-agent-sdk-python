@@ -693,7 +693,19 @@ class StreamEvent:
     parent_tool_use_id: str | None = None
 
 
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
+@dataclass
+class RateLimitEvent:
+    """Rate limit event from Claude Code CLI."""
+
+    type: str
+    session_id: str
+    limit_type: str | None = None
+    limit: int | None = None
+    remaining: int | None = None
+    reset_at: str | None = None
+
+
+Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent | RateLimitEvent
 
 
 class ThinkingConfigAdaptive(TypedDict):

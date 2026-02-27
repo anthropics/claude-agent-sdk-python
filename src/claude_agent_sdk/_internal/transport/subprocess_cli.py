@@ -30,6 +30,24 @@ _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
+def _should_suppress_console_window() -> bool:
+    """Check if we should suppress console window for subprocesses on Windows.
+
+    Returns True when running on Windows and the parent process has no console
+    attached (e.g., GUI app, PyInstaller bundle with console=False).
+
+    Returns:
+        bool: True if CREATE_NO_WINDOW should be used, False otherwise.
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+
+    # GetConsoleWindow() returns NULL (0) if no console is attached
+    return not ctypes.windll.kernel32.GetConsoleWindow()
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 

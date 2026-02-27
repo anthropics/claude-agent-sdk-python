@@ -540,8 +540,29 @@ class SubprocessCLITransport(Transport):
                     if not json_line:
                         continue
 
-                    # Keep accumulating partial JSON until we can parse it
-                    json_buffer += json_line
+                    # Try standalone parse first (most common case).
+                    # This prevents non-JSON lines (e.g. verbose HTTP logs,
+                    # sandbox debug messages) from poisoning the buffer.
+                    if not json_buffer:
+                        try:
+                            data = json.loads(json_line)
+                            yield data
+                            continue
+                        except json.JSONDecodeError:
+                            # Only start buffering if line looks like start of
+                            # a JSON object. The stream-json protocol emits
+                            # JSON objects, so "{" is the expected start.
+                            if json_line.startswith("{"):
+                                json_buffer = json_line
+                            else:
+                                logger.debug(
+                                    "Skipping non-JSON line on stdout: %s",
+                                    json_line[:100],
+                                )
+                                continue
+                    else:
+                        # Accumulate into existing buffer
+                        json_buffer += json_line
 
                     if len(json_buffer) > self._max_buffer_size:
                         buffer_length = len(json_buffer)
@@ -558,9 +579,7 @@ class SubprocessCLITransport(Transport):
                         json_buffer = ""
                         yield data
                     except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
-                        # a full JSON object. If there is an actual issue, we
-                        # raise an error after exceeding the configured limit.
+                        # Still incomplete, keep buffering
                         continue
 
         except anyio.ClosedResourceError:

@@ -153,6 +153,8 @@ class Query:
         }
         if self._agents:
             request["agents"] = self._agents
+        if self.sdk_mcp_servers:
+            request["sdkMcpServers"] = list(self.sdk_mcp_servers.keys())
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

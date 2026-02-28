@@ -14,6 +14,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import CLIConnectionError
 from ..types import (
     PermissionResultAllow,
     PermissionResultDeny,
@@ -327,7 +328,14 @@ class Query:
                     "response": response_data,
                 },
             }
-            await self.transport.write(json.dumps(success_response) + "\n")
+            try:
+                await self.transport.write(json.dumps(success_response) + "\n")
+            except CLIConnectionError:
+                logger.debug(
+                    "Transport closed before sending control response for %s (request_id=%s)",
+                    subtype,
+                    request_id,
+                )
 
         except Exception as e:
             # Send error response
@@ -339,7 +347,15 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            try:
+                await self.transport.write(json.dumps(error_response) + "\n")
+            except CLIConnectionError:
+                logger.debug(
+                    "Transport closed before sending error response for %s (request_id=%s): %s",
+                    subtype,
+                    request_id,
+                    e,
+                )
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

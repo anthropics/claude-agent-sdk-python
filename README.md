@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/anthropics-claude-agent-sdk-python-badge.png)](https://mseep.ai/app/anthropics-claude-agent-sdk-python)
+
 # Claude Agent SDK for Python
 
 Python SDK for Claude Agent. See the [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python) for more information.

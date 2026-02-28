@@ -452,6 +452,118 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_claudecode_env_var_is_filtered(self):
+        """Test that CLAUDECODE env var is filtered from subprocess to prevent nesting detection."""
+
+        async def _test():
+            # Simulate running inside Claude Code
+            os.environ["CLAUDECODE"] = "1"
+
+            options = make_options()
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Verify open_process was called twice (version check + main process)
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
+
+                # CLAUDECODE should NOT be in env (filtered to prevent nesting detection)
+                assert "CLAUDECODE" not in env_passed
+
+                # But other vars should be present
+                assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
+                assert env_passed["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
+
+        anyio.run(_test)
+
+    def test_claudecode_can_be_explicitly_set(self):
+        """Test that CLAUDECODE can be explicitly set via options env if needed."""
+
+        async def _test():
+            # Simulate running inside Claude Code
+            os.environ["CLAUDECODE"] = "1"
+
+            # User explicitly wants CLAUDECODE set (unusual but allowed)
+            options = make_options(env={"CLAUDECODE": "1"})
+
+            # Mock the subprocess to capture the env argument
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                # Return version process first, then main process
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Verify open_process was called twice
+                assert mock_open_process.call_count == 2
+
+                # Check the second call (main process) for env vars
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "env" in second_call_kwargs
+                env_passed = second_call_kwargs["env"]
+
+                # CLAUDECODE SHOULD be in env because user explicitly provided it
+                assert "CLAUDECODE" in env_passed
+                assert env_passed["CLAUDECODE"] == "1"
+
+        anyio.run(_test)
+
     def test_connect_as_different_user(self):
         """Test connect as different user."""
 

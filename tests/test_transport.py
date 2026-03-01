@@ -503,6 +503,54 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_connect_user_param_skipped_on_windows(self):
+        """Test that user parameter is not passed to open_process on Windows."""
+
+        async def _test():
+            options = make_options(user="claude")
+
+            with (
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.platform"
+                ) as mock_platform,
+            ):
+                mock_platform.system.return_value = "Windows"
+
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                # Check the second call (main process) does NOT include user
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                assert "user" not in second_call_kwargs
+
+        anyio.run(_test)
+
     def test_build_command_with_sandbox_only(self):
         """Test building CLI command with sandbox settings (no existing settings)."""
         import json

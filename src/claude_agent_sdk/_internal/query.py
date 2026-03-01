@@ -116,6 +116,11 @@ class Query:
             float(os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")) / 1000.0
         )  # Convert ms to seconds
 
+        # Timeout for task group cleanup during close() to prevent indefinite hangs
+        self._task_group_close_timeout = (
+            float(os.environ.get("CLAUDE_CODE_TASK_GROUP_CLOSE_TIMEOUT", "5000")) / 1000.0
+        )  # Convert ms to seconds, default 5s
+
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
 
@@ -617,9 +622,21 @@ class Query:
         self._closed = True
         if self._tg:
             self._tg.cancel_scope.cancel()
-            # Wait for task group to complete cancellation
+            # Wait for task group to complete cancellation with timeout
+            # to prevent indefinite hangs if tasks don't respond to cancellation.
+            # Set deadline on the task group's own cancel scope rather than
+            # wrapping with a new scope to avoid cancel scope nesting issues.
+            self._tg.cancel_scope.deadline = (
+                anyio.current_time() + self._task_group_close_timeout
+            )
             with suppress(anyio.get_cancelled_exc_class()):
                 await self._tg.__aexit__(None, None, None)
+            if self._tg.cancel_scope.cancel_called and not self._tg.cancel_scope.cancelled_caught:
+                # Timeout occurred during cleanup
+                logger.warning(
+                    f"Task group cleanup timed out after {self._task_group_close_timeout}s, "
+                    "forcing close"
+                )
         await self.transport.close()
 
     # Make Query an async iterator

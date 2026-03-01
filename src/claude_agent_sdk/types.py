@@ -681,6 +681,7 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     result: str | None = None
     structured_output: Any = None
+    errors: list[str] | None = None
 
 
 @dataclass

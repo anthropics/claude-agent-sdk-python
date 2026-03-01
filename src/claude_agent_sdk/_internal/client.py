@@ -131,6 +131,29 @@ class InternalClient:
                     "parent_tool_use_id": None,
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
+
+                # Keep stdin open until CLI completes MCP initialization
+                # This ensures bidirectional control protocol works for SDK MCP servers and hooks
+                if sdk_mcp_servers or configured_options.hooks:
+                    import logging
+
+                    import anyio
+
+                    logger = logging.getLogger(__name__)
+
+                    logger.debug(
+                        f"Waiting for first result before closing stdin "
+                        f"(sdk_mcp_servers={len(sdk_mcp_servers)}, has_hooks={bool(configured_options.hooks)})"
+                    )
+                    try:
+                        with anyio.move_on_after(query._stream_close_timeout):
+                            await query._first_result_event.wait()
+                            logger.debug("Received first result, closing input stream")
+                    except Exception:
+                        logger.debug(
+                            "Timed out waiting for first result, closing input stream"
+                        )
+
                 await chosen_transport.end_input()
             elif isinstance(prompt, AsyncIterable) and query._tg:
                 # Stream input in background for async iterables

@@ -696,6 +696,40 @@ class StreamEvent:
 Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
 
 
+# ---------------------------------------------------------------------------
+# Session Listing Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SDKSessionInfo:
+    """Session metadata returned by ``list_sessions()``.
+
+    Contains only data extractable from stat + head/tail reads — no full
+    JSONL parsing required.
+
+    Attributes:
+        session_id: Unique session identifier (UUID).
+        summary: Display title for the session — custom title, auto-generated
+            summary, or first prompt.
+        last_modified: Last modified time in milliseconds since epoch.
+        file_size: Session file size in bytes.
+        custom_title: User-set session title via /rename.
+        first_prompt: First meaningful user prompt in the session.
+        git_branch: Git branch at the end of the session.
+        cwd: Working directory for the session.
+    """
+
+    session_id: str
+    summary: str
+    last_modified: int
+    file_size: int
+    custom_title: str | None = None
+    first_prompt: str | None = None
+    git_branch: str | None = None
+    cwd: str | None = None
+
+
 class ThinkingConfigAdaptive(TypedDict):
     type: Literal["adaptive"]
 

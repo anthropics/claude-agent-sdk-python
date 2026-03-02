@@ -8,7 +8,14 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import (
+    ClaudeAgentOptions,
+    HookEvent,
+    HookMatcher,
+    McpStatusResponse,
+    Message,
+    ResultMessage,
+)
 
 
 class ClaudeSDKClient:
@@ -375,30 +382,37 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.stop_task(task_id)
 
-    async def get_mcp_status(self) -> dict[str, Any]:
+    async def get_mcp_status(self) -> McpStatusResponse:
         """Get current MCP server connection status (only works with streaming mode).
 
         Queries the Claude Code CLI for the live connection status of all
         configured MCP servers.
 
         Returns:
-            Dictionary with MCP server status information. Contains a
-            'mcpServers' key with a list of server status objects, each having:
+            McpStatusResponse dictionary with an 'mcpServers' key containing
+            a list of McpServerStatus entries. Each entry includes:
             - 'name': Server name (str)
             - 'status': Connection status ('connected', 'pending', 'failed',
               'needs-auth', 'disabled')
+            - 'serverInfo': MCP server name/version (when connected)
+            - 'error': Error message (when status is 'failed')
+            - 'config': Server configuration (stdio/sse/http/sdk/claudeai-proxy)
+            - 'scope': Configuration scope (e.g., project, user, local)
+            - 'tools': List of tools provided by the server (when connected)
 
         Example:
             ```python
             async with ClaudeSDKClient(options) as client:
                 status = await client.get_mcp_status()
-                for server in status.get("mcpServers", []):
+                for server in status["mcpServers"]:
                     print(f"{server['name']}: {server['status']}")
+                    if server["status"] == "failed":
+                        print(f"  Error: {server.get('error')}")
             ```
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        result: dict[str, Any] = await self._query.get_mcp_status()
+        result: McpStatusResponse = await self._query.get_mcp_status()
         return result
 
     async def get_server_info(self) -> dict[str, Any] | None:

@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from claude_agent_sdk import SDKSessionInfo, list_sessions
+from claude_agent_sdk import (
+    SDKSessionInfo,
+    SessionMessage,
+    get_session_messages,
+    list_sessions,
+)
 from claude_agent_sdk._internal.sessions import (
+    _build_conversation_chain,
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
@@ -580,3 +586,495 @@ class TestSDKSessionInfoType:
         assert info.first_prompt == "prompt"
         assert info.git_branch == "main"
         assert info.cwd == "/foo"
+
+
+# ---------------------------------------------------------------------------
+# get_session_messages() helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_transcript_entry(
+    entry_type: str,
+    entry_uuid: str,
+    parent_uuid: str | None,
+    session_id: str,
+    content: str | list | None = None,
+    **extras,
+) -> dict:
+    """Builds a transcript entry dict matching the CLI's JSONL format."""
+    entry: dict = {
+        "type": entry_type,
+        "uuid": entry_uuid,
+        "parentUuid": parent_uuid,
+        "sessionId": session_id,
+    }
+    if content is not None:
+        role = entry_type if entry_type in ("user", "assistant") else "user"
+        entry["message"] = {"role": role, "content": content}
+    entry.update(extras)
+    return entry
+
+
+def _write_transcript(project_dir: Path, session_id: str, entries: list[dict]) -> Path:
+    """Writes a JSONL transcript file."""
+    file_path = project_dir / f"{session_id}.jsonl"
+    lines = [json.dumps(e) for e in entries]
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return file_path
+
+
+# ---------------------------------------------------------------------------
+# get_session_messages() tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionMessages:
+    """Tests for get_session_messages()."""
+
+    def test_invalid_session_id(self, claude_config_dir: Path):
+        """Non-UUID session_id returns empty list."""
+        assert get_session_messages("not-a-uuid") == []
+        assert get_session_messages("") == []
+
+    def test_nonexistent_session(self, claude_config_dir: Path):
+        """Session file not found returns empty list."""
+        sid = str(uuid.uuid4())
+        assert get_session_messages(sid) == []
+
+    def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Missing config dir returns empty list."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
+        sid = str(uuid.uuid4())
+        assert get_session_messages(sid) == []
+
+    def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
+        """Basic user → assistant → user → assistant chain."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        a2 = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hello"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hi!"),
+            _make_transcript_entry("user", u2, a1, sid, content="thanks"),
+            _make_transcript_entry("assistant", a2, u2, sid, content="welcome"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 4
+
+        # Chronological order: root → leaf
+        assert messages[0].type == "user"
+        assert messages[0].uuid == u1
+        assert messages[0].session_id == sid
+        assert messages[0].message == {"role": "user", "content": "hello"}
+        assert messages[0].parent_tool_use_id is None
+
+        assert messages[1].type == "assistant"
+        assert messages[1].uuid == a1
+        assert messages[1].message == {"role": "assistant", "content": "hi!"}
+
+        assert messages[2].type == "user"
+        assert messages[2].uuid == u2
+
+        assert messages[3].type == "assistant"
+        assert messages[3].uuid == a2
+
+        # All SessionMessage instances
+        assert all(isinstance(m, SessionMessage) for m in messages)
+
+    def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
+        """isMeta entries in the chain are filtered from output."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        meta = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hello"),
+            # Meta user message in the chain — should be walked through but
+            # filtered from output
+            _make_transcript_entry("user", meta, u1, sid, content="meta", isMeta=True),
+            _make_transcript_entry("assistant", a1, meta, sid, content="hi"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        # Only u1 and a1 visible (meta filtered out)
+        assert len(messages) == 2
+        assert messages[0].uuid == u1
+        assert messages[1].uuid == a1
+
+    def test_filters_non_user_assistant_from_chain(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Progress/system entries in chain are filtered from output."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hello"),
+            # Progress entry in the chain
+            _make_transcript_entry("progress", prog, u1, sid),
+            _make_transcript_entry("assistant", a1, prog, sid, content="hi"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        # progress is walked through the chain but filtered from output
+        assert len(messages) == 2
+        assert messages[0].uuid == u1
+        assert messages[1].uuid == a1
+
+    def test_keeps_compact_summary(self, claude_config_dir: Path, tmp_path: Path):
+        """isCompactSummary messages are kept (they represent compacted content)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry(
+                "user",
+                u1,
+                None,
+                sid,
+                content="compact summary",
+                isCompactSummary=True,
+            ),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hi"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+        assert messages[0].uuid == u1  # compact summary kept
+
+    def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
+        """Limit and offset pagination."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        # Build a chain of 6 messages: u→a→u→a→u→a
+        uuids = [str(uuid.uuid4()) for _ in range(6)]
+        entries = []
+        for i, uid in enumerate(uuids):
+            parent = uuids[i - 1] if i > 0 else None
+            entry_type = "user" if i % 2 == 0 else "assistant"
+            entries.append(
+                _make_transcript_entry(entry_type, uid, parent, sid, content=f"m{i}")
+            )
+        _write_transcript(project_dir, sid, entries)
+
+        # No limit/offset
+        all_msgs = get_session_messages(sid, directory=project_path)
+        assert len(all_msgs) == 6
+
+        # limit=2
+        page = get_session_messages(sid, directory=project_path, limit=2)
+        assert len(page) == 2
+        assert page[0].uuid == uuids[0]
+        assert page[1].uuid == uuids[1]
+
+        # offset=2, limit=2
+        page = get_session_messages(sid, directory=project_path, limit=2, offset=2)
+        assert len(page) == 2
+        assert page[0].uuid == uuids[2]
+        assert page[1].uuid == uuids[3]
+
+        # offset only (no limit)
+        page = get_session_messages(sid, directory=project_path, offset=4)
+        assert len(page) == 2
+        assert page[0].uuid == uuids[4]
+        assert page[1].uuid == uuids[5]
+
+        # limit=0 returns all (TS: limit > 0 check)
+        page = get_session_messages(sid, directory=project_path, limit=0)
+        assert len(page) == 6
+
+        # offset beyond end
+        page = get_session_messages(sid, directory=project_path, offset=100)
+        assert page == []
+
+    def test_picks_main_chain_over_sidechain(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """When multiple leaves exist, prefers non-sidechain main leaf."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        root = str(uuid.uuid4())
+        main_leaf = str(uuid.uuid4())
+        side_leaf = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry("user", root, None, sid, content="root"),
+            # Main chain continuation
+            _make_transcript_entry("assistant", main_leaf, root, sid, content="main"),
+            # Sidechain branch (also from root) — should be ignored as leaf
+            _make_transcript_entry(
+                "assistant",
+                side_leaf,
+                root,
+                sid,
+                content="side",
+                isSidechain=True,
+            ),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+        assert messages[0].uuid == root
+        assert messages[1].uuid == main_leaf  # main leaf chosen, not sidechain
+
+    def test_picks_latest_leaf_by_file_position(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """When multiple main leaves exist, picks the one latest in the file."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        root = str(uuid.uuid4())
+        old_leaf = str(uuid.uuid4())
+        new_leaf = str(uuid.uuid4())
+
+        # Both leaves branch from root; new_leaf appears later in file
+        entries = [
+            _make_transcript_entry("user", root, None, sid, content="root"),
+            _make_transcript_entry("assistant", old_leaf, root, sid, content="old"),
+            _make_transcript_entry("assistant", new_leaf, root, sid, content="new"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+        assert messages[0].uuid == root
+        # new_leaf has higher file position → chosen
+        assert messages[1].uuid == new_leaf
+
+    def test_terminal_non_message_walked_back(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A terminal progress entry is walked back to find user/assistant leaf."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        prog = str(uuid.uuid4())  # terminal progress entry
+
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hi"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hello"),
+            # Terminal entry is progress type — should walk back to a1
+            _make_transcript_entry("progress", prog, a1, sid),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+        assert messages[0].uuid == u1
+        assert messages[1].uuid == a1
+
+    def test_corrupt_lines_skipped(self, claude_config_dir: Path, tmp_path: Path):
+        """Corrupt JSON lines are skipped without failing."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        lines = [
+            json.dumps(_make_transcript_entry("user", u1, None, sid, content="hi")),
+            "not valid json {{{",
+            "",
+            json.dumps(
+                _make_transcript_entry("assistant", a1, u1, sid, content="hello")
+            ),
+        ]
+        (project_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+
+    def test_search_all_projects_when_no_dir(self, claude_config_dir: Path):
+        """When no directory given, searches all project directories."""
+        proj1 = _make_project_dir(claude_config_dir, "/path/one")
+        proj2 = _make_project_dir(claude_config_dir, "/path/two")
+
+        sid = str(uuid.uuid4())
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        # Session lives only in proj2
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hi"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hello"),
+        ]
+        _write_transcript(proj2, sid, entries)
+
+        # proj1 exists but doesn't have this session
+        _ = proj1  # noqa: F841
+
+        messages = get_session_messages(sid)  # no directory
+        assert len(messages) == 2
+        assert messages[0].uuid == u1
+
+    def test_cycle_detection(self, claude_config_dir: Path, tmp_path: Path):
+        """Cyclic parentUuid references don't cause infinite loop."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        # a1 → u1 → a1 (cycle!)
+        entries = [
+            _make_transcript_entry("user", u1, a1, sid, content="hi"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hello"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        # Should terminate without hanging. Both entries are parents of
+        # each other → no terminals → empty chain.
+        messages = get_session_messages(sid, directory=project_path)
+        # No terminals found (both are parents) → returns empty
+        assert messages == []
+
+    def test_empty_transcript_file(self, claude_config_dir: Path, tmp_path: Path):
+        """Empty file returns empty list."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        (project_dir / f"{sid}.jsonl").write_text("")
+        assert get_session_messages(sid, directory=project_path) == []
+
+    def test_ignores_non_transcript_types(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Lines with type=summary (no uuid/chain) are ignored during parsing."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+
+        lines = [
+            json.dumps(_make_transcript_entry("user", u1, None, sid, content="hi")),
+            json.dumps({"type": "summary", "summary": "A nice chat"}),
+            json.dumps(
+                _make_transcript_entry("assistant", a1, u1, sid, content="hello")
+            ),
+        ]
+        (project_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert len(messages) == 2
+
+
+class TestBuildConversationChain:
+    """Unit tests for the _build_conversation_chain helper."""
+
+    def test_empty_input(self):
+        assert _build_conversation_chain([]) == []
+
+    def test_single_entry(self):
+        entry = {"type": "user", "uuid": "a", "parentUuid": None}
+        result = _build_conversation_chain([entry])
+        assert result == [entry]
+
+    def test_linear_chain(self):
+        entries = [
+            {"type": "user", "uuid": "a", "parentUuid": None},
+            {"type": "assistant", "uuid": "b", "parentUuid": "a"},
+            {"type": "user", "uuid": "c", "parentUuid": "b"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == ["a", "b", "c"]
+
+    def test_only_progress_entries_returns_empty(self):
+        """If no user/assistant entries, no leaves found → empty."""
+        entries = [
+            {"type": "progress", "uuid": "a", "parentUuid": None},
+            {"type": "progress", "uuid": "b", "parentUuid": "a"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert result == []
+
+
+class TestSessionMessageType:
+    """Tests for the SessionMessage dataclass."""
+
+    def test_creation(self):
+        msg = SessionMessage(
+            type="user",
+            uuid="abc",
+            session_id="sess",
+            message={"role": "user", "content": "hi"},
+        )
+        assert msg.type == "user"
+        assert msg.uuid == "abc"
+        assert msg.session_id == "sess"
+        assert msg.message == {"role": "user", "content": "hi"}
+        assert msg.parent_tool_use_id is None

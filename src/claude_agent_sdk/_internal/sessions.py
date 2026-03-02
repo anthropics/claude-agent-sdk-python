@@ -14,8 +14,9 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Any
 
-from ..types import SDKSessionInfo
+from ..types import SDKSessionInfo, SessionMessage
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -631,3 +632,295 @@ def list_sessions(
     if directory:
         return _list_sessions_for_project(directory, limit, include_worktrees)
     return _list_all_sessions(limit)
+
+
+# ---------------------------------------------------------------------------
+# get_session_messages — full transcript reconstruction
+# ---------------------------------------------------------------------------
+
+# Transcript entry types that carry uuid + parentUuid chain links.
+_TRANSCRIPT_ENTRY_TYPES = frozenset(
+    {"user", "assistant", "progress", "system", "attachment"}
+)
+
+# Internal type for parsed JSONL transcript entries — mirrors the TS
+# TranscriptEntry type but as a loose dict (fields: type, uuid, parentUuid,
+# sessionId, message, isSidechain, isMeta, isCompactSummary, teamName).
+_TranscriptEntry = dict[str, Any]
+
+
+def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
+    """Tries to read a session JSONL file from a project directory."""
+    try:
+        return (project_dir / file_name).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _read_session_file(session_id: str, directory: str | None) -> str | None:
+    """Finds and reads the session JSONL file.
+
+    If directory is provided, looks in that project directory and its git
+    worktrees (with prefix-fallback for Bun/Node hash mismatches on long
+    paths). Otherwise, searches all project directories.
+
+    Returns the file content, or None if not found.
+    """
+    file_name = f"{session_id}.jsonl"
+
+    if directory:
+        canonical_dir = _canonicalize_path(directory)
+
+        # Try the exact/prefix-matched project directory first
+        project_dir = _find_project_dir(canonical_dir)
+        if project_dir is not None:
+            content = _try_read_session_file(project_dir, file_name)
+            if content:
+                return content
+
+        # Try worktree paths — sessions may live under a different worktree root
+        try:
+            worktree_paths = _get_worktree_paths(canonical_dir)
+        except Exception:
+            worktree_paths = []
+
+        for wt in worktree_paths:
+            if wt == canonical_dir:
+                continue  # already tried above
+            wt_project_dir = _find_project_dir(wt)
+            if wt_project_dir is not None:
+                content = _try_read_session_file(wt_project_dir, file_name)
+                if content:
+                    return content
+
+        return None
+
+    # No directory provided — search all project directories
+    projects_dir = _get_projects_dir()
+    try:
+        dirents = list(projects_dir.iterdir())
+    except OSError:
+        return None
+
+    for entry in dirents:
+        content = _try_read_session_file(entry, file_name)
+        if content:
+            return content
+
+    return None
+
+
+def _parse_transcript_entries(content: str) -> list[_TranscriptEntry]:
+    """Parses JSONL content into transcript entries.
+
+    Only keeps entries that have a uuid and are transcript message types
+    (user/assistant/progress/system/attachment). Skips corrupt lines.
+    """
+    entries: list[_TranscriptEntry] = []
+    start = 0
+    length = len(content)
+
+    while start < length:
+        end = content.find("\n", start)
+        if end == -1:
+            end = length
+
+        line = content[start:end].strip()
+        start = end + 1
+        if not line:
+            continue
+
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        if not isinstance(entry, dict):
+            continue
+        entry_type = entry.get("type")
+        if entry_type in _TRANSCRIPT_ENTRY_TYPES and isinstance(entry.get("uuid"), str):
+            entries.append(entry)
+
+    return entries
+
+
+def _build_conversation_chain(
+    entries: list[_TranscriptEntry],
+) -> list[_TranscriptEntry]:
+    """Builds the conversation chain by finding the leaf and walking parentUuid.
+
+    Returns messages in chronological order (root → leaf).
+
+    Note: logicalParentUuid (set on compact_boundary entries) is intentionally
+    NOT followed. This matches VS Code IDE behavior — post-compaction, the
+    isCompactSummary message replaces earlier messages, so following logical
+    parents would duplicate content.
+    """
+    if not entries:
+        return []
+
+    # Index by uuid for O(1) parent lookup
+    by_uuid: dict[str, _TranscriptEntry] = {}
+    for entry in entries:
+        by_uuid[entry["uuid"]] = entry
+
+    # Build index of entry positions (file order) for tie-breaking
+    entry_index: dict[str, int] = {}
+    for i, entry in enumerate(entries):
+        entry_index[entry["uuid"]] = i
+
+    # Find terminal messages (no children point to them via parentUuid)
+    parent_uuids: set[str] = set()
+    for entry in entries:
+        parent = entry.get("parentUuid")
+        if parent:
+            parent_uuids.add(parent)
+
+    terminals = [e for e in entries if e["uuid"] not in parent_uuids]
+
+    # From each terminal, walk back to find the nearest user/assistant leaf
+    leaves: list[_TranscriptEntry] = []
+    for terminal in terminals:
+        walk_cur: _TranscriptEntry | None = terminal
+        walk_seen: set[str] = set()
+        while walk_cur is not None:
+            uid = walk_cur["uuid"]
+            if uid in walk_seen:
+                break
+            walk_seen.add(uid)
+            if walk_cur.get("type") in ("user", "assistant"):
+                leaves.append(walk_cur)
+                break
+            parent = walk_cur.get("parentUuid")
+            walk_cur = by_uuid.get(parent) if parent else None
+
+    if not leaves:
+        return []
+
+    # Pick the leaf from the main chain (not sidechain/team/meta), preferring
+    # the highest position in the entries array (most recent in file)
+    main_leaves = [
+        leaf
+        for leaf in leaves
+        if not leaf.get("isSidechain")
+        and not leaf.get("teamName")
+        and not leaf.get("isMeta")
+    ]
+
+    def _pick_best(candidates: list[_TranscriptEntry]) -> _TranscriptEntry:
+        best = candidates[0]
+        best_idx = entry_index.get(best["uuid"], -1)
+        for cur in candidates[1:]:
+            cur_idx = entry_index.get(cur["uuid"], -1)
+            if cur_idx > best_idx:
+                best = cur
+                best_idx = cur_idx
+        return best
+
+    leaf = _pick_best(main_leaves) if main_leaves else _pick_best(leaves)
+
+    # Walk from leaf to root via parentUuid
+    chain: list[_TranscriptEntry] = []
+    chain_seen: set[str] = set()
+    chain_cur: _TranscriptEntry | None = leaf
+    while chain_cur is not None:
+        uid = chain_cur["uuid"]
+        if uid in chain_seen:
+            break
+        chain_seen.add(uid)
+        chain.append(chain_cur)
+        parent = chain_cur.get("parentUuid")
+        chain_cur = by_uuid.get(parent) if parent else None
+
+    chain.reverse()
+    return chain
+
+
+def _is_visible_message(entry: _TranscriptEntry) -> bool:
+    """Returns True if the entry should be included in the returned messages."""
+    entry_type = entry.get("type")
+    if entry_type != "user" and entry_type != "assistant":
+        return False
+    if entry.get("isMeta"):
+        return False
+    if entry.get("isSidechain"):
+        return False
+    # Note: isCompactSummary messages are intentionally included. They contain
+    # the summarized content from compacted conversations and are the only
+    # representation of that content post-compaction. This matches VS Code IDE
+    # behavior (transcriptToSessionMessage does not filter them).
+    return not entry.get("teamName")
+
+
+def _to_session_message(entry: _TranscriptEntry) -> SessionMessage:
+    """Converts a transcript entry dict into a SessionMessage."""
+    entry_type = entry.get("type")
+    # Narrow to the Literal type — _is_visible_message already guarantees
+    # this is "user" or "assistant".
+    msg_type: str = "user" if entry_type == "user" else "assistant"
+    return SessionMessage(
+        type=msg_type,  # type: ignore[arg-type]
+        uuid=entry.get("uuid", ""),
+        session_id=entry.get("sessionId", ""),
+        message=entry.get("message"),
+        parent_tool_use_id=None,
+    )
+
+
+def get_session_messages(
+    session_id: str,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SessionMessage]:
+    """Reads a session's conversation messages from its JSONL transcript file.
+
+    Parses the full JSONL, builds the conversation chain via ``parentUuid``
+    links, and returns user/assistant messages in chronological order.
+
+    Args:
+        session_id: UUID of the session to read.
+        directory: Project directory to find the session in. If omitted,
+            searches all project directories under ``~/.claude/projects/``.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Returns
+        an empty list if the session is not found, the session_id is not a
+        valid UUID, or the transcript contains no visible messages.
+
+    Example:
+        Read all messages from a session::
+
+            messages = get_session_messages(
+                "550e8400-e29b-41d4-a716-446655440000",
+                directory="/path/to/project",
+            )
+            for msg in messages:
+                print(msg.type, msg.message)
+
+        Read with pagination::
+
+            page = get_session_messages(
+                session_id, limit=10, offset=20
+            )
+    """
+    if not _validate_uuid(session_id):
+        return []
+
+    content = _read_session_file(session_id, directory)
+    if not content:
+        return []
+
+    entries = _parse_transcript_entries(content)
+    chain = _build_conversation_chain(entries)
+    visible = [e for e in chain if _is_visible_message(e)]
+    messages = [_to_session_message(e) for e in visible]
+
+    # Apply offset and limit
+    if limit is not None and limit > 0:
+        return messages[offset : offset + limit]
+    if offset > 0:
+        return messages[offset:]
+    return messages

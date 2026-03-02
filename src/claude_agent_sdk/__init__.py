@@ -13,7 +13,7 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
-from ._internal.sessions import list_sessions
+from ._internal.sessions import get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
 from .client import ClaudeSDKClient
@@ -54,6 +54,7 @@ from .types import (
     SdkBeta,
     SdkPluginConfig,
     SDKSessionInfo,
+    SessionMessage,
     SettingSource,
     StopHookInput,
     SubagentStartHookInput,
@@ -382,7 +383,9 @@ __all__ = [
     "SdkPluginConfig",
     # Session listing
     "list_sessions",
+    "get_session_messages",
     "SDKSessionInfo",
+    "SessionMessage",
     # Beta support
     "SdkBeta",
     # Sandbox support

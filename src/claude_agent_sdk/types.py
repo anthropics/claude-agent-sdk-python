@@ -730,6 +730,30 @@ class SDKSessionInfo:
     cwd: str | None = None
 
 
+@dataclass
+class SessionMessage:
+    """A user or assistant message from a session transcript.
+
+    Returned by ``get_session_messages()`` for reading historical session
+    data. Fields match the SDK wire protocol types (SDKUserMessage /
+    SDKAssistantMessage).
+
+    Attributes:
+        type: Message type — ``"user"`` or ``"assistant"``.
+        uuid: Unique message identifier.
+        session_id: ID of the session this message belongs to.
+        message: Raw Anthropic API message dict (role, content, etc.).
+        parent_tool_use_id: Always ``None`` for top-level conversation
+            messages (tool-use sidechain messages are filtered out).
+    """
+
+    type: Literal["user", "assistant"]
+    uuid: str
+    session_id: str
+    message: Any
+    parent_tool_use_id: None = None
+
+
 class ThinkingConfigAdaptive(TypedDict):
     type: Literal["adaptive"]
 

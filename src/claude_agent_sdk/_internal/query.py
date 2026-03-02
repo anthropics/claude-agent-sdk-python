@@ -567,6 +567,34 @@ class Query:
             }
         )
 
+    async def reconnect_mcp_server(self, server_name: str) -> None:
+        """Reconnect a disconnected or failed MCP server.
+
+        Args:
+            server_name: The name of the MCP server to reconnect
+        """
+        await self._send_control_request(
+            {
+                "subtype": "mcp_reconnect",
+                "serverName": server_name,
+            }
+        )
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None:
+        """Enable or disable an MCP server.
+
+        Args:
+            server_name: The name of the MCP server to toggle
+            enabled: Whether the server should be enabled
+        """
+        await self._send_control_request(
+            {
+                "subtype": "mcp_toggle",
+                "serverName": server_name,
+                "enabled": enabled,
+            }
+        )
+
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 

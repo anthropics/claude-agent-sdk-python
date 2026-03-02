@@ -828,6 +828,23 @@ class SDKControlRewindFilesRequest(TypedDict):
     user_message_id: str
 
 
+class SDKControlMcpReconnectRequest(TypedDict):
+    """Reconnects a disconnected or failed MCP server."""
+
+    subtype: Literal["mcp_reconnect"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+
+
+class SDKControlMcpToggleRequest(TypedDict):
+    """Enables or disables an MCP server."""
+
+    subtype: Literal["mcp_toggle"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+    enabled: bool
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -839,6 +856,8 @@ class SDKControlRequest(TypedDict):
         | SDKHookCallbackRequest
         | SDKControlMcpMessageRequest
         | SDKControlRewindFilesRequest
+        | SDKControlMcpReconnectRequest
+        | SDKControlMcpToggleRequest
     )
 
 

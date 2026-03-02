@@ -304,6 +304,54 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.rewind_files(user_message_id)
 
+    async def reconnect_mcp_server(self, server_name: str) -> None:
+        """Reconnect a disconnected or failed MCP server (only works with streaming mode).
+
+        Use this to retry connecting to an MCP server that failed to connect
+        or was disconnected. Raises an exception if the reconnection fails.
+
+        Args:
+            server_name: The name of the MCP server to reconnect
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                status = await client.get_mcp_status()
+                for server in status.get("mcpServers", []):
+                    if server["status"] == "failed":
+                        await client.reconnect_mcp_server(server["name"])
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.reconnect_mcp_server(server_name)
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None:
+        """Enable or disable an MCP server (only works with streaming mode).
+
+        Disabling a server disconnects it and removes its tools from the
+        available tool set. Enabling a server reconnects it and makes its
+        tools available again. Raises an exception on failure.
+
+        Args:
+            server_name: The name of the MCP server to toggle
+            enabled: True to enable the server, False to disable it
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                # Temporarily disable a server
+                await client.toggle_mcp_server("my-server", enabled=False)
+                await client.query("Do something without my-server tools")
+
+                # Re-enable it later
+                await client.toggle_mcp_server("my-server", enabled=True)
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.toggle_mcp_server(server_name, enabled)
+
     async def get_mcp_status(self) -> dict[str, Any]:
         """Get current MCP server connection status (only works with streaming mode).
 

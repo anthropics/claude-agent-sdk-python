@@ -595,6 +595,19 @@ class Query:
             }
         )
 
+    async def stop_task(self, task_id: str) -> None:
+        """Stop a running task.
+
+        Args:
+            task_id: The task ID from task_notification events
+        """
+        await self._send_control_request(
+            {
+                "subtype": "stop_task",
+                "task_id": task_id,
+            }
+        )
+
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 

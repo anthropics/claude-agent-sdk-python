@@ -845,6 +845,11 @@ class SDKControlMcpToggleRequest(TypedDict):
     enabled: bool
 
 
+class SDKControlStopTaskRequest(TypedDict):
+    subtype: Literal["stop_task"]
+    task_id: str
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -858,6 +863,7 @@ class SDKControlRequest(TypedDict):
         | SDKControlRewindFilesRequest
         | SDKControlMcpReconnectRequest
         | SDKControlMcpToggleRequest
+        | SDKControlStopTaskRequest
     )
 
 

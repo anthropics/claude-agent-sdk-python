@@ -352,6 +352,29 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.toggle_mcp_server(server_name, enabled)
 
+    async def stop_task(self, task_id: str) -> None:
+        """Stop a running task (only works with streaming mode).
+
+        After this resolves, a `task_notification` system message with
+        status `'stopped'` will be emitted by the CLI in the message stream.
+
+        Args:
+            task_id: The task ID from `task_notification` events.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Start a long-running task")
+
+                # Listen for task_notification to get task_id, then:
+                await client.stop_task("task-abc123")
+                # A task_notification with status 'stopped' will follow
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.stop_task(task_id)
+
     async def get_mcp_status(self) -> dict[str, Any]:
         """Get current MCP server connection status (only works with streaming mode).
 

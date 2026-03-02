@@ -637,6 +637,51 @@ class TestClaudeSDKClientStreaming:
 
         anyio.run(_test)
 
+    def test_stop_task(self):
+        """Test stop_task sends correct control request with task_id."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = _create_mock_transport_with_control_responses()
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    await client.stop_task("task-abc123")
+                    # Check that a control request was sent via write
+                    write_calls = mock_transport.write.call_args_list
+                    request_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            req = msg.get("request", {})
+                            if (
+                                msg.get("type") == "control_request"
+                                and req.get("subtype") == "stop_task"
+                            ):
+                                assert req.get("task_id") == "task-abc123"
+                                request_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert request_found, (
+                        "stop_task control request with task_id not found"
+                    )
+
+        anyio.run(_test)
+
+    def test_stop_task_not_connected(self):
+        """Test stop_task when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.stop_task("task-abc123")
+
+        anyio.run(_test)
+
     def test_client_with_options(self):
         """Test client initialization with options."""
 

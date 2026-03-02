@@ -677,6 +677,7 @@ class ResultMessage:
     is_error: bool
     num_turns: int
     session_id: str
+    stop_reason: str | None = None
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None

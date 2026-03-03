@@ -8,7 +8,14 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import (
+    ClaudeAgentOptions,
+    HookEvent,
+    HookMatcher,
+    McpStatusResponse,
+    Message,
+    ResultMessage,
+)
 
 
 class ClaudeSDKClient:
@@ -304,30 +311,108 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.rewind_files(user_message_id)
 
-    async def get_mcp_status(self) -> dict[str, Any]:
-        """Get current MCP server connection status (only works with streaming mode).
+    async def reconnect_mcp_server(self, server_name: str) -> None:
+        """Reconnect a disconnected or failed MCP server (only works with streaming mode).
 
-        Queries the Claude Code CLI for the live connection status of all
-        configured MCP servers.
+        Use this to retry connecting to an MCP server that failed to connect
+        or was disconnected. Raises an exception if the reconnection fails.
 
-        Returns:
-            Dictionary with MCP server status information. Contains a
-            'mcpServers' key with a list of server status objects, each having:
-            - 'name': Server name (str)
-            - 'status': Connection status ('connected', 'pending', 'failed',
-              'needs-auth', 'disabled')
+        Args:
+            server_name: The name of the MCP server to reconnect
 
         Example:
             ```python
             async with ClaudeSDKClient(options) as client:
                 status = await client.get_mcp_status()
                 for server in status.get("mcpServers", []):
-                    print(f"{server['name']}: {server['status']}")
+                    if server["status"] == "failed":
+                        await client.reconnect_mcp_server(server["name"])
             ```
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        result: dict[str, Any] = await self._query.get_mcp_status()
+        await self._query.reconnect_mcp_server(server_name)
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None:
+        """Enable or disable an MCP server (only works with streaming mode).
+
+        Disabling a server disconnects it and removes its tools from the
+        available tool set. Enabling a server reconnects it and makes its
+        tools available again. Raises an exception on failure.
+
+        Args:
+            server_name: The name of the MCP server to toggle
+            enabled: True to enable the server, False to disable it
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                # Temporarily disable a server
+                await client.toggle_mcp_server("my-server", enabled=False)
+                await client.query("Do something without my-server tools")
+
+                # Re-enable it later
+                await client.toggle_mcp_server("my-server", enabled=True)
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.toggle_mcp_server(server_name, enabled)
+
+    async def stop_task(self, task_id: str) -> None:
+        """Stop a running task (only works with streaming mode).
+
+        After this resolves, a `task_notification` system message with
+        status `'stopped'` will be emitted by the CLI in the message stream.
+
+        Args:
+            task_id: The task ID from `task_notification` events.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Start a long-running task")
+
+                # Listen for task_notification to get task_id, then:
+                await client.stop_task("task-abc123")
+                # A task_notification with status 'stopped' will follow
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.stop_task(task_id)
+
+    async def get_mcp_status(self) -> McpStatusResponse:
+        """Get current MCP server connection status (only works with streaming mode).
+
+        Queries the Claude Code CLI for the live connection status of all
+        configured MCP servers.
+
+        Returns:
+            McpStatusResponse dictionary with an 'mcpServers' key containing
+            a list of McpServerStatus entries. Each entry includes:
+            - 'name': Server name (str)
+            - 'status': Connection status ('connected', 'pending', 'failed',
+              'needs-auth', 'disabled')
+            - 'serverInfo': MCP server name/version (when connected)
+            - 'error': Error message (when status is 'failed')
+            - 'config': Server configuration (stdio/sse/http/sdk/claudeai-proxy)
+            - 'scope': Configuration scope (e.g., project, user, local)
+            - 'tools': List of tools provided by the server (when connected)
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                status = await client.get_mcp_status()
+                for server in status["mcpServers"]:
+                    print(f"{server['name']}: {server['status']}")
+                    if server["status"] == "failed":
+                        print(f"  Error: {server.get('error')}")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: McpStatusResponse = await self._query.get_mcp_status()
         return result
 
     async def get_server_info(self) -> dict[str, Any] | None:

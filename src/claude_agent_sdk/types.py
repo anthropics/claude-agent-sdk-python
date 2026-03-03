@@ -504,6 +504,116 @@ McpServerConfig = (
 )
 
 
+# MCP Server Status types (returned by get_mcp_status)
+# These mirror the TypeScript SDK's McpServerStatus type and use wire-format
+# field names (camelCase where applicable) since they come directly from CLI
+# JSON output.
+
+
+class McpSdkServerConfigStatus(TypedDict):
+    """SDK MCP server config as returned in status responses.
+
+    Unlike McpSdkServerConfig (which includes the in-process `instance`),
+    this output-only type only has serializable fields.
+    """
+
+    type: Literal["sdk"]
+    name: str
+
+
+class McpClaudeAIProxyServerConfig(TypedDict):
+    """Claude.ai proxy MCP server config.
+
+    Output-only type that appears in status responses for servers proxied
+    through Claude.ai.
+    """
+
+    type: Literal["claudeai-proxy"]
+    url: str
+    id: str
+
+
+# Broader config type for status responses (includes claudeai-proxy which is
+# output-only)
+McpServerStatusConfig = (
+    McpStdioServerConfig
+    | McpSSEServerConfig
+    | McpHttpServerConfig
+    | McpSdkServerConfigStatus
+    | McpClaudeAIProxyServerConfig
+)
+
+
+class McpToolAnnotations(TypedDict, total=False):
+    """Tool annotations as returned in MCP server status.
+
+    Wire format uses camelCase field names (from CLI JSON output).
+    """
+
+    readOnly: bool
+    destructive: bool
+    openWorld: bool
+
+
+class McpToolInfo(TypedDict):
+    """Information about a tool provided by an MCP server."""
+
+    name: str
+    description: NotRequired[str]
+    annotations: NotRequired[McpToolAnnotations]
+
+
+class McpServerInfo(TypedDict):
+    """Server info from MCP initialize handshake (available when connected)."""
+
+    name: str
+    version: str
+
+
+# Connection status values for an MCP server
+McpServerConnectionStatus = Literal[
+    "connected", "failed", "needs-auth", "pending", "disabled"
+]
+
+
+class McpServerStatus(TypedDict):
+    """Status information for an MCP server connection.
+
+    Returned by `ClaudeSDKClient.get_mcp_status()` in the `mcpServers` list.
+    """
+
+    name: str
+    """Server name as configured."""
+
+    status: McpServerConnectionStatus
+    """Current connection status."""
+
+    serverInfo: NotRequired[McpServerInfo]
+    """Server information from MCP handshake (available when connected)."""
+
+    error: NotRequired[str]
+    """Error message (available when status is 'failed')."""
+
+    config: NotRequired[McpServerStatusConfig]
+    """Server configuration (includes URL for HTTP/SSE servers)."""
+
+    scope: NotRequired[str]
+    """Configuration scope (e.g., project, user, local, claudeai, managed)."""
+
+    tools: NotRequired[list[McpToolInfo]]
+    """Tools provided by this server (available when connected)."""
+
+
+class McpStatusResponse(TypedDict):
+    """Response from `ClaudeSDKClient.get_mcp_status()`.
+
+    Wraps the list of server statuses under the `mcpServers` key, matching
+    the wire-format response shape.
+    """
+
+    mcpServers: list[McpServerStatus]
+
+
 class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 
@@ -829,6 +939,28 @@ class SDKControlRewindFilesRequest(TypedDict):
     user_message_id: str
 
 
+class SDKControlMcpReconnectRequest(TypedDict):
+    """Reconnects a disconnected or failed MCP server."""
+
+    subtype: Literal["mcp_reconnect"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+
+
+class SDKControlMcpToggleRequest(TypedDict):
+    """Enables or disables an MCP server."""
+
+    subtype: Literal["mcp_toggle"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+    enabled: bool
+
+
+class SDKControlStopTaskRequest(TypedDict):
+    subtype: Literal["stop_task"]
+    task_id: str
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -840,6 +972,9 @@ class SDKControlRequest(TypedDict):
         | SDKHookCallbackRequest
         | SDKControlMcpMessageRequest
         | SDKControlRewindFilesRequest
+        | SDKControlMcpReconnectRequest
+        | SDKControlMcpToggleRequest
+        | SDKControlStopTaskRequest
     )
 
 

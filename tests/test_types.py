@@ -275,3 +275,98 @@ class TestHookSpecificOutputTypes:
             "updatedMCPToolOutput": {"result": "modified"},
         }
         assert output["updatedMCPToolOutput"] == {"result": "modified"}
+
+
+class TestMcpServerStatusTypes:
+    """Test MCP server status type definitions."""
+
+    def test_mcp_server_status_importable_from_package(self):
+        """Verify McpServerStatus and related types are exported."""
+        from claude_agent_sdk import (
+            McpServerConnectionStatus,  # noqa: F401
+            McpServerInfo,  # noqa: F401
+            McpServerStatus,  # noqa: F401
+            McpServerStatusConfig,  # noqa: F401
+            McpStatusResponse,  # noqa: F401
+            McpToolAnnotations,  # noqa: F401
+            McpToolInfo,  # noqa: F401
+        )
+
+    def test_mcp_server_status_connected(self):
+        """Test constructing a connected McpServerStatus with full fields."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "my-server",
+            "status": "connected",
+            "serverInfo": {"name": "my-server", "version": "1.2.3"},
+            "config": {"type": "http", "url": "https://example.com"},
+            "scope": "project",
+            "tools": [
+                {
+                    "name": "greet",
+                    "description": "Greet a user",
+                    "annotations": {
+                        "readOnly": True,
+                        "destructive": False,
+                        "openWorld": False,
+                    },
+                }
+            ],
+        }
+        assert status["name"] == "my-server"
+        assert status["status"] == "connected"
+        assert status["serverInfo"]["version"] == "1.2.3"
+        assert status["tools"][0]["annotations"]["readOnly"] is True
+
+    def test_mcp_server_status_minimal(self):
+        """Test constructing a minimal McpServerStatus (only required fields)."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {"name": "pending-server", "status": "pending"}
+        assert status["name"] == "pending-server"
+        assert status["status"] == "pending"
+        assert "error" not in status
+        assert "config" not in status
+
+    def test_mcp_server_status_failed_with_error(self):
+        """Test McpServerStatus for a failed server includes error."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "broken-server",
+            "status": "failed",
+            "error": "Connection refused",
+        }
+        assert status["status"] == "failed"
+        assert status["error"] == "Connection refused"
+
+    def test_mcp_server_status_config_claudeai_proxy(self):
+        """Test McpServerStatusConfig accepts claudeai-proxy variant."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "proxy-server",
+            "status": "needs-auth",
+            "config": {
+                "type": "claudeai-proxy",
+                "url": "https://claude.ai/proxy",
+                "id": "proxy-abc",
+            },
+        }
+        assert status["config"]["type"] == "claudeai-proxy"
+        assert status["config"]["id"] == "proxy-abc"
+
+    def test_mcp_status_response_wraps_servers(self):
+        """Test McpStatusResponse wraps mcpServers list."""
+        from claude_agent_sdk import McpStatusResponse
+
+        response: McpStatusResponse = {
+            "mcpServers": [
+                {"name": "a", "status": "connected"},
+                {"name": "b", "status": "disabled"},
+            ]
+        }
+        assert len(response["mcpServers"]) == 2
+        assert response["mcpServers"][0]["status"] == "connected"
+        assert response["mcpServers"][1]["status"] == "disabled"

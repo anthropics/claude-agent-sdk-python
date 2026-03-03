@@ -107,6 +107,54 @@ def create_mock_transport(with_init_response=True):
     return mock_transport
 
 
+def _create_mock_transport_with_control_responses():
+    """Create a mock transport that responds with success to all control requests.
+
+    Useful for testing client methods that send control requests (e.g.
+    reconnect_mcp_server, toggle_mcp_server) without needing to special-case
+    each subtype in the mock.
+    """
+    mock_transport = AsyncMock()
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+
+    written_messages: list[str] = []
+
+    async def mock_write(data):
+        written_messages.append(data)
+
+    mock_transport.write = AsyncMock(side_effect=mock_write)
+
+    async def control_protocol_generator():
+        # Poll for control requests and respond with success to each one.
+        last_check = 0
+        timeout_counter = 0
+        while timeout_counter < 200:  # Avoid infinite loop
+            await asyncio.sleep(0.01)
+            timeout_counter += 1
+
+            for msg_str in written_messages[last_check:]:
+                try:
+                    msg = json.loads(msg_str.strip())
+                    if msg.get("type") == "control_request":
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg.get("request_id"),
+                                "subtype": "success",
+                                "response": {},
+                            },
+                        }
+                except (json.JSONDecodeError, KeyError, AttributeError):
+                    pass
+            last_check = len(written_messages)
+
+    mock_transport.read_messages = control_protocol_generator
+    return mock_transport
+
+
 class TestClaudeSDKClientStreaming:
     """Test ClaudeSDKClient streaming functionality."""
 
@@ -464,6 +512,319 @@ class TestClaudeSDKClientStreaming:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.interrupt()
+
+        anyio.run(_test)
+
+    def test_reconnect_mcp_server(self):
+        """Test reconnect_mcp_server sends correct control request."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = _create_mock_transport_with_control_responses()
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    await client.reconnect_mcp_server("my-server")
+                    # Check that a control request was sent via write
+                    write_calls = mock_transport.write.call_args_list
+                    request_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            req = msg.get("request", {})
+                            if (
+                                msg.get("type") == "control_request"
+                                and req.get("subtype") == "mcp_reconnect"
+                            ):
+                                # Verify wire format uses camelCase serverName
+                                assert req.get("serverName") == "my-server"
+                                request_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert request_found, "mcp_reconnect control request not found"
+
+        anyio.run(_test)
+
+    def test_reconnect_mcp_server_not_connected(self):
+        """Test reconnect_mcp_server when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.reconnect_mcp_server("my-server")
+
+        anyio.run(_test)
+
+    def test_toggle_mcp_server(self):
+        """Test toggle_mcp_server sends correct control request."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = _create_mock_transport_with_control_responses()
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    await client.toggle_mcp_server("my-server", False)
+                    # Check that a control request was sent via write
+                    write_calls = mock_transport.write.call_args_list
+                    request_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            req = msg.get("request", {})
+                            if (
+                                msg.get("type") == "control_request"
+                                and req.get("subtype") == "mcp_toggle"
+                            ):
+                                # Verify wire format uses camelCase serverName
+                                assert req.get("serverName") == "my-server"
+                                assert req.get("enabled") is False
+                                request_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert request_found, "mcp_toggle control request not found"
+
+        anyio.run(_test)
+
+    def test_toggle_mcp_server_enabled_true(self):
+        """Test toggle_mcp_server with enabled=True."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = _create_mock_transport_with_control_responses()
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    await client.toggle_mcp_server("other-server", True)
+                    write_calls = mock_transport.write.call_args_list
+                    request_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            req = msg.get("request", {})
+                            if (
+                                msg.get("type") == "control_request"
+                                and req.get("subtype") == "mcp_toggle"
+                            ):
+                                assert req.get("serverName") == "other-server"
+                                assert req.get("enabled") is True
+                                request_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert request_found, "mcp_toggle control request not found"
+
+        anyio.run(_test)
+
+    def test_toggle_mcp_server_not_connected(self):
+        """Test toggle_mcp_server when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.toggle_mcp_server("my-server", True)
+
+        anyio.run(_test)
+
+    def test_stop_task(self):
+        """Test stop_task sends correct control request with task_id."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = _create_mock_transport_with_control_responses()
+                mock_transport_class.return_value = mock_transport
+
+                async with ClaudeSDKClient() as client:
+                    await client.stop_task("task-abc123")
+                    # Check that a control request was sent via write
+                    write_calls = mock_transport.write.call_args_list
+                    request_found = False
+                    for call in write_calls:
+                        data = call[0][0]
+                        try:
+                            msg = json.loads(data.strip())
+                            req = msg.get("request", {})
+                            if (
+                                msg.get("type") == "control_request"
+                                and req.get("subtype") == "stop_task"
+                            ):
+                                assert req.get("task_id") == "task-abc123"
+                                request_found = True
+                                break
+                        except (json.JSONDecodeError, KeyError, AttributeError):
+                            pass
+                    assert request_found, (
+                        "stop_task control request with task_id not found"
+                    )
+
+        anyio.run(_test)
+
+    def test_stop_task_not_connected(self):
+        """Test stop_task when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.stop_task("task-abc123")
+
+        anyio.run(_test)
+
+    def test_get_mcp_status(self):
+        """Test get_mcp_status returns McpStatusResponse shape."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+                mock_transport_class.return_value = mock_transport
+
+                written_messages: list[str] = []
+
+                async def mock_write(data):
+                    written_messages.append(data)
+
+                mock_transport.write = AsyncMock(side_effect=mock_write)
+
+                # Simulated mcp_status response matching McpServerStatus shape
+                mcp_status_response = {
+                    "mcpServers": [
+                        {
+                            "name": "my-http-server",
+                            "status": "connected",
+                            "serverInfo": {
+                                "name": "my-http-server",
+                                "version": "1.0.0",
+                            },
+                            "config": {
+                                "type": "http",
+                                "url": "https://example.com/mcp",
+                            },
+                            "scope": "project",
+                            "tools": [
+                                {
+                                    "name": "greet",
+                                    "description": "Greet a user",
+                                    "annotations": {"readOnly": True},
+                                },
+                                {"name": "reset"},
+                            ],
+                        },
+                        {
+                            "name": "failed-server",
+                            "status": "failed",
+                            "error": "Connection refused",
+                        },
+                        {
+                            "name": "proxy-server",
+                            "status": "needs-auth",
+                            "config": {
+                                "type": "claudeai-proxy",
+                                "url": "https://claude.ai/proxy",
+                                "id": "proxy-123",
+                            },
+                        },
+                    ]
+                }
+
+                async def control_protocol_generator():
+                    last_check = 0
+                    timeout_counter = 0
+                    while timeout_counter < 200:
+                        await asyncio.sleep(0.01)
+                        timeout_counter += 1
+
+                        for msg_str in written_messages[last_check:]:
+                            try:
+                                msg = json.loads(msg_str.strip())
+                                if msg.get("type") == "control_request":
+                                    subtype = msg.get("request", {}).get("subtype")
+                                    if subtype == "initialize":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {},
+                                            },
+                                        }
+                                    elif subtype == "mcp_status":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": mcp_status_response,
+                                            },
+                                        }
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+                        last_check = len(written_messages)
+
+                mock_transport.read_messages = control_protocol_generator
+
+                async with ClaudeSDKClient() as client:
+                    status = await client.get_mcp_status()
+
+                    # Verify response conforms to McpStatusResponse shape
+                    assert "mcpServers" in status
+                    servers = status["mcpServers"]
+                    assert len(servers) == 3
+
+                    # Connected server with full info
+                    connected = servers[0]
+                    assert connected["name"] == "my-http-server"
+                    assert connected["status"] == "connected"
+                    assert connected["serverInfo"]["version"] == "1.0.0"
+                    assert connected["config"]["type"] == "http"
+                    assert connected["config"]["url"] == "https://example.com/mcp"
+                    assert connected["scope"] == "project"
+                    assert len(connected["tools"]) == 2
+                    assert connected["tools"][0]["name"] == "greet"
+                    assert connected["tools"][0]["annotations"]["readOnly"] is True
+                    # Tool without optional fields
+                    assert connected["tools"][1]["name"] == "reset"
+                    assert "description" not in connected["tools"][1]
+
+                    # Failed server with error
+                    failed = servers[1]
+                    assert failed["name"] == "failed-server"
+                    assert failed["status"] == "failed"
+                    assert failed["error"] == "Connection refused"
+
+                    # Server with claudeai-proxy config
+                    proxy = servers[2]
+                    assert proxy["name"] == "proxy-server"
+                    assert proxy["status"] == "needs-auth"
+                    assert proxy["config"]["type"] == "claudeai-proxy"
+                    assert proxy["config"]["id"] == "proxy-123"
+
+        anyio.run(_test)
+
+    def test_get_mcp_status_not_connected(self):
+        """Test get_mcp_status when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.get_mcp_status()
 
         anyio.run(_test)
 

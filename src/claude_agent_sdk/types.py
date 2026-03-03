@@ -873,6 +873,64 @@ class StreamEvent:
 Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
 
 
+# ---------------------------------------------------------------------------
+# Session Listing Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SDKSessionInfo:
+    """Session metadata returned by ``list_sessions()``.
+
+    Contains only data extractable from stat + head/tail reads — no full
+    JSONL parsing required.
+
+    Attributes:
+        session_id: Unique session identifier (UUID).
+        summary: Display title for the session — custom title, auto-generated
+            summary, or first prompt.
+        last_modified: Last modified time in milliseconds since epoch.
+        file_size: Session file size in bytes.
+        custom_title: User-set session title via /rename.
+        first_prompt: First meaningful user prompt in the session.
+        git_branch: Git branch at the end of the session.
+        cwd: Working directory for the session.
+    """
+
+    session_id: str
+    summary: str
+    last_modified: int
+    file_size: int
+    custom_title: str | None = None
+    first_prompt: str | None = None
+    git_branch: str | None = None
+    cwd: str | None = None
+
+
+@dataclass
+class SessionMessage:
+    """A user or assistant message from a session transcript.
+
+    Returned by ``get_session_messages()`` for reading historical session
+    data. Fields match the SDK wire protocol types (SDKUserMessage /
+    SDKAssistantMessage).
+
+    Attributes:
+        type: Message type — ``"user"`` or ``"assistant"``.
+        uuid: Unique message identifier.
+        session_id: ID of the session this message belongs to.
+        message: Raw Anthropic API message dict (role, content, etc.).
+        parent_tool_use_id: Always ``None`` for top-level conversation
+            messages (tool-use sidechain messages are filtered out).
+    """
+
+    type: Literal["user", "assistant"]
+    uuid: str
+    session_id: str
+    message: Any
+    parent_tool_use_id: None = None
+
+
 class ThinkingConfigAdaptive(TypedDict):
     type: Literal["adaptive"]
 

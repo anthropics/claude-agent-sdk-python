@@ -153,6 +153,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     is_error=data["is_error"],
                     num_turns=data["num_turns"],
                     session_id=data["session_id"],
+                    stop_reason=data.get("stop_reason"),
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),

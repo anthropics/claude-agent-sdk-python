@@ -313,6 +313,45 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, ResultMessage)
         assert message.subtype == "success"
+        assert message.stop_reason is None
+
+    def test_parse_result_message_with_stop_reason(self):
+        """Test parsing a result message with stop_reason field.
+
+        The stop_reason field mirrors the Anthropic API's stop_reason on the
+        final assistant turn (e.g., "end_turn", "max_tokens", "tool_use").
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "stop_reason": "end_turn",
+            "result": "Done",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.stop_reason == "end_turn"
+        assert message.result == "Done"
+
+    def test_parse_result_message_with_null_stop_reason(self):
+        """Test parsing a result message with explicit null stop_reason."""
+        data = {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": True,
+            "num_turns": 10,
+            "session_id": "session_123",
+            "stop_reason": None,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.stop_reason is None
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""

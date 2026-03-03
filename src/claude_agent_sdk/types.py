@@ -777,6 +777,72 @@ class SystemMessage:
     data: dict[str, Any]
 
 
+class TaskUsage(TypedDict):
+    """Usage statistics reported in task_progress and task_notification messages."""
+
+    total_tokens: int
+    tool_uses: int
+    duration_ms: int
+
+
+# Possible status values for a task_notification message.
+TaskNotificationStatus = Literal["completed", "failed", "stopped"]
+
+
+@dataclass
+class TaskStartedMessage(SystemMessage):
+    """System message emitted when a task starts.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    description: str
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    task_type: str | None = None
+
+
+@dataclass
+class TaskProgressMessage(SystemMessage):
+    """System message emitted while a task is in progress.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    description: str
+    usage: TaskUsage
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    last_tool_name: str | None = None
+
+
+@dataclass
+class TaskNotificationMessage(SystemMessage):
+    """System message emitted when a task completes, fails, or is stopped.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    status: TaskNotificationStatus
+    output_file: str
+    summary: str
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    usage: TaskUsage | None = None
+
+
 @dataclass
 class ResultMessage:
     """Result message with cost and usage information."""

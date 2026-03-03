@@ -11,6 +11,9 @@ from ..types import (
     ResultMessage,
     StreamEvent,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -135,10 +138,49 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "system":
             try:
-                return SystemMessage(
-                    subtype=data["subtype"],
-                    data=data,
-                )
+                subtype = data["subtype"]
+                match subtype:
+                    case "task_started":
+                        return TaskStartedMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            description=data["description"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            task_type=data.get("task_type"),
+                        )
+                    case "task_progress":
+                        return TaskProgressMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            description=data["description"],
+                            usage=data["usage"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            last_tool_name=data.get("last_tool_name"),
+                        )
+                    case "task_notification":
+                        return TaskNotificationMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            status=data["status"],
+                            output_file=data["output_file"],
+                            summary=data["summary"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            usage=data.get("usage"),
+                        )
+                    case _:
+                        return SystemMessage(
+                            subtype=subtype,
+                            data=data,
+                        )
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in system message: {e}", data

@@ -8,6 +8,9 @@ from claude_agent_sdk.types import (
     AssistantMessage,
     ResultMessage,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -276,6 +279,197 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, SystemMessage)
         assert message.subtype == "start"
+
+    def test_parse_task_started_message(self):
+        """Test parsing a task_started system message yields a TaskStartedMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "description": "Reticulating splines",
+            "task_type": "background",
+            "uuid": "uuid-1",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        assert message.task_id == "task-abc"
+        assert message.description == "Reticulating splines"
+        assert message.uuid == "uuid-1"
+        assert message.session_id == "session-1"
+        assert message.tool_use_id == "toolu_01"
+        assert message.task_type == "background"
+
+    def test_parse_task_started_message_optional_fields_absent(self):
+        """task_started with no optional fields should still parse, optionals set to None."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-abc",
+            "description": "Working",
+            "uuid": "uuid-1",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        assert message.tool_use_id is None
+        assert message.task_type is None
+
+    def test_parse_task_progress_message(self):
+        """Test parsing a task_progress system message yields a TaskProgressMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "description": "Halfway there",
+            "usage": {
+                "total_tokens": 1234,
+                "tool_uses": 5,
+                "duration_ms": 9876,
+            },
+            "last_tool_name": "Read",
+            "uuid": "uuid-2",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskProgressMessage)
+        assert message.task_id == "task-abc"
+        assert message.description == "Halfway there"
+        assert message.usage == {
+            "total_tokens": 1234,
+            "tool_uses": 5,
+            "duration_ms": 9876,
+        }
+        assert message.last_tool_name == "Read"
+        assert message.tool_use_id == "toolu_01"
+        assert message.uuid == "uuid-2"
+        assert message.session_id == "session-1"
+
+    def test_parse_task_notification_message(self):
+        """Test parsing a task_notification system message yields a TaskNotificationMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "status": "completed",
+            "output_file": "/tmp/out.md",
+            "summary": "All done",
+            "usage": {
+                "total_tokens": 2000,
+                "tool_uses": 7,
+                "duration_ms": 12345,
+            },
+            "uuid": "uuid-3",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskNotificationMessage)
+        assert message.task_id == "task-abc"
+        assert message.status == "completed"
+        assert message.output_file == "/tmp/out.md"
+        assert message.summary == "All done"
+        assert message.usage == {
+            "total_tokens": 2000,
+            "tool_uses": 7,
+            "duration_ms": 12345,
+        }
+        assert message.tool_use_id == "toolu_01"
+        assert message.uuid == "uuid-3"
+        assert message.session_id == "session-1"
+
+    def test_parse_task_notification_message_optional_fields_absent(self):
+        """task_notification with no optional fields (usage, tool_use_id) still parses."""
+        data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-abc",
+            "status": "failed",
+            "output_file": "/tmp/out.md",
+            "summary": "Boom",
+            "uuid": "uuid-3",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskNotificationMessage)
+        assert message.status == "failed"
+        assert message.usage is None
+        assert message.tool_use_id is None
+
+    def test_task_message_backward_compat_isinstance(self):
+        """Backward-compat: typed task messages are still SystemMessage instances."""
+        started_data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "desc",
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        progress_data = {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t1",
+            "description": "desc",
+            "usage": {"total_tokens": 1, "tool_uses": 0, "duration_ms": 10},
+            "uuid": "u2",
+            "session_id": "s1",
+        }
+        notif_data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t1",
+            "status": "stopped",
+            "output_file": "/o",
+            "summary": "s",
+            "uuid": "u3",
+            "session_id": "s1",
+        }
+        started = parse_message(started_data)
+        progress = parse_message(progress_data)
+        notif = parse_message(notif_data)
+        # isinstance checks against the base class still work
+        assert isinstance(started, SystemMessage)
+        assert isinstance(progress, SystemMessage)
+        assert isinstance(notif, SystemMessage)
+        # match-case against SystemMessage still works
+        matched = False
+        match started:
+            case SystemMessage():
+                matched = True
+        assert matched
+
+    def test_task_message_backward_compat_base_fields(self):
+        """Backward-compat: subtype and data fields on typed task messages are populated."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "desc",
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        # Base class fields still populated for legacy code paths
+        assert message.subtype == "task_started"
+        assert message.data == data
+        assert message.data["task_id"] == "t1"
+
+    def test_unknown_system_subtype_yields_generic(self):
+        """Unknown system subtypes fall through to generic SystemMessage (not a subclass)."""
+        data = {"type": "system", "subtype": "some_future_subtype", "foo": "bar"}
+        message = parse_message(data)
+        assert isinstance(message, SystemMessage)
+        # Ensure it's exactly SystemMessage, not one of the typed subclasses
+        assert type(message) is SystemMessage
+        assert not isinstance(message, TaskStartedMessage)
+        assert not isinstance(message, TaskProgressMessage)
+        assert not isinstance(message, TaskNotificationMessage)
+        assert message.subtype == "some_future_subtype"
+        assert message.data == data
 
     def test_parse_assistant_message_inside_subagent(self):
         """Test parsing a valid assistant message."""

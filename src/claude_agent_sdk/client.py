@@ -6,8 +6,8 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
-from . import Transport
 from ._errors import CLIConnectionError
+from ._internal.transport import Transport
 from .types import (
     ClaudeAgentOptions,
     HookEvent,

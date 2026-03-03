@@ -14,34 +14,7 @@ on:
         default: ''
 
 jobs:
-  build-wheels:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build dependencies
-        run: pip install build twine wheel
-        shell: bash
-
-      - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.os }}
-          path: dist/*.whl
-          if-no-files-found: error
-
   publish:
-    needs: build-wheels
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -61,16 +34,10 @@ jobs:
       - name: Update version files
         run: python scripts/update_version.py "$VERSION"
 
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: wheel-*
-          merge-multiple: true
-
-      - name: Build sdist and publish to PyPI
+      - name: Build and publish to PyPI
         run: |
           pip install build twine
-          python -m build --sdist
+          python -m build
           twine upload dist/*
         env:
           TWINE_USERNAME: __token__

@@ -203,6 +203,62 @@ class TestHookInputTypes:
         assert hook_input["agent_id"] == "agent-42"
         assert hook_input["agent_type"] == "researcher"
 
+    def test_pre_tool_use_hook_input_with_agent_id(self):
+        """PreToolUseHookInput accepts optional agent_id/agent_type.
+
+        When a tool is called from inside a Task sub-agent, the CLI includes
+        the calling agent's id so consumers can correlate the tool call to
+        the correct sub-agent — parallel sub-agents interleave their hook
+        callbacks over the same control channel and are otherwise
+        indistinguishable.
+        """
+        from claude_agent_sdk.types import PreToolUseHookInput
+
+        # Tool called from inside a sub-agent: agent_id present,
+        # same value SubagentStart emits.
+        hook_input: PreToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_use_id": "toolu_abc123",
+            "agent_id": "agent-42",
+            "agent_type": "researcher",
+        }
+        assert hook_input.get("agent_id") == "agent-42"
+        assert hook_input.get("agent_type") == "researcher"
+
+        # Tool called on the main thread: agent_id absent. Still type-valid.
+        hook_input_main: PreToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_use_id": "toolu_def456",
+        }
+        assert hook_input_main.get("agent_id") is None
+
+    def test_post_tool_use_hook_input_with_agent_id(self):
+        """PostToolUseHookInput accepts optional agent_id."""
+        from claude_agent_sdk.types import PostToolUseHookInput
+
+        hook_input: PostToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_response": {"content": [{"type": "text", "text": "hello"}]},
+            "tool_use_id": "toolu_abc123",
+            "agent_id": "agent-42",
+        }
+        assert hook_input.get("agent_id") == "agent-42"
+
     def test_permission_request_hook_input(self):
         """Test PermissionRequestHookInput construction."""
         hook_input: PermissionRequestHookInput = {

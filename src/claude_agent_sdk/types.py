@@ -182,7 +182,32 @@ class BaseHookInput(TypedDict):
     permission_mode: NotRequired[str]
 
 
-class PreToolUseHookInput(BaseHookInput):
+# agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
+# declared per-hook here because SubagentStartHookInput/SubagentStopHookInput
+# need them as *required*, and PEP 655 forbids narrowing NotRequired->Required
+# in a TypedDict subclass. The four tool-lifecycle types below are the only
+# ones the CLI actually populates (the other BaseHookInput consumers don't
+# have a toolUseContext in scope at their build site).
+class _SubagentContextMixin(TypedDict, total=False):
+    """Optional sub-agent attribution fields for tool-lifecycle hooks.
+
+    agent_id: Sub-agent identifier. Present only when the hook fires from
+    inside a Task-spawned sub-agent; absent on the main thread. Matches the
+    agent_id emitted by that sub-agent's SubagentStart/SubagentStop hooks.
+    When multiple sub-agents run in parallel their tool-lifecycle hooks
+    interleave over the same control channel — this is the only reliable
+    way to attribute each one to the correct sub-agent.
+
+    agent_type: Agent type name (e.g. "general-purpose", "code-reviewer").
+    Present inside a sub-agent (alongside agent_id), or on the main thread
+    of a session started with --agent (without agent_id).
+    """
+
+    agent_id: str
+    agent_type: str
+
+
+class PreToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PreToolUse hook events."""
 
     hook_event_name: Literal["PreToolUse"]
@@ -191,7 +216,7 @@ class PreToolUseHookInput(BaseHookInput):
     tool_use_id: str
 
 
-class PostToolUseHookInput(BaseHookInput):
+class PostToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PostToolUse hook events."""
 
     hook_event_name: Literal["PostToolUse"]
@@ -201,7 +226,7 @@ class PostToolUseHookInput(BaseHookInput):
     tool_use_id: str
 
 
-class PostToolUseFailureHookInput(BaseHookInput):
+class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PostToolUseFailure hook events."""
 
     hook_event_name: Literal["PostToolUseFailure"]
@@ -261,7 +286,7 @@ class SubagentStartHookInput(BaseHookInput):
     agent_type: str
 
 
-class PermissionRequestHookInput(BaseHookInput):
+class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PermissionRequest hook events."""
 
     hook_event_name: Literal["PermissionRequest"]

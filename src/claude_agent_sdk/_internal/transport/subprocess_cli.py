@@ -463,14 +463,20 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
-        # Terminate and wait for process
+        # Wait for the CLI process to exit gracefully after stdin EOF.
+        # The CLI detects stdin closure and shuts down on its own, flushing
+        # its async write queue (session transcript) to disk before exiting.
+        # Without this wait, the transcript may not be persisted, causing
+        # subsequent --resume to silently create a new session instead.
         if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-                # Wait for process to finish with timeout
-                with suppress(Exception):
-                    # Just try to wait, but don't block if it fails
+            try:
+                with anyio.fail_after(5):
                     await self._process.wait()
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    self._process.terminate()
+                    with suppress(Exception):
+                        await self._process.wait()
 
         self._process = None
         self._stdout_stream = None

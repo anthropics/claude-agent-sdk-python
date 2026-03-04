@@ -1,5 +1,6 @@
 """Internal client implementation."""
 
+import json
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
@@ -122,8 +123,6 @@ class InternalClient:
             if isinstance(prompt, str):
                 # For string prompts, write user message to stdin after initialize
                 # (matching TypeScript SDK behavior)
-                import json
-
                 user_message = {
                     "type": "user",
                     "session_id": "",
@@ -131,7 +130,7 @@ class InternalClient:
                     "parent_tool_use_id": None,
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
-                await chosen_transport.end_input()
+                await query.wait_for_result_and_end_input()
             elif isinstance(prompt, AsyncIterable) and query._tg:
                 # Stream input in background for async iterables
                 query._tg.start_soon(query.stream_input, prompt)

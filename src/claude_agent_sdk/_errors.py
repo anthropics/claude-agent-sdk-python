@@ -54,3 +54,56 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class TaskContextError(ClaudeSDKError):
+    """Raised when ClaudeSDKClient is used across different async tasks.
+
+    This occurs when connect() is called in one async task (e.g., FastAPI startup)
+    and receive_messages() is called in a different task (e.g., request handler).
+
+    The anyio MemoryObjectStream used internally is bound to the task group
+    where it was created, and cannot be accessed from a different task.
+
+    Attributes:
+        connect_task_id: ID of the task where connect() was called
+        current_task_id: ID of the task where the error occurred
+
+    Example:
+        Wrong way (will raise this error):
+        ```python
+        client = ClaudeSDKClient()
+        await client.connect()  # Task A
+
+        async def handle_request():
+            async for msg in client.receive_messages():  # Task B - ERROR!
+                yield msg
+        ```
+
+        Correct way:
+        ```python
+        async def handle_request():
+            async with ClaudeSDKClient() as client:  # Create in same task
+                await client.query("Hello")
+                async for msg in client.receive_messages():
+                    yield msg
+        ```
+    """
+
+    def __init__(
+        self,
+        message: str = "Client used across different async tasks",
+        connect_task_id: int | None = None,
+        current_task_id: int | None = None,
+    ):
+        self.connect_task_id = connect_task_id
+        self.current_task_id = current_task_id
+
+        # Build helpful error message
+        if connect_task_id is not None and current_task_id is not None:
+            message = (
+                f"{message} (connect task: {connect_task_id}, "
+                f"current task: {current_task_id})"
+            )
+
+        super().__init__(message)

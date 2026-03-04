@@ -379,3 +379,41 @@ async def test_tool_annotations_in_jsonrpc():
 
     # Tool without annotations should not have the key
     assert "annotations" not in tools_by_name["plain_tool"]
+
+
+@pytest.mark.asyncio
+async def test_is_error_flag():
+    """Test that is_error flag in tool results is properly propagated."""
+
+    @tool("divide", "Divide two numbers", {"a": float, "b": float})
+    async def divide(args: dict[str, Any]) -> dict[str, Any]:
+        if args["b"] == 0:
+            return {
+                "content": [{"type": "text", "text": "Error: Division by zero"}],
+                "is_error": True,
+            }
+        return {
+            "content": [{"type": "text", "text": f"Result: {args['a'] / args['b']}"}]
+        }
+
+    server_config = create_sdk_mcp_server(name="error-flag-test", tools=[divide])
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    # Test error case - is_error flag should be propagated
+    error_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="divide", arguments={"a": 1, "b": 0}),
+    )
+    result = await call_handler(error_request)
+    assert result.root.isError is True
+    assert "Division by zero" in result.root.content[0].text
+
+    # Test success case - should not be an error
+    success_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="divide", arguments={"a": 10, "b": 2}),
+    )
+    result = await call_handler(success_request)
+    assert result.root.isError is not True
+    assert "5.0" in result.root.content[0].text

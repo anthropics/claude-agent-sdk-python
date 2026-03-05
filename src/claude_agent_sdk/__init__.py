@@ -12,6 +12,7 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    SessionStorageError,
 )
 from ._internal.sessions import get_session_messages, list_sessions
 from ._internal.transport import Transport
@@ -427,4 +428,5 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    "SessionStorageError",
 ]

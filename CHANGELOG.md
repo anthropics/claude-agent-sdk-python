@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.46
+
+### New Features
+
+- **Session history functions**: Added `list_sessions()` and `get_session_messages()` top-level functions for retrieving past session data (#622)
+- **MCP control methods**: Added `add_mcp_server()`, `remove_mcp_server()`, and typed `McpServerStatus` for runtime MCP server management (#620)
+- **Typed task messages**: Added `TaskStarted`, `TaskProgress`, and `TaskNotification` message subclasses for better type safety when handling task-related events (#621)
+- **ResultMessage stop_reason**: Added `stop_reason` field to `ResultMessage` for inspecting why a conversation turn ended (#619)
+- **Hook input enhancements**: Added `agent_id` and `agent_type` fields to tool-lifecycle hook inputs (`PreToolUseHookInput`, `PostToolUseHookInput`, `PostToolUseFailureHookInput`) (#628)
+
+### Bug Fixes
+
+- **String prompt MCP initialization**: Fixed an issue where passing a string prompt would close stdin before MCP server initialization completed, causing MCP servers to fail to register (#630)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.69
+
 ## 0.1.45
 
 ### Internal/Other Changes

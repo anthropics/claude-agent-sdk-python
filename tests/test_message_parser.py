@@ -248,6 +248,48 @@ class TestMessageParser:
         assert isinstance(message.content[0], TextBlock)
         assert isinstance(message.content[1], ToolUseBlock)
 
+    def test_parse_assistant_message_with_usage(self):
+        """Test parsing an assistant message with usage statistics."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+                "usage": {
+                    "input_tokens": 1500,
+                    "output_tokens": 250,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 1200,
+                },
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage is not None
+        assert message.usage["input_tokens"] == 1500
+        assert message.usage["output_tokens"] == 250
+        assert message.usage["cache_read_input_tokens"] == 1200
+        assert message.message_id == "msg_01XFDUDYJgAACzvnptvVoYEL"
+
+    def test_parse_assistant_message_without_usage(self):
+        """Test that usage defaults to None when not present."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage is None
+        assert message.message_id is None
+
     def test_parse_assistant_message_with_thinking(self):
         """Test parsing an assistant message with thinking block."""
         data = {

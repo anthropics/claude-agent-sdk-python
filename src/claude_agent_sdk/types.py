@@ -786,12 +786,14 @@ class UserMessage:
 
 @dataclass
 class AssistantMessage:
-    """Assistant message with content blocks."""
+    """Assistant message with content blocks and optional usage statistics."""
 
     content: list[ContentBlock]
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    usage: dict[str, Any] | None = None
+    message_id: str | None = None
 
 
 @dataclass

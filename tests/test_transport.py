@@ -883,6 +883,138 @@ class TestSubprocessCLITransport:
         assert "stream-json" in cmd
         assert "--print" not in cmd
 
+    def test_include_partial_messages_enables_fgts(self):
+        """Test that include_partial_messages=True sets CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING.
+
+        --include-partial-messages tells the CLI to forward stream_event messages,
+        but tool input parameters are still buffered by the API unless
+        eager_input_streaming is enabled via this env var.
+        """
+
+        async def _test():
+            options = make_options(include_partial_messages=True)
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                env_passed = second_call_kwargs["env"]
+                assert (
+                    env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING")
+                    == "1"
+                )
+
+        anyio.run(_test)
+
+    def test_include_partial_messages_false_does_not_set_fgts(self):
+        """Test that include_partial_messages=False does not force-enable FGTS."""
+
+        async def _test():
+            options = make_options(include_partial_messages=False)
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                env_passed = second_call_kwargs["env"]
+                # Should not be set (unless the user already had it in their env)
+                assert (
+                    "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING" not in env_passed
+                )
+
+        anyio.run(_test)
+
+    def test_user_can_override_fgts_env_var(self):
+        """Test that a user-supplied env var takes precedence over the SDK default."""
+
+        async def _test():
+            options = make_options(
+                include_partial_messages=True,
+                env={"CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING": "0"},
+            )
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
+                env_passed = second_call_kwargs["env"]
+                # User's explicit "0" should win over SDK default "1"
+                assert (
+                    env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING")
+                    == "0"
+                )
+
+        anyio.run(_test)
+
     def test_build_command_large_agents_work(self):
         """Test that large agent definitions work without size limits.
 

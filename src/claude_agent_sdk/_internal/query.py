@@ -110,6 +110,11 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
+        # Store the last CLI error from result messages so that a subsequent
+        # ProcessError raised by the transport can carry the real error text
+        # instead of a generic "Check stderr output for details" message.
+        self._last_cli_error: str | None = None
+
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
         self._stream_close_timeout = (
@@ -209,6 +214,14 @@ class Query:
                 # Track results for proper stream closure
                 if msg_type == "result":
                     self._first_result_event.set()
+                    # Capture error text from error results so we can attach
+                    # it to the ProcessError that the transport will raise
+                    # when the CLI exits with a non-zero code.
+                    subtype = message.get("subtype", "")
+                    if subtype == "error_during_execution" or message.get("is_error"):
+                        error_text = message.get("result") or message.get("error")
+                        if error_text:
+                            self._last_cli_error = str(error_text)
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -219,13 +232,29 @@ class Query:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             logger.error(f"Fatal error in message reader: {e}")
+            # If we captured a real CLI error from an error result message,
+            # wrap or replace the generic ProcessError with the actual error.
+            effective_error: Exception = e
+            if self._last_cli_error:
+                from .._errors import ProcessError
+
+                if isinstance(e, ProcessError):
+                    effective_error = ProcessError(
+                        self._last_cli_error,
+                        exit_code=e.exit_code,
+                        stderr=e.stderr,
+                    )
+                else:
+                    effective_error = type(e)(
+                        f"{e}\nCLI error: {self._last_cli_error}"
+                    )
             # Signal all pending control requests so they fail fast instead of timing out
             for request_id, event in list(self.pending_control_responses.items()):
                 if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = e
+                    self.pending_control_results[request_id] = effective_error
                     event.set()
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            await self._message_send.send({"type": "error", "error": str(effective_error)})
         finally:
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.

@@ -894,7 +894,9 @@ class TestSubprocessCLITransport:
         async def _test():
             options = make_options(include_partial_messages=True)
 
-            with patch("anyio.open_process", new_callable=AsyncMock) as mock_open_process:
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
                 mock_version_process = MagicMock()
                 mock_version_process.stdout = MagicMock()
                 mock_version_process.stdout.receive = AsyncMock(
@@ -920,7 +922,10 @@ class TestSubprocessCLITransport:
 
                 second_call_kwargs = mock_open_process.call_args_list[1].kwargs
                 env_passed = second_call_kwargs["env"]
-                assert env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING") == "1"
+                assert (
+                    env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING")
+                    == "1"
+                )
 
         anyio.run(_test)
 
@@ -930,7 +935,9 @@ class TestSubprocessCLITransport:
         async def _test():
             options = make_options(include_partial_messages=False)
 
-            with patch("anyio.open_process", new_callable=AsyncMock) as mock_open_process:
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
                 mock_version_process = MagicMock()
                 mock_version_process.stdout = MagicMock()
                 mock_version_process.stdout.receive = AsyncMock(
@@ -957,7 +964,9 @@ class TestSubprocessCLITransport:
                 second_call_kwargs = mock_open_process.call_args_list[1].kwargs
                 env_passed = second_call_kwargs["env"]
                 # Should not be set (unless the user already had it in their env)
-                assert "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING" not in env_passed
+                assert (
+                    "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING" not in env_passed
+                )
 
         anyio.run(_test)
 
@@ -970,7 +979,9 @@ class TestSubprocessCLITransport:
                 env={"CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING": "0"},
             )
 
-            with patch("anyio.open_process", new_callable=AsyncMock) as mock_open_process:
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
                 mock_version_process = MagicMock()
                 mock_version_process.stdout = MagicMock()
                 mock_version_process.stdout.receive = AsyncMock(
@@ -997,7 +1008,10 @@ class TestSubprocessCLITransport:
                 second_call_kwargs = mock_open_process.call_args_list[1].kwargs
                 env_passed = second_call_kwargs["env"]
                 # User's explicit "0" should win over SDK default "1"
-                assert env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING") == "0"
+                assert (
+                    env_passed.get("CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING")
+                    == "0"
+                )
 
         anyio.run(_test)
 

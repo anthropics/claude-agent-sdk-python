@@ -235,7 +235,11 @@ class TestSubprocessCLITransport:
                 assert transport.is_ready()
 
                 await transport.close()
-                mock_process.terminate.assert_called_once()
+                # After stdin EOF, the process is given time to exit
+                # gracefully. Since the mock's wait() returns immediately,
+                # terminate should NOT be called.
+                mock_process.terminate.assert_not_called()
+                mock_process.wait.assert_called()
 
         anyio.run(_test)
 

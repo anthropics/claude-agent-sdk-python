@@ -54,6 +54,7 @@ from .types import (
     PostToolUseHookInput,
     PreCompactHookInput,
     PreToolUseHookInput,
+    RawContentBlock,
     ResultMessage,
     SandboxIgnoreViolations,
     SandboxNetworkConfig,
@@ -371,6 +372,7 @@ __all__ = [
     "ThinkingConfigDisabled",
     "ToolUseBlock",
     "ToolResultBlock",
+    "RawContentBlock",
     "ContentBlock",
     # Tool callbacks
     "CanUseTool",

@@ -379,3 +379,75 @@ async def test_tool_annotations_in_jsonrpc():
 
     # Tool without annotations should not have the key
     assert "annotations" not in tools_by_name["plain_tool"]
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_content_blocks_passed_through():
+    """Test that non-text/image content blocks are not silently dropped.
+
+    The content conversion loop in _handle_sdk_mcp_request only handled text
+    and image blocks. Other valid MCP content types like EmbeddedResource and
+    ResourceLink were silently discarded.
+
+    Regression test for https://github.com/anthropics/claude-agent-sdk-python/issues/574
+    """
+    from unittest.mock import AsyncMock
+
+    from mcp.server import Server
+    from mcp.types import (
+        CallToolResult,
+        EmbeddedResource,
+        ServerResult,
+        TextContent,
+        TextResourceContents,
+    )
+
+    from claude_agent_sdk._internal.query import Query
+
+    # Build a fake MCP handler that returns an EmbeddedResource content block
+    # alongside a normal text block
+    embedded = EmbeddedResource(
+        type="resource",
+        resource=TextResourceContents(
+            uri="file:///test.txt",
+            text="file contents here",
+            mimeType="text/plain",
+        ),
+    )
+    fake_result = ServerResult(
+        root=CallToolResult(
+            content=[
+                TextContent(type="text", text="Here are the results"),
+                embedded,
+            ]
+        )
+    )
+
+    server = Server("test-server")
+    handler = AsyncMock(return_value=fake_result)
+    server.request_handlers[CallToolRequest] = handler
+
+    query_instance = Query.__new__(Query)
+    query_instance.sdk_mcp_servers = {"test": server}
+
+    response = await query_instance._handle_sdk_mcp_request(
+        "test",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "test_tool", "arguments": {}},
+        },
+    )
+
+    assert response is not None
+    content = response["result"]["content"]
+
+    # Text block should be preserved as before
+    assert content[0] == {"type": "text", "text": "Here are the results"}
+
+    # EmbeddedResource block should be passed through via model_dump(), not dropped
+    assert len(content) == 2
+    assert content[1]["type"] == "resource"
+    assert content[1]["resource"]["uri"] == "file:///test.txt"
+    assert content[1]["resource"]["text"] == "file contents here"

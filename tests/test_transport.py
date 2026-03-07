@@ -686,6 +686,26 @@ class TestSubprocessCLITransport:
         tools_idx = cmd.index("--tools")
         assert cmd[tools_idx + 1] == "default"
 
+    def test_build_command_with_allowed_tools_empty_array(self):
+        """Test that allowed_tools=[] passes --allowedTools with empty value."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(allowed_tools=[]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        allowed_idx = cmd.index("--allowedTools")
+        assert cmd[allowed_idx + 1] == ""
+
+    def test_build_command_without_allowed_tools(self):
+        """Test that allowed_tools=None (default) omits --allowedTools."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+
     def test_build_command_without_tools(self):
         """Test building CLI command without tools option (default None)."""
         transport = SubprocessCLITransport(

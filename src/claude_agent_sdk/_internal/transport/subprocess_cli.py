@@ -342,9 +342,13 @@ class SubprocessCLITransport(Transport):
 
         cmd = self._build_command()
         try:
+            # Remove CLAUDECODE from parent environment to prevent nesting detection
+            # This allows SDK usage from within Claude Code (hooks, plugins, subagents)
+            parent_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
             # Merge environment variables: system -> user -> SDK required
             process_env = {
-                **os.environ,
+                **parent_env,
                 **self._options.env,  # User-provided env vars
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
                 "CLAUDE_AGENT_SDK_VERSION": __version__,

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.48
+
+### Bug Fixes
+
+- **Fine-grained tool streaming**: Fixed `include_partial_messages=True` not delivering `input_json_delta` events by enabling the `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING` environment variable in the subprocess. This regression affected versions 0.1.36 through 0.1.47 for users without the server-side feature flag (#644)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.71
+
 ## 0.1.47
 
 ### Internal/Other Changes

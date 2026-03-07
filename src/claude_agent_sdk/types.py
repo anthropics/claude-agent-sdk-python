@@ -1246,6 +1246,10 @@ class ClaudeAgentOptions:
     # its remaining token budget so it can pace tool use and wrap up before
     # the limit.
     task_budget: TaskBudget | None = None
+    # Disable parallel tool use. When True, the model will only ever emit
+    # one tool_use block per response, executing tools sequentially.
+    # Maps to the Anthropic API's tool_choice.disable_parallel_tool_use parameter.
+    disable_parallel_tool_use: bool = False
 
 
 # SDK Control Protocol

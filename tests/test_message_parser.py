@@ -6,6 +6,7 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    RawContentBlock,
     ResultMessage,
     SystemMessage,
     TaskNotificationMessage,
@@ -670,3 +671,60 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_with_unknown_content_block(self):
+        """Test that unrecognized content block types are preserved, not dropped."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Here are the results"},
+                    {
+                        "type": "server_tool_use",
+                        "id": "st_123",
+                        "name": "web_search",
+                        "input": {"query": "test"},
+                    },
+                    {
+                        "type": "code_execution_result",
+                        "output": "42",
+                        "status": "success",
+                    },
+                ],
+                "model": "claude-opus-4-6-20250219",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 3
+        assert isinstance(message.content[0], TextBlock)
+        assert isinstance(message.content[1], RawContentBlock)
+        assert message.content[1].type == "server_tool_use"
+        assert message.content[1].data["id"] == "st_123"
+        assert isinstance(message.content[2], RawContentBlock)
+        assert message.content[2].type == "code_execution_result"
+        assert message.content[2].data["output"] == "42"
+
+    def test_parse_user_message_with_unknown_content_block(self):
+        """Test that unrecognized content blocks in user messages are preserved."""
+        data = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Check this"},
+                    {
+                        "type": "file",
+                        "file_id": "file_abc",
+                        "filename": "data.csv",
+                    },
+                ],
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], TextBlock)
+        assert isinstance(message.content[1], RawContentBlock)
+        assert message.content[1].type == "file"
+        assert message.content[1].data["file_id"] == "file_abc"

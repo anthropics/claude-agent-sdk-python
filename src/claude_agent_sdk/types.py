@@ -977,7 +977,7 @@ class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
     tools: list[str] | ToolsPreset | None = None
-    allowed_tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] | None = None
     system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
@@ -985,7 +985,7 @@ class ClaudeAgentOptions:
     resume: str | None = None
     max_turns: int | None = None
     max_budget_usd: float | None = None
-    disallowed_tools: list[str] = field(default_factory=list)
+    disallowed_tools: list[str] | None = None
     model: str | None = None
     fallback_model: str | None = None
     # Beta features - see https://docs.anthropic.com/en/api/beta-headers

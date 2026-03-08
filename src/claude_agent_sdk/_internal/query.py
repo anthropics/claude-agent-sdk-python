@@ -665,6 +665,14 @@ class Query:
             with suppress(anyio.get_cancelled_exc_class()):
                 await self._tg.__aexit__(None, None, None)
         await self.transport.close()
+        # Clean up resources to prevent memory leaks in long-running applications
+        self.hook_callbacks.clear()
+        self.pending_control_responses.clear()
+        self.pending_control_results.clear()
+        with suppress(Exception):
+            await self._message_send.aclose()
+        with suppress(Exception):
+            await self._message_receive.aclose()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

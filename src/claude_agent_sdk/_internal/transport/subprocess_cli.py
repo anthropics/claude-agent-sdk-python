@@ -109,6 +109,17 @@ class SubprocessCLITransport(Transport):
 
         return None
 
+    def _resolve_settings_path(self, path_str: str) -> Path:
+        """Resolve a settings file path.
+
+        Relative paths are resolved against `options.cwd` when provided to keep
+        behavior consistent with how the CLI itself resolves paths.
+        """
+        path = Path(path_str).expanduser()
+        if not path.is_absolute() and self._cwd:
+            path = Path(self._cwd) / path
+        return path
+
     def _build_settings_value(self) -> str | None:
         """Build settings value, merging sandbox settings if provided.
 
@@ -144,13 +155,13 @@ class SubprocessCLITransport(Transport):
                         f"Failed to parse settings as JSON, treating as file path: {settings_str}"
                     )
                     # Read the file
-                    settings_path = Path(settings_str)
+                    settings_path = self._resolve_settings_path(settings_str)
                     if settings_path.exists():
                         with settings_path.open(encoding="utf-8") as f:
                             settings_obj = json.load(f)
             else:
                 # It's a file path - read and parse
-                settings_path = Path(settings_str)
+                settings_path = self._resolve_settings_path(settings_str)
                 if settings_path.exists():
                     with settings_path.open(encoding="utf-8") as f:
                         settings_obj = json.load(f)

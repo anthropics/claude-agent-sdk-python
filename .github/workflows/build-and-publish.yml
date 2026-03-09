@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -66,6 +66,25 @@ jobs:
           path: dist
           pattern: wheel-*
           merge-multiple: true
+
+      - name: Verify all expected wheels are present
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          expected=(
+            "macosx_11_0_arm64"
+            "macosx_11_0_x86_64"
+            "manylinux_2_17_x86_64"
+            "manylinux_2_17_aarch64"
+            "win_amd64"
+          )
+          for tag in "${expected[@]}"; do
+            if ! ls dist/*"${tag}".whl 2>/dev/null; then
+              echo "::error::Missing wheel for platform tag: ${tag}"
+              exit 1
+            fi
+          done
+          echo "All ${#expected[@]} expected wheels present ✓"
 
       - name: Build sdist and publish to PyPI
         run: |

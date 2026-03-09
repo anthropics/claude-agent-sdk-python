@@ -278,6 +278,8 @@ def create_sdk_mcp_server(
                                 properties[param_name] = {"type": "number"}
                             elif param_type is bool:
                                 properties[param_name] = {"type": "boolean"}
+                            elif param_type is list:
+                                properties[param_name] = {"type": "array"}
                             else:
                                 properties[param_name] = {"type": "string"}  # Default
                         schema = {

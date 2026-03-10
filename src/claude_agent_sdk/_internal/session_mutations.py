@@ -22,6 +22,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
+import unicodedata
 from pathlib import Path
 
 from .sessions import (
@@ -82,6 +84,72 @@ def rename_session(
             {
                 "type": "custom-title",
                 "customTitle": stripped,
+                "sessionId": session_id,
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    _append_to_session(session_id, data, directory)
+
+
+def tag_session(
+    session_id: str,
+    tag: str | None,
+    directory: str | None = None,
+) -> None:
+    """Tag a session. Pass ``None`` to clear the tag.
+
+    Appends a ``{type:'tag',tag:<tag>,sessionId:<id>}`` JSONL entry.
+    ``list_sessions`` reads the LAST tag from the file tail — most recent
+    wins. Passing ``None`` appends an empty-string tag entry which
+    ``list_sessions`` treats as ``None`` (cleared).
+
+    Tags are Unicode-sanitized before storing (removes zero-width chars,
+    directional marks, private-use characters, etc.) for CLI filter
+    compatibility.
+
+    Args:
+        session_id: UUID of the session to tag.
+        tag: Tag string, or ``None`` to clear. Leading/trailing whitespace
+            is stripped. Must be non-empty after sanitization and stripping
+            (unless ``None``).
+        directory: Project directory path (same semantics as
+            ``list_sessions(directory=...)``). When omitted, all project
+            directories are searched for the session file.
+
+    Raises:
+        ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
+            empty/whitespace-only after sanitization.
+        FileNotFoundError: If the session file cannot be found.
+
+    Example:
+        Tag a session::
+
+            tag_session(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "experiment",
+                directory="/path/to/project",
+            )
+
+        Clear a tag::
+
+            tag_session(session_id, None)
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    if tag is not None:
+        sanitized = _sanitize_unicode(tag).strip()
+        if not sanitized:
+            raise ValueError("tag must be non-empty (use None to clear)")
+        tag = sanitized
+
+    data = (
+        json.dumps(
+            {
+                "type": "tag",
+                "tag": tag if tag is not None else "",
                 "sessionId": session_id,
             },
             separators=(",", ":"),
@@ -185,3 +253,49 @@ def _try_append(path: Path, data: str) -> bool:
         return True
     finally:
         os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# Unicode sanitization — ported from TS sanitization.ts
+# ---------------------------------------------------------------------------
+
+# Explicit ranges for dangerous Unicode characters. Python's regex supports
+# Unicode categories via \p{} only in the third-party `regex` module, so we
+# use explicit ranges here (matching the TS fallback paths).
+_UNICODE_STRIP_RE = re.compile(
+    "["
+    "\u200b-\u200f"  # Zero-width spaces, LTR/RTL marks
+    "\u202a-\u202e"  # Directional formatting characters
+    "\u2066-\u2069"  # Directional isolates
+    "\ufeff"  # Byte order mark
+    "\ue000-\uf8ff"  # Basic Multilingual Plane private use
+    "]"
+)
+
+# Format characters (Cf category) — the ones most commonly abused for
+# injection. We check this per-character since Python's re module doesn't
+# support \p{Cf} without the third-party regex module.
+_FORMAT_CATEGORIES = frozenset({"Cf", "Co", "Cn"})
+
+
+def _sanitize_unicode(value: str) -> str:
+    """Sanitize a string by removing dangerous Unicode characters.
+
+    Ported from TS ``partiallySanitizeUnicode``. Iteratively applies NFKC
+    normalization and strips format/private-use/unassigned characters until
+    no more changes occur (max 10 iterations).
+    """
+    current = value
+    for _ in range(10):
+        previous = current
+        # Apply NFKC normalization to handle composed character sequences
+        current = unicodedata.normalize("NFKC", current)
+        # Strip Cf (format), Co (private use), Cn (unassigned) categories
+        current = "".join(
+            c for c in current if unicodedata.category(c) not in _FORMAT_CATEGORIES
+        )
+        # Explicit ranges (redundant with category check but matches TS)
+        current = _UNICODE_STRIP_RE.sub("", current)
+        if current == previous:
+            break
+    return current

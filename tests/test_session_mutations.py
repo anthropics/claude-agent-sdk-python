@@ -1,4 +1,4 @@
-"""Tests for session mutation functions (rename_session, delete_session, tag_session)."""
+"""Tests for session mutation functions (rename_session, tag_session)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_agent_sdk import list_sessions, rename_session
-from claude_agent_sdk._internal.session_mutations import _try_append
+from claude_agent_sdk import list_sessions, rename_session, tag_session
+from claude_agent_sdk._internal.session_mutations import (
+    _sanitize_unicode,
+    _try_append,
+)
 from claude_agent_sdk._internal.sessions import _sanitize_path
 
 # ---------------------------------------------------------------------------
@@ -253,3 +256,201 @@ class TestRenameSession:
         assert lines[-1] == (
             f'{{"type":"custom-title","customTitle":"Title","sessionId":"{sid}"}}'
         )
+
+
+# ---------------------------------------------------------------------------
+# tag_session() tests
+# ---------------------------------------------------------------------------
+
+
+class TestTagSession:
+    """Tests for tag_session()."""
+
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
+        """Non-UUID session_id raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            tag_session("not-a-uuid", "tag")
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            tag_session("", "tag")
+
+    def test_empty_tag_raises(self, claude_config_dir: Path, tmp_path: Path):
+        """Empty or whitespace-only tag raises ValueError."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(project_dir)
+
+        with pytest.raises(ValueError, match="tag must be non-empty"):
+            tag_session(sid, "", directory=project_path)
+        with pytest.raises(ValueError, match="tag must be non-empty"):
+            tag_session(sid, "   ", directory=project_path)
+
+    def test_session_not_found_raises(self, claude_config_dir: Path, tmp_path: Path):
+        """Session not found raises FileNotFoundError."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        _make_project_dir(claude_config_dir, os.path.realpath(project_path))
+
+        sid = str(uuid.uuid4())
+        with pytest.raises(FileNotFoundError):
+            tag_session(sid, "tag", directory=project_path)
+
+    def test_appends_tag_entry(self, claude_config_dir: Path, tmp_path: Path):
+        """tag_session appends a {type:'tag'} JSON line."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        tag_session(sid, "experiment", directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["type"] == "tag"
+        assert entry["tag"] == "experiment"
+        assert entry["sessionId"] == sid
+
+    def test_tag_trimmed(self, claude_config_dir: Path, tmp_path: Path):
+        """Leading/trailing whitespace is stripped from tag."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        tag_session(sid, "  my-tag  ", directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["tag"] == "my-tag"
+
+    def test_none_clears_tag(self, claude_config_dir: Path, tmp_path: Path):
+        """Passing None appends an empty-string tag entry (clears tag)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        tag_session(sid, "original-tag", directory=project_path)
+        tag_session(sid, None, directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        # Last entry is the clear
+        entry = json.loads(lines[-1])
+        assert entry["type"] == "tag"
+        assert entry["tag"] == ""
+        assert entry["sessionId"] == sid
+
+    def test_last_wins(self, claude_config_dir: Path, tmp_path: Path):
+        """Multiple tag calls — last one lands at EOF."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        tag_session(sid, "first", directory=project_path)
+        tag_session(sid, "second", directory=project_path)
+        tag_session(sid, "third", directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["tag"] == "third"
+        # All three tag entries present in file
+        tag_lines = [
+            json.loads(line) for line in lines if json.loads(line).get("type") == "tag"
+        ]
+        assert len(tag_lines) == 3
+
+    def test_compact_json_format(self, claude_config_dir: Path, tmp_path: Path):
+        """Appended JSON uses compact separators matching CLI."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        tag_session(sid, "mytag", directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        assert lines[-1] == f'{{"type":"tag","tag":"mytag","sessionId":"{sid}"}}'
+
+    def test_unicode_sanitization(self, claude_config_dir: Path, tmp_path: Path):
+        """Tag is sanitized: zero-width chars stripped."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        # Tag with zero-width space and BOM embedded
+        dirty_tag = "clean\u200btag\ufeff"
+        tag_session(sid, dirty_tag, directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["tag"] == "cleantag"
+
+    def test_sanitization_rejects_pure_invisible(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Tag that is only zero-width chars is rejected."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(project_dir)
+
+        with pytest.raises(ValueError, match="tag must be non-empty"):
+            tag_session(sid, "\u200b\u200c\ufeff", directory=project_path)
+
+
+class TestSanitizeUnicode:
+    """Tests for the _sanitize_unicode helper."""
+
+    def test_passthrough_clean_string(self):
+        """Clean strings pass through unchanged."""
+        assert _sanitize_unicode("hello") == "hello"
+        assert _sanitize_unicode("tag-with-dashes_123") == "tag-with-dashes_123"
+
+    def test_strips_zero_width(self):
+        """Zero-width spaces/joiners are stripped."""
+        assert _sanitize_unicode("a\u200bb") == "ab"
+        assert _sanitize_unicode("a\u200cb") == "ab"  # zero-width non-joiner
+        assert _sanitize_unicode("a\u200db") == "ab"  # zero-width joiner
+
+    def test_strips_bom(self):
+        """Byte order mark is stripped."""
+        assert _sanitize_unicode("\ufeffhello") == "hello"
+
+    def test_strips_directional_marks(self):
+        """LTR/RTL marks and isolates are stripped."""
+        assert _sanitize_unicode("a\u202ab\u202cc") == "abc"
+        assert _sanitize_unicode("a\u2066b\u2069c") == "abc"
+
+    def test_strips_private_use(self):
+        """Private use area characters are stripped."""
+        assert _sanitize_unicode("a\ue000b") == "ab"
+        assert _sanitize_unicode("a\uf8ffb") == "ab"
+
+    def test_nfkc_normalization(self):
+        """NFKC normalization is applied (composed chars)."""
+        # Fullwidth 'A' → ASCII 'A'
+        assert _sanitize_unicode("\uff21") == "A"
+
+    def test_iterative_converges(self):
+        """Handles multi-pass cases safely (max 10 iterations)."""
+        # A string that needs multiple passes still converges
+        result = _sanitize_unicode("a" + "\u200b" * 20 + "b")
+        assert result == "ab"

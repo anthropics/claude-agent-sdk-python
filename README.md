@@ -56,9 +56,11 @@ async for message in query(prompt="Tell me a joke", options=options):
 
 ### Using Tools
 
+By default, Claude has access to the full [Claude Code toolset](https://code.claude.com/docs/en/settings#tools-available-to-claude) (Read, Write, Edit, Bash, and others). `allowed_tools` is a permission allowlist: listed tools are auto-approved, and unlisted tools fall through to `permission_mode` and `can_use_tool` for a decision. It does not remove tools from Claude's toolset. To block specific tools, use `disallowed_tools`. See the [permissions guide](https://platform.claude.com/docs/en/agent-sdk/permissions) for the full evaluation order.
+
 ```python
 options = ClaudeAgentOptions(
-    allowed_tools=["Read", "Write", "Bash"],
+    allowed_tools=["Read", "Write", "Bash"],  # auto-approve these tools
     permission_mode='acceptEdits'  # auto-accept file edits
 )
 
@@ -116,7 +118,8 @@ server = create_sdk_mcp_server(
     tools=[greet_user]
 )
 
-# Use it with Claude
+# Use it with Claude. allowed_tools pre-approves the tool so it runs
+# without a permission prompt; it does not control tool availability.
 options = ClaudeAgentOptions(
     mcp_servers={"tools": server},
     allowed_tools=["mcp__tools__greet"]
@@ -183,7 +186,7 @@ options = ClaudeAgentOptions(
 
 ### Hooks
 
-A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks).
+A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).
 
 For more examples, see examples/hooks.py.
 
@@ -267,7 +270,7 @@ See [src/claude_agent_sdk/\_errors.py](src/claude_agent_sdk/_errors.py) for all 
 
 ## Available Tools
 
-See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude) for a complete list of available tools.
+See the [Claude Code documentation](https://code.claude.com/docs/en/settings#tools-available-to-claude) for a complete list of available tools.
 
 ## Examples
 

@@ -12,6 +12,7 @@ import pytest
 from claude_agent_sdk import (
     SDKSessionInfo,
     SessionMessage,
+    get_session_info,
     get_session_messages,
     list_sessions,
 )
@@ -20,6 +21,8 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _parse_session_info_from_lite,
+    _read_session_lite,
     _sanitize_path,
     _simple_hash,
     _validate_uuid,
@@ -1078,3 +1081,298 @@ class TestSessionMessageType:
         assert msg.session_id == "sess"
         assert msg.message == {"role": "user", "content": "hi"}
         assert msg.parent_tool_use_id is None
+
+
+# ---------------------------------------------------------------------------
+# Tag and agent_name extraction tests (Branch A additions)
+# ---------------------------------------------------------------------------
+
+
+class TestTagAndAgentNameExtraction:
+    """Tests for tag and agent_name field extraction in SDKSessionInfo."""
+
+    def test_tag_extracted_from_tail(self, claude_config_dir: Path, tmp_path: Path):
+        """Tag is extracted from the last {type:'tag'} entry in the tail."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "hello"}}),
+            json.dumps({"type": "tag", "tag": "my-tag", "sessionId": sid}),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag == "my-tag"
+
+    def test_tag_last_wins(self, claude_config_dir: Path, tmp_path: Path):
+        """When multiple tag entries exist, the last one wins."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "hello"}}),
+            json.dumps({"type": "tag", "tag": "first-tag", "sessionId": sid}),
+            json.dumps({"type": "tag", "tag": "second-tag", "sessionId": sid}),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag == "second-tag"
+
+    def test_tag_empty_string_is_none(self, claude_config_dir: Path, tmp_path: Path):
+        """Empty-string tag (clear marker) resolves to None via 'or None'."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "hello"}}),
+            json.dumps({"type": "tag", "tag": "old-tag", "sessionId": sid}),
+            json.dumps({"type": "tag", "tag": "", "sessionId": sid}),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag is None
+
+    def test_tag_absent(self, claude_config_dir: Path, tmp_path: Path):
+        """Sessions without a tag entry have tag=None."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        _make_session_file(project_dir, first_prompt="hello")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag is None
+
+    def test_agent_name_scoped_to_type_entry(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """agent_name is extracted only from {type:'agent-name'} entries.
+
+        Per-message agentName fields (from swarm sessions) must be ignored.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        # Swarm session: every message has per-message agentName which must
+        # NOT be picked up. Only the {type:'agent-name'} entry counts.
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "agentName": "worker-1",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "agent-name",
+                    "agentName": "coordinator",
+                    "sessionId": sid,
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": "hi"},
+                    "agentName": "worker-2",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].agent_name == "coordinator"
+
+    def test_agent_name_absent_without_type_entry(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Sessions with per-message agentName but no type entry have agent_name=None."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "agentName": "worker-1",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].agent_name is None
+
+    def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
+        """Direct test of the refactored _parse_session_info_from_lite helper."""
+        sid = str(uuid.uuid4())
+        file_path = tmp_path / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "test prompt"},
+                    "cwd": "/workspace",
+                }
+            ),
+            json.dumps({"type": "tag", "tag": "experiment", "sessionId": sid}),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        lite = _read_session_lite(file_path)
+        assert lite is not None
+        info = _parse_session_info_from_lite(sid, lite, "/fallback")
+        assert info is not None
+        assert info.session_id == sid
+        assert info.summary == "test prompt"
+        assert info.tag == "experiment"
+        assert info.cwd == "/workspace"  # head cwd wins over fallback
+        assert info.agent_name is None
+
+
+# ---------------------------------------------------------------------------
+# get_session_info() tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionInfo:
+    """Tests for the get_session_info() single-session lookup."""
+
+    def test_invalid_session_id(self, claude_config_dir: Path):
+        """Non-UUID session_id returns None."""
+        assert get_session_info("not-a-uuid") is None
+        assert get_session_info("") is None
+
+    def test_nonexistent_session(self, claude_config_dir: Path):
+        """Session file not found returns None."""
+        sid = str(uuid.uuid4())
+        assert get_session_info(sid) is None
+
+    def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Missing config dir returns None."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
+        sid = str(uuid.uuid4())
+        assert get_session_info(sid) is None
+
+    def test_found_with_directory(self, claude_config_dir: Path, tmp_path: Path):
+        """Session found in a specific project directory."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(
+            project_dir, first_prompt="hello", git_branch="main"
+        )
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.session_id == sid
+        assert info.summary == "hello"
+        assert info.git_branch == "main"
+
+    def test_found_without_directory(self, claude_config_dir: Path):
+        """Session found by searching all project directories."""
+        project_dir = _make_project_dir(claude_config_dir, "/some/project")
+        sid, _ = _make_session_file(project_dir, first_prompt="search all")
+
+        info = get_session_info(sid)
+        assert info is not None
+        assert info.session_id == sid
+        assert info.summary == "search all"
+
+    def test_returns_none_for_sidechain(self, claude_config_dir: Path, tmp_path: Path):
+        """Sidechain sessions return None (filtered by parse helper)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(
+            project_dir, first_prompt="sidechain", is_sidechain=True
+        )
+
+        assert get_session_info(sid, directory=project_path) is None
+
+    def test_directory_not_containing_session(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Returns None when directory provided but session not in it."""
+        project_a = str(tmp_path / "proj-a")
+        project_b = str(tmp_path / "proj-b")
+        Path(project_a).mkdir(parents=True)
+        Path(project_b).mkdir(parents=True)
+        dir_a = _make_project_dir(claude_config_dir, os.path.realpath(project_a))
+        _make_project_dir(claude_config_dir, os.path.realpath(project_b))
+        sid, _ = _make_session_file(dir_a, first_prompt="in A only")
+
+        # Session exists in A but we look in B — should return None
+        # (no worktree relationship between them)
+        assert get_session_info(sid, directory=project_b) is None
+        # But searching all projects finds it
+        assert get_session_info(sid) is not None
+
+    def test_includes_tag_and_agent_name(self, claude_config_dir: Path, tmp_path: Path):
+        """get_session_info includes the new tag and agent_name fields."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "hello"}}),
+            json.dumps({"type": "tag", "tag": "urgent", "sessionId": sid}),
+            json.dumps(
+                {"type": "agent-name", "agentName": "reviewer", "sessionId": sid}
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.tag == "urgent"
+        assert info.agent_name == "reviewer"
+
+    def test_sdksessioninfo_new_fields_defaults(self):
+        """SDKSessionInfo has tag and agent_name defaulting to None."""
+        info = SDKSessionInfo(
+            session_id="abc",
+            summary="test",
+            last_modified=1000,
+            file_size=42,
+        )
+        assert info.tag is None
+        assert info.agent_name is None

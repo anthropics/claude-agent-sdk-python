@@ -920,6 +920,8 @@ class SDKSessionInfo:
         first_prompt: First meaningful user prompt in the session.
         git_branch: Git branch at the end of the session.
         cwd: Working directory for the session.
+        tag: User-set session tag.
+        agent_name: Name of the agent that ran this session.
     """
 
     session_id: str
@@ -930,6 +932,8 @@ class SDKSessionInfo:
     first_prompt: str | None = None
     git_branch: str | None = None
     cwd: str | None = None
+    tag: str | None = None
+    agent_name: str | None = None
 
 
 @dataclass

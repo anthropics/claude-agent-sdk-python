@@ -22,6 +22,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shutil
 from pathlib import Path
 
 from .sessions import (
@@ -90,6 +91,82 @@ def rename_session(
     )
 
     _append_to_session(session_id, data, directory)
+
+
+def delete_session(
+    session_id: str,
+    directory: str | None = None,
+) -> None:
+    """Delete a session's JSONL transcript and its per-session directory.
+
+    Removes both the ``{session_id}.jsonl`` file and the ``{session_id}/``
+    directory (subagent transcripts, session-memory, tool-results).
+
+    .. warning::
+        Do not call on a session that is currently running — the subprocess
+        will continue writing to a deleted file. Only safe for sessions that
+        have ended.
+
+    Args:
+        session_id: UUID of the session to delete.
+        directory: Project directory path (same semantics as
+            ``list_sessions(directory=...)``). When omitted, all project
+            directories are searched for the session file.
+
+    Raises:
+        ValueError: If ``session_id`` is not a valid UUID.
+        FileNotFoundError: If the session file cannot be found.
+
+    Example:
+        Delete a session from a specific project::
+
+            delete_session(
+                "550e8400-e29b-41d4-a716-446655440000",
+                directory="/path/to/project",
+            )
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    file_name = f"{session_id}.jsonl"
+
+    if directory:
+        canonical = _canonicalize_path(directory)
+
+        # Try the exact/prefix-matched project directory first.
+        project_dir = _find_project_dir(canonical)
+        if project_dir is not None and _try_delete(project_dir, session_id, file_name):
+            return
+
+        # Worktree fallback — matches list_sessions/get_session_messages.
+        try:
+            worktree_paths = _get_worktree_paths(canonical)
+        except Exception:
+            worktree_paths = []
+        for wt in worktree_paths:
+            if wt == canonical:
+                continue
+            wt_project_dir = _find_project_dir(wt)
+            if wt_project_dir is not None and _try_delete(
+                wt_project_dir, session_id, file_name
+            ):
+                return
+
+        raise FileNotFoundError(
+            f"Session {session_id} not found in project directory for {directory}"
+        )
+
+    # No directory — search all project directories.
+    projects_dir = _get_projects_dir()
+    try:
+        dirents = list(projects_dir.iterdir())
+    except OSError as e:
+        raise FileNotFoundError(
+            f"Session {session_id} not found (no projects directory)"
+        ) from e
+    for entry in dirents:
+        if _try_delete(entry, session_id, file_name):
+            return
+    raise FileNotFoundError(f"Session {session_id} not found in any project directory")
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +262,39 @@ def _try_append(path: Path, data: str) -> bool:
         return True
     finally:
         os.close(fd)
+
+
+def _try_delete(project_dir: Path, session_id: str, file_name: str) -> bool:
+    """Try deleting a session from a project storage directory.
+
+    Unlinks the JSONL and recursively removes the ``{session_id}/`` directory
+    (subagent transcripts, session-memory, tool-results). Returns ``True`` on
+    success, ``False`` if the JSONL does not exist (ENOENT/ENOTDIR) or is
+    0-byte.
+
+    The 0-byte guard is semantically part of the search protocol, not a
+    TOCTOU pre-check: readers (``_read_session_lite``) already treat a 0-byte
+    ``.jsonl`` as "session not here, keep searching". Without matching writer
+    behavior, a stub in an earlier-searched project dir would be unlinked,
+    the search would stop, and the real file in a worktree would remain. The
+    stat here provides size (required); its existence-check aspect is
+    incidental and handled identically to unlink's ENOENT.
+
+    Re-raises other unlink/stat errors. The directory removal uses
+    ``ignore_errors=True`` so a missing directory is a no-op.
+    """
+    file_path = project_dir / file_name
+    try:
+        stat = file_path.stat()
+        if stat.st_size == 0:
+            return False
+        file_path.unlink()
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR):
+            return False
+        raise
+    # JSONL deleted — also remove the per-session directory. ignore_errors
+    # makes this a no-op if the directory doesn't exist (sessions without
+    # subagents or tool-results won't have one).
+    shutil.rmtree(project_dir / session_id, ignore_errors=True)
+    return True

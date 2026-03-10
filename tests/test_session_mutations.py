@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_agent_sdk import list_sessions, rename_session
-from claude_agent_sdk._internal.session_mutations import _try_append
+from claude_agent_sdk import delete_session, list_sessions, rename_session
+from claude_agent_sdk._internal.session_mutations import _try_append, _try_delete
 from claude_agent_sdk._internal.sessions import _sanitize_path
 
 # ---------------------------------------------------------------------------
@@ -253,3 +253,160 @@ class TestRenameSession:
         assert lines[-1] == (
             f'{{"type":"custom-title","customTitle":"Title","sessionId":"{sid}"}}'
         )
+
+
+# ---------------------------------------------------------------------------
+# delete_session() tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSession:
+    """Tests for delete_session()."""
+
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
+        """Non-UUID session_id raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            delete_session("not-a-uuid")
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            delete_session("")
+
+    def test_session_not_found_raises(self, claude_config_dir: Path, tmp_path: Path):
+        """Session not found raises FileNotFoundError."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        _make_project_dir(claude_config_dir, os.path.realpath(project_path))
+
+        sid = str(uuid.uuid4())
+        with pytest.raises(FileNotFoundError):
+            delete_session(sid, directory=project_path)
+
+    def test_no_projects_dir_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Missing projects dir raises FileNotFoundError."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
+        sid = str(uuid.uuid4())
+        with pytest.raises(FileNotFoundError, match="no projects directory"):
+            delete_session(sid)
+
+    def test_deletes_jsonl_file(self, claude_config_dir: Path, tmp_path: Path):
+        """delete_session removes the .jsonl file."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+        assert file_path.exists()
+
+        delete_session(sid, directory=project_path)
+
+        assert not file_path.exists()
+
+    def test_deletes_session_directory(self, claude_config_dir: Path, tmp_path: Path):
+        """delete_session also removes the {session_id}/ directory."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        # Create per-session directory with subagent content
+        session_dir = project_dir / sid
+        session_dir.mkdir()
+        (session_dir / "subagent.jsonl").write_text("subagent data\n")
+        (session_dir / "tool-results").mkdir()
+        (session_dir / "tool-results" / "result.txt").write_text("result\n")
+
+        delete_session(sid, directory=project_path)
+
+        assert not file_path.exists()
+        assert not session_dir.exists()
+
+    def test_missing_session_dir_is_ok(self, claude_config_dir: Path, tmp_path: Path):
+        """delete_session succeeds when {session_id}/ directory doesn't exist."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        # No {session_id}/ directory — common for sessions without subagents
+        delete_session(sid, directory=project_path)
+        assert not file_path.exists()
+
+    def test_list_sessions_no_longer_returns_deleted(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """After delete, list_sessions no longer returns the session."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid1, _ = _make_session_file(project_dir, first_prompt="keep")
+        sid2, _ = _make_session_file(project_dir, first_prompt="delete me")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 2
+
+        delete_session(sid2, directory=project_path)
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].session_id == sid1
+
+    def test_search_all_projects(self, claude_config_dir: Path):
+        """When no directory given, searches all project directories."""
+        project_dir = _make_project_dir(claude_config_dir, "/some/project")
+        sid, file_path = _make_session_file(project_dir)
+
+        delete_session(sid)
+        assert not file_path.exists()
+
+    def test_skips_zero_byte_stub(self, claude_config_dir: Path):
+        """0-byte stub is skipped; real file in later dir is deleted."""
+        proj_a = _make_project_dir(claude_config_dir, "/aaa/project")
+        proj_z = _make_project_dir(claude_config_dir, "/zzz/project")
+
+        sid = str(uuid.uuid4())
+        stub = proj_a / f"{sid}.jsonl"
+        stub.write_text("")  # 0-byte stub
+        _, real = _make_session_file(proj_z, session_id=sid, first_prompt="real")
+
+        delete_session(sid)
+
+        # Stub untouched, real file deleted
+        assert stub.exists()
+        assert stub.stat().st_size == 0
+        assert not real.exists()
+
+
+class TestTryDelete:
+    """Tests for the low-level _try_delete helper."""
+
+    def test_deletes_existing_file(self, tmp_path: Path):
+        """Deletes an existing non-empty file."""
+        sid = str(uuid.uuid4())
+        f = tmp_path / f"{sid}.jsonl"
+        f.write_text("content\n")
+        result = _try_delete(tmp_path, sid, f"{sid}.jsonl")
+        assert result is True
+        assert not f.exists()
+
+    def test_missing_file_returns_false(self, tmp_path: Path):
+        """ENOENT returns False."""
+        sid = str(uuid.uuid4())
+        result = _try_delete(tmp_path, sid, f"{sid}.jsonl")
+        assert result is False
+
+    def test_zero_byte_returns_false(self, tmp_path: Path):
+        """0-byte stub returns False without deleting."""
+        sid = str(uuid.uuid4())
+        f = tmp_path / f"{sid}.jsonl"
+        f.write_text("")
+        result = _try_delete(tmp_path, sid, f"{sid}.jsonl")
+        assert result is False
+        assert f.exists()  # stub not deleted

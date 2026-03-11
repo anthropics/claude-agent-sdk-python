@@ -1084,12 +1084,12 @@ class TestSessionMessageType:
 
 
 # ---------------------------------------------------------------------------
-# Tag and agent_name extraction tests (Branch A additions)
+# Tag extraction tests (Branch A additions)
 # ---------------------------------------------------------------------------
 
 
-class TestTagAndAgentNameExtraction:
-    """Tests for tag and agent_name field extraction in SDKSessionInfo."""
+class TestTagExtraction:
+    """Tests for tag field extraction in SDKSessionInfo."""
 
     def test_tag_extracted_from_tail(self, claude_config_dir: Path, tmp_path: Path):
         """Tag is extracted from the last {type:'tag'} entry in the tail."""
@@ -1163,77 +1163,6 @@ class TestTagAndAgentNameExtraction:
         assert len(sessions) == 1
         assert sessions[0].tag is None
 
-    def test_agent_name_scoped_to_type_entry(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
-        """agent_name is extracted only from {type:'agent-name'} entries.
-
-        Per-message agentName fields (from swarm sessions) must be ignored.
-        """
-        project_path = str(tmp_path / "proj")
-        Path(project_path).mkdir(parents=True)
-        project_dir = _make_project_dir(
-            claude_config_dir, os.path.realpath(project_path)
-        )
-        sid = str(uuid.uuid4())
-        file_path = project_dir / f"{sid}.jsonl"
-        # Swarm session: every message has per-message agentName which must
-        # NOT be picked up. Only the {type:'agent-name'} entry counts.
-        lines = [
-            json.dumps(
-                {
-                    "type": "user",
-                    "message": {"content": "hello"},
-                    "agentName": "worker-1",
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "agent-name",
-                    "agentName": "coordinator",
-                    "sessionId": sid,
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {"content": "hi"},
-                    "agentName": "worker-2",
-                }
-            ),
-        ]
-        file_path.write_text("\n".join(lines) + "\n")
-
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
-        assert len(sessions) == 1
-        assert sessions[0].agent_name == "coordinator"
-
-    def test_agent_name_absent_without_type_entry(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
-        """Sessions with per-message agentName but no type entry have agent_name=None."""
-        project_path = str(tmp_path / "proj")
-        Path(project_path).mkdir(parents=True)
-        project_dir = _make_project_dir(
-            claude_config_dir, os.path.realpath(project_path)
-        )
-        sid = str(uuid.uuid4())
-        file_path = project_dir / f"{sid}.jsonl"
-        lines = [
-            json.dumps(
-                {
-                    "type": "user",
-                    "message": {"content": "hello"},
-                    "agentName": "worker-1",
-                }
-            ),
-        ]
-        file_path.write_text("\n".join(lines) + "\n")
-
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
-        assert len(sessions) == 1
-        assert sessions[0].agent_name is None
-
     def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
         """Direct test of the refactored _parse_session_info_from_lite helper."""
         sid = str(uuid.uuid4())
@@ -1258,7 +1187,6 @@ class TestTagAndAgentNameExtraction:
         assert info.summary == "test prompt"
         assert info.tag == "experiment"
         assert info.cwd == "/workspace"  # head cwd wins over fallback
-        assert info.agent_name is None
 
 
 class TestCreatedAtExtraction:
@@ -1479,8 +1407,8 @@ class TestGetSessionInfo:
         # But searching all projects finds it
         assert get_session_info(sid) is not None
 
-    def test_includes_tag_and_agent_name(self, claude_config_dir: Path, tmp_path: Path):
-        """get_session_info includes the new tag and agent_name fields."""
+    def test_includes_tag(self, claude_config_dir: Path, tmp_path: Path):
+        """get_session_info includes the new tag field."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
         project_dir = _make_project_dir(
@@ -1491,19 +1419,15 @@ class TestGetSessionInfo:
         lines = [
             json.dumps({"type": "user", "message": {"content": "hello"}}),
             json.dumps({"type": "tag", "tag": "urgent", "sessionId": sid}),
-            json.dumps(
-                {"type": "agent-name", "agentName": "reviewer", "sessionId": sid}
-            ),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
         info = get_session_info(sid, directory=project_path)
         assert info is not None
         assert info.tag == "urgent"
-        assert info.agent_name == "reviewer"
 
     def test_sdksessioninfo_new_fields_defaults(self):
-        """SDKSessionInfo has tag and agent_name defaulting to None."""
+        """SDKSessionInfo has tag defaulting to None."""
         info = SDKSessionInfo(
             session_id="abc",
             summary="test",
@@ -1511,4 +1435,3 @@ class TestGetSessionInfo:
             file_size=42,
         )
         assert info.tag is None
-        assert info.agent_name is None

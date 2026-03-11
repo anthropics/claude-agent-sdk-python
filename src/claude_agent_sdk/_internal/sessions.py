@@ -439,23 +439,6 @@ def _parse_session_info_from_lite(
     session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
     tag = _extract_last_json_string_field(tail, "tag") or None
 
-    # agentName requires type-scoped extraction: TranscriptMessage has a
-    # per-message agentName field (written on every message in swarm
-    # sessions), so a bare tail-scan for '"agentName":' would pick up the
-    # per-message value instead of the session-level {type:'agent-name'}
-    # entry. Scope to that entry type.
-    agent_name: str | None = None
-    # CLI writes compact JSON (no space); json.dumps default adds a space.
-    # Handle both variants and pick the LAST occurrence.
-    idx_compact = tail.rfind('"type":"agent-name"')
-    idx_spaced = tail.rfind('"type": "agent-name"')
-    agent_name_type_idx = max(idx_compact, idx_spaced)
-    if agent_name_type_idx >= 0:
-        line_start = tail.rfind("\n", 0, agent_name_type_idx) + 1
-        line_end = tail.find("\n", agent_name_type_idx)
-        line = tail[line_start : line_end if line_end >= 0 else len(tail)]
-        agent_name = _extract_json_string_field(line, "agentName") or None
-
     # created_at from first entry's ISO timestamp (epoch ms). More reliable
     # than stat().birthtime which is unsupported on some filesystems.
     created_at: float | None = None
@@ -482,7 +465,6 @@ def _parse_session_info_from_lite(
         git_branch=git_branch,
         cwd=session_cwd,
         tag=tag,
-        agent_name=agent_name,
         created_at=created_at,
     )
 

@@ -921,7 +921,6 @@ class SDKSessionInfo:
         git_branch: Git branch at the end of the session.
         cwd: Working directory for the session.
         tag: User-set session tag.
-        agent_name: Name of the agent that ran this session.
         created_at: Creation time in milliseconds since epoch, extracted
             from the first entry's ISO timestamp field. More reliable
             than stat().birthtime which is unsupported on some filesystems.
@@ -936,7 +935,6 @@ class SDKSessionInfo:
     git_branch: str | None = None
     cwd: str | None = None
     tag: str | None = None
-    agent_name: str | None = None
     created_at: float | None = None
 
 

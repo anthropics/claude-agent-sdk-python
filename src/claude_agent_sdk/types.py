@@ -922,6 +922,9 @@ class SDKSessionInfo:
         cwd: Working directory for the session.
         tag: User-set session tag.
         agent_name: Name of the agent that ran this session.
+        created_at: Creation time in milliseconds since epoch, extracted
+            from the first entry's ISO timestamp field. More reliable
+            than stat().birthtime which is unsupported on some filesystems.
     """
 
     session_id: str
@@ -934,6 +937,7 @@ class SDKSessionInfo:
     cwd: str | None = None
     tag: str | None = None
     agent_name: str | None = None
+    created_at: float | None = None
 
 
 @dataclass

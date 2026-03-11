@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -455,6 +456,22 @@ def _parse_session_info_from_lite(
         line = tail[line_start : line_end if line_end >= 0 else len(tail)]
         agent_name = _extract_json_string_field(line, "agentName") or None
 
+    # created_at from first entry's ISO timestamp (epoch ms). More reliable
+    # than stat().birthtime which is unsupported on some filesystems.
+    created_at: float | None = None
+    first_timestamp = _extract_json_string_field(head, "timestamp")
+    if first_timestamp:
+        try:
+            # Python 3.10's fromisoformat doesn't support trailing 'Z'
+            ts = (
+                first_timestamp.replace("Z", "+00:00")
+                if first_timestamp.endswith("Z")
+                else first_timestamp
+            )
+            created_at = datetime.fromisoformat(ts).timestamp() * 1000
+        except ValueError:
+            pass
+
     return SDKSessionInfo(
         session_id=session_id,
         summary=summary,
@@ -466,6 +483,7 @@ def _parse_session_info_from_lite(
         cwd=session_cwd,
         tag=tag,
         agent_name=agent_name,
+        created_at=created_at,
     )
 
 

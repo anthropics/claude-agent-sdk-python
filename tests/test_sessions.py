@@ -1261,6 +1261,142 @@ class TestTagAndAgentNameExtraction:
         assert info.agent_name is None
 
 
+class TestCreatedAtExtraction:
+    """Tests for created_at field extraction from first entry timestamp."""
+
+    def test_created_at_from_iso_timestamp(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """created_at is parsed from ISO timestamp in first entry (epoch ms)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        # 2026-01-15T10:30:00.000Z → epoch 1768473000000 ms
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": "hi"},
+                    "timestamp": "2026-01-15T10:35:00.000Z",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        # 2026-01-15T10:30:00Z = 1768473000 seconds = 1768473000000 ms
+        assert sessions[0].created_at == 1768473000000.0
+
+    def test_created_at_leq_last_modified(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """created_at <= last_modified (creation precedes mtime)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "2026-01-01T00:00:00.000Z",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+        # Set mtime to Feb 2026 (well after the Jan timestamp)
+        os.utime(file_path, (1769904000, 1769904000))  # 2026-02-01 UTC
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].created_at is not None
+        assert sessions[0].created_at <= sessions[0].last_modified
+
+    def test_created_at_none_when_missing(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """created_at is None when first entry lacks a timestamp field."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        # _make_session_file doesn't add a timestamp field
+        _make_session_file(project_dir, first_prompt="no timestamp")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].created_at is None
+
+    def test_created_at_none_on_invalid_format(self, tmp_path: Path):
+        """Invalid ISO string results in created_at=None (no exception)."""
+        sid = str(uuid.uuid4())
+        file_path = tmp_path / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "not-a-valid-iso-date",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        lite = _read_session_lite(file_path)
+        assert lite is not None
+        info = _parse_session_info_from_lite(sid, lite)
+        assert info is not None
+        assert info.created_at is None
+
+    def test_created_at_without_z_suffix(self, tmp_path: Path):
+        """ISO timestamp without Z suffix (with explicit offset) also works."""
+        sid = str(uuid.uuid4())
+        file_path = tmp_path / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "2026-01-15T10:30:00+00:00",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        lite = _read_session_lite(file_path)
+        assert lite is not None
+        info = _parse_session_info_from_lite(sid, lite)
+        assert info is not None
+        assert info.created_at == 1768473000000.0
+
+    def test_sdksessioninfo_created_at_default(self):
+        """SDKSessionInfo has created_at defaulting to None."""
+        info = SDKSessionInfo(
+            session_id="abc",
+            summary="test",
+            last_modified=1000,
+            file_size=42,
+        )
+        assert info.created_at is None
+
+
 # ---------------------------------------------------------------------------
 # get_session_info() tests
 # ---------------------------------------------------------------------------

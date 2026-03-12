@@ -192,7 +192,7 @@ class SubprocessCLITransport(Transport):
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
 
-        if self._options.allowed_tools:
+        if self._options.allowed_tools is not None:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
 
         if self._options.max_turns:
@@ -201,7 +201,7 @@ class SubprocessCLITransport(Transport):
         if self._options.max_budget_usd is not None:
             cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
 
-        if self._options.disallowed_tools:
+        if self._options.disallowed_tools is not None:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
         if self._options.model:

@@ -54,6 +54,8 @@ class SubprocessCLITransport(Transport):
         self._stderr_task_group: anyio.abc.TaskGroup | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
+        # Collect recent stderr lines so we can include them in ProcessError
+        self._stderr_lines: list[str] = []
         self._max_buffer_size = (
             options.max_buffer_size
             if options.max_buffer_size is not None
@@ -420,6 +422,9 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
+                # Always collect stderr lines for error reporting
+                self._stderr_lines.append(line_str)
+
                 # Call the stderr callback if provided
                 if self._options.stderr:
                     self._options.stderr(line_str)
@@ -577,10 +582,15 @@ class SubprocessCLITransport(Transport):
 
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            stderr_text = (
+                "\n".join(self._stderr_lines)
+                if self._stderr_lines
+                else "Check stderr output for details"
+            )
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=stderr_text,
             )
             raise self._exit_error
 

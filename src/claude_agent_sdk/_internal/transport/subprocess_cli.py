@@ -354,15 +354,6 @@ class SubprocessCLITransport(Transport):
             if self._options.enable_file_checkpointing:
                 process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
 
-            # Enable fine-grained tool streaming when partial messages are requested.
-            # --include-partial-messages emits stream_event messages, but tool input
-            # parameters are still buffered by the API unless eager_input_streaming is
-            # also enabled at the per-tool level via this env var.
-            if self._options.include_partial_messages:
-                process_env.setdefault(
-                    "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING", "1"
-                )
-
             if self._cwd:
                 process_env["PWD"] = self._cwd
 

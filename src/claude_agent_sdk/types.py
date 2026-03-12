@@ -792,6 +792,12 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    id: str | None = None
+    usage: dict[str, Any] | None = None
+    stop_reason: str | None = None
+    stop_sequence: str | None = None
+    session_id: str | None = None
+    uuid: str | None = None
 
 
 @dataclass
@@ -883,6 +889,9 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     result: str | None = None
     structured_output: Any = None
+    model_usage: dict[str, Any] | None = None
+    permission_denials: list[Any] | None = None
+    uuid: str | None = None
 
 
 @dataclass

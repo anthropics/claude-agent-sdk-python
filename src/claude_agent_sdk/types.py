@@ -760,7 +760,15 @@ class ToolResultBlock:
     is_error: bool | None = None
 
 
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+@dataclass
+class RawContentBlock:
+    """Unrecognized content block, preserved as raw data for forward compatibility."""
+
+    type: str
+    data: dict[str, Any]
+
+
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | RawContentBlock
 
 
 # Message types

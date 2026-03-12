@@ -6,6 +6,7 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    RateLimitEvent,
     ResultMessage,
     SystemMessage,
     TaskNotificationMessage,
@@ -546,6 +547,28 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
+
+    def test_parse_rate_limit_event(self):
+        """Test parsing a rate_limit_event into a typed RateLimitEvent."""
+        data = {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed_warning",
+                "resetsAt": 1700000000,
+                "rateLimitType": "five_hour",
+                "utilization": 0.91,
+            },
+            "uuid": "abc-123",
+            "session_id": "session_xyz",
+        }
+        message = parse_message(data)
+        assert isinstance(message, RateLimitEvent)
+        assert message.uuid == "abc-123"
+        assert message.session_id == "session_xyz"
+        assert message.rate_limit_info.status == "allowed_warning"
+        assert message.rate_limit_info.resets_at == 1700000000
+        assert message.rate_limit_info.rate_limit_type == "five_hour"
+        assert message.rate_limit_info.utilization == 0.91
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""

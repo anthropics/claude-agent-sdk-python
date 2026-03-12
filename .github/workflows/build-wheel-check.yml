@@ -83,6 +83,12 @@ jobs:
           python -c "import claude_agent_sdk; print('import ok')"
           python -c "import claude_agent_sdk, pathlib, platform; cli_name = 'claude.exe' if platform.system() == 'Windows' else 'claude'; p = pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled' / cli_name; assert p.exists() and p.is_file(), f'bundled CLI missing after install: {p}'; print('bundled CLI at', p)"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-check-${{ matrix.expected_tag }}
+          path: dist/*.whl
+          retention-days: 7
+
   verify-matrix-sync:
     # Guard against the build matrix here drifting from the publish matrix.
     runs-on: ubuntu-latest

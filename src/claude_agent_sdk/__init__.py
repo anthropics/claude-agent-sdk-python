@@ -13,6 +13,7 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
+from ._internal.session_mutations import rename_session
 from ._internal.sessions import get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
@@ -420,6 +421,8 @@ __all__ = [
     "get_session_messages",
     "SDKSessionInfo",
     "SessionMessage",
+    # Session mutations
+    "rename_session",
     # Beta support
     "SdkBeta",
     # Sandbox support

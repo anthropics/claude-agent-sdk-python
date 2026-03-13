@@ -195,6 +195,17 @@ class TestSubprocessCLITransport:
         assert "--resume" in cmd
         assert "session-123" in cmd
 
+    def test_build_command_with_session_id(self):
+        """Test building CLI command with session_id option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(session_id="my-session-uuid"),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" in cmd
+        assert "my-session-uuid" in cmd
+
     def test_connect_close(self):
         """Test connect and close lifecycle."""
 

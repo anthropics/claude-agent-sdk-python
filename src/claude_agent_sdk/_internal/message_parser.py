@@ -1,4 +1,4 @@
-"""Message parser for Claude Code SDK responses."""
+"""Message parser for Claude Agent SDK responses."""
 
 import logging
 from typing import Any

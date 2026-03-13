@@ -463,14 +463,18 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
-        # Terminate and wait for process
+        # Wait for process to exit gracefully after stdin EOF,
+        # giving the CLI time to flush the session transcript.
+        # Only resort to SIGTERM if it doesn't exit in time.
         if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-                # Wait for process to finish with timeout
-                with suppress(Exception):
-                    # Just try to wait, but don't block if it fails
+            try:
+                with anyio.fail_after(10):
                     await self._process.wait()
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    self._process.terminate()
+                    with suppress(Exception):
+                        await self._process.wait()
 
         self._process = None
         self._stdout_stream = None

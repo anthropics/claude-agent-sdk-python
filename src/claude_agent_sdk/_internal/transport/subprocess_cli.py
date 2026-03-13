@@ -30,6 +30,24 @@ _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
+def _should_suppress_console_window() -> bool:
+    """Check if we should suppress console window for subprocesses on Windows.
+
+    Returns True when running on Windows and the parent process has no console
+    attached (e.g., GUI app, PyInstaller bundle with console=False).
+
+    Returns:
+        bool: True if CREATE_NO_WINDOW should be used, False otherwise.
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+
+    # GetConsoleWindow() returns NULL (0) if no console is attached
+    return not ctypes.windll.kernel32.GetConsoleWindow()
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
@@ -366,14 +384,25 @@ class SubprocessCLITransport(Transport):
             # For backward compat: use debug_stderr file object if no callback and debug is on
             stderr_dest = PIPE if should_pipe_stderr else None
 
+            # Build kwargs dict for anyio.open_process
+            kwargs = {
+                "stdin": PIPE,
+                "stdout": PIPE,
+                "stderr": stderr_dest,
+                "cwd": self._cwd,
+                "env": process_env,
+                "user": self._options.user,
+            }
+
+            # Windows: suppress console window if parent has no console
+            if _should_suppress_console_window():
+                import subprocess
+
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
             self._process = await anyio.open_process(
                 cmd,
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=stderr_dest,
-                cwd=self._cwd,
-                env=process_env,
-                user=self._options.user,
+                **kwargs,  # type: ignore[arg-type]
             )
 
             if self._process.stdout:
@@ -589,10 +618,21 @@ class SubprocessCLITransport(Transport):
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
+                # Build kwargs for anyio.open_process
+                kwargs = {
+                    "stdout": PIPE,
+                    "stderr": PIPE,
+                }
+
+                # Windows: suppress console window if parent has no console
+                if _should_suppress_console_window():
+                    import subprocess
+
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
-                    stdout=PIPE,
-                    stderr=PIPE,
+                    **kwargs,  # type: ignore[arg-type]
                 )
 
                 if version_process.stdout:

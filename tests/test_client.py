@@ -1,10 +1,13 @@
 """Tests for Claude SDK client functionality."""
 
+import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
+from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.transport import Transport
 from claude_agent_sdk.types import TextBlock
 
 
@@ -125,5 +128,54 @@ class TestQueryFunction:
                 call_kwargs = mock_transport_class.call_args.kwargs
                 assert call_kwargs["prompt"] == "test"
                 assert call_kwargs["options"].cwd == "/custom/path"
+
+        anyio.run(_test)
+
+
+class TestQueryClose:
+    """Test Query.close() behavior."""
+
+    def test_close_timeout_prevents_hang(self):
+        """Test that close() doesn't hang if task group cleanup takes too long.
+
+        Regression test for issue #378 - Query.close() could hang indefinitely
+        when tasks don't respond to cancellation.
+        """
+
+        async def _test():
+            # Create a mock transport
+            mock_transport = Mock(spec=Transport)
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = AsyncMock()
+
+            # Set a short timeout for testing (100ms)
+            os.environ["CLAUDE_CODE_TASK_GROUP_CLOSE_TIMEOUT"] = "100"
+            try:
+                query = Query(
+                    transport=mock_transport,
+                    is_streaming_mode=True,
+                )
+
+                # Start the query to create the task group
+                await query.start()
+
+                # Verify task group was created
+                assert query._tg is not None
+
+                # Close should complete within the timeout even if tasks misbehave
+                # The timeout is set to 100ms, so this should complete quickly
+                start = anyio.current_time()
+                await query.close()
+                elapsed = anyio.current_time() - start
+
+                # Should complete quickly (< 1 second), not hang indefinitely
+                assert elapsed < 1.0
+
+                # Transport close should have been called
+                mock_transport.close.assert_called_once()
+            finally:
+                # Restore original timeout
+                os.environ.pop("CLAUDE_CODE_TASK_GROUP_CLOSE_TIMEOUT", None)
 
         anyio.run(_test)

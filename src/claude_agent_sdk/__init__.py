@@ -13,6 +13,7 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
+from ._internal.session_mutations import rename_session, tag_session
 from ._internal.sessions import get_session_info, get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
@@ -54,6 +55,10 @@ from .types import (
     PostToolUseHookInput,
     PreCompactHookInput,
     PreToolUseHookInput,
+    RateLimitEvent,
+    RateLimitInfo,
+    RateLimitStatus,
+    RateLimitType,
     ResultMessage,
     SandboxIgnoreViolations,
     SandboxNetworkConfig,
@@ -64,6 +69,7 @@ from .types import (
     SessionMessage,
     SettingSource,
     StopHookInput,
+    StreamEvent,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
     SubagentStopHookInput,
@@ -361,6 +367,11 @@ __all__ = [
     "TaskNotificationStatus",
     "TaskUsage",
     "ResultMessage",
+    "RateLimitEvent",
+    "RateLimitInfo",
+    "RateLimitStatus",
+    "RateLimitType",
+    "StreamEvent",
     "Message",
     "ClaudeAgentOptions",
     "TextBlock",
@@ -411,6 +422,9 @@ __all__ = [
     "get_session_messages",
     "SDKSessionInfo",
     "SessionMessage",
+    # Session mutations
+    "rename_session",
+    "tag_session",
     # Beta support
     "SdkBeta",
     # Sandbox support

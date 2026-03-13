@@ -159,6 +159,42 @@ class TestOptions:
         assert options.permission_prompt_tool_name == "CustomTool"
 
 
+class TestAgentDefinition:
+    """Test AgentDefinition configuration."""
+
+    def test_agent_definition_defaults(self):
+        """Test AgentDefinition with required fields only."""
+        from dataclasses import asdict
+
+        from claude_agent_sdk.types import AgentDefinition
+
+        agent = AgentDefinition(description="Test agent", prompt="You are a test agent")
+        assert agent.tools is None
+        assert agent.model is None
+        assert agent.memory is None
+
+        # Verify None fields are excluded from serialized dict
+        d = {k: v for k, v in asdict(agent).items() if v is not None}
+        assert "memory" not in d
+        assert "tools" not in d
+
+    def test_agent_definition_with_memory(self):
+        """Test AgentDefinition with memory field."""
+        from dataclasses import asdict
+
+        from claude_agent_sdk.types import AgentDefinition
+
+        agent = AgentDefinition(
+            description="Memory agent",
+            prompt="You are an agent with memory",
+            memory="project",
+        )
+        assert agent.memory == "project"
+
+        d = {k: v for k, v in asdict(agent).items() if v is not None}
+        assert d["memory"] == "project"
+
+
 class TestHookInputTypes:
     """Test hook input type definitions."""
 

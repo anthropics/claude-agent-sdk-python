@@ -1,4 +1,13 @@
-"""Type definitions for Claude SDK."""
+"""Type definitions for Claude SDK.
+
+This module contains two kinds of types:
+
+- **@dataclass types** (e.g., ``AgentDefinition``, ``TextBlock``) support attribute
+  access: ``obj.field_name``.
+- **TypedDict types** (e.g., ``ThinkingConfigEnabled``, ``SyncHookJSONOutput``) are
+  plain ``dict`` objects at runtime. Use bracket access: ``obj["field_name"]``,
+  **not** ``obj.field_name`` (which raises ``AttributeError``).
+"""
 
 import sys
 from collections.abc import Awaitable, Callable
@@ -393,6 +402,9 @@ HookSpecificOutput = (
 class AsyncHookJSONOutput(TypedDict):
     """Async hook output that defers hook execution.
 
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``output["async_"]``, not ``output.async_``.
+
     Fields:
         async_: Set to True to defer hook execution. Note: This is converted to
             "async" when sent to the CLI - use "async_" in your Python code.
@@ -410,6 +422,9 @@ class SyncHookJSONOutput(TypedDict):
 
     This defines the structure for hook callbacks to control execution and provide
     feedback to Claude.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``output["continue_"]``, not ``output.continue_``.
 
     Common Control Fields:
         continue_: Whether Claude should proceed after hook execution (default: True).
@@ -492,7 +507,11 @@ class HookMatcher:
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):
-    """MCP stdio server configuration."""
+    """MCP stdio server configuration.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["command"]``, not ``config.command``.
+    """
 
     type: NotRequired[Literal["stdio"]]  # Optional for backwards compatibility
     command: str
@@ -501,7 +520,11 @@ class McpStdioServerConfig(TypedDict):
 
 
 class McpSSEServerConfig(TypedDict):
-    """MCP SSE server configuration."""
+    """MCP SSE server configuration.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["url"]``, not ``config.url``.
+    """
 
     type: Literal["sse"]
     url: str
@@ -509,7 +532,11 @@ class McpSSEServerConfig(TypedDict):
 
 
 class McpHttpServerConfig(TypedDict):
-    """MCP HTTP server configuration."""
+    """MCP HTTP server configuration.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["url"]``, not ``config.url``.
+    """
 
     type: Literal["http"]
     url: str
@@ -653,6 +680,9 @@ class SdkPluginConfig(TypedDict):
 class SandboxNetworkConfig(TypedDict, total=False):
     """Network configuration for sandbox.
 
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["allowLocalBinding"]``, not ``config.allowLocalBinding``.
+
     Attributes:
         allowUnixSockets: Unix socket paths accessible in sandbox (e.g., SSH agents).
         allowAllUnixSockets: Allow all Unix sockets (less secure).
@@ -685,6 +715,9 @@ class SandboxSettings(TypedDict, total=False):
 
     This controls how Claude Code sandboxes bash commands for filesystem
     and network isolation.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``settings["enabled"]``, not ``settings.enabled``.
 
     **Important:** Filesystem and network restrictions are configured via permission
     rules, not via these sandbox settings:
@@ -1011,15 +1044,33 @@ class SessionMessage:
 
 
 class ThinkingConfigAdaptive(TypedDict):
+    """Adaptive thinking configuration.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["type"]``, not ``config.type``.
+    """
+
     type: Literal["adaptive"]
 
 
 class ThinkingConfigEnabled(TypedDict):
+    """Enabled thinking configuration with a token budget.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["budget_tokens"]``, not ``config.budget_tokens``.
+    """
+
     type: Literal["enabled"]
     budget_tokens: int
 
 
 class ThinkingConfigDisabled(TypedDict):
+    """Disabled thinking configuration.
+
+    Note: This is a TypedDict. Instances are plain dicts at runtime.
+    Use ``config["type"]``, not ``config.type``.
+    """
+
     type: Literal["disabled"]
 
 

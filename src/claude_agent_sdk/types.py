@@ -1096,6 +1096,10 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # Disable parallel tool use. When True, the model will only ever emit
+    # one tool_use block per response, executing tools sequentially.
+    # Maps to the Anthropic API's tool_choice.disable_parallel_tool_use parameter.
+    disable_parallel_tool_use: bool = False
 
 
 # SDK Control Protocol

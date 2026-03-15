@@ -1096,6 +1096,10 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # Create a new git worktree for this session.
+    # When True, creates a worktree with an auto-generated name.
+    # When a string, creates a worktree with the specified name.
+    worktree: bool | str | None = None
 
 
 # SDK Control Protocol

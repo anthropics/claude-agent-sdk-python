@@ -326,6 +326,13 @@ class SubprocessCLITransport(Transport):
             if schema is not None:
                 cmd.extend(["--json-schema", json.dumps(schema)])
 
+        # Worktree support
+        if self._options.worktree is not None:
+            if isinstance(self._options.worktree, str):
+                cmd.extend(["--worktree", self._options.worktree])
+            elif self._options.worktree:
+                cmd.append("--worktree")
+
         # Always use streaming mode with stdin (matching TypeScript SDK)
         # This allows agents and other large configs to be sent via initialize request
         cmd.extend(["--input-format", "stream-json"])

@@ -557,8 +557,18 @@ class SubprocessCLITransport(Transport):
                         data = json.loads(json_buffer)
                         json_buffer = ""
                         yield data
-                    except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
+                    except json.JSONDecodeError as e:
+                        # Check if buffer contains non-JSON content (e.g., control characters)
+                        # that makes it impossible to ever parse successfully
+                        stripped = json_buffer.lstrip()
+                        if stripped and not stripped.startswith(("{", "[")):
+                            # Buffer contains garbage at the start, clear it and raise
+                            json_buffer = ""
+                            raise SDKJSONDecodeError(
+                                "Buffer contains non-JSON content",
+                                e,
+                            ) from e
+                        # Otherwise, we are speculatively decoding the buffer until we get
                         # a full JSON object. If there is an actual issue, we
                         # raise an error after exceeding the configured limit.
                         continue

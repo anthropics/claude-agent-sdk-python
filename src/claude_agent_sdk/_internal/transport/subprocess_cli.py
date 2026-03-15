@@ -373,6 +373,7 @@ class SubprocessCLITransport(Transport):
                 stderr=stderr_dest,
                 cwd=self._cwd,
                 env=process_env,
+                start_new_session=True,
                 user=self._options.user,
             )
 

@@ -428,10 +428,7 @@ class TestSubprocessCLITransport:
                     options=options,
                 )
 
-                # Clear any inherited entrypoint so we exercise the default path
-                with patch.dict(os.environ):
-                    os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
-                    await transport.connect()
+                await transport.connect()
 
                 # Verify open_process was called twice (version check + main process)
                 assert mock_open_process.call_count == 2
@@ -444,7 +441,7 @@ class TestSubprocessCLITransport:
                 # Check that custom env var was passed
                 assert env_passed["MY_TEST_VAR"] == test_value
 
-                # Verify SDK default entrypoint is applied when not overridden
+                # Verify SDK entrypoint default is applied (overrides inherited env)
                 assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
                 assert env_passed["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
 

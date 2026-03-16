@@ -132,6 +132,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
+                    usage=data["message"].get("usage"),
                 )
             except KeyError as e:
                 raise MessageParseError(

@@ -796,6 +796,7 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    usage: dict[str, Any] | None = None
 
 
 @dataclass

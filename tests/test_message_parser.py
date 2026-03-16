@@ -274,6 +274,49 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_assistant_message_with_usage(self):
+        """Per-turn usage is preserved on AssistantMessage.
+
+        The CLI emits the API's full usage dict (including cache token
+        breakdown) on every assistant message. Previously this was dropped
+        by the parser, forcing consumers to wait for the aggregate in
+        ResultMessage. See issue #673.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_read_input_tokens": 2000,
+                    "cache_creation_input_tokens": 500,
+                },
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage == {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 2000,
+            "cache_creation_input_tokens": 500,
+        }
+
+    def test_parse_assistant_message_without_usage(self):
+        """usage defaults to None when absent (e.g. synthetic messages)."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage is None
+
     def test_parse_valid_system_message(self):
         """Test parsing a valid system message."""
         data = {"type": "system", "subtype": "start"}

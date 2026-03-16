@@ -47,6 +47,10 @@ class AgentDefinition:
     prompt: str
     tools: list[str] | None = None
     model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    skills: list[str] | None = None
+    memory: Literal["user", "project", "local"] | None = None
+    # Each entry is a server name (str) or an inline {name: config} dict.
+    mcpServers: list[str | dict[str, Any]] | None = None  # noqa: N815
 
 
 # Permission Update types (matching TypeScript SDK)
@@ -792,6 +796,7 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    usage: dict[str, Any] | None = None
 
 
 @dataclass

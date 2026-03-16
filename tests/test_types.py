@@ -426,3 +426,60 @@ class TestMcpServerStatusTypes:
         assert len(response["mcpServers"]) == 2
         assert response["mcpServers"][0]["status"] == "connected"
         assert response["mcpServers"][1]["status"] == "disabled"
+
+
+class TestAgentDefinition:
+    """Test AgentDefinition serialization contract.
+
+    AgentDefinition is sent to the CLI via the initialize control request.
+    The _internal/client.py serializer uses ``asdict()`` directly, so field
+    names here must match the CLI's expected JSON keys exactly.
+    """
+
+    def _serialize(self, agent):
+        # Mirror the transform in _internal/client.py and client.py:
+        #   {k: v for k, v in asdict(agent_def).items() if v is not None}
+        from dataclasses import asdict
+
+        return {k: v for k, v in asdict(agent).items() if v is not None}
+
+    def test_minimal_definition_omits_unset_fields(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="You are a test")
+        payload = self._serialize(agent)
+
+        assert payload == {"description": "test", "prompt": "You are a test"}
+
+    def test_skills_and_memory_serialize_with_cli_keys(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            skills=["skill-a", "skill-b"],
+            memory="project",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["skills"] == ["skill-a", "skill-b"]
+        assert payload["memory"] == "project"
+
+    def test_mcp_servers_serializes_as_camelcase(self):
+        """CLI expects ``mcpServers`` (camelCase), not snake_case."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            mcpServers=[
+                "slack",
+                {"local": {"command": "python", "args": ["server.py"]}},
+            ],
+        )
+        payload = self._serialize(agent)
+
+        assert "mcpServers" in payload
+        assert "mcp_servers" not in payload
+        assert payload["mcpServers"][0] == "slack"
+        assert payload["mcpServers"][1]["local"]["command"] == "python"

@@ -441,7 +441,7 @@ class TestSubprocessCLITransport:
                 # Check that custom env var was passed
                 assert env_passed["MY_TEST_VAR"] == test_value
 
-                # Verify SDK identifier is present
+                # Verify SDK entrypoint default is applied (overrides inherited env)
                 assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
                 assert env_passed["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
 
@@ -449,6 +449,49 @@ class TestSubprocessCLITransport:
                 if "PATH" in os.environ:
                     assert "PATH" in env_passed
                     assert env_passed["PATH"] == os.environ["PATH"]
+
+        anyio.run(_test)
+
+    def test_caller_can_override_entrypoint(self):
+        """Test that a caller-supplied CLAUDE_CODE_ENTRYPOINT survives the env merge."""
+
+        async def _test():
+            custom_env = {"CLAUDE_CODE_ENTRYPOINT": "custom-caller"}
+            options = make_options(env=custom_env)
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Caller's entrypoint must win over the sdk-py default
+                assert env_passed["CLAUDE_CODE_ENTRYPOINT"] == "custom-caller"
+
+                # CLAUDE_AGENT_SDK_VERSION is still SDK-controlled
+                assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
 
         anyio.run(_test)
 

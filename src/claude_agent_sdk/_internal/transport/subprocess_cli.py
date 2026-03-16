@@ -342,11 +342,13 @@ class SubprocessCLITransport(Transport):
 
         cmd = self._build_command()
         try:
-            # Merge environment variables: system -> user -> SDK required
+            # Merge environment variables. CLAUDE_CODE_ENTRYPOINT defaults to
+            # sdk-py regardless of inherited process env; options.env can override
+            # it. CLAUDE_AGENT_SDK_VERSION is always set by the SDK.
             process_env = {
                 **os.environ,
-                **self._options.env,  # User-provided env vars
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                **self._options.env,
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 

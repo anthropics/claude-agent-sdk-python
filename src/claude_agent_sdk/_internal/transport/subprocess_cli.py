@@ -465,6 +465,11 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
+        if self._stdout_stream:
+            with suppress(Exception):
+                await self._stdout_stream.aclose()
+            self._stdout_stream = None
+
         # Terminate and wait for process
         if self._process.returncode is None:
             with suppress(ProcessLookupError):

@@ -744,6 +744,63 @@ class TestHookEventCallbacks:
         )
         assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
 
+    @pytest.mark.asyncio
+    async def test_post_compact_hook_callback(self):
+        """Test that a PostCompact hook callback receives correct input and returns output."""
+        hook_calls: list[dict[str, Any]] = []
+
+        async def post_compact_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            hook_calls.append({"input": input_data, "tool_use_id": tool_use_id})
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostCompact",
+                    "additionalContext": "Compaction logged successfully",
+                }
+            }
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks={}
+        )
+
+        callback_id = "test_post_compact_hook"
+        query.hook_callbacks[callback_id] = post_compact_hook
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-post-compact",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": callback_id,
+                "input": {
+                    "session_id": "sess-1",
+                    "transcript_path": "/tmp/t",
+                    "cwd": "/home",
+                    "hook_event_name": "PostCompact",
+                    "trigger": "auto",
+                    "compact_summary": "Conversation summary...",
+                },
+                "tool_use_id": None,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(hook_calls) == 1
+        assert hook_calls[0]["input"]["hook_event_name"] == "PostCompact"
+        assert hook_calls[0]["input"]["trigger"] == "auto"
+        assert hook_calls[0]["input"]["compact_summary"] == "Conversation summary..."
+
+        response_data = json.loads(transport.written_messages[-1])
+        result = response_data["response"]["response"]
+        assert result["hookSpecificOutput"]["hookEventName"] == "PostCompact"
+        assert (
+            result["hookSpecificOutput"]["additionalContext"]
+            == "Compaction logged successfully"
+        )
+
 
 class TestHookInitializeRegistration:
     """Test that new hook events can be registered through the initialize flow."""

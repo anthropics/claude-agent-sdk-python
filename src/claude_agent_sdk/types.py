@@ -170,6 +170,7 @@ HookEvent = (
     | Literal["Stop"]
     | Literal["SubagentStop"]
     | Literal["PreCompact"]
+    | Literal["PostCompact"]
     | Literal["Notification"]
     | Literal["SubagentStart"]
     | Literal["PermissionRequest"]
@@ -273,6 +274,14 @@ class PreCompactHookInput(BaseHookInput):
     custom_instructions: str | None
 
 
+class PostCompactHookInput(BaseHookInput):
+    """Input data for PostCompact hook events."""
+
+    hook_event_name: Literal["PostCompact"]
+    trigger: Literal["manual", "auto"]
+    compact_summary: str
+
+
 class NotificationHookInput(BaseHookInput):
     """Input data for Notification hook events."""
 
@@ -308,6 +317,7 @@ HookInput = (
     | StopHookInput
     | SubagentStopHookInput
     | PreCompactHookInput
+    | PostCompactHookInput
     | NotificationHookInput
     | SubagentStartHookInput
     | PermissionRequestHookInput
@@ -354,6 +364,13 @@ class SessionStartHookSpecificOutput(TypedDict):
     additionalContext: NotRequired[str]
 
 
+class PostCompactHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostCompact events."""
+
+    hookEventName: Literal["PostCompact"]
+    additionalContext: NotRequired[str]
+
+
 class NotificationHookSpecificOutput(TypedDict):
     """Hook-specific output for Notification events."""
 
@@ -381,6 +398,7 @@ HookSpecificOutput = (
     | PostToolUseFailureHookSpecificOutput
     | UserPromptSubmitHookSpecificOutput
     | SessionStartHookSpecificOutput
+    | PostCompactHookSpecificOutput
     | NotificationHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PermissionRequestHookSpecificOutput

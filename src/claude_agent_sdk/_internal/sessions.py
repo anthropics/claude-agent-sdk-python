@@ -766,7 +766,7 @@ def get_session_info(
     # No directory — search all project directories for the session file.
     projects_dir = _get_projects_dir()
     try:
-        dirents = list(projects_dir.iterdir())
+        dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
     except OSError:
         return None
     for entry in dirents:

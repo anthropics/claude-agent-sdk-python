@@ -1397,7 +1397,8 @@ class TestCreatedAtExtraction:
         assert lite is not None
         info = _parse_session_info_from_lite(sid, lite)
         assert info is not None
-        assert info.created_at == 1768473000000.0
+        assert info.created_at == 1768473000000
+        assert isinstance(info.created_at, int)
 
     def test_sdksessioninfo_created_at_default(self):
         """SDKSessionInfo has created_at defaulting to None."""

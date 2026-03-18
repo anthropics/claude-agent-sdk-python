@@ -995,7 +995,7 @@ class SDKSessionInfo:
     git_branch: str | None = None
     cwd: str | None = None
     tag: str | None = None
-    created_at: float | None = None
+    created_at: int | None = None
 
 
 @dataclass

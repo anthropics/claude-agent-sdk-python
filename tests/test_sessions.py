@@ -28,6 +28,11 @@ from claude_agent_sdk._internal.sessions import (
     _validate_uuid,
 )
 
+# Matches the CLI's on-disk JSONL format (JSON.stringify / json.dumps with
+# separators). Tag extraction scopes to '{"type":"tag"' (no space after colon)
+# at column 0 to avoid matching tool_use inputs — fixtures must use this form.
+_COMPACT = {"separators": (",", ":")}
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1102,7 +1107,7 @@ class TestTagExtraction:
         file_path = project_dir / f"{sid}.jsonl"
         lines = [
             json.dumps({"type": "user", "message": {"content": "hello"}}),
-            json.dumps({"type": "tag", "tag": "my-tag", "sessionId": sid}),
+            json.dumps({"type": "tag", "tag": "my-tag", "sessionId": sid}, **_COMPACT),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
@@ -1121,8 +1126,12 @@ class TestTagExtraction:
         file_path = project_dir / f"{sid}.jsonl"
         lines = [
             json.dumps({"type": "user", "message": {"content": "hello"}}),
-            json.dumps({"type": "tag", "tag": "first-tag", "sessionId": sid}),
-            json.dumps({"type": "tag", "tag": "second-tag", "sessionId": sid}),
+            json.dumps(
+                {"type": "tag", "tag": "first-tag", "sessionId": sid}, **_COMPACT
+            ),
+            json.dumps(
+                {"type": "tag", "tag": "second-tag", "sessionId": sid}, **_COMPACT
+            ),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
@@ -1141,8 +1150,8 @@ class TestTagExtraction:
         file_path = project_dir / f"{sid}.jsonl"
         lines = [
             json.dumps({"type": "user", "message": {"content": "hello"}}),
-            json.dumps({"type": "tag", "tag": "old-tag", "sessionId": sid}),
-            json.dumps({"type": "tag", "tag": "", "sessionId": sid}),
+            json.dumps({"type": "tag", "tag": "old-tag", "sessionId": sid}, **_COMPACT),
+            json.dumps({"type": "tag", "tag": "", "sessionId": sid}, **_COMPACT),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
@@ -1163,6 +1172,79 @@ class TestTagExtraction:
         assert len(sessions) == 1
         assert sessions[0].tag is None
 
+    def test_tag_ignores_tool_use_inputs(self, claude_config_dir: Path, tmp_path: Path):
+        """Tag extraction is scoped to {type:'tag'} lines — ignores "tag" fields
+        in tool_use inputs (git tag, Docker tags, cloud resource tags).
+
+        Mirrors TS listSessionsImpl.ts:132 / sessionStorage.ts:629.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "tag this v1.0"}}),
+            json.dumps(
+                {"type": "tag", "tag": "real-tag", "sessionId": sid}, **_COMPACT
+            ),
+            # A tool_use entry with a "tag" key in its input — must NOT match.
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "mcp__docker__build",
+                                "input": {"tag": "myapp:v2", "context": "."},
+                            }
+                        ],
+                    },
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag == "real-tag"  # NOT "myapp:v2"
+
+    def test_tag_none_when_only_tool_use_tag(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Session with no {type:'tag'} entry but tool_use input has tag — returns None."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "build docker"}}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "input": {"tag": "prod"},
+                            }
+                        ],
+                    },
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].tag is None  # NOT "prod"
+
     def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
         """Direct test of the refactored _parse_session_info_from_lite helper."""
         sid = str(uuid.uuid4())
@@ -1175,7 +1257,9 @@ class TestTagExtraction:
                     "cwd": "/workspace",
                 }
             ),
-            json.dumps({"type": "tag", "tag": "experiment", "sessionId": sid}),
+            json.dumps(
+                {"type": "tag", "tag": "experiment", "sessionId": sid}, **_COMPACT
+            ),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
@@ -1225,7 +1309,8 @@ class TestCreatedAtExtraction:
         sessions = list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         # 2026-01-15T10:30:00Z = 1768473000 seconds = 1768473000000 ms
-        assert sessions[0].created_at == 1768473000000.0
+        assert sessions[0].created_at == 1768473000000
+        assert isinstance(sessions[0].created_at, int)
 
     def test_created_at_leq_last_modified(
         self, claude_config_dir: Path, tmp_path: Path
@@ -1418,7 +1503,7 @@ class TestGetSessionInfo:
         file_path = project_dir / f"{sid}.jsonl"
         lines = [
             json.dumps({"type": "user", "message": {"content": "hello"}}),
-            json.dumps({"type": "tag", "tag": "urgent", "sessionId": sid}),
+            json.dumps({"type": "tag", "tag": "urgent", "sessionId": sid}, **_COMPACT),
         ]
         file_path.write_text("\n".join(lines) + "\n")
 

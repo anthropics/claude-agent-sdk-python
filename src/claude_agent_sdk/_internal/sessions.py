@@ -411,7 +411,7 @@ def _parse_session_info_from_lite(
     Returns None for sidechain sessions or metadata-only sessions with no
     extractable summary.
 
-    Exported for reuse by get_session_info.
+    Shared by list_sessions and get_session_info.
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
@@ -421,10 +421,22 @@ def _parse_session_info_from_lite(
     if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
         return None
 
-    custom_title = _extract_last_json_string_field(tail, "customTitle") or None
+    # User-set title (customTitle) wins over AI-generated title (aiTitle).
+    # Head fallback covers short sessions where the title entry may not be in tail.
+    custom_title = (
+        _extract_last_json_string_field(tail, "customTitle")
+        or _extract_last_json_string_field(head, "customTitle")
+        or _extract_last_json_string_field(tail, "aiTitle")
+        or _extract_last_json_string_field(head, "aiTitle")
+        or None
+    )
     first_prompt = _extract_first_prompt_from_head(head) or None
+    # lastPrompt tail entry shows what the user was most recently doing.
     summary = (
-        custom_title or _extract_last_json_string_field(tail, "summary") or first_prompt
+        custom_title
+        or _extract_last_json_string_field(tail, "lastPrompt")
+        or _extract_last_json_string_field(tail, "summary")
+        or first_prompt
     )
 
     # Skip metadata-only sessions (no title, no summary, no prompt)
@@ -437,11 +449,20 @@ def _parse_session_info_from_lite(
         or None
     )
     session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
-    tag = _extract_last_json_string_field(tail, "tag") or None
+    # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
+    # "tag" would match tool_use inputs (git tag, Docker tags, cloud resource
+    # tags). Mirrors TS listSessionsImpl.ts / sessionStorage.ts:629.
+    tag_line = next(
+        (ln for ln in reversed(tail.split("\n")) if ln.startswith('{"type":"tag"')),
+        None,
+    )
+    tag = (
+        (_extract_last_json_string_field(tag_line, "tag") or None) if tag_line else None
+    )
 
     # created_at from first entry's ISO timestamp (epoch ms). More reliable
     # than stat().birthtime which is unsupported on some filesystems.
-    created_at: float | None = None
+    created_at: int | None = None
     first_timestamp = _extract_json_string_field(head, "timestamp")
     if first_timestamp:
         try:
@@ -451,7 +472,7 @@ def _parse_session_info_from_lite(
                 if first_timestamp.endswith("Z")
                 else first_timestamp
             )
-            created_at = datetime.fromisoformat(ts).timestamp() * 1000
+            created_at = int(datetime.fromisoformat(ts).timestamp() * 1000)
         except ValueError:
             pass
 

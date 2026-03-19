@@ -234,8 +234,19 @@ class TestSubprocessCLITransport:
                 assert transport._process is not None
                 assert transport.is_ready()
 
+                # Replace internal streams with mocks to verify close() calls aclose()
+                mock_stdout_stream = MagicMock()
+                mock_stdout_stream.aclose = AsyncMock()
+                transport._stdout_stream = mock_stdout_stream
+
+                mock_stderr_stream = MagicMock()
+                mock_stderr_stream.aclose = AsyncMock()
+                transport._stderr_stream = mock_stderr_stream
+
                 await transport.close()
                 mock_process.terminate.assert_called_once()
+                mock_stdout_stream.aclose.assert_called_once()
+                mock_stderr_stream.aclose.assert_called_once()
 
         anyio.run(_test)
 

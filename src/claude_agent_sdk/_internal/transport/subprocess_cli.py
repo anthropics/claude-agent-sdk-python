@@ -465,14 +465,20 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
-        # Terminate and wait for process
+        # Wait for graceful shutdown after stdin EOF, then terminate if needed.
+        # The subprocess needs time to flush its session file after receiving
+        # EOF on stdin. Without this grace period, SIGTERM can interrupt the
+        # write and cause the last assistant message to be lost (see #625).
         if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-                # Wait for process to finish with timeout
-                with suppress(Exception):
-                    # Just try to wait, but don't block if it fails
+            try:
+                with anyio.fail_after(5):
                     await self._process.wait()
+            except TimeoutError:
+                # Graceful shutdown timed out — force terminate
+                with suppress(ProcessLookupError):
+                    self._process.terminate()
+                    with suppress(Exception):
+                        await self._process.wait()
 
         self._process = None
         self._stdout_stream = None

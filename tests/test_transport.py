@@ -235,7 +235,11 @@ class TestSubprocessCLITransport:
                 assert transport.is_ready()
 
                 await transport.close()
-                mock_process.terminate.assert_called_once()
+                # After stdin EOF, the process is given time to exit
+                # gracefully. Since the mock's wait() returns immediately,
+                # terminate should NOT be called.
+                mock_process.terminate.assert_not_called()
+                mock_process.wait.assert_called()
 
         anyio.run(_test)
 
@@ -871,6 +875,96 @@ class TestSubprocessCLITransport:
                 await process.wait()
 
         anyio.run(_test, backend="trio")
+
+    def test_close_terminates_after_grace_period_timeout(self):
+        """Test that SIGTERM is sent when process doesn't exit within grace period."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process that hangs (never exits on its own)
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                # Make wait() hang until cancelled (simulates stuck process)
+                async def hanging_wait():
+                    await anyio.sleep(999)
+
+                mock_process.wait = AsyncMock(side_effect=hanging_wait)
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+
+                # Patch the grace period to be short for testing
+                with patch("anyio.fail_after", side_effect=TimeoutError):
+                    # After terminate, wait should succeed
+                    mock_process.wait = AsyncMock()
+                    await transport.close()
+
+                # Process should have been terminated after timeout
+                mock_process.terminate.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_close_skips_wait_when_already_exited(self):
+        """Test that close() doesn't wait or terminate if process already exited."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = 0  # Already exited
+                mock_process.terminate = MagicMock()
+                mock_process.wait = AsyncMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+                await transport.close()
+
+                # Should not try to wait or terminate an already-exited process
+                mock_process.terminate.assert_not_called()
+
+        anyio.run(_test)
 
     def test_build_command_agents_always_via_initialize(self):
         """Test that --agents is NEVER passed via CLI.

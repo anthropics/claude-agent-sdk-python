@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.50
+
+### New Features
+
+- **Session info**: Added `tag` and `created_at` fields to `SDKSessionInfo` and new `get_session_info()` function for retrieving session metadata (#667)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.81
+- Hardened PyPI publish workflow against partial-upload failures (#700)
+- Added daily PyPI storage quota monitoring (#705)
+
 ## 0.1.49
 
 ### New Features

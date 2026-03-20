@@ -102,8 +102,8 @@ jobs:
           import sys
           import urllib.request
 
-          QUOTA_BYTES = 10 * 1024**3       # PyPI default project quota: 10 GiB
-          THRESHOLD_BYTES = 9.5 * 1024**3  # Fail above 9.5 GiB (0.5 GiB buffer)
+          QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
+          THRESHOLD_BYTES = 47.5 * 1024**3  # Fail above 95% (2.5 GiB buffer)
 
           # Fetch current usage from PyPI JSON API
           with urllib.request.urlopen("https://pypi.org/pypi/claude-agent-sdk/json") as r:
@@ -125,15 +125,16 @@ jobs:
           pct = 100.0 * current_total / QUOTA_BYTES
           projected_pct = 100.0 * projected / QUOTA_BYTES
 
-          print(f"Current PyPI usage: {current_total / 1024**3:.3f} GiB / 10.000 GiB ({pct:.1f}%)")
+          print(f"Current PyPI usage: {current_total / 1024**3:.3f} GiB / {QUOTA_BYTES / 1024**3:.0f} GiB ({pct:.1f}%)")
           print(f"New upload size:    {new_total / 1024**2:.2f} MiB")
-          print(f"Projected usage:    {projected / 1024**3:.3f} GiB / 10.000 GiB ({projected_pct:.1f}%)")
+          print(f"Projected usage:    {projected / 1024**3:.3f} GiB / {QUOTA_BYTES / 1024**3:.0f} GiB ({projected_pct:.1f}%)")
 
           if projected > THRESHOLD_BYTES:
               print(
                   f"::error::Projected PyPI usage {projected / 1024**3:.3f} GiB exceeds "
-                  f"9.5 GiB safety threshold. Delete old releases or request a quota "
-                  f"increase at https://pypi.org/help/#project-size-limit before publishing."
+                  f"{THRESHOLD_BYTES / 1024**3:.1f} GiB safety threshold. Delete old releases or "
+                  f"request a further quota increase at https://pypi.org/help/#project-size-limit "
+                  f"before publishing."
               )
               sys.exit(1)
           EOF

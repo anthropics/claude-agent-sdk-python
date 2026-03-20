@@ -16,7 +16,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-PYPI_PROJECT_LIMIT_BYTES = 10 * 1024**3  # 10 GiB
+PYPI_PROJECT_LIMIT_BYTES = 50 * 1024**3  # 50 GiB (increased from PyPI default 10 GiB)
 PYPI_FILE_LIMIT_BYTES = 100 * 1024**2  # 100 MiB
 
 
@@ -48,7 +48,7 @@ def main() -> int:
         "--project-limit",
         type=int,
         default=PYPI_PROJECT_LIMIT_BYTES,
-        help="Total project size limit in bytes (default: PyPI's 10 GiB)",
+        help="Total project size limit in bytes (default: 50 GiB)",
     )
     parser.add_argument(
         "--file-limit",

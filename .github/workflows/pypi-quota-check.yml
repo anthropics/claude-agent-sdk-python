@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       project_limit:
-        description: 'Project size limit in bytes (defaults to PyPI 10 GiB)'
+        description: 'Project size limit in bytes (defaults to 50 GiB)'
         required: false
       file_limit:
         description: 'Per-file size limit in bytes (defaults to PyPI 100 MiB)'

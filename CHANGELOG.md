@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.49
+
+### New Features
+
+- **AgentDefinition**: Added `skills`, `memory`, and `mcpServers` fields (#684)
+- **AssistantMessage usage**: Preserve per-turn `usage` on `AssistantMessage` (#685)
+- **Session tagging**: Added `tag_session()` with Unicode sanitization (#670)
+- **Session renaming**: Added `rename_session()` (#668)
+- **RateLimitEvent**: Added typed `RateLimitEvent` message (#648)
+
+### Bug Fixes
+
+- **CLAUDE_CODE_ENTRYPOINT**: Use default-if-absent semantics to match TS SDK (#686)
+- **Fine-grained tool streaming**: Reverted the env-var workaround from 0.1.48; partial-message delivery is now handled upstream (#671)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.77
+- Added macOS x86_64 wheel to the published matrix (#661)
+- Upload wheel-check artifacts in CI (#662)
+- Docs: clarified `allowed_tools` as a permission allowlist (#649)
+
 ## 0.1.48
 
 ### Bug Fixes

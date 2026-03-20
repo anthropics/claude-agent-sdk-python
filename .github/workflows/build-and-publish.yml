@@ -105,20 +105,40 @@ jobs:
           QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
           THRESHOLD_BYTES = 47.5 * 1024**3  # Fail above 95% (2.5 GiB buffer)
 
+          version = os.environ.get("VERSION", "")
+
           # Fetch current usage from PyPI JSON API
-          with urllib.request.urlopen("https://pypi.org/pypi/claude-agent-sdk/json") as r:
-              data = json.load(r)
+          try:
+              with urllib.request.urlopen(
+                  "https://pypi.org/pypi/claude-agent-sdk/json", timeout=30
+              ) as r:
+                  data = json.load(r)
+          except Exception as exc:
+              print(f"::warning::Could not fetch PyPI metadata: {exc}")
+              print("Skipping quota pre-flight check.")
+              sys.exit(0)
+
           current_total = sum(
               f["size"]
               for files in data["releases"].values()
               for f in files
           )
 
-          # Sum local artifacts about to be uploaded
+          # Collect filenames already uploaded for the current version so we
+          # don't double-count them when summing local artifacts (re-run after
+          # a partial upload).
+          already_uploaded = set()
+          if version and version in data["releases"]:
+              already_uploaded = {f["filename"] for f in data["releases"][version]}
+
+          # Sum local artifacts about to be uploaded, skipping already-uploaded files
           new_total = 0
           for d in ("dist", "sdist"):
               if os.path.isdir(d):
                   for fn in os.listdir(d):
+                      if fn in already_uploaded:
+                          print(f"  (skipping already-uploaded file: {fn})")
+                          continue
                       new_total += os.path.getsize(os.path.join(d, fn))
 
           projected = current_total + new_total

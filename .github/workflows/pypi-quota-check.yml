@@ -3,6 +3,10 @@ name: PyPI Quota Check
 on:
   schedule:
     - cron: '23 13 * * *'  # daily at 13:23 UTC (off-peak to avoid runner queue delays)
+  pull_request:
+    paths:
+      - 'scripts/check_pypi_quota.py'
+      - '.github/workflows/pypi-quota-check.yml'
   workflow_dispatch:
     inputs:
       project_limit:
@@ -33,7 +37,7 @@ jobs:
           FILE_LIMIT: ${{ inputs.file_limit }}
 
       - name: Post to Slack
-        if: steps.quota.outputs.alert == 'true'
+        if: steps.quota.outputs.alert == 'true' && github.event_name != 'pull_request'
         uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # 2.1.1
         with:
           method: chat.postMessage
@@ -63,5 +67,5 @@ jobs:
             }
 
       - name: Fail job if over threshold
-        if: steps.quota.outputs.alert == 'true'
+        if: steps.quota.outputs.alert == 'true' && github.event_name != 'pull_request'
         run: exit 1

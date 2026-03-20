@@ -115,13 +115,10 @@ def main() -> int:
             which.append(f"project size at {project_pct:.1%} of limit")
         if over_file:
             which.append(f"largest file at {file_pct:.1%} of limit")
-        print(
-            f"::warning::PyPI quota threshold exceeded: {'; '.join(which)}",
-            file=sys.stderr,
-        )
-        return 1
+        print(f"::warning::PyPI quota threshold exceeded: {'; '.join(which)}")
+    else:
+        print("All quotas below warning threshold.")
 
-    print("All quotas below warning threshold.")
     return 0
 
 

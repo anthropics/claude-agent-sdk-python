@@ -2,7 +2,7 @@ name: PyPI Quota Check
 
 on:
   schedule:
-    - cron: '0 14 * * *'  # daily at 14:00 UTC
+    - cron: '23 13 * * *'  # daily at 13:23 UTC (off-peak to avoid runner queue delays)
   workflow_dispatch:
     inputs:
       project_limit:
@@ -24,7 +24,6 @@ jobs:
 
       - name: Check PyPI storage usage
         id: quota
-        continue-on-error: true
         run: |
           python scripts/check_pypi_quota.py \
             ${PROJECT_LIMIT:+--project-limit "$PROJECT_LIMIT"} \

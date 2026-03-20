@@ -2,9 +2,9 @@
 """Check PyPI storage usage for this project against the quota limits
 documented at https://docs.pypi.org/project-management/storage-limits/.
 
-Intended to run as a daily GitHub Actions job. Exits non-zero and emits
-GitHub Actions outputs when usage crosses the configured warning threshold,
-so the workflow can post a Slack alert before publishes start failing.
+Intended to run as a daily GitHub Actions job. Sets GitHub Actions outputs
+when usage crosses the configured warning threshold, so the workflow can
+post a Slack alert before publishes start failing.
 """
 
 from __future__ import annotations

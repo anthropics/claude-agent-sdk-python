@@ -14,7 +14,7 @@ from ._errors import (
     ProcessError,
 )
 from ._internal.session_mutations import rename_session, tag_session
-from ._internal.sessions import get_session_messages, list_sessions
+from ._internal.sessions import get_session_info, get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
 from .client import ClaudeSDKClient
@@ -418,6 +418,7 @@ __all__ = [
     "SdkPluginConfig",
     # Session listing
     "list_sessions",
+    "get_session_info",
     "get_session_messages",
     "SDKSessionInfo",
     "SessionMessage",

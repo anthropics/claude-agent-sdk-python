@@ -974,21 +974,28 @@ class SDKSessionInfo:
         summary: Display title for the session — custom title, auto-generated
             summary, or first prompt.
         last_modified: Last modified time in milliseconds since epoch.
-        file_size: Session file size in bytes.
-        custom_title: User-set session title via /rename.
+        file_size: Session file size in bytes. Only populated for local
+            JSONL storage; may be ``None`` for remote storage backends.
+        custom_title: Session title — user-set custom title or AI-generated title.
         first_prompt: First meaningful user prompt in the session.
         git_branch: Git branch at the end of the session.
         cwd: Working directory for the session.
+        tag: User-set session tag.
+        created_at: Creation time in milliseconds since epoch, extracted
+            from the first entry's ISO timestamp field. More reliable
+            than stat().birthtime which is unsupported on some filesystems.
     """
 
     session_id: str
     summary: str
     last_modified: int
-    file_size: int
+    file_size: int | None = None
     custom_title: str | None = None
     first_prompt: str | None = None
     git_branch: str | None = None
     cwd: str | None = None
+    tag: str | None = None
+    created_at: int | None = None
 
 
 @dataclass

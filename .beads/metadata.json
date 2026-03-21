@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "claudeagentsdk",
+  "project_id": "5f4915e3-2f26-42c3-a1ad-87af91872009"
+}

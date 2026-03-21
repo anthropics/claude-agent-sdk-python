@@ -49,3 +49,7 @@ htmlcov/
 .dmypy.json
 dmypy.json
 .pyre/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db

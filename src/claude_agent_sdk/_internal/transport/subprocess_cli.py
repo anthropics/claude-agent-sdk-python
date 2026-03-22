@@ -465,6 +465,18 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
+        # Close stdout stream explicitly to deregister its file descriptor from
+        # the event loop (kqueue/epoll). Without this, if the subprocess held
+        # open TCP connections (e.g. to the Anthropic API), their sockets can
+        # enter CLOSE_WAIT after the process exits. A CLOSE_WAIT socket is
+        # permanently readable (EOF pending), so if its FD is still registered
+        # in kqueue/epoll, the event loop busy-spins instead of blocking.
+        # See: https://github.com/anthropics/claude-agent-sdk-python/issues/665
+        if self._stdout_stream:
+            with suppress(Exception):
+                await self._stdout_stream.aclose()
+            self._stdout_stream = None
+
         # Wait for graceful shutdown after stdin EOF, then terminate if needed.
         # The subprocess needs time to flush its session file after receiving
         # EOF on stdin. Without this grace period, SIGTERM can interrupt the

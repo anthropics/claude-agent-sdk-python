@@ -614,15 +614,16 @@ class Query:
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the first result (if needed) then close stdin.
 
-        If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives (or timeout).
-        Otherwise closes stdin immediately.
+        If SDK MCP servers, hooks, or can_use_tool require bidirectional
+        communication, keeps stdin open until the first result arrives
+        (or timeout). Otherwise closes stdin immediately.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        if self.sdk_mcp_servers or self.hooks or self.can_use_tool:
             logger.debug(
                 "Waiting for first result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={self.can_use_tool is not None})"
             )
             with anyio.move_on_after(self._stream_close_timeout):
                 await self._first_result_event.wait()
@@ -632,8 +633,9 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or can_use_tool are present, waits for the
+        first result before closing stdin to allow bidirectional control
+        protocol communication.
         """
         try:
             async for message in stream:

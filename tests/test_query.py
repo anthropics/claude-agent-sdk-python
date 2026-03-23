@@ -1,10 +1,10 @@
-"""Tests for query() stdin lifecycle with SDK MCP servers and hooks.
+"""Tests for query() stdin lifecycle with SDK MCP servers, hooks, and tool callbacks.
 
 The SDK communicates with the CLI subprocess over stdin/stdout. When SDK MCP
-servers or hooks are configured, the CLI sends control_request messages back
-to the SDK *after* the prompt is written. The SDK must keep stdin open long
-enough to respond to these requests. These tests verify that both the string
-prompt and AsyncIterable prompt paths defer closing stdin until the CLI's
+servers, hooks, or can_use_tool are configured, the CLI sends control_request
+messages back to the SDK *after* the prompt is written. The SDK must keep stdin
+open long enough to respond to these requests. These tests verify that both the
+string prompt and AsyncIterable prompt paths defer closing stdin until the CLI's
 first result arrives.
 """
 
@@ -16,6 +16,7 @@ import anyio
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    PermissionResultAllow,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -98,6 +99,20 @@ _MCP_CONTROL_REQUESTS = [
                 "method": "tools/list",
                 "params": {},
             },
+        },
+    },
+]
+
+
+_CAN_USE_TOOL_CONTROL_REQUESTS = [
+    {
+        "type": "control_request",
+        "request_id": "perm_1",
+        "request": {
+            "subtype": "can_use_tool",
+            "tool_name": "Read",
+            "input": {"file_path": "foo.txt"},
+            "permission_suggestions": [],
         },
     },
 ]
@@ -367,6 +382,129 @@ class TestAsyncIterablePromptWithSdkMcpServers:
             written_data = json.loads(write_calls[0][1])
             assert written_data["type"] == "user"
             assert written_data["message"]["content"] == "Hello"
+
+        anyio.run(_test)
+
+    def test_async_iterable_with_can_use_tool_waits_for_result(self):
+        """AsyncIterable prompt path should wait for first result before
+        closing stdin when can_use_tool is configured."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
+
+            call_order = []
+            original_write = mock_transport.write
+
+            async def tracking_write(data):
+                call_order.append(("write", data))
+                return await original_write(data)
+
+            async def tracking_end_input():
+                call_order.append(("end_input",))
+
+            mock_transport.write = tracking_write
+            mock_transport.end_input = tracking_end_input
+
+            async def allow_callback(tool_name, tool_input, context):
+                return PermissionResultAllow()
+
+            async def prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": "Hello"},
+                }
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                messages = []
+                async for msg in query(
+                    prompt=prompt_stream(),
+                    options=ClaudeAgentOptions(
+                        can_use_tool=allow_callback,
+                    ),
+                ):
+                    messages.append(msg)
+
+            assert len(messages) == 2
+            assert isinstance(messages[0], AssistantMessage)
+            assert isinstance(messages[1], ResultMessage)
+            assert any(c[0] == "end_input" for c in call_order)
+
+        anyio.run(_test)
+
+    def test_async_iterable_can_use_tool_control_requests_succeed(self):
+        """can_use_tool control requests should be handled correctly when using
+        AsyncIterable prompts."""
+
+        async def _test():
+            mock_transport = AsyncMock()
+            writes = []
+
+            async def tracking_write(data):
+                writes.append(data)
+
+            mock_transport.write = tracking_write
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def mock_receive():
+                for req in _CAN_USE_TOOL_CONTROL_REQUESTS:
+                    yield req
+                for msg in _ASSISTANT_AND_RESULT:
+                    yield msg
+
+            mock_transport.read_messages = mock_receive
+
+            async def allow_callback(tool_name, tool_input, context):
+                return PermissionResultAllow()
+
+            async def prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": "Read foo.txt"},
+                }
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                messages = []
+                async for msg in query(
+                    prompt=prompt_stream(),
+                    options=ClaudeAgentOptions(
+                        can_use_tool=allow_callback,
+                    ),
+                ):
+                    messages.append(msg)
+
+            assert len(messages) == 2
+            assert isinstance(messages[0], AssistantMessage)
+            assert isinstance(messages[1], ResultMessage)
+
+            control_responses = [
+                json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
+            ]
+            assert len(control_responses) == 1
+            assert control_responses[0]["response"]["subtype"] == "success"
+            assert control_responses[0]["response"]["response"]["behavior"] == "allow"
 
         anyio.run(_test)
 

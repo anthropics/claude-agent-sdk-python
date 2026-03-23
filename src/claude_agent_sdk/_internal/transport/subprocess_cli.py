@@ -131,7 +131,8 @@ class SubprocessCLITransport(Transport):
         settings_obj: dict[str, Any] = {}
 
         if has_settings:
-            assert self._options.settings is not None
+            if self._options.settings is None:
+                raise RuntimeError("expected settings to be set when has_settings is True")
             settings_str = self._options.settings.strip()
             # Check if settings is a JSON string or a file path
             if settings_str.startswith("{") and settings_str.endswith("}"):

@@ -310,8 +310,10 @@ class Query:
                     raise Exception("Missing server_name or message for MCP request")
 
                 # Type narrowing - we've verified these are not None above
-                assert isinstance(server_name, str)
-                assert isinstance(mcp_message, dict)
+                if not isinstance(server_name, str):
+                    raise TypeError(f"expected server_name to be str, got {type(server_name).__name__}")
+                if not isinstance(mcp_message, dict):
+                    raise TypeError(f"expected mcp_message to be dict, got {type(mcp_message).__name__}")
                 mcp_response = await self._handle_sdk_mcp_request(
                     server_name, mcp_message
                 )

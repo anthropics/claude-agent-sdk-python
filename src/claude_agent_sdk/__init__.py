@@ -248,7 +248,7 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
-    from mcp.types import ImageContent, TextContent, Tool
+    from mcp.types import CallToolResult, ImageContent, TextContent, Tool
 
     # Create MCP server instance
     server = Server(name, version=version)
@@ -317,8 +317,6 @@ def create_sdk_mcp_server(
             result = await tool_def.handler(arguments)
 
             # Convert result to MCP format
-            # The decorator expects us to return the content, not a CallToolResult
-            # It will wrap our return value in CallToolResult
             content: list[TextContent | ImageContent] = []
             if "content" in result:
                 for item in result["content"]:
@@ -333,8 +331,9 @@ def create_sdk_mcp_server(
                             )
                         )
 
-            # Return just the content list - the decorator wraps it
-            return content
+            return CallToolResult(
+                content=content, isError=result.get("is_error", False)
+            )
 
     # Return SDK server configuration
     return McpSdkServerConfig(type="sdk", name=name, instance=server)

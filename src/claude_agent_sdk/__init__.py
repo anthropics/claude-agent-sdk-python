@@ -1,5 +1,6 @@
 """Claude SDK for Python."""
 
+import types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, Union, get_type_hints
@@ -184,13 +185,21 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
         return {"type": "number"}
     if py_type is bool:
         return {"type": "boolean"}
+    if py_type is dict:
+        return {"type": "object"}
     origin = getattr(py_type, "__origin__", None)
     args = getattr(py_type, "__args__", None)
     if origin is list:
         item_schema = _python_type_to_json_schema(args[0]) if args else {}
         return {"type": "array", "items": item_schema}
+    if origin is dict:
+        return {"type": "object"}
     if origin is Union:
         non_none = [a for a in (args or ()) if a is not type(None)]
+        if len(non_none) == 1:
+            return _python_type_to_json_schema(non_none[0])
+    if isinstance(py_type, types.UnionType):
+        non_none = [a for a in py_type.__args__ if a is not type(None)]
         if len(non_none) == 1:
             return _python_type_to_json_schema(non_none[0])
     return {"type": "string"}

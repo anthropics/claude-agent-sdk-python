@@ -23,25 +23,28 @@ def make_options(**kwargs: object) -> ClaudeAgentOptions:
 class TestSubprocessCLITransport:
     """Test subprocess transport implementation."""
 
-    @pytest.mark.anyio
-    async def test_find_cli_not_found(self):
+    def test_find_cli_not_found(self):
         """Test CLI not found error is raised during connect()."""
-        from claude_agent_sdk._errors import CLINotFoundError
 
-        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
-        assert transport._cli_path is None
+        async def _test():
+            from claude_agent_sdk._errors import CLINotFoundError
 
-        with (
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
-            patch("pathlib.Path.exists", return_value=False),
-            pytest.raises(CLINotFoundError) as exc_info,
-        ):
-            await transport.connect()
+            transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+            assert transport._cli_path is None
 
-        assert "Claude Code not found" in str(exc_info.value)
+            with (
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value=None,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                pytest.raises(CLINotFoundError) as exc_info,
+            ):
+                await transport.connect()
+
+            assert "Claude Code not found" in str(exc_info.value)
+
+        anyio.run(_test)
 
     def test_init_does_not_call_find_cli(self):
         """Test that __init__ defers CLI discovery instead of blocking."""

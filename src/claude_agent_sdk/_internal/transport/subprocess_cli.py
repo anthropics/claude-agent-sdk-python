@@ -172,15 +172,20 @@ class SubprocessCLITransport(Transport):
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
-            if (
-                self._options.system_prompt.get("type") == "preset"
-                and "append" in self._options.system_prompt
-            ):
+            if "path" in self._options.system_prompt:
                 cmd.extend(
-                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                    [
+                        "--system-prompt-file",
+                        self._options.system_prompt["path"],
+                    ]
                 )
-            elif self._options.system_prompt.get("type") == "file":
-                cmd.extend(["--system-prompt-file", self._options.system_prompt["path"]])
+            elif "append" in self._options.system_prompt:
+                cmd.extend(
+                    [
+                        "--append-system-prompt",
+                        self._options.system_prompt["append"],
+                    ]
+                )
 
         # Handle tools option (base set of tools)
         if self._options.tools is not None:

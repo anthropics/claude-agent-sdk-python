@@ -557,6 +557,15 @@ class TestContentBlockRepr:
         r = repr(block)
         assert "None" not in r
 
+    def test_tool_result_block_list_content(self):
+        block = ToolResultBlock(
+            tool_use_id="toolu_abc",
+            content=[{"type": "text", "text": "hi"}],
+        )
+        r = repr(block)
+        assert "ToolResultBlock(tool_use_id='toolu_abc'" in r
+        assert "content=[" in r
+
     def test_text_block_with_quotes(self):
         """Ensure repr properly escapes quotes in text."""
         block = TextBlock(text='it\'s a "test"')
@@ -597,6 +606,15 @@ class TestMessageRepr:
         r = repr(msg)
         assert "AssistantMessage(model='claude-opus-4-6'" in r
         assert "TextBlock(text='Hello!')" in r
+
+    def test_assistant_message_with_error(self):
+        msg = AssistantMessage(
+            content=[TextBlock(text="err")],
+            model="claude-opus-4-6",
+            error="server_error",
+        )
+        r = repr(msg)
+        assert "error='server_error'" in r
 
     def test_assistant_message_omits_none_fields(self):
         msg = AssistantMessage(

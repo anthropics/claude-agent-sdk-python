@@ -338,11 +338,11 @@ def create_sdk_mcp_server(
                         )
                     elif item_type == "resource_link":
                         parts = []
-                        name = item.get("name")
+                        link_name = item.get("name")
                         uri = item.get("uri")
                         desc = item.get("description")
-                        if name:
-                            parts.append(name)
+                        if link_name:
+                            parts.append(link_name)
                         if uri:
                             parts.append(str(uri))
                         if desc:
@@ -354,7 +354,7 @@ def create_sdk_mcp_server(
                             )
                         )
                     elif item_type == "resource":
-                        resource = item.get("resource", {})
+                        resource = item.get("resource") or {}
                         if "text" in resource:
                             content.append(
                                 TextContent(type="text", text=resource["text"])

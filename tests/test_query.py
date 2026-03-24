@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
+from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
 
@@ -434,5 +435,60 @@ class TestAsyncIterablePromptWithSdkMcpServers:
                 json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
             ]
             assert len(control_responses) == 2
+
+        anyio.run(_test)
+
+
+class TestNoTimeoutForHooksAndMcpServers:
+    """Regression test for #730: stdin must not be closed by a timeout when
+    hooks or SDK MCP servers are active."""
+
+    def test_hooks_wait_without_timeout(self):
+        """wait_for_result_and_end_input() should wait indefinitely for the
+        result event when hooks are configured, not cut off after 60s."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            end_input_called = anyio.Event()
+
+            async def tracking_end_input():
+                end_input_called.set()
+
+            mock_transport.end_input = tracking_end_input
+
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=True,
+                hooks={"PreToolUse": [{"matcher": "Bash", "hooks": ["hook_0"]}]},
+            )
+
+            async with anyio.create_task_group() as tg:
+
+                async def wait_then_check():
+                    await anyio.sleep(0.05)
+                    assert not end_input_called.is_set()
+                    q._first_result_event.set()
+                    await anyio.sleep(0.05)
+                    assert end_input_called.is_set()
+
+                tg.start_soon(q.wait_for_result_and_end_input)
+                tg.start_soon(wait_then_check)
+
+        anyio.run(_test)
+
+    def test_no_hooks_closes_immediately(self):
+        """Without hooks or SDK MCP servers, end_input should be called
+        immediately without waiting for any event."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=True,
+            )
+
+            await q.wait_for_result_and_end_input()
+            mock_transport.end_input.assert_called_once()
 
         anyio.run(_test)

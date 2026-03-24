@@ -1049,3 +1049,59 @@ class TestSubprocessCLITransport:
         # No @filepath references should exist
         cmd_str = " ".join(cmd)
         assert "@" not in cmd_str
+
+    def test_close_explicitly_closes_stdout_stream(self):
+        """Test that close() explicitly closes stdout to deregister its FD from the event loop.
+
+        Without this, CLOSE_WAIT sockets inherited from the subprocess can keep
+        their FD registered in kqueue/epoll, causing the event loop to busy-spin.
+        See: https://github.com/anthropics/claude-agent-sdk-python/issues/665
+        """
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Mock main process
+                mock_process = MagicMock()
+                mock_process.returncode = 0
+                mock_process.terminate = MagicMock()
+                mock_process.wait = AsyncMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+
+                # Replace the stdout stream with a mock to track aclose calls
+                mock_stdout_stream = MagicMock()
+                mock_stdout_stream.aclose = AsyncMock()
+                transport._stdout_stream = mock_stdout_stream
+
+                await transport.close()
+
+                # Verify stdout stream was explicitly closed
+                mock_stdout_stream.aclose.assert_awaited_once()
+                # Verify all streams are cleaned up
+                assert transport._stdout_stream is None
+                assert transport._stdin_stream is None
+                assert transport._stderr_stream is None
+
+        anyio.run(_test)

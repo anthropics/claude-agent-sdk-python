@@ -187,6 +187,8 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
         return {"type": "boolean"}
     if py_type is dict:
         return {"type": "object"}
+    if py_type is list:
+        return {"type": "array"}
     origin = getattr(py_type, "__origin__", None)
     args = getattr(py_type, "__args__", None)
     if origin is list:

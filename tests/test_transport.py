@@ -1049,3 +1049,4 @@ class TestSubprocessCLITransport:
         # No @filepath references should exist
         cmd_str = " ".join(cmd)
         assert "@" not in cmd_str
+

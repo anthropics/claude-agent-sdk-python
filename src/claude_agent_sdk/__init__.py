@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, Union, get_type_hints
 
 from mcp.types import ToolAnnotations
 
@@ -175,6 +175,27 @@ def tool(
     return decorator
 
 
+def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
+    if py_type is str:
+        return {"type": "string"}
+    if py_type is int:
+        return {"type": "integer"}
+    if py_type is float:
+        return {"type": "number"}
+    if py_type is bool:
+        return {"type": "boolean"}
+    origin = getattr(py_type, "__origin__", None)
+    args = getattr(py_type, "__args__", None)
+    if origin is list:
+        item_schema = _python_type_to_json_schema(args[0]) if args else {}
+        return {"type": "array", "items": item_schema}
+    if origin is Union:
+        non_none = [a for a in (args or ()) if a is not type(None)]
+        if len(non_none) == 1:
+            return _python_type_to_json_schema(non_none[0])
+    return {"type": "string"}
+
+
 def create_sdk_mcp_server(
     name: str, version: str = "1.0.0", tools: list[SdkMcpTool[Any]] | None = None
 ) -> McpSdkServerConfig:
@@ -273,27 +294,39 @@ def create_sdk_mcp_server(
                     ):
                         schema = tool_def.input_schema
                     else:
-                        # Simple dict mapping names to types - convert to JSON schema
-                        properties = {}
-                        for param_name, param_type in tool_def.input_schema.items():
-                            if param_type is str:
-                                properties[param_name] = {"type": "string"}
-                            elif param_type is int:
-                                properties[param_name] = {"type": "integer"}
-                            elif param_type is float:
-                                properties[param_name] = {"type": "number"}
-                            elif param_type is bool:
-                                properties[param_name] = {"type": "boolean"}
-                            else:
-                                properties[param_name] = {"type": "string"}  # Default
+                        properties = {
+                            name: _python_type_to_json_schema(ptype)
+                            for name, ptype in tool_def.input_schema.items()
+                        }
                         schema = {
                             "type": "object",
                             "properties": properties,
                             "required": list(properties.keys()),
                         }
                 else:
-                    # For TypedDict or other types, create basic schema
-                    schema = {"type": "object", "properties": {}}
+                    try:
+                        hints = get_type_hints(tool_def.input_schema)
+                    except (TypeError, NameError):
+                        hints = {}
+
+                    if hints:
+                        properties = {}
+                        for field_name, field_type in hints.items():
+                            properties[field_name] = _python_type_to_json_schema(
+                                field_type
+                            )
+                        required_keys = getattr(
+                            tool_def.input_schema,
+                            "__required_keys__",
+                            frozenset(properties.keys()),
+                        )
+                        schema = {
+                            "type": "object",
+                            "properties": properties,
+                            "required": sorted(required_keys),
+                        }
+                    else:
+                        schema = {"type": "object", "properties": {}}
 
                 tool_list.append(
                     Tool(

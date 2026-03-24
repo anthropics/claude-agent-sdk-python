@@ -17,6 +17,11 @@ from claude_agent_sdk import (
     tool,
 )
 
+try:
+    from typing import NotRequired, TypedDict
+except ImportError:
+    from typing_extensions import NotRequired, TypedDict
+
 
 @pytest.mark.asyncio
 async def test_sdk_mcp_server_handlers():
@@ -379,3 +384,88 @@ async def test_tool_annotations_in_jsonrpc():
 
     # Tool without annotations should not have the key
     assert "annotations" not in tools_by_name["plain_tool"]
+
+
+class UserParams(TypedDict):
+    name: str
+    age: int
+    is_active: bool
+
+
+@pytest.mark.asyncio
+async def test_typeddict_input_schema():
+    """Test that TypedDict classes produce proper JSON Schema with visible parameters."""
+
+    @tool("create_user", "Create a new user", UserParams)
+    async def create_user(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {"type": "text", "text": f"Created {args['name']}, age {args['age']}"}
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="typeddict-test", tools=[create_user]
+    )
+    server = server_config["instance"]
+
+    from mcp.types import ListToolsRequest
+
+    list_handler = server.request_handlers[ListToolsRequest]
+    response = await list_handler(ListToolsRequest(method="tools/list"))
+
+    assert len(response.root.tools) == 1
+    schema = response.root.tools[0].inputSchema
+    assert schema["type"] == "object"
+    assert "name" in schema["properties"]
+    assert schema["properties"]["name"] == {"type": "string"}
+    assert schema["properties"]["age"] == {"type": "integer"}
+    assert schema["properties"]["is_active"] == {"type": "boolean"}
+    assert sorted(schema["required"]) == ["age", "is_active", "name"]
+
+
+class PartialParams(TypedDict, total=False):
+    query: str
+    limit: int
+
+
+class MixedParams(TypedDict):
+    name: str
+    tags: NotRequired[list[str]]
+
+
+@pytest.mark.asyncio
+async def test_typeddict_optional_fields():
+    """Test TypedDict with total=False (all optional) and NotRequired fields."""
+
+    @tool("search", "Search items", PartialParams)
+    async def search(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "results"}]}
+
+    @tool("tag_user", "Tag a user", MixedParams)
+    async def tag_user(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "tagged"}]}
+
+    server_config = create_sdk_mcp_server(
+        name="optional-test", tools=[search, tag_user]
+    )
+    server = server_config["instance"]
+
+    from mcp.types import ListToolsRequest
+
+    list_handler = server.request_handlers[ListToolsRequest]
+    response = await list_handler(ListToolsRequest(method="tools/list"))
+
+    tools_by_name = {t.name: t for t in response.root.tools}
+
+    # PartialParams: total=False means no required fields
+    search_schema = tools_by_name["search"].inputSchema
+    assert "query" in search_schema["properties"]
+    assert "limit" in search_schema["properties"]
+    assert search_schema["required"] == []
+
+    # MixedParams: name is required, tags is NotRequired
+    tag_schema = tools_by_name["tag_user"].inputSchema
+    assert "name" in tag_schema["properties"]
+    assert "tags" in tag_schema["properties"]
+    assert tag_schema["required"] == ["name"]

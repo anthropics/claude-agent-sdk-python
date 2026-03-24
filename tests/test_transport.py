@@ -29,7 +29,9 @@ class TestSubprocessCLITransport:
         async def _test():
             from claude_agent_sdk._errors import CLINotFoundError
 
-            transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
             assert transport._cli_path is None
 
             with (

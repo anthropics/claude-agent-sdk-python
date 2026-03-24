@@ -337,13 +337,9 @@ class TestSubprocessBuffering:
             msg1 = json.dumps({"type": "system", "subtype": "init"})
             msg2 = json.dumps({"type": "result", "subtype": "success"})
 
-            stream = MockTextReceiveStream(
-                [f"{debug}\n{msg1}\n{debug}\n{msg2}\n"]
-            )
+            stream = MockTextReceiveStream([f"{debug}\n{msg1}\n{debug}\n{msg2}\n"])
 
-            transport = SubprocessCLITransport(
-                prompt="test", options=make_options()
-            )
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
             transport._stdout_stream = stream
             transport._process = MagicMock()
             transport._process.wait = AsyncMock(return_value=0)
@@ -363,17 +359,17 @@ class TestSubprocessBuffering:
         must be silently skipped."""
 
         async def _test() -> None:
-            stream = MockTextReceiveStream([
-                "[SandboxDebug] line 1\n",
-                "[SandboxDebug] line 2\n",
-                json.dumps({"type": "system", "subtype": "init"}) + "\n",
-                "WARNING: something\n",
-                json.dumps({"type": "result", "subtype": "success"}) + "\n",
-            ])
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=make_options()
+            stream = MockTextReceiveStream(
+                [
+                    "[SandboxDebug] line 1\n",
+                    "[SandboxDebug] line 2\n",
+                    json.dumps({"type": "system", "subtype": "init"}) + "\n",
+                    "WARNING: something\n",
+                    json.dumps({"type": "result", "subtype": "success"}) + "\n",
+                ]
             )
+
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
             transport._stdout_stream = stream
             transport._process = MagicMock()
             transport._process.wait = AsyncMock(return_value=0)

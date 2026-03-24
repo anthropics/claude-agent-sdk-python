@@ -115,6 +115,15 @@ class TestOptions:
         options_accept = ClaudeAgentOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
+        options_dont_ask = ClaudeAgentOptions(permission_mode="dontAsk")
+        assert options_dont_ask.permission_mode == "dontAsk"
+
+        options_auto = ClaudeAgentOptions(permission_mode="auto")
+        assert options_auto.permission_mode == "auto"
+
+        options_bubble = ClaudeAgentOptions(permission_mode="bubble")
+        assert options_bubble.permission_mode == "bubble"
+
     def test_claude_code_options_with_system_prompt_string(self):
         """Test Options with system prompt as string."""
         options = ClaudeAgentOptions(

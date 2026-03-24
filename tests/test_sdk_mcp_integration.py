@@ -404,9 +404,7 @@ async def test_typeddict_input_schema():
             ]
         }
 
-    server_config = create_sdk_mcp_server(
-        name="typeddict-test", tools=[create_user]
-    )
+    server_config = create_sdk_mcp_server(name="typeddict-test", tools=[create_user])
     server = server_config["instance"]
 
     from mcp.types import ListToolsRequest

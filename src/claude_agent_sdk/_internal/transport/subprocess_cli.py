@@ -346,9 +346,7 @@ class SubprocessCLITransport(Transport):
             # it. CLAUDE_AGENT_SDK_VERSION is always set by the SDK.
             # Filter out CLAUDECODE so SDK-spawned subprocesses don't think
             # they're running inside a Claude Code parent (see #573).
-            inherited_env = {
-                k: v for k, v in os.environ.items() if k != "CLAUDECODE"
-            }
+            inherited_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             process_env = {
                 **inherited_env,
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",

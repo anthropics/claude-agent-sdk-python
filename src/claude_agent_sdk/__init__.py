@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, Union, get_args, get_origin, is_typeddict
 
 from mcp.types import ToolAnnotations
 
@@ -95,6 +95,14 @@ from .types import (
 
 # MCP Server Support
 
+# __import__ avoids shadowing by our own types.py in this package.
+_UnionType = __import__("types").UnionType
+
+try:
+    from typing_extensions import get_type_hints as _get_type_hints
+except ImportError:
+    from typing import get_type_hints as _get_type_hints
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -176,6 +184,70 @@ def tool(
         )
 
     return decorator
+
+
+def _is_typeddict(tp: Any) -> bool:
+    """Check if a type is a TypedDict class."""
+    return is_typeddict(tp)
+
+
+def _python_type_to_json_schema(tp: Any) -> dict[str, Any]:
+    """Convert a Python type annotation to a JSON Schema dict."""
+    if tp is type(None):
+        return {"type": "null"}
+    if tp is str:
+        return {"type": "string"}
+    if tp is int:
+        return {"type": "integer"}
+    if tp is float:
+        return {"type": "number"}
+    if tp is bool:
+        return {"type": "boolean"}
+    if tp is list:
+        return {"type": "array"}
+    if tp is dict:
+        return {"type": "object"}
+
+    origin = get_origin(tp)
+    args = get_args(tp)
+
+    # PEP 604 unions (str | None) and typing.Union
+    if origin is Union or isinstance(tp, _UnionType):
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            return _python_type_to_json_schema(non_none[0])
+        return {"anyOf": [_python_type_to_json_schema(a) for a in non_none]}
+
+    if origin is list:
+        if args:
+            return {"type": "array", "items": _python_type_to_json_schema(args[0])}
+        return {"type": "array"}
+
+    if origin is dict:
+        return {"type": "object"}
+
+    if _is_typeddict(tp):
+        return _typeddict_to_json_schema(tp)
+
+    return {"type": "string"}
+
+
+def _typeddict_to_json_schema(td: type) -> dict[str, Any]:
+    """Convert a TypedDict class to a JSON Schema dict."""
+    hints = _get_type_hints(td)
+    required_keys: frozenset[str] = getattr(td, "__required_keys__", frozenset())
+
+    properties: dict[str, Any] = {}
+    for field_name, field_type in hints.items():
+        properties[field_name] = _python_type_to_json_schema(field_type)
+
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+    if required_keys:
+        schema["required"] = sorted(required_keys)
+    return schema
 
 
 def create_sdk_mcp_server(
@@ -284,26 +356,18 @@ def create_sdk_mcp_server(
                     ):
                         schema = tool_def.input_schema
                     else:
-                        # Simple dict mapping names to types - convert to JSON schema
-                        properties = {}
-                        for param_name, param_type in tool_def.input_schema.items():
-                            if param_type is str:
-                                properties[param_name] = {"type": "string"}
-                            elif param_type is int:
-                                properties[param_name] = {"type": "integer"}
-                            elif param_type is float:
-                                properties[param_name] = {"type": "number"}
-                            elif param_type is bool:
-                                properties[param_name] = {"type": "boolean"}
-                            else:
-                                properties[param_name] = {"type": "string"}  # Default
+                        properties = {
+                            k: _python_type_to_json_schema(v)
+                            for k, v in tool_def.input_schema.items()
+                        }
                         schema = {
                             "type": "object",
                             "properties": properties,
                             "required": list(properties.keys()),
                         }
+                elif _is_typeddict(tool_def.input_schema):
+                    schema = _typeddict_to_json_schema(tool_def.input_schema)
                 else:
-                    # For TypedDict or other types, create basic schema
                     schema = {"type": "object", "properties": {}}
 
                 tool_list.append(

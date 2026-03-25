@@ -419,6 +419,109 @@ async def test_tool_annotations_in_jsonrpc():
 
 
 @pytest.mark.asyncio
+async def test_typeddict_input_schema():
+    """Test that TypedDict input_schema produces correct JSON Schema."""
+    from typing import TypedDict
+
+    from typing_extensions import NotRequired
+
+    class SearchInput(TypedDict):
+        query: str
+        max_results: int
+        include_drafts: bool
+
+    class FilterInput(TypedDict):
+        term: str
+        limit: NotRequired[int]
+
+    @tool("search", "Search for items", SearchInput)
+    async def search_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    @tool("filter", "Filter items", FilterInput)
+    async def filter_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    server_config = create_sdk_mcp_server(
+        name="typeddict-test", tools=[search_tool, filter_tool]
+    )
+    server = server_config["instance"]
+    from mcp.types import ListToolsRequest
+
+    list_handler = server.request_handlers[ListToolsRequest]
+    response = await list_handler(ListToolsRequest(method="tools/list"))
+    tools_by_name = {t.name: t for t in response.root.tools}
+
+    # Basic TypedDict: all fields required, correct types
+    search_schema = tools_by_name["search"].inputSchema
+    assert search_schema["type"] == "object"
+    assert search_schema["properties"]["query"] == {"type": "string"}
+    assert search_schema["properties"]["max_results"] == {"type": "integer"}
+    assert search_schema["properties"]["include_drafts"] == {"type": "boolean"}
+    assert sorted(search_schema["required"]) == [
+        "include_drafts",
+        "max_results",
+        "query",
+    ]
+
+    # TypedDict with NotRequired: limit excluded from required
+    filter_schema = tools_by_name["filter"].inputSchema
+    assert filter_schema["properties"]["term"] == {"type": "string"}
+    assert filter_schema["properties"]["limit"] == {"type": "integer"}
+    assert filter_schema["required"] == ["term"]
+
+
+@pytest.mark.asyncio
+async def test_typeddict_optional_and_list_types():
+    """Test TypedDict with Optional, list, nested TypedDict, and union types."""
+    from typing import TypedDict
+
+    class Address(TypedDict):
+        street: str
+        city: str
+
+    class PersonInput(TypedDict):
+        name: str
+        nickname: str | None
+        tags: list[str]
+        address: Address
+        score: int | float
+
+    @tool("person", "Create person", PersonInput)
+    async def person_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    server_config = create_sdk_mcp_server(name="nested-test", tools=[person_tool])
+    server = server_config["instance"]
+    from mcp.types import ListToolsRequest
+
+    list_handler = server.request_handlers[ListToolsRequest]
+    response = await list_handler(ListToolsRequest(method="tools/list"))
+    schema = response.root.tools[0].inputSchema
+
+    # str | None unwraps to just string
+    assert schema["properties"]["nickname"] == {"type": "string"}
+
+    # list[str] maps to array with items
+    assert schema["properties"]["tags"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+    # Nested TypedDict is recursively converted
+    addr = schema["properties"]["address"]
+    assert addr["type"] == "object"
+    assert addr["properties"]["street"] == {"type": "string"}
+    assert addr["properties"]["city"] == {"type": "string"}
+
+    # Multi-type union produces anyOf
+    score = schema["properties"]["score"]
+    assert "anyOf" in score
+    types_in_union = sorted([s["type"] for s in score["anyOf"]])
+    assert types_in_union == ["integer", "number"]
+
+
+@pytest.mark.asyncio
 async def test_resource_link_content_converted_to_text():
     """Test that resource_link content blocks are converted to text."""
 

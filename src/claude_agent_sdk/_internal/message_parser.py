@@ -133,6 +133,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
                     usage=data["message"].get("usage"),
+                    message_id=data["message"].get("id"),
+                    stop_reason=data["message"].get("stop_reason"),
+                    session_id=data.get("session_id"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -203,6 +207,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     usage=data.get("usage"),
                     result=data.get("result"),
                     structured_output=data.get("structured_output"),
+                    model_usage=data.get("modelUsage"),
+                    permission_denials=data.get("permission_denials"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(

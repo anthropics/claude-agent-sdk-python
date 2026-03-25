@@ -736,3 +736,93 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_with_all_fields(self):
+        """Test that AssistantMessage preserves id, stop_reason, session_id, uuid."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-sonnet-4-5-20250929",
+                "id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id == "msg_01HRq7YZE3apPqSHydvG77Ve"
+        assert message.stop_reason == "end_turn"
+        assert message.session_id == "fdf2d90a-fd9e-4736-ae35-806edd13643f"
+        assert message.uuid == "0dbd2453-1209-4fe9-bd51-4102f64e33df"
+        assert message.usage == {"input_tokens": 10, "output_tokens": 5}
+
+    def test_parse_assistant_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id is None
+        assert message.stop_reason is None
+        assert message.session_id is None
+        assert message.uuid is None
+
+    def test_parse_result_message_with_model_usage(self):
+        """Test that ResultMessage preserves modelUsage, permission_denials, uuid."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 3000,
+            "duration_api_ms": 2000,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "stop_reason": "end_turn",
+            "total_cost_usd": 0.0106,
+            "usage": {"input_tokens": 3, "output_tokens": 24},
+            "result": "Hello",
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 3,
+                    "outputTokens": 24,
+                    "cacheReadInputTokens": 20012,
+                    "costUSD": 0.0106,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 64000,
+                }
+            },
+            "permission_denials": [],
+            "uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is not None
+        assert "claude-sonnet-4-5-20250929" in message.model_usage
+        assert message.model_usage["claude-sonnet-4-5-20250929"]["costUSD"] == 0.0106
+        assert message.permission_denials == []
+        assert message.uuid == "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+
+    def test_parse_result_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is None
+        assert message.permission_denials is None
+        assert message.uuid is None

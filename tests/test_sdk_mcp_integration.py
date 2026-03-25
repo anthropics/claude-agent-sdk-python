@@ -149,6 +149,42 @@ async def test_error_handling():
 
 
 @pytest.mark.asyncio
+async def test_is_error_flag_propagated():
+    """Test that is_error flag from tool result dict is propagated to CallToolResult."""
+
+    @tool("divide", "Divide two numbers", {"a": float, "b": float})
+    async def divide(args: dict[str, Any]) -> dict[str, Any]:
+        if args["b"] == 0:
+            return {
+                "content": [{"type": "text", "text": "Division by zero"}],
+                "is_error": True,
+            }
+        return {"content": [{"type": "text", "text": str(args["a"] / args["b"])}]}
+
+    server_config = create_sdk_mcp_server(name="error-flag-test", tools=[divide])
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    # Test error case — is_error: True should be propagated
+    error_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="divide", arguments={"a": 1, "b": 0}),
+    )
+    result = await call_handler(error_request)
+    assert result.root.isError is True
+    assert result.root.content[0].text == "Division by zero"
+
+    # Test success case — is_error should default to False
+    success_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="divide", arguments={"a": 6, "b": 3}),
+    )
+    result = await call_handler(success_request)
+    assert result.root.isError is not True
+    assert "2.0" in result.root.content[0].text
+
+
+@pytest.mark.asyncio
 async def test_mixed_servers():
     """Test that SDK and external MCP servers can work together."""
 

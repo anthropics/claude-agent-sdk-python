@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -21,6 +22,8 @@ from claude_agent_sdk import (
     query,
     tool,
 )
+from claude_agent_sdk._errors import ProcessError
+from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
 
@@ -434,5 +437,214 @@ class TestAsyncIterablePromptWithSdkMcpServers:
                 json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
             ]
             assert len(control_responses) == 2
+
+        anyio.run(_test)
+
+
+def _make_error_transport(error_messages, raise_error=None):
+    """Create a mock transport that yields error messages and optionally raises.
+
+    Args:
+        error_messages: List of message dicts to yield before raising.
+        raise_error: Optional exception to raise after yielding messages.
+    """
+    mock_transport = AsyncMock()
+
+    async def mock_receive():
+        for msg in error_messages:
+            yield msg
+        if raise_error is not None:
+            raise raise_error
+
+    mock_transport.read_messages = mock_receive
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.write = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+    return mock_transport
+
+
+class TestCliErrorPropagation:
+    """Test that CLI error text from result messages is propagated properly."""
+
+    def test_process_error_includes_cli_error_text(self):
+        """When CLI sends error_during_execution result then exits non-zero,
+        the ProcessError reaching callers should contain the real CLI error
+        text instead of the generic 'Check stderr output for details'."""
+
+        async def _test():
+            error_result = {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "duration_ms": 50,
+                "duration_api_ms": 0,
+                "is_error": True,
+                "num_turns": 0,
+                "session_id": "ab2c985b",
+                "result": "No conversation found with session ID ab2c985b",
+            }
+            process_error = ProcessError(
+                "Command failed with exit code 1",
+                exit_code=1,
+                stderr="Check stderr output for details",
+            )
+            transport = _make_error_transport(
+                [error_result], raise_error=process_error
+            )
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            # Simulate an initialize-like control request that will wait
+            # for a response but instead get the error
+            with pytest.raises(ProcessError) as exc_info:
+                await q._send_control_request(
+                    {"subtype": "initialize"}, timeout=5.0
+                )
+
+            # The error message should contain the real CLI error, not just
+            # "Check stderr output for details"
+            error_msg = str(exc_info.value)
+            assert "No conversation found with session ID ab2c985b" in error_msg
+
+        anyio.run(_test)
+
+    def test_process_error_preserves_exit_code(self):
+        """The enriched ProcessError should still carry the original exit code."""
+
+        async def _test():
+            error_result = {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "duration_ms": 50,
+                "duration_api_ms": 0,
+                "is_error": True,
+                "num_turns": 0,
+                "session_id": "test-session",
+                "result": "Some CLI error occurred",
+            }
+            process_error = ProcessError(
+                "Command failed with exit code 42",
+                exit_code=42,
+                stderr="Check stderr output for details",
+            )
+            transport = _make_error_transport(
+                [error_result], raise_error=process_error
+            )
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ProcessError) as exc_info:
+                await q._send_control_request(
+                    {"subtype": "initialize"}, timeout=5.0
+                )
+
+            assert exc_info.value.exit_code == 42
+
+        anyio.run(_test)
+
+    def test_is_error_flag_captures_error_text(self):
+        """Result messages with is_error=True (any subtype) should also
+        capture the error text for use in ProcessError."""
+
+        async def _test():
+            error_result = {
+                "type": "result",
+                "subtype": "some_other_subtype",
+                "duration_ms": 50,
+                "duration_api_ms": 0,
+                "is_error": True,
+                "num_turns": 0,
+                "session_id": "test-session",
+                "result": "An unexpected error happened",
+            }
+            process_error = ProcessError(
+                "Command failed with exit code 1",
+                exit_code=1,
+                stderr="Check stderr output for details",
+            )
+            transport = _make_error_transport(
+                [error_result], raise_error=process_error
+            )
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ProcessError) as exc_info:
+                await q._send_control_request(
+                    {"subtype": "initialize"}, timeout=5.0
+                )
+
+            assert "An unexpected error happened" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_no_cli_error_keeps_original_process_error(self):
+        """When no error result precedes the ProcessError, the original
+        error message should be preserved as-is."""
+
+        async def _test():
+            # No error result message - transport just raises
+            process_error = ProcessError(
+                "Command failed with exit code 1",
+                exit_code=1,
+                stderr="Check stderr output for details",
+            )
+            transport = _make_error_transport([], raise_error=process_error)
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ProcessError) as exc_info:
+                await q._send_control_request(
+                    {"subtype": "initialize"}, timeout=5.0
+                )
+
+            # Should still have the original message
+            assert "Command failed with exit code 1" in str(exc_info.value)
+            assert "Check stderr output for details" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_error_result_also_sent_to_message_stream(self):
+        """The error result message should still be sent to the message stream
+        even though we capture the error text for the ProcessError."""
+
+        async def _test():
+            error_result = {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "duration_ms": 50,
+                "duration_api_ms": 0,
+                "is_error": True,
+                "num_turns": 0,
+                "session_id": "ab2c985b",
+                "result": "No conversation found with session ID ab2c985b",
+            }
+            process_error = ProcessError(
+                "Command failed with exit code 1",
+                exit_code=1,
+                stderr="Check stderr output for details",
+            )
+            transport = _make_error_transport(
+                [error_result], raise_error=process_error
+            )
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            # Read messages from the stream - should include the error result
+            # and then an error/end message
+            stream_messages = []
+            async for msg in q._message_receive:
+                stream_messages.append(msg)
+                if msg.get("type") == "end":
+                    break
+
+            result_msgs = [m for m in stream_messages if m.get("type") == "result"]
+            assert len(result_msgs) == 1
+            assert result_msgs[0]["result"] == "No conversation found with session ID ab2c985b"
 
         anyio.run(_test)

@@ -112,9 +112,6 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
-        self._stream_close_timeout = (
-            float(os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")) / 1000.0
-        )  # Convert ms to seconds
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -615,8 +612,11 @@ class Query:
         """Wait for the first result (if needed) then close stdin.
 
         If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives (or timeout).
-        Otherwise closes stdin immediately.
+        keeps stdin open until the first result arrives. The control protocol
+        requires stdin to remain open for the entire conversation, so no
+        timeout is applied. The event is guaranteed to fire: either when the
+        result message arrives, or in _read_messages' finally block if the
+        process exits early.
         """
         if self.sdk_mcp_servers or self.hooks:
             logger.debug(
@@ -624,8 +624,7 @@ class Query:
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)})"
             )
-            with anyio.move_on_after(self._stream_close_timeout):
-                await self._first_result_event.wait()
+            await self._first_result_event.wait()
 
         await self.transport.end_input()
 

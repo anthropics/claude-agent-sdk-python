@@ -485,15 +485,50 @@ class Query:
                     # Convert MCP result to JSONRPC response
                     content = []
                     for item in result.root.content:  # type: ignore[union-attr]
-                        if hasattr(item, "text"):
-                            content.append({"type": "text", "text": item.text})
-                        elif hasattr(item, "data") and hasattr(item, "mimeType"):
+                        item_type = getattr(item, "type", None)
+                        if item_type == "text":
+                            content.append(
+                                {"type": "text", "text": getattr(item, "text", "")}
+                            )
+                        elif item_type == "image":
                             content.append(
                                 {
                                     "type": "image",
-                                    "data": item.data,
-                                    "mimeType": item.mimeType,
+                                    "data": getattr(item, "data", ""),
+                                    "mimeType": getattr(item, "mimeType", ""),
                                 }
+                            )
+                        elif item_type == "resource_link":
+                            parts = []
+                            name = getattr(item, "name", None)
+                            uri = getattr(item, "uri", None)
+                            desc = getattr(item, "description", None)
+                            if name:
+                                parts.append(name)
+                            if uri:
+                                parts.append(str(uri))
+                            if desc:
+                                parts.append(desc)
+                            content.append(
+                                {
+                                    "type": "text",
+                                    "text": "\n".join(parts)
+                                    if parts
+                                    else "Resource link",
+                                }
+                            )
+                        elif item_type == "resource":
+                            resource = getattr(item, "resource", None)
+                            if resource and hasattr(resource, "text"):
+                                content.append({"type": "text", "text": resource.text})
+                            else:
+                                logger.warning(
+                                    "Binary embedded resource cannot be converted to text, skipping"
+                                )
+                        else:
+                            logger.warning(
+                                "Unsupported content type %r in tool result, skipping",
+                                item_type,
                             )
 
                     response_data = {"content": content}

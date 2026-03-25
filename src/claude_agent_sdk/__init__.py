@@ -1,5 +1,6 @@
 """Claude SDK for Python."""
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
@@ -93,6 +94,8 @@ from .types import (
 )
 
 # MCP Server Support
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -334,15 +337,48 @@ def create_sdk_mcp_server(
             ] = []
             if "content" in result:
                 for item in result["content"]:
-                    if item.get("type") == "text":
+                    item_type = item.get("type")
+                    if item_type == "text":
                         content.append(TextContent(type="text", text=item["text"]))
-                    if item.get("type") == "image":
+                    elif item_type == "image":
                         content.append(
                             ImageContent(
                                 type="image",
                                 data=item["data"],
                                 mimeType=item["mimeType"],
                             )
+                        )
+                    elif item_type == "resource_link":
+                        parts = []
+                        link_name = item.get("name")
+                        uri = item.get("uri")
+                        desc = item.get("description")
+                        if link_name:
+                            parts.append(link_name)
+                        if uri:
+                            parts.append(str(uri))
+                        if desc:
+                            parts.append(desc)
+                        content.append(
+                            TextContent(
+                                type="text",
+                                text="\n".join(parts) if parts else "Resource link",
+                            )
+                        )
+                    elif item_type == "resource":
+                        resource = item.get("resource") or {}
+                        if "text" in resource:
+                            content.append(
+                                TextContent(type="text", text=resource["text"])
+                            )
+                        else:
+                            logger.warning(
+                                "Binary embedded resource cannot be converted to text, skipping"
+                            )
+                    else:
+                        logger.warning(
+                            "Unsupported content type %r in tool result, skipping",
+                            item_type,
                         )
 
             return CallToolResult(

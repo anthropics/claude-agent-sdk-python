@@ -5,6 +5,7 @@ matching the TypeScript SDK test/sdk.test.ts pattern.
 """
 
 import base64
+import logging
 from typing import Any
 
 import pytest
@@ -415,3 +416,225 @@ async def test_tool_annotations_in_jsonrpc():
 
     # Tool without annotations should not have the key
     assert "annotations" not in tools_by_name["plain_tool"]
+
+
+@pytest.mark.asyncio
+async def test_resource_link_content_converted_to_text():
+    """Test that resource_link content blocks are converted to text."""
+
+    @tool("get_resource", "Returns a resource link", {"url": str})
+    async def get_resource(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource_link",
+                    "name": "My Document",
+                    "uri": args["url"],
+                    "description": "A test document",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="resource-link-test", tools=[get_resource]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(
+            name="get_resource",
+            arguments={"url": "https://example.com/doc.pdf"},
+        ),
+    )
+    result = await call_handler(request)
+
+    assert len(result.root.content) == 1
+    assert result.root.content[0].type == "text"
+    assert "My Document" in result.root.content[0].text
+    assert "https://example.com/doc.pdf" in result.root.content[0].text
+    assert "A test document" in result.root.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_embedded_resource_text_content_converted():
+    """Test that embedded resource with text content is converted to text."""
+
+    @tool("get_embedded", "Returns an embedded resource", {})
+    async def get_embedded(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///test.txt",
+                        "text": "File contents here",
+                        "mimeType": "text/plain",
+                    },
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="embedded-resource-test", tools=[get_embedded]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_embedded", arguments={}),
+    )
+    result = await call_handler(request)
+
+    assert len(result.root.content) == 1
+    assert result.root.content[0].type == "text"
+    assert result.root.content[0].text == "File contents here"
+
+
+@pytest.mark.asyncio
+async def test_binary_embedded_resource_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Test that binary embedded resources are skipped with a warning."""
+
+    @tool("get_binary", "Returns a binary embedded resource", {})
+    async def get_binary(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///image.png",
+                        "blob": "iVBORw0KGgo=",
+                        "mimeType": "image/png",
+                    },
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="binary-resource-test", tools=[get_binary]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_binary", arguments={}),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = await call_handler(request)
+
+    assert len(result.root.content) == 0
+    assert "Binary embedded resource" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unknown_content_type_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Test that unknown content types are skipped with a warning."""
+
+    @tool("get_unknown", "Returns unknown content type", {})
+    async def get_unknown(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {"type": "custom_widget", "data": "some data"},
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(name="unknown-type-test", tools=[get_unknown])
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_unknown", arguments={}),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = await call_handler(request)
+
+    assert len(result.root.content) == 0
+    assert "Unsupported content type" in caplog.text
+    assert "custom_widget" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mixed_content_types_with_resource_link():
+    """Test that mixed content with text, image, and resource_link works."""
+
+    png_data = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("utf-8")
+
+    @tool("get_mixed", "Returns mixed content", {})
+    async def get_mixed(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {"type": "text", "text": "Here is the document:"},
+                {"type": "image", "data": png_data, "mimeType": "image/png"},
+                {
+                    "type": "resource_link",
+                    "name": "Report",
+                    "uri": "https://example.com/report",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(name="mixed-content-test", tools=[get_mixed])
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_mixed", arguments={}),
+    )
+    result = await call_handler(request)
+
+    assert len(result.root.content) == 3
+    assert result.root.content[0].type == "text"
+    assert result.root.content[0].text == "Here is the document:"
+    assert result.root.content[1].type == "image"
+    assert result.root.content[2].type == "text"
+    assert "Report" in result.root.content[2].text
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_bridge_resource_link():
+    """Test that the JSONRPC bridge converts resource_link content to text."""
+    from claude_agent_sdk._internal.query import Query
+
+    @tool("link_tool", "Returns a link", {})
+    async def link_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource_link",
+                    "name": "API Docs",
+                    "uri": "https://api.example.com",
+                    "description": "The API documentation",
+                }
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(name="jsonrpc-link-test", tools=[link_tool])
+
+    query_instance = Query.__new__(Query)
+    query_instance.sdk_mcp_servers = {"test": server_config["instance"]}
+
+    response = await query_instance._handle_sdk_mcp_request(
+        "test",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "link_tool", "arguments": {}},
+        },
+    )
+
+    assert response is not None
+    result_content = response["result"]["content"]
+    assert len(result_content) == 1
+    assert result_content[0]["type"] == "text"
+    assert "API Docs" in result_content[0]["text"]
+    assert "https://api.example.com" in result_content[0]["text"]

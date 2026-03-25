@@ -327,3 +327,59 @@ class TestSubprocessBuffering:
             assert messages[2]["subtype"] == "end"
 
         anyio.run(_test)
+
+    def test_non_json_debug_lines_skipped(self) -> None:
+        """Non-JSON lines (e.g. [SandboxDebug]) on stdout must not corrupt
+        the JSON parser buffer.  Regression test for #347."""
+
+        async def _test() -> None:
+            debug = "[SandboxDebug] Seccomp filtering not available"
+            msg1 = json.dumps({"type": "system", "subtype": "init"})
+            msg2 = json.dumps({"type": "result", "subtype": "success"})
+
+            stream = MockTextReceiveStream([f"{debug}\n{msg1}\n{debug}\n{msg2}\n"])
+
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            transport._stdout_stream = stream
+            transport._process = MagicMock()
+            transport._process.wait = AsyncMock(return_value=0)
+
+            messages: list[dict[str, Any]] = []
+            async for msg in transport.read_messages():
+                messages.append(msg)
+
+            assert len(messages) == 2
+            assert messages[0]["type"] == "system"
+            assert messages[1]["type"] == "result"
+
+        anyio.run(_test)
+
+    def test_interleaved_non_json_lines_skipped(self) -> None:
+        """Debug/warning lines interleaved between valid JSON messages
+        must be silently skipped."""
+
+        async def _test() -> None:
+            stream = MockTextReceiveStream(
+                [
+                    "[SandboxDebug] line 1\n",
+                    "[SandboxDebug] line 2\n",
+                    json.dumps({"type": "system", "subtype": "init"}) + "\n",
+                    "WARNING: something\n",
+                    json.dumps({"type": "result", "subtype": "success"}) + "\n",
+                ]
+            )
+
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            transport._stdout_stream = stream
+            transport._process = MagicMock()
+            transport._process.wait = AsyncMock(return_value=0)
+
+            messages: list[dict[str, Any]] = []
+            async for msg in transport.read_messages():
+                messages.append(msg)
+
+            assert len(messages) == 2
+            assert messages[0]["type"] == "system"
+            assert messages[1]["type"] == "result"
+
+        anyio.run(_test)

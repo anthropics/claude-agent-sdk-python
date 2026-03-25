@@ -548,6 +548,15 @@ class SubprocessCLITransport(Transport):
                     if not json_line:
                         continue
 
+                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
+                    # mid-parse — they corrupt the buffer otherwise (#347).
+                    if not json_buffer and not json_line.startswith("{"):
+                        logger.debug(
+                            "Skipping non-JSON line from CLI stdout: %s",
+                            json_line[:200],
+                        )
+                        continue
+
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 

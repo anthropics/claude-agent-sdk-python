@@ -11,7 +11,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import anyio.abc
@@ -21,7 +21,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeAgentOptions
+from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -172,12 +172,12 @@ class SubprocessCLITransport(Transport):
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
-            if (
-                self._options.system_prompt.get("type") == "preset"
-                and "append" in self._options.system_prompt
-            ):
+            sp = self._options.system_prompt
+            if sp.get("type") == "file":
+                cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+            elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
-                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                    ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
                 )
 
         # Handle tools option (base set of tools)

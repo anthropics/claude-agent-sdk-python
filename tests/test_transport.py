@@ -1064,3 +1064,76 @@ class TestSubprocessCLITransport:
         # No @filepath references should exist
         cmd_str = " ".join(cmd)
         assert "@" not in cmd_str
+
+    def test_version_warning_includes_cli_path(self):
+        """Test that the version warning includes the CLI path and uses only logger.warning."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+
+            with (
+                patch("anyio.open_process") as mock_exec,
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+                ) as mock_logger,
+                patch("builtins.print") as mock_print,
+            ):
+                # Mock version check returning an old version
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"1.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_exec.return_value = mock_version_process
+
+                await transport._check_claude_version()
+
+                # logger.warning should be called with version and CLI path
+                mock_logger.warning.assert_called_once()
+                args, _ = mock_logger.warning.call_args
+                assert args[1] == "1.0.0"
+                assert args[2] == DEFAULT_CLI_PATH
+
+                # print should NOT be called (no duplicate output)
+                mock_print.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_version_warning_not_emitted_for_current_version(self):
+        """Test that no warning is emitted when CLI version meets minimum."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+
+            with (
+                patch("anyio.open_process") as mock_exec,
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+                ) as mock_logger,
+            ):
+                # Mock version check returning a current version
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"99.99.99 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_exec.return_value = mock_version_process
+
+                await transport._check_claude_version()
+
+                # No warning for a current version
+                mock_logger.warning.assert_not_called()
+
+        anyio.run(_test)

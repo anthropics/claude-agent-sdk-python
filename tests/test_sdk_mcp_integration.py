@@ -166,7 +166,7 @@ async def test_is_error_flag_propagated():
     server = server_config["instance"]
     call_handler = server.request_handlers[CallToolRequest]
 
-    # Test error case \u2014 is_error: True should be propagated
+    # Test error case — is_error: True should be propagated
     error_request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="divide", arguments={"a": 1, "b": 0}),
@@ -175,7 +175,7 @@ async def test_is_error_flag_propagated():
     assert result.root.isError is True
     assert result.root.content[0].text == "Division by zero"
 
-    # Test success case \u2014 is_error should default to False
+    # Test success case — is_error should default to False
     success_request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="divide", arguments={"a": 6, "b": 3}),

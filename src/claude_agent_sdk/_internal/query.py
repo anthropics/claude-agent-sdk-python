@@ -498,6 +498,15 @@ class Query:
                                     "mimeType": item.mimeType,
                                 }
                             )
+                        else:
+                            # Forward-compatible: pass through unrecognized
+                            # content block types (e.g. search_result)
+                            if hasattr(item, "model_dump"):
+                                content.append(item.model_dump(mode="json"))
+                            elif isinstance(item, dict):
+                                content.append(item)
+                            else:
+                                content.append({"type": "text", "text": str(item)})
 
                     response_data = {"content": content}
                     if hasattr(result.root, "is_error") and result.root.is_error:

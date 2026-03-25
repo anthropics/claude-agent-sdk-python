@@ -16,7 +16,7 @@ else:
 
 # Permission modes
 PermissionMode = Literal[
-    "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto", "bubble"
+    "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk"
 ]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers

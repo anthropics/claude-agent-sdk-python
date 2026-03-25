@@ -253,11 +253,13 @@ def create_sdk_mcp_server(
     from mcp.server import Server
     from mcp.types import (
         AudioContent,
+        BlobResourceContents,
         CallToolResult,
         EmbeddedResource,
         ImageContent,
         ResourceLink,
         TextContent,
+        TextResourceContents,
         Tool,
     )
 
@@ -349,31 +351,58 @@ def create_sdk_mcp_server(
                             )
                         )
                     elif item_type == "resource_link":
-                        parts = []
-                        link_name = item.get("name")
-                        uri = item.get("uri")
-                        desc = item.get("description")
-                        if link_name:
-                            parts.append(link_name)
-                        if uri:
-                            parts.append(str(uri))
-                        if desc:
-                            parts.append(desc)
                         content.append(
-                            TextContent(
-                                type="text",
-                                text="\n".join(parts) if parts else "Resource link",
+                            ResourceLink(
+                                type="resource_link",
+                                name=item["name"],
+                                title=item.get("title"),
+                                uri=item["uri"],
+                                description=item.get("description"),
+                                mimeType=item.get("mimeType"),
+                                size=item.get("size"),
+                                icons=item.get("icons"),
+                                annotations=item.get("annotations"),
+                                _meta=item.get("_meta"),
                             )
                         )
                     elif item_type == "resource":
                         resource = item.get("resource") or {}
-                        if "text" in resource:
+                        uri = resource.get("uri")
+                        if uri is None:
+                            logger.warning(
+                                "Embedded resource missing uri, skipping content block"
+                            )
+                        elif "text" in resource:
                             content.append(
-                                TextContent(type="text", text=resource["text"])
+                                EmbeddedResource(
+                                    type="resource",
+                                    resource=TextResourceContents(
+                                        uri=uri,
+                                        text=resource["text"],
+                                        mimeType=resource.get("mimeType"),
+                                        _meta=resource.get("_meta"),
+                                    ),
+                                    annotations=item.get("annotations"),
+                                    _meta=item.get("_meta"),
+                                )
+                            )
+                        elif "blob" in resource:
+                            content.append(
+                                EmbeddedResource(
+                                    type="resource",
+                                    resource=BlobResourceContents(
+                                        uri=uri,
+                                        blob=resource["blob"],
+                                        mimeType=resource.get("mimeType"),
+                                        _meta=resource.get("_meta"),
+                                    ),
+                                    annotations=item.get("annotations"),
+                                    _meta=item.get("_meta"),
+                                )
                             )
                         else:
                             logger.warning(
-                                "Binary embedded resource cannot be converted to text, skipping"
+                                "Embedded resource missing text/blob payload, skipping"
                             )
                     else:
                         logger.warning(

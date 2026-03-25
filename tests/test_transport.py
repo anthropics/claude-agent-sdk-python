@@ -299,7 +299,7 @@ class TestSubprocessCLITransport:
 
     def test_build_command_with_settings_json(self):
         """Test building CLI command with settings as JSON object."""
-        settings_json = '{"permissions": {"allow": ["Bash(ls:*)"]}}'  
+        settings_json = '{"permissions": {"allow": ["Bash(ls:*)"]}}'
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(settings=settings_json),
@@ -893,7 +893,7 @@ class TestSubprocessCLITransport:
 
                 async def do_write(i: int):
                     try:
-                        await transport.write(f'{"msg": {i}}\n')
+                        await transport.write(f'{{"msg": {i}}}\n')
                     except Exception as e:
                         errors.append(e)
 
@@ -961,7 +961,7 @@ class TestSubprocessCLITransport:
 
                 async def do_write(i: int):
                     try:
-                        await transport.write(f'{"msg": {i}}\n')
+                        await transport.write(f'{{"msg": {i}}}\n')
                     except Exception as e:
                         errors.append(e)
 

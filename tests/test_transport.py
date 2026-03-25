@@ -565,6 +565,104 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_connect_creates_project_log_dir_for_home_override(self, tmp_path):
+        """Test that connect pre-creates the CLI project log directory."""
+
+        async def _test():
+            from claude_agent_sdk._internal.sessions import _sanitize_path
+
+            home_dir = tmp_path / "agent-home"
+            home_dir.mkdir()
+            cwd = tmp_path / "tmp-myapp-agents" / "agent-123" / "workspace"
+            cwd.mkdir(parents=True)
+
+            mock_version_process = MagicMock()
+            mock_version_process.stdout = MagicMock()
+            mock_version_process.stdout.receive = AsyncMock(
+                return_value=b"2.0.0 (Claude Code)"
+            )
+            mock_version_process.terminate = MagicMock()
+            mock_version_process.wait = AsyncMock()
+
+            mock_process = MagicMock()
+            mock_process.stdout = MagicMock()
+            mock_stdin = MagicMock()
+            mock_stdin.aclose = AsyncMock()
+            mock_process.stdin = mock_stdin
+            mock_process.returncode = None
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(
+                        cwd=str(cwd),
+                        env={"HOME": str(home_dir)},
+                    ),
+                )
+
+                await transport.connect()
+
+            expected_dir = (
+                home_dir
+                / ".claude"
+                / "projects"
+                / _sanitize_path(os.path.realpath(cwd))
+            )
+            assert expected_dir.is_dir()
+
+        anyio.run(_test)
+
+    def test_connect_prefers_claude_config_dir_for_project_logs(self, tmp_path):
+        """Test that CLAUDE_CONFIG_DIR controls the pre-created log directory."""
+
+        async def _test():
+            from claude_agent_sdk._internal.sessions import _sanitize_path
+
+            config_dir = tmp_path / "custom-config"
+            cwd = tmp_path / "workspace"
+            cwd.mkdir(parents=True)
+
+            mock_version_process = MagicMock()
+            mock_version_process.stdout = MagicMock()
+            mock_version_process.stdout.receive = AsyncMock(
+                return_value=b"2.0.0 (Claude Code)"
+            )
+            mock_version_process.terminate = MagicMock()
+            mock_version_process.wait = AsyncMock()
+
+            mock_process = MagicMock()
+            mock_process.stdout = MagicMock()
+            mock_stdin = MagicMock()
+            mock_stdin.aclose = AsyncMock()
+            mock_process.stdin = mock_stdin
+            mock_process.returncode = None
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(
+                        cwd=str(cwd),
+                        env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+                    ),
+                )
+
+                await transport.connect()
+
+            expected_dir = (
+                config_dir / "projects" / _sanitize_path(os.path.realpath(cwd))
+            )
+            assert expected_dir.is_dir()
+
+        anyio.run(_test)
+
     def test_build_command_with_sandbox_only(self):
         """Test building CLI command with sandbox settings (no existing settings)."""
         import json

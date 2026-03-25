@@ -21,12 +21,27 @@ from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
 from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
+from ..sessions import _canonicalize_path, _sanitize_path
 from . import Transport
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+
+def _get_claude_config_dir_for_env(process_env: dict[str, str]) -> Path:
+    """Resolve the CLI config directory for a child process environment."""
+    if config_dir := process_env.get("CLAUDE_CONFIG_DIR"):
+        return Path(config_dir)
+
+    if home_dir := process_env.get("HOME"):
+        return Path(home_dir) / ".claude"
+
+    if user_profile := process_env.get("USERPROFILE"):
+        return Path(user_profile) / ".claude"
+
+    return Path.home() / ".claude"
 
 
 class SubprocessCLITransport(Transport):
@@ -331,6 +346,20 @@ class SubprocessCLITransport(Transport):
 
         return cmd
 
+    def _ensure_project_log_dir(self, process_env: dict[str, str]) -> None:
+        """Pre-create the CLI project log directory for the child process."""
+        try:
+            cwd = self._cwd or str(Path.cwd())
+        except OSError:
+            return
+
+        project_dir = (
+            _get_claude_config_dir_for_env(process_env)
+            / "projects"
+            / _sanitize_path(_canonicalize_path(cwd))
+        )
+        project_dir.mkdir(parents=True, exist_ok=True)
+
     async def connect(self) -> None:
         """Start subprocess."""
         if self._process:
@@ -357,6 +386,8 @@ class SubprocessCLITransport(Transport):
 
             if self._cwd:
                 process_env["PWD"] = self._cwd
+
+            self._ensure_project_log_dir(process_env)
 
             # Pipe stderr if we have a callback OR debug mode is enabled
             should_pipe_stderr = (

@@ -205,6 +205,9 @@ class SubprocessCLITransport(Transport):
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
+        if self._options.task_budget is not None:
+            cmd.extend(["--task-budget", str(self._options.task_budget["total"])])
+
         if self._options.model:
             cmd.extend(["--model", self._options.model])
 

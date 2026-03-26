@@ -201,6 +201,27 @@ class TestSubprocessCLITransport:
         assert "--fallback-model" in cmd
         assert "sonnet" in cmd
 
+    def test_build_command_with_task_budget(self):
+        """Test building CLI command with task_budget option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(task_budget={"total": 100000}),
+        )
+
+        cmd = transport._build_command()
+        assert "--task-budget" in cmd
+        assert "100000" in cmd
+
+    def test_build_command_without_task_budget(self):
+        """Test that --task-budget is not included when task_budget is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--task-budget" not in cmd
+
     def test_build_command_with_max_thinking_tokens(self):
         """Test building CLI command with max_thinking_tokens option."""
         transport = SubprocessCLITransport(

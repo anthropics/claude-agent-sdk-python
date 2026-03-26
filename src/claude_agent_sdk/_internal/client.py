@@ -139,9 +139,9 @@ class InternalClient:
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
                 await query.wait_for_result_and_end_input()
-            elif isinstance(prompt, AsyncIterable) and query._tg:
+            elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables
-                query._tg.start_soon(query.stream_input, prompt)
+                query.spawn_task(query.stream_input(prompt))
 
             # Yield parsed messages, skipping unknown message types
             async for data in query.receive_messages():

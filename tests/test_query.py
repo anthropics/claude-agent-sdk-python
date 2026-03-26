@@ -492,3 +492,56 @@ class TestNoTimeoutForHooksAndMcpServers:
             mock_transport.end_input.assert_called_once()
 
         anyio.run(_test)
+
+
+class TestQueryCrossTaskCleanup:
+    """Tests for cross-task cleanup of Query task groups (issue #454).
+
+    When a user breaks out of an async for loop over process_query(), Python
+    finalizes the async generator in a different task than the one that called
+    start(). This triggers close() from a different task context, which causes
+    anyio to raise RuntimeError because cancel scopes must be exited by the
+    same task that entered them. These tests verify that close() handles this
+    gracefully.
+    """
+
+    def test_close_from_different_task_does_not_raise(self):
+        """close() called from a different task than start() must not raise."""
+        import asyncio
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+
+            close_error = None
+
+            async def close_in_other_task():
+                nonlocal close_error
+                try:
+                    await q.close()
+                except Exception as e:
+                    close_error = e
+
+            task = asyncio.create_task(close_in_other_task())
+            await task
+
+            assert close_error is None, f"close() raised: {close_error}"
+
+        asyncio.run(_test())
+
+    def test_close_from_same_task_still_works(self):
+        """close() from the same task as start() should still work normally."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+            await q.close()
+
+            assert q._read_task is None
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test)

@@ -149,6 +149,17 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_dont_ask_permission_mode(self):
+        """Test building CLI command with dontAsk permission mode."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(permission_mode="dontAsk"),
+        )
+
+        cmd = transport._build_command()
+        assert "--permission-mode" in cmd
+        assert "dontAsk" in cmd
+
     def test_build_command_with_fallback_model(self):
         """Test building CLI command with fallback_model option."""
         transport = SubprocessCLITransport(

@@ -15,7 +15,9 @@ else:
     McpServer = Any
 
 # Permission modes
-PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
+PermissionMode = Literal[
+    "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk"
+]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
 SdkBeta = Literal["context-1m-2025-08-07"]
@@ -1146,8 +1148,7 @@ class SDKControlInitializeRequest(TypedDict):
 
 class SDKControlSetPermissionModeRequest(TypedDict):
     subtype: Literal["set_permission_mode"]
-    # TODO: Add PermissionMode
-    mode: str
+    mode: PermissionMode
 
 
 class SDKHookCallbackRequest(TypedDict):

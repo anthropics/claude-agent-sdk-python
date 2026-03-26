@@ -14,6 +14,7 @@ from .types import (
     HookMatcher,
     McpStatusResponse,
     Message,
+    PermissionMode,
     ResultMessage,
 )
 
@@ -230,14 +231,16 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).
 
         Args:
             mode: The permission mode to set. Valid options:
                 - 'default': CLI prompts for dangerous tools
                 - 'acceptEdits': Auto-accept file edits
+                - 'plan': Plan-only mode (no tool execution)
                 - 'bypassPermissions': Allow all tools (use with caution)
+                - 'dontAsk': Allow all tools without prompting
 
         Example:
             ```python

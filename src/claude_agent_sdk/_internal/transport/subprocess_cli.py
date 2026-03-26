@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import unicodedata
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -33,13 +34,13 @@ MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 def _get_claude_config_dir_for_env(process_env: dict[str, str]) -> Path:
     """Resolve the CLI config directory for a child process environment."""
     if config_dir := process_env.get("CLAUDE_CONFIG_DIR"):
-        return Path(config_dir)
+        return Path(unicodedata.normalize("NFC", config_dir))
 
     if home_dir := process_env.get("HOME"):
-        return Path(home_dir) / ".claude"
+        return Path(unicodedata.normalize("NFC", home_dir)) / ".claude"
 
     if user_profile := process_env.get("USERPROFILE"):
-        return Path(user_profile) / ".claude"
+        return Path(unicodedata.normalize("NFC", user_profile)) / ".claude"
 
     return Path.home() / ".claude"
 

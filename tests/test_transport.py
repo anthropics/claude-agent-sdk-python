@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -569,7 +570,10 @@ class TestSubprocessCLITransport:
         """Test that connect pre-creates the CLI project log directory."""
 
         async def _test():
-            from claude_agent_sdk._internal.sessions import _sanitize_path
+            from claude_agent_sdk._internal.sessions import (
+                _canonicalize_path,
+                _sanitize_path,
+            )
 
             home_dir = tmp_path / "agent-home"
             home_dir.mkdir()
@@ -610,7 +614,7 @@ class TestSubprocessCLITransport:
                 home_dir
                 / ".claude"
                 / "projects"
-                / _sanitize_path(os.path.realpath(cwd))
+                / _sanitize_path(_canonicalize_path(str(cwd)))
             )
             assert expected_dir.is_dir()
 
@@ -620,7 +624,10 @@ class TestSubprocessCLITransport:
         """Test that CLAUDE_CONFIG_DIR controls the pre-created log directory."""
 
         async def _test():
-            from claude_agent_sdk._internal.sessions import _sanitize_path
+            from claude_agent_sdk._internal.sessions import (
+                _canonicalize_path,
+                _sanitize_path,
+            )
 
             config_dir = tmp_path / "custom-config"
             cwd = tmp_path / "workspace"
@@ -657,11 +664,25 @@ class TestSubprocessCLITransport:
                 await transport.connect()
 
             expected_dir = (
-                config_dir / "projects" / _sanitize_path(os.path.realpath(cwd))
+                config_dir / "projects" / _sanitize_path(_canonicalize_path(str(cwd)))
             )
             assert expected_dir.is_dir()
 
         anyio.run(_test)
+
+    def test_claude_config_dir_env_paths_are_normalized(self):
+        """Config dir resolution normalizes env paths to NFC."""
+        import unicodedata
+
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            _get_claude_config_dir_for_env,
+        )
+
+        decomposed = unicodedata.normalize("NFD", "C:/tmp/cafe\u0301")
+
+        resolved = _get_claude_config_dir_for_env({"CLAUDE_CONFIG_DIR": decomposed})
+
+        assert resolved == Path(unicodedata.normalize("NFC", decomposed))
 
     def test_build_command_with_sandbox_only(self):
         """Test building CLI command with sandbox settings (no existing settings)."""

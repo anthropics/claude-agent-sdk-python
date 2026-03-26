@@ -27,6 +27,7 @@ import re
 import unicodedata
 import uuid as uuid_mod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -292,7 +293,6 @@ def fork_session(
     if not transcript:
         raise ValueError(f"Session {session_id} has no messages to fork")
 
-    # Slice at up_to_message_id (inclusive).
     if up_to_message_id:
         cutoff = -1
         for i, entry in enumerate(transcript):
@@ -305,8 +305,7 @@ def fork_session(
             )
         transcript = transcript[: cutoff + 1]
 
-    # Build old → new UUID mapping for ALL entries (including progress —
-    # needed for parentUuid chain walk).
+    # Include progress entries in the mapping — needed for parentUuid chain walk.
     uuid_mapping: dict[str, str] = {}
     for entry in transcript:
         uuid_mapping[entry["uuid"]] = str(uuid_mod.uuid4())
@@ -317,13 +316,11 @@ def fork_session(
     if not writable:
         raise ValueError(f"Session {session_id} has no messages to fork")
 
-    # Index transcript by uuid for parent chain walk.
     by_uuid: dict[str, dict[str, Any]] = {}
     for entry in transcript:
         by_uuid[entry["uuid"]] = entry
 
     forked_session_id = str(uuid_mod.uuid4())
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     lines: list[str] = []
@@ -437,58 +434,10 @@ def _find_session_file(
 ) -> Path | None:
     """Find the path to a session's JSONL file.
 
-    Returns the path if found, None otherwise. Does NOT open or read the
-    file — just locates it. Searches candidate directories in the same
-    order as _append_to_session (exact project dir, worktree fallback,
-    then all project dirs when directory is None).
+    Returns the path if found, None otherwise.
     """
-    file_name = f"{session_id}.jsonl"
-
-    if directory:
-        canonical = _canonicalize_path(directory)
-
-        project_dir = _find_project_dir(canonical)
-        if project_dir is not None:
-            path = project_dir / file_name
-            try:
-                st = path.stat()
-                if st.st_size > 0:
-                    return path
-            except OSError:
-                pass
-
-        try:
-            worktree_paths = _get_worktree_paths(canonical)
-        except Exception:
-            worktree_paths = []
-        for wt in worktree_paths:
-            if wt == canonical:
-                continue
-            wt_project_dir = _find_project_dir(wt)
-            if wt_project_dir is not None:
-                path = wt_project_dir / file_name
-                try:
-                    st = path.stat()
-                    if st.st_size > 0:
-                        return path
-                except OSError:
-                    pass
-        return None
-
-    projects_dir = _get_projects_dir()
-    try:
-        dirents = list(projects_dir.iterdir())
-    except OSError:
-        return None
-    for entry in dirents:
-        path = entry / file_name
-        try:
-            st = path.stat()
-            if st.st_size > 0:
-                return path
-        except OSError:
-            pass
-    return None
+    result = _find_session_file_with_dir(session_id, directory)
+    return result[0] if result else None
 
 
 def _find_session_file_with_dir(
@@ -560,16 +509,8 @@ def _parse_fork_transcript(
     transcript: list[dict[str, Any]] = []
     content_replacements: list[Any] = []
 
-    text = content.decode("utf-8", errors="replace")
-    start = 0
-    length = len(text)
-
-    while start < length:
-        end = text.find("\n", start)
-        if end == -1:
-            end = length
-        line = text[start:end].strip()
-        start = end + 1
+    for line in content.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
         if not line:
             continue
         try:

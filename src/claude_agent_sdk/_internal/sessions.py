@@ -636,7 +636,7 @@ def _list_sessions_for_project(
                 break
 
     deduped = _deduplicate_by_session_id(all_sessions)
-    return _apply_sort_limit_offset(deduped, limit)
+    return _apply_sort_limit_offset(deduped, limit, offset)
 
 
 def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:

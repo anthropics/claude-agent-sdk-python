@@ -1,5 +1,6 @@
 """Query class for handling bidirectional control protocol."""
 
+import asyncio
 import json
 import logging
 import os
@@ -106,7 +107,8 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
-        self._tg: anyio.abc.TaskGroup | None = None
+        self._read_task: asyncio.Task[None] | None = None
+        self._child_tasks: set[asyncio.Task[Any]] = set()
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -162,10 +164,16 @@ class Query:
 
     async def start(self) -> None:
         """Start reading messages from transport."""
-        if self._tg is None:
-            self._tg = anyio.create_task_group()
-            await self._tg.__aenter__()
-            self._tg.start_soon(self._read_messages)
+        if self._read_task is None:
+            loop = asyncio.get_running_loop()
+            self._read_task = loop.create_task(self._read_messages())
+
+    def spawn_task(self, coro: Any) -> None:
+        """Spawn a child task that will be cancelled on close()."""
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(coro)
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
@@ -195,8 +203,8 @@ class Query:
                     # Handle incoming control requests from CLI
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
-                    if self._tg:
-                        self._tg.start_soon(self._handle_control_request, request)
+                    if not self._closed:
+                        self.spawn_task(self._handle_control_request(request))
                     continue
 
                 elif msg_type == "control_cancel_request":
@@ -694,11 +702,13 @@ class Query:
     async def close(self) -> None:
         """Close the query and transport."""
         self._closed = True
-        if self._tg:
-            self._tg.cancel_scope.cancel()
-            # Wait for task group to complete cancellation
-            with suppress(anyio.get_cancelled_exc_class()):
-                await self._tg.__aexit__(None, None, None)
+        for task in list(self._child_tasks):
+            task.cancel()
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._read_task
+        self._read_task = None
         await self.transport.close()
 
     # Make Query an async iterator

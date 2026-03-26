@@ -1,5 +1,6 @@
 """Tests for Claude SDK client functionality."""
 
+import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
@@ -127,3 +128,67 @@ class TestQueryFunction:
                 assert call_kwargs["options"].cwd == "/custom/path"
 
         anyio.run(_test)
+
+    def _run_query_with_mocked_internals(self, env_patch, expected_timeout):
+        """Helper: run query() with mocked transport/Query and verify initialize_timeout."""
+
+        async def _test():
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch("claude_agent_sdk._internal.client.Query") as mock_query_class,
+                patch.dict(os.environ, env_patch, clear=False),
+            ):
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                mock_query = AsyncMock()
+                mock_query_class.return_value = mock_query
+                mock_query.start = AsyncMock()
+                mock_query.initialize = AsyncMock()
+                mock_query.close = AsyncMock()
+                mock_query._tg = None
+
+                async def mock_receive():
+                    yield {
+                        "type": "result",
+                        "subtype": "success",
+                        "duration_ms": 100,
+                        "duration_api_ms": 80,
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "test",
+                    }
+
+                mock_query.receive_messages = mock_receive
+
+                async for _ in query(prompt="test", options=ClaudeAgentOptions()):
+                    pass
+
+                call_kwargs = mock_query_class.call_args.kwargs
+                assert call_kwargs["initialize_timeout"] == expected_timeout
+
+        anyio.run(_test)
+
+    def test_query_passes_initialize_timeout_from_env(self):
+        """Test that query() reads CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and passes it to Query."""
+        self._run_query_with_mocked_internals(
+            env_patch={"CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "120000"},
+            expected_timeout=120.0,
+        )
+
+    def test_query_uses_default_initialize_timeout(self):
+        """Test that query() defaults to 60s initialize timeout when env var is not set."""
+        # Ensure env var is absent for this test
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", None)
+            self._run_query_with_mocked_internals(
+                env_patch={},
+                expected_timeout=60.0,
+            )

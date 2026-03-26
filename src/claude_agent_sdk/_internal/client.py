@@ -1,6 +1,7 @@
 """Internal client implementation."""
 
 import json
+import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
@@ -98,6 +99,12 @@ class InternalClient:
                 for name, agent_def in configured_options.agents.items()
             }
 
+        # Match ClaudeSDKClient.connect() — without this, query() ignores the env var
+        initialize_timeout_ms = int(
+            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
+        )
+        initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+
         # Create Query to handle control protocol
         # Always use streaming mode internally (matching TypeScript SDK)
         # This ensures agents are always sent via initialize request
@@ -109,6 +116,7 @@ class InternalClient:
             if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
+            initialize_timeout=initialize_timeout,
             agents=agents_dict,
         )
 

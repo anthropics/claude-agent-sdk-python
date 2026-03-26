@@ -20,7 +20,13 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
-from ._internal.session_mutations import rename_session, tag_session
+from ._internal.session_mutations import (
+    ForkSessionResult,
+    delete_session,
+    fork_session,
+    rename_session,
+    tag_session,
+)
 from ._internal.sessions import get_session_info, get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
@@ -529,6 +535,9 @@ __all__ = [
     # Session mutations
     "rename_session",
     "tag_session",
+    "delete_session",
+    "fork_session",
+    "ForkSessionResult",
     # Beta support
     "SdkBeta",
     # Sandbox support

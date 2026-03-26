@@ -1,6 +1,5 @@
 """Session listing implementation.
 
-Ported from TypeScript SDK (listSessionsImpl.ts + sessionStoragePortable.ts).
 Scans ~/.claude/projects/<sanitized-cwd>/ for .jsonl session files and
 extracts metadata from stat + head/tail reads without full JSONL parsing.
 """
@@ -68,11 +67,7 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 
 
 def _simple_hash(s: str) -> str:
-    """Port of the JS simpleHash function (32-bit integer hash, base36).
-
-    Uses the same algorithm as the TS fallback so directory names match
-    when the CLI was running under Node.js (not Bun).
-    """
+    """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
     for ch in s:
         char = ord(ch)
@@ -451,7 +446,7 @@ def _parse_session_info_from_lite(
     session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
     # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
     # "tag" would match tool_use inputs (git tag, Docker tags, cloud resource
-    # tags). Mirrors TS listSessionsImpl.ts / sessionStorage.ts:629.
+    # tags).
     tag_line = next(
         (ln for ln in reversed(tail.split("\n")) if ln.startswith('{"type":"tag"')),
         None,
@@ -541,18 +536,25 @@ def _deduplicate_by_session_id(
     return list(by_id.values())
 
 
-def _apply_sort_and_limit(
-    sessions: list[SDKSessionInfo], limit: int | None
+def _apply_sort_limit_offset(
+    sessions: list[SDKSessionInfo],
+    limit: int | None,
+    offset: int = 0,
 ) -> list[SDKSessionInfo]:
-    """Sorts sessions by last_modified descending and applies optional limit."""
+    """Sorts sessions by last_modified descending and applies offset + limit."""
     sessions.sort(key=lambda s: s.last_modified, reverse=True)
+    if offset > 0:
+        sessions = sessions[offset:]
     if limit is not None and limit > 0:
-        return sessions[:limit]
+        sessions = sessions[:limit]
     return sessions
 
 
 def _list_sessions_for_project(
-    directory: str, limit: int | None, include_worktrees: bool
+    directory: str,
+    limit: int | None,
+    offset: int,
+    include_worktrees: bool,
 ) -> list[SDKSessionInfo]:
     """Lists sessions for a specific project directory (and its worktrees)."""
     canonical_dir = _canonicalize_path(directory)
@@ -572,7 +574,7 @@ def _list_sessions_for_project(
         if project_dir is None:
             return []
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_and_limit(sessions, limit)
+        return _apply_sort_limit_offset(sessions, limit, offset)
 
     # Worktree-aware scanning: find all project dirs matching any worktree
     projects_dir = _get_projects_dir()
@@ -593,9 +595,9 @@ def _list_sessions_for_project(
         # Fall back to single project dir
         project_dir = _find_project_dir(canonical_dir)
         if project_dir is None:
-            return _apply_sort_and_limit([], limit)
+            return _apply_sort_limit_offset([], limit, offset)
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_and_limit(sessions, limit)
+        return _apply_sort_limit_offset(sessions, limit, offset)
 
     all_sessions: list[SDKSessionInfo] = []
     seen_dirs: set[str] = set()
@@ -629,10 +631,10 @@ def _list_sessions_for_project(
                 break
 
     deduped = _deduplicate_by_session_id(all_sessions)
-    return _apply_sort_and_limit(deduped, limit)
+    return _apply_sort_limit_offset(deduped, limit, offset)
 
 
-def _list_all_sessions(limit: int | None) -> list[SDKSessionInfo]:
+def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
     """Lists sessions across all project directories."""
     projects_dir = _get_projects_dir()
 
@@ -646,12 +648,13 @@ def _list_all_sessions(limit: int | None) -> list[SDKSessionInfo]:
         all_sessions.extend(_read_sessions_from_dir(project_dir))
 
     deduped = _deduplicate_by_session_id(all_sessions)
-    return _apply_sort_and_limit(deduped, limit)
+    return _apply_sort_limit_offset(deduped, limit, offset)
 
 
 def list_sessions(
     directory: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
     include_worktrees: bool = True,
 ) -> list[SDKSessionInfo]:
     """Lists sessions with metadata extracted from stat + head/tail reads.
@@ -660,11 +663,15 @@ def list_sessions(
     directory and its git worktrees. When omitted, returns sessions
     across all projects.
 
+    Use ``limit`` and ``offset`` for pagination.
+
     Args:
         directory: Directory to list sessions for. When provided, returns
             sessions for this project directory (and optionally its git
             worktrees). When omitted, returns sessions across all projects.
         limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip from the start of the sorted
+            result set. Use with ``limit`` for pagination. Defaults to 0.
         include_worktrees: When ``directory`` is provided and the directory
             is inside a git repository, include sessions from all git
             worktree paths. Defaults to ``True``.
@@ -677,9 +684,10 @@ def list_sessions(
 
             sessions = list_sessions(directory="/path/to/project")
 
-        List all sessions across all projects::
+        Paginate::
 
-            all_sessions = list_sessions()
+            page1 = list_sessions(limit=50)
+            page2 = list_sessions(limit=50, offset=50)
 
         List sessions without scanning git worktrees::
 
@@ -689,8 +697,8 @@ def list_sessions(
             )
     """
     if directory:
-        return _list_sessions_for_project(directory, limit, include_worktrees)
-    return _list_all_sessions(limit)
+        return _list_sessions_for_project(directory, limit, offset, include_worktrees)
+    return _list_all_sessions(limit, offset)
 
 
 # ---------------------------------------------------------------------------

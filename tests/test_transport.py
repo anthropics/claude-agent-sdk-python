@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -892,7 +893,7 @@ class TestSubprocessCLITransport:
         anyio.run(_test, backend="trio")
 
     def test_close_terminates_after_grace_period_timeout(self):
-        """Test that SIGTERM is sent when process doesn't exit within grace period."""
+        """Test that SIGTERM and then SIGKILL are sent when process never exits."""
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
@@ -909,6 +910,7 @@ class TestSubprocessCLITransport:
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_process.stderr = MagicMock()
 
@@ -931,14 +933,66 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Patch the grace period to be short for testing
                 with patch("anyio.fail_after", side_effect=TimeoutError):
-                    # After terminate, wait should succeed
                     mock_process.wait = AsyncMock()
                     await transport.close()
 
-                # Process should have been terminated after timeout
                 mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_close_sigterm_succeeds_no_sigkill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_process.wait = AsyncMock()
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+
+                # First fail_after raises (grace period expired), second
+                # succeeds (process responds to SIGTERM)
+                call_count = 0
+
+                def mock_fail_after(timeout):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise TimeoutError
+                    return nullcontext()
+
+                with patch("anyio.fail_after", side_effect=mock_fail_after):
+                    await transport.close()
+
+                mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_not_called()
 
         anyio.run(_test)
 

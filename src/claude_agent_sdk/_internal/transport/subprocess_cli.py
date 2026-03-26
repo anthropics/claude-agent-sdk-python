@@ -476,6 +476,13 @@ class SubprocessCLITransport(Transport):
                 # Graceful shutdown timed out — force terminate
                 with suppress(ProcessLookupError):
                     self._process.terminate()
+                try:
+                    with anyio.fail_after(5):
+                        await self._process.wait()
+                except TimeoutError:
+                    # SIGTERM handler blocked — force kill (SIGKILL)
+                    with suppress(ProcessLookupError):
+                        self._process.kill()
                     with suppress(Exception):
                         await self._process.wait()
 

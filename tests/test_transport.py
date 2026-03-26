@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -24,17 +25,42 @@ class TestSubprocessCLITransport:
     """Test subprocess transport implementation."""
 
     def test_find_cli_not_found(self):
-        """Test CLI not found error."""
-        from claude_agent_sdk._errors import CLINotFoundError
+        """Test CLI not found error is raised during connect()."""
 
-        with (
-            patch("shutil.which", return_value=None),
-            patch("pathlib.Path.exists", return_value=False),
-            pytest.raises(CLINotFoundError) as exc_info,
-        ):
-            SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        async def _test():
+            from claude_agent_sdk._errors import CLINotFoundError
 
-        assert "Claude Code not found" in str(exc_info.value)
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            assert transport._cli_path is None
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value=None,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                pytest.raises(CLINotFoundError) as exc_info,
+            ):
+                await transport.connect()
+
+            assert "Claude Code not found" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_init_does_not_call_find_cli(self):
+        """Test that __init__ defers CLI discovery instead of blocking."""
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        assert transport._cli_path is None
+
+    def test_init_uses_provided_cli_path(self):
+        """Test that __init__ uses cli_path when provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+        )
+        assert transport._cli_path == "/usr/bin/claude"
 
     def test_build_command_basic(self):
         """Test building basic CLI command."""
@@ -147,6 +173,17 @@ class TestSubprocessCLITransport:
         assert "acceptEdits" in cmd
         assert "--max-turns" in cmd
         assert "5" in cmd
+
+    def test_build_command_with_dont_ask_permission_mode(self):
+        """Test building CLI command with dontAsk permission mode."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(permission_mode="dontAsk"),
+        )
+
+        cmd = transport._build_command()
+        assert "--permission-mode" in cmd
+        assert "dontAsk" in cmd
 
     def test_build_command_with_fallback_model(self):
         """Test building CLI command with fallback_model option."""
@@ -511,6 +548,100 @@ class TestSubprocessCLITransport:
 
                 # CLAUDE_AGENT_SDK_VERSION is still SDK-controlled
                 assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_claudecode_env_var_not_inherited(self):
+        """Test that CLAUDECODE env var is filtered from the subprocess environment."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict(os.environ, {"CLAUDECODE": "1"}),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # CLAUDECODE must NOT be inherited from the parent process
+                assert "CLAUDECODE" not in env_passed
+
+                # Other env vars should still be present
+                assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
+                assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_claudecode_can_be_set_via_options_env(self):
+        """Test that users can explicitly set CLAUDECODE via options.env."""
+
+        async def _test():
+            options = make_options(env={"CLAUDECODE": "1"})
+
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Explicit options.env should be respected
+                assert env_passed.get("CLAUDECODE") == "1"
 
         anyio.run(_test)
 
@@ -892,7 +1023,7 @@ class TestSubprocessCLITransport:
         anyio.run(_test, backend="trio")
 
     def test_close_terminates_after_grace_period_timeout(self):
-        """Test that SIGTERM is sent when process doesn't exit within grace period."""
+        """Test that SIGTERM and then SIGKILL are sent when process never exits."""
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
@@ -909,6 +1040,7 @@ class TestSubprocessCLITransport:
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_process.stderr = MagicMock()
 
@@ -931,14 +1063,66 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Patch the grace period to be short for testing
                 with patch("anyio.fail_after", side_effect=TimeoutError):
-                    # After terminate, wait should succeed
                     mock_process.wait = AsyncMock()
                     await transport.close()
 
-                # Process should have been terminated after timeout
                 mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_close_sigterm_succeeds_no_sigkill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_process.wait = AsyncMock()
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+
+                # First fail_after raises (grace period expired), second
+                # succeeds (process responds to SIGTERM)
+                call_count = 0
+
+                def mock_fail_after(timeout):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise TimeoutError
+                    return nullcontext()
+
+                with patch("anyio.fail_after", side_effect=mock_fail_after):
+                    await transport.close()
+
+                mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_not_called()
 
         anyio.run(_test)
 

@@ -373,6 +373,26 @@ class TestSubprocessCLITransport:
         # Either it's the last element or the next element is another flag
         assert boolean_idx == len(cmd) - 1 or cmd[boolean_idx + 1].startswith("--")
 
+    def test_build_command_with_disable_parallel_tool_use(self):
+        """Test building CLI command with disable_parallel_tool_use."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(disable_parallel_tool_use=True),
+        )
+
+        cmd = transport._build_command()
+        assert "--disable-parallel-tool-use" in cmd
+
+    def test_build_command_without_disable_parallel_tool_use(self):
+        """Test that disable_parallel_tool_use flag is omitted when False."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(disable_parallel_tool_use=False),
+        )
+
+        cmd = transport._build_command()
+        assert "--disable-parallel-tool-use" not in cmd
+
     def test_build_command_with_mcp_servers(self):
         """Test building CLI command with mcp_servers option."""
         import json

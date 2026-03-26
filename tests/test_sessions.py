@@ -364,6 +364,45 @@ class TestListSessions:
         # Should be the 2 newest
         assert sessions[0].last_modified >= sessions[1].last_modified
 
+    def test_offset_pagination(self, claude_config_dir: Path, tmp_path: Path):
+        """Offset skips sessions for pagination."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+
+        for i in range(5):
+            _make_session_file(
+                project_dir, first_prompt=f"prompt {i}", mtime=1000.0 + i
+            )
+
+        # Get page 1 (first 2)
+        page1 = list_sessions(
+            directory=project_path, limit=2, offset=0, include_worktrees=False
+        )
+        assert len(page1) == 2
+
+        # Get page 2 (next 2)
+        page2 = list_sessions(
+            directory=project_path, limit=2, offset=2, include_worktrees=False
+        )
+        assert len(page2) == 2
+
+        # Pages should have different sessions
+        page1_ids = {s.session_id for s in page1}
+        page2_ids = {s.session_id for s in page2}
+        assert page1_ids.isdisjoint(page2_ids)
+
+        # Page 1 should be newer than page 2
+        assert page1[0].last_modified > page2[0].last_modified
+
+        # Offset beyond available returns empty
+        page_empty = list_sessions(
+            directory=project_path, offset=100, include_worktrees=False
+        )
+        assert len(page_empty) == 0
+
     def test_filters_sidechain_sessions(self, claude_config_dir: Path, tmp_path: Path):
         """Sessions with isSidechain:true are filtered out."""
         project_path = str(tmp_path / "proj")

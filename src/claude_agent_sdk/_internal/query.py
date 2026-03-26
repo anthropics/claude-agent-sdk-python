@@ -499,32 +499,19 @@ class Query:
                                     "mimeType": getattr(item, "mimeType", ""),
                                 }
                             )
-                        elif item_type == "resource_link":
-                            parts = []
-                            name = getattr(item, "name", None)
-                            uri = getattr(item, "uri", None)
-                            desc = getattr(item, "description", None)
-                            if name:
-                                parts.append(name)
-                            if uri:
-                                parts.append(str(uri))
-                            if desc:
-                                parts.append(desc)
-                            content.append(
-                                {
-                                    "type": "text",
-                                    "text": "\n".join(parts)
-                                    if parts
-                                    else "Resource link",
-                                }
-                            )
-                        elif item_type == "resource":
-                            resource = getattr(item, "resource", None)
-                            if resource and hasattr(resource, "text"):
-                                content.append({"type": "text", "text": resource.text})
+                        elif item_type in {"audio", "resource", "resource_link"}:
+                            if hasattr(item, "model_dump"):
+                                content.append(
+                                    item.model_dump(
+                                        mode="json",
+                                        by_alias=True,
+                                        exclude_none=True,
+                                    )
+                                )
                             else:
                                 logger.warning(
-                                    "Binary embedded resource cannot be converted to text, skipping"
+                                    "Unsupported structured content %r without model_dump, skipping",
+                                    item_type,
                                 )
                         else:
                             logger.warning(

@@ -5,6 +5,7 @@ matching the TypeScript SDK test/sdk.test.ts pattern.
 """
 
 import base64
+import json
 import logging
 from typing import Any
 
@@ -17,6 +18,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
     tool,
 )
+from claude_agent_sdk._internal.query import Query
 
 
 @pytest.mark.asyncio
@@ -304,6 +306,56 @@ async def test_image_content_support():
 
 
 @pytest.mark.asyncio
+async def test_structured_resource_results_round_trip_through_sdk_bridge():
+    """Test that structured resource blocks survive the SDK MCP round-trip."""
+
+    payload = {"status": "ok", "items": [1, 2, 3]}
+
+    @tool("get_status", "Return structured JSON status", {})
+    async def get_status(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///status.json",
+                        "mimeType": "application/json",
+                        "text": json.dumps(payload),
+                    },
+                }
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="structured-json", version="1.0.0", tools=[get_status]
+    )
+
+    query_instance = Query.__new__(Query)
+    query_instance.sdk_mcp_servers = {"structured": server_config["instance"]}
+
+    response = await query_instance._handle_sdk_mcp_request(
+        "structured",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_status", "arguments": {}},
+        },
+    )
+
+    assert response["result"]["content"] == [
+        {
+            "type": "resource",
+            "resource": {
+                "uri": "file:///status.json",
+                "mimeType": "application/json",
+                "text": json.dumps(payload),
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_tool_annotations():
     """Test that tool annotations are stored and flow through list_tools."""
 
@@ -419,8 +471,8 @@ async def test_tool_annotations_in_jsonrpc():
 
 
 @pytest.mark.asyncio
-async def test_resource_link_content_converted_to_text():
-    """Test that resource_link content blocks are converted to text."""
+async def test_resource_link_content_is_preserved():
+    """Test that resource_link content blocks stay structured."""
 
     @tool("get_resource", "Returns a resource link", {"url": str})
     async def get_resource(args: dict[str, Any]) -> dict[str, Any]:
@@ -451,15 +503,15 @@ async def test_resource_link_content_converted_to_text():
     result = await call_handler(request)
 
     assert len(result.root.content) == 1
-    assert result.root.content[0].type == "text"
-    assert "My Document" in result.root.content[0].text
-    assert "https://example.com/doc.pdf" in result.root.content[0].text
-    assert "A test document" in result.root.content[0].text
+    assert result.root.content[0].type == "resource_link"
+    assert result.root.content[0].name == "My Document"
+    assert str(result.root.content[0].uri) == "https://example.com/doc.pdf"
+    assert result.root.content[0].description == "A test document"
 
 
 @pytest.mark.asyncio
-async def test_embedded_resource_text_content_converted():
-    """Test that embedded resource with text content is converted to text."""
+async def test_embedded_resource_text_content_is_preserved():
+    """Test that embedded resource text content stays structured."""
 
     @tool("get_embedded", "Returns an embedded resource", {})
     async def get_embedded(args: dict[str, Any]) -> dict[str, Any]:
@@ -489,15 +541,15 @@ async def test_embedded_resource_text_content_converted():
     result = await call_handler(request)
 
     assert len(result.root.content) == 1
-    assert result.root.content[0].type == "text"
-    assert result.root.content[0].text == "File contents here"
+    assert result.root.content[0].type == "resource"
+    assert str(result.root.content[0].resource.uri) == "file:///test.txt"
+    assert result.root.content[0].resource.text == "File contents here"
+    assert result.root.content[0].resource.mimeType == "text/plain"
 
 
 @pytest.mark.asyncio
-async def test_binary_embedded_resource_skipped_with_warning(
-    caplog: pytest.LogCaptureFixture,
-):
-    """Test that binary embedded resources are skipped with a warning."""
+async def test_binary_embedded_resource_is_preserved():
+    """Test that binary embedded resources stay structured."""
 
     @tool("get_binary", "Returns a binary embedded resource", {})
     async def get_binary(args: dict[str, Any]) -> dict[str, Any]:
@@ -524,11 +576,81 @@ async def test_binary_embedded_resource_skipped_with_warning(
         method="tools/call",
         params=CallToolRequestParams(name="get_binary", arguments={}),
     )
+    result = await call_handler(request)
+
+    assert len(result.root.content) == 1
+    assert result.root.content[0].type == "resource"
+    assert str(result.root.content[0].resource.uri) == "file:///image.png"
+    assert result.root.content[0].resource.blob == "iVBORw0KGgo="
+    assert result.root.content[0].resource.mimeType == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_malformed_embedded_resource_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Malformed embedded resources should be skipped with a warning."""
+
+    @tool("get_malformed_resource", "Returns malformed resource", {})
+    async def get_malformed_resource(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": "not-a-dict",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="malformed-resource-test", tools=[get_malformed_resource]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_malformed_resource", arguments={}),
+    )
     with caplog.at_level(logging.WARNING):
         result = await call_handler(request)
 
     assert len(result.root.content) == 0
-    assert "Binary embedded resource" in caplog.text
+    assert "Embedded resource payload must be a dict" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_resource_link_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Malformed resource links should be skipped with a warning."""
+
+    @tool("get_bad_link", "Returns malformed resource link", {})
+    async def get_bad_link(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource_link",
+                    "name": "Incomplete link",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="malformed-link-test", tools=[get_bad_link]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_bad_link", arguments={}),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = await call_handler(request)
+
+    assert len(result.root.content) == 0
+    assert "Resource link missing required name/uri" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -563,7 +685,7 @@ async def test_unknown_content_type_skipped_with_warning(
 
 @pytest.mark.asyncio
 async def test_mixed_content_types_with_resource_link():
-    """Test that mixed content with text, image, and resource_link works."""
+    """Test that mixed content preserves structured resource links."""
 
     png_data = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("utf-8")
 
@@ -595,13 +717,13 @@ async def test_mixed_content_types_with_resource_link():
     assert result.root.content[0].type == "text"
     assert result.root.content[0].text == "Here is the document:"
     assert result.root.content[1].type == "image"
-    assert result.root.content[2].type == "text"
-    assert "Report" in result.root.content[2].text
+    assert result.root.content[2].type == "resource_link"
+    assert result.root.content[2].name == "Report"
 
 
 @pytest.mark.asyncio
 async def test_jsonrpc_bridge_resource_link():
-    """Test that the JSONRPC bridge converts resource_link content to text."""
+    """Test that the JSONRPC bridge preserves resource_link content."""
     from claude_agent_sdk._internal.query import Query
 
     @tool("link_tool", "Returns a link", {})
@@ -635,6 +757,10 @@ async def test_jsonrpc_bridge_resource_link():
     assert response is not None
     result_content = response["result"]["content"]
     assert len(result_content) == 1
-    assert result_content[0]["type"] == "text"
-    assert "API Docs" in result_content[0]["text"]
-    assert "https://api.example.com" in result_content[0]["text"]
+    assert result_content[0]["type"] == "resource_link"
+    assert result_content[0]["name"] == "API Docs"
+    assert result_content[0]["uri"] in (
+        "https://api.example.com",
+        "https://api.example.com/",
+    )
+    assert result_content[0]["description"] == "The API documentation"

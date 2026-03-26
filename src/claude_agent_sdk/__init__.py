@@ -338,6 +338,7 @@ def create_sdk_mcp_server(
                 if (
                     "type" in tool_def.input_schema
                     and "properties" in tool_def.input_schema
+                    and isinstance(tool_def.input_schema["type"], str)
                 ):
                     return tool_def.input_schema
                 properties = {}

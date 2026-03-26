@@ -42,8 +42,8 @@ class SubprocessCLITransport(Transport):
         # This allows agents and other large configs to be sent via initialize request
         self._is_streaming = True
         self._options = options
-        self._cli_path = (
-            str(options.cli_path) if options.cli_path is not None else self._find_cli()
+        self._cli_path: str | None = (
+            str(options.cli_path) if options.cli_path is not None else None
         )
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
@@ -164,6 +164,8 @@ class SubprocessCLITransport(Transport):
 
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
@@ -335,6 +337,9 @@ class SubprocessCLITransport(Transport):
         """Start subprocess."""
         if self._process:
             return
+
+        if self._cli_path is None:
+            self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
 
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()
@@ -612,6 +617,8 @@ class SubprocessCLITransport(Transport):
 
     async def _check_claude_version(self) -> None:
         """Check Claude Code version and warn if below minimum."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout

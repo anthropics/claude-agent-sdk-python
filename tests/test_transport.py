@@ -25,17 +25,42 @@ class TestSubprocessCLITransport:
     """Test subprocess transport implementation."""
 
     def test_find_cli_not_found(self):
-        """Test CLI not found error."""
-        from claude_agent_sdk._errors import CLINotFoundError
+        """Test CLI not found error is raised during connect()."""
 
-        with (
-            patch("shutil.which", return_value=None),
-            patch("pathlib.Path.exists", return_value=False),
-            pytest.raises(CLINotFoundError) as exc_info,
-        ):
-            SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        async def _test():
+            from claude_agent_sdk._errors import CLINotFoundError
 
-        assert "Claude Code not found" in str(exc_info.value)
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            assert transport._cli_path is None
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value=None,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                pytest.raises(CLINotFoundError) as exc_info,
+            ):
+                await transport.connect()
+
+            assert "Claude Code not found" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_init_does_not_call_find_cli(self):
+        """Test that __init__ defers CLI discovery instead of blocking."""
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        assert transport._cli_path is None
+
+    def test_init_uses_provided_cli_path(self):
+        """Test that __init__ uses cli_path when provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+        )
+        assert transport._cli_path == "/usr/bin/claude"
 
     def test_build_command_basic(self):
         """Test building basic CLI command."""

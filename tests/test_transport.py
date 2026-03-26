@@ -515,6 +515,100 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_claudecode_env_var_not_inherited(self):
+        """Test that CLAUDECODE env var is filtered from the subprocess environment."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict(os.environ, {"CLAUDECODE": "1"}),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # CLAUDECODE must NOT be inherited from the parent process
+                assert "CLAUDECODE" not in env_passed
+
+                # Other env vars should still be present
+                assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
+                assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_claudecode_can_be_set_via_options_env(self):
+        """Test that users can explicitly set CLAUDECODE via options.env."""
+
+        async def _test():
+            options = make_options(env={"CLAUDECODE": "1"})
+
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Explicit options.env should be respected
+                assert env_passed.get("CLAUDECODE") == "1"
+
+        anyio.run(_test)
+
     def test_connect_as_different_user(self):
         """Test connect as different user."""
 

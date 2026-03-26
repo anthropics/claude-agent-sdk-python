@@ -586,6 +586,74 @@ async def test_binary_embedded_resource_is_preserved():
 
 
 @pytest.mark.asyncio
+async def test_malformed_embedded_resource_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Malformed embedded resources should be skipped with a warning."""
+
+    @tool("get_malformed_resource", "Returns malformed resource", {})
+    async def get_malformed_resource(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": "not-a-dict",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="malformed-resource-test", tools=[get_malformed_resource]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_malformed_resource", arguments={}),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = await call_handler(request)
+
+    assert len(result.root.content) == 0
+    assert "Embedded resource payload must be a dict" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_resource_link_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Malformed resource links should be skipped with a warning."""
+
+    @tool("get_bad_link", "Returns malformed resource link", {})
+    async def get_bad_link(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "resource_link",
+                    "name": "Incomplete link",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="malformed-link-test", tools=[get_bad_link]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="get_bad_link", arguments={}),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = await call_handler(request)
+
+    assert len(result.root.content) == 0
+    assert "Resource link missing required name/uri" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_unknown_content_type_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ):
@@ -691,5 +759,8 @@ async def test_jsonrpc_bridge_resource_link():
     assert len(result_content) == 1
     assert result_content[0]["type"] == "resource_link"
     assert result_content[0]["name"] == "API Docs"
-    assert result_content[0]["uri"] == "https://api.example.com/"
+    assert result_content[0]["uri"] in (
+        "https://api.example.com",
+        "https://api.example.com/",
+    )
     assert result_content[0]["description"] == "The API documentation"

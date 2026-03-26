@@ -351,12 +351,19 @@ def create_sdk_mcp_server(
                             )
                         )
                     elif item_type == "resource_link":
+                        link_name = item.get("name")
+                        uri = item.get("uri")
+                        if link_name is None or uri is None:
+                            logger.warning(
+                                "Resource link missing required name/uri, skipping"
+                            )
+                            continue
                         content.append(
                             ResourceLink(
                                 type="resource_link",
-                                name=item["name"],
+                                name=link_name,
                                 title=item.get("title"),
-                                uri=item["uri"],
+                                uri=uri,
                                 description=item.get("description"),
                                 mimeType=item.get("mimeType"),
                                 size=item.get("size"),
@@ -367,6 +374,11 @@ def create_sdk_mcp_server(
                         )
                     elif item_type == "resource":
                         resource = item.get("resource") or {}
+                        if not isinstance(resource, dict):
+                            logger.warning(
+                                "Embedded resource payload must be a dict, skipping"
+                            )
+                            continue
                         uri = resource.get("uri")
                         if uri is None:
                             logger.warning(

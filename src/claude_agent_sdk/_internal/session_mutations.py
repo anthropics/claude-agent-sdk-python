@@ -302,14 +302,6 @@ def fork_session(
                 f"Message {up_to_message_id} not found in session {session_id}"
             )
         transcript = transcript[: cutoff + 1]
-        # Filter content_replacements to only include entries whose uuid
-        # appears in the surviving (sliced) transcript.
-        surviving_uuids = {e["uuid"] for e in transcript}
-        content_replacements = [
-            r
-            for r in content_replacements
-            if not isinstance(r, dict) or r.get("uuid") in surviving_uuids
-        ]
 
     # Include progress entries in the mapping — needed for parentUuid chain walk.
     uuid_mapping: dict[str, str] = {}
@@ -389,12 +381,7 @@ def fork_session(
         )
 
     # Derive title: explicit > original customTitle/aiTitle > first prompt.
-    if title is not None:
-        fork_title = title.strip()
-        if not fork_title:
-            raise ValueError("title must be non-empty")
-    else:
-        fork_title = None
+    fork_title = title.strip() if title else None
     if not fork_title:
         buf_len = len(content)
         head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(

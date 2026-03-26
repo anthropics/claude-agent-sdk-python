@@ -13,6 +13,7 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    TaskContextError,
 )
 from ._internal.session_mutations import rename_session, tag_session
 from ._internal.sessions import get_session_info, get_session_messages, list_sessions
@@ -491,4 +492,5 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    "TaskContextError",
 ]

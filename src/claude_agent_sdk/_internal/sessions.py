@@ -1,6 +1,5 @@
 """Session listing implementation.
 
-Ported from TypeScript SDK (listSessionsImpl.ts + sessionStoragePortable.ts).
 Scans ~/.claude/projects/<sanitized-cwd>/ for .jsonl session files and
 extracts metadata from stat + head/tail reads without full JSONL parsing.
 """
@@ -68,11 +67,7 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 
 
 def _simple_hash(s: str) -> str:
-    """Port of the JS simpleHash function (32-bit integer hash, base36).
-
-    Uses the same algorithm as the TS fallback so directory names match
-    when the CLI was running under Node.js (not Bun).
-    """
+    """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
     for ch in s:
         char = ord(ch)
@@ -451,7 +446,7 @@ def _parse_session_info_from_lite(
     session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
     # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
     # "tag" would match tool_use inputs (git tag, Docker tags, cloud resource
-    # tags). Mirrors TS listSessionsImpl.ts / sessionStorage.ts:629.
+    # tags).
     tag_line = next(
         (ln for ln in reversed(tail.split("\n")) if ln.startswith('{"type":"tag"')),
         None,

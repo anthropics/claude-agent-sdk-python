@@ -1,7 +1,5 @@
 """Portable session mutation functions for the Agent SDK.
 
-Ported from TypeScript SDK (sessionMutationsImpl.ts + forkSessionImpl.ts).
-
 Rename/tag append typed metadata entries to the session's JSONL (matching
 the CLI pattern); delete removes the JSONL file; fork creates a new session
 with UUID remapping. Safe to call from any SDK host process — see
@@ -616,8 +614,8 @@ def _try_append(path: Path, data: str) -> bool:
     kernel's append mode on all platforms. On POSIX, O_APPEND makes the kernel
     atomically seek-to-EOF on every write (race-free). On Windows, CPython's
     ``os.open`` translates O_APPEND to ``FILE_APPEND_DATA`` (also atomic).
-    Unlike the TS SDK's Bun/Windows workaround, CPython handles this correctly
-    so no explicit-position fallback is needed.
+    CPython handles this correctly on all platforms, so no explicit-position
+    fallback is needed.
     """
     try:
         fd = os.open(path, os.O_WRONLY | os.O_APPEND)
@@ -636,7 +634,7 @@ def _try_append(path: Path, data: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Unicode sanitization — ported from TS sanitization.ts
+# Unicode sanitization
 # ---------------------------------------------------------------------------
 
 # Explicit ranges for dangerous Unicode characters. Python's regex supports
@@ -661,7 +659,7 @@ _FORMAT_CATEGORIES = frozenset({"Cf", "Co", "Cn"})
 def _sanitize_unicode(value: str) -> str:
     """Sanitize a string by removing dangerous Unicode characters.
 
-    Ported from TS ``partiallySanitizeUnicode``. Iteratively applies NFKC
+    Iteratively applies NFKC
     normalization and strips format/private-use/unassigned characters until
     no more changes occur (max 10 iterations).
     """

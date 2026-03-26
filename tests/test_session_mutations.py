@@ -479,11 +479,13 @@ class TestDeleteSession:
         with pytest.raises(FileNotFoundError, match="not found"):
             delete_session(sid)
 
-    def test_deletes_session_file(self, claude_config_dir: Path):
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+    def test_deletes_session_file(self, claude_config_dir: Path, tmp_path: Path):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, file_path = _make_session_file(project_dir)
         assert file_path.exists()
-        delete_session(sid, directory="/test/project")
+        delete_session(sid, directory=project_path)
         assert not file_path.exists()
 
     def test_deletes_without_directory(self, claude_config_dir: Path):
@@ -494,13 +496,15 @@ class TestDeleteSession:
         delete_session(sid)
         assert not file_path.exists()
 
-    def test_no_longer_in_list_sessions(self, claude_config_dir: Path):
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+    def test_no_longer_in_list_sessions(self, claude_config_dir: Path, tmp_path: Path):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _ = _make_session_file(project_dir)
-        sessions = list_sessions(directory="/test/project")
+        sessions = list_sessions(directory=project_path)
         assert any(s.session_id == sid for s in sessions)
-        delete_session(sid, directory="/test/project")
-        sessions = list_sessions(directory="/test/project")
+        delete_session(sid, directory=project_path)
+        sessions = list_sessions(directory=project_path)
         assert not any(s.session_id == sid for s in sessions)
 
 
@@ -590,24 +594,28 @@ class TestForkSession:
         with pytest.raises(ValueError, match="Invalid up_to_message_id"):
             fork_session(str(uuid.uuid4()), up_to_message_id="not-valid")
 
-    def test_fork_creates_new_session(self, claude_config_dir: Path):
+    def test_fork_creates_new_session(self, claude_config_dir: Path, tmp_path: Path):
         """Fork creates a new session file with a different session_id."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
         assert result.session_id != sid
 
         # New file exists
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
-    def test_fork_remaps_uuids(self, claude_config_dir: Path):
+    def test_fork_remaps_uuids(self, claude_config_dir: Path, tmp_path: Path):
         """uuid and parentUuid fields are remapped; originals only appear in forkedFrom."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, original_uuids = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
@@ -617,88 +625,102 @@ class TestForkSession:
                 if entry["parentUuid"] is not None:
                     assert entry["parentUuid"] not in original_uuids
 
-    def test_fork_preserves_message_count(self, claude_config_dir: Path):
+    def test_fork_preserves_message_count(self, claude_config_dir: Path, tmp_path: Path):
         """Fork has the same number of user/assistant messages."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir, num_turns=3)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
 
-        original_msgs = get_session_messages(sid, directory="/test/project")
-        fork_msgs = get_session_messages(result.session_id, directory="/test/project")
+        original_msgs = get_session_messages(sid, directory=project_path)
+        fork_msgs = get_session_messages(result.session_id, directory=project_path)
         # Fork has same visible messages + 1 custom-title entry (not visible)
         assert len(fork_msgs) == len(original_msgs)
 
-    def test_fork_up_to_message_id(self, claude_config_dir: Path):
+    def test_fork_up_to_message_id(self, claude_config_dir: Path, tmp_path: Path):
         """Fork slices at up_to_message_id (inclusive)."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, uuids = _make_transcript_session(project_dir, num_turns=3)
 
         # Fork up to the first assistant response (uuid index 1)
         cutoff_uuid = uuids[1]
         result = fork_session(
             sid,
-            directory="/test/project",
+            directory=project_path,
             up_to_message_id=cutoff_uuid,
         )
 
-        fork_msgs = get_session_messages(result.session_id, directory="/test/project")
+        fork_msgs = get_session_messages(result.session_id, directory=project_path)
         # Should have 2 messages (1 user + 1 assistant from first turn)
         assert len(fork_msgs) == 2
 
-    def test_fork_up_to_message_id_not_found_raises(self, claude_config_dir: Path):
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+    def test_fork_up_to_message_id_not_found_raises(self, claude_config_dir: Path, tmp_path: Path):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
         fake_uuid = str(uuid.uuid4())
         with pytest.raises(ValueError, match="not found in session"):
             fork_session(
                 sid,
-                directory="/test/project",
+                directory=project_path,
                 up_to_message_id=fake_uuid,
             )
 
-    def test_fork_custom_title(self, claude_config_dir: Path):
+    def test_fork_custom_title(self, claude_config_dir: Path, tmp_path: Path):
         """Custom title is used when provided."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project", title="My Fork")
+        result = fork_session(sid, directory=project_path, title="My Fork")
 
-        sessions = list_sessions(directory="/test/project")
+        sessions = list_sessions(directory=project_path)
         fork_info = next(s for s in sessions if s.session_id == result.session_id)
         assert fork_info.custom_title == "My Fork"
 
-    def test_fork_default_title_has_suffix(self, claude_config_dir: Path):
+    def test_fork_default_title_has_suffix(self, claude_config_dir: Path, tmp_path: Path):
         """Default fork title is derived from original + ' (fork)'."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
 
-        sessions = list_sessions(directory="/test/project")
+        sessions = list_sessions(directory=project_path)
         fork_info = next(s for s in sessions if s.session_id == result.session_id)
         assert fork_info.custom_title is not None
         assert fork_info.custom_title.endswith("(fork)")
 
-    def test_fork_session_id_in_entries(self, claude_config_dir: Path):
+    def test_fork_session_id_in_entries(self, claude_config_dir: Path, tmp_path: Path):
         """Every entry in the fork has the new session ID."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
             entry = json.loads(line)
             assert entry.get("sessionId") == result.session_id
 
-    def test_fork_forked_from_field(self, claude_config_dir: Path):
+    def test_fork_forked_from_field(self, claude_config_dir: Path, tmp_path: Path):
         """Transcript entries have a forkedFrom field pointing to the source."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
@@ -715,9 +737,11 @@ class TestForkSession:
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
-    def test_fork_clears_stale_fields(self, claude_config_dir: Path):
+    def test_fork_clears_stale_fields(self, claude_config_dir: Path, tmp_path: Path):
         """teamName, agentName, slug are removed from forked entries."""
-        project_dir = _make_project_dir(claude_config_dir, "/test/project")
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(claude_config_dir, os.path.realpath(project_path))
         sid = str(uuid.uuid4())
         file_path = project_dir / f"{sid}.jsonl"
         entry = {
@@ -733,7 +757,7 @@ class TestForkSession:
         }
         file_path.write_text(json.dumps(entry) + "\n")
 
-        result = fork_session(sid, directory="/test/project")
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):

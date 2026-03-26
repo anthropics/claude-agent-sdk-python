@@ -9,13 +9,19 @@ import logging
 from typing import Any
 
 import pytest
-from mcp.types import CallToolRequest, CallToolRequestParams
+from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ToolAnnotations,
     create_sdk_mcp_server,
     tool,
+)
+from claude_agent_sdk import (
+    _python_type_to_json_schema as python_type_to_json_schema,
+)
+from claude_agent_sdk import (
+    _typeddict_to_json_schema as typeddict_to_json_schema,
 )
 
 
@@ -638,3 +644,293 @@ async def test_jsonrpc_bridge_resource_link():
     assert result_content[0]["type"] == "text"
     assert "API Docs" in result_content[0]["text"]
     assert "https://api.example.com" in result_content[0]["text"]
+
+
+# --- Tests for _python_type_to_json_schema and TypedDict schema conversion ---
+
+
+class TestPythonTypeToJsonSchema:
+    """Tests for the _python_type_to_json_schema helper."""
+
+    def test_basic_str(self) -> None:
+        assert python_type_to_json_schema(str) == {"type": "string"}
+
+    def test_basic_int(self) -> None:
+        assert python_type_to_json_schema(int) == {"type": "integer"}
+
+    def test_basic_float(self) -> None:
+        assert python_type_to_json_schema(float) == {"type": "number"}
+
+    def test_basic_bool(self) -> None:
+        assert python_type_to_json_schema(bool) == {"type": "boolean"}
+
+    def test_bare_list(self) -> None:
+        assert python_type_to_json_schema(list) == {"type": "array"}
+
+    def test_bare_dict(self) -> None:
+        assert python_type_to_json_schema(dict) == {"type": "object"}
+
+    def test_parameterized_list(self) -> None:
+        assert python_type_to_json_schema(list[str]) == {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+
+    def test_parameterized_list_int(self) -> None:
+        assert python_type_to_json_schema(list[int]) == {
+            "type": "array",
+            "items": {"type": "integer"},
+        }
+
+    def test_parameterized_dict(self) -> None:
+        assert python_type_to_json_schema(dict[str, int]) == {"type": "object"}
+
+    def test_optional_str(self) -> None:
+        result = python_type_to_json_schema(str | None)
+        assert result == {"type": "string"}
+
+    def test_optional_int_union_syntax(self) -> None:
+        result = python_type_to_json_schema(int | None)
+        assert result == {"type": "integer"}
+
+    def test_multi_type_union(self) -> None:
+        result = python_type_to_json_schema(str | int)
+        assert result == {
+            "anyOf": [{"type": "string"}, {"type": "integer"}],
+        }
+
+    def test_multi_type_union_with_none(self) -> None:
+        result = python_type_to_json_schema(str | int | None)
+        assert result == {
+            "anyOf": [{"type": "string"}, {"type": "integer"}],
+        }
+
+    def test_unknown_type_defaults_to_string(self) -> None:
+        class Custom:
+            pass
+
+        assert python_type_to_json_schema(Custom) == {"type": "string"}
+
+    def test_nested_typeddict(self) -> None:
+        from typing import TypedDict
+
+        class Address(TypedDict):
+            street: str
+            city: str
+
+        result = python_type_to_json_schema(Address)
+        assert result["type"] == "object"
+        assert result["properties"]["street"] == {"type": "string"}
+        assert result["properties"]["city"] == {"type": "string"}
+        assert sorted(result["required"]) == ["city", "street"]
+
+
+class TestTypedDictToJsonSchema:
+    """Tests for the _typeddict_to_json_schema helper."""
+
+    def test_simple_typeddict(self) -> None:
+        from typing import TypedDict
+
+        class SearchParams(TypedDict):
+            query: str
+            max_results: int
+
+        result = typeddict_to_json_schema(SearchParams)
+        assert result == {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer"},
+            },
+            "required": ["max_results", "query"],
+        }
+
+    def test_typeddict_with_all_basic_types(self) -> None:
+        from typing import TypedDict
+
+        class AllTypes(TypedDict):
+            name: str
+            count: int
+            score: float
+            active: bool
+
+        result = typeddict_to_json_schema(AllTypes)
+        assert result["type"] == "object"
+        assert result["properties"]["name"] == {"type": "string"}
+        assert result["properties"]["count"] == {"type": "integer"}
+        assert result["properties"]["score"] == {"type": "number"}
+        assert result["properties"]["active"] == {"type": "boolean"}
+        assert sorted(result["required"]) == ["active", "count", "name", "score"]
+
+    def test_typeddict_with_optional_fields(self) -> None:
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired
+
+        class Config(TypedDict):
+            name: str
+            timeout: NotRequired[int]
+
+        result = typeddict_to_json_schema(Config)
+        assert result["type"] == "object"
+        assert result["properties"]["name"] == {"type": "string"}
+        assert result["properties"]["timeout"] == {"type": "integer"}
+        assert result["required"] == ["name"]
+
+    def test_typeddict_with_list_field(self) -> None:
+        from typing import TypedDict
+
+        class TaggedItem(TypedDict):
+            name: str
+            tags: list[str]
+
+        result = typeddict_to_json_schema(TaggedItem)
+        assert result["properties"]["tags"] == {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+
+    def test_nested_typeddict(self) -> None:
+        from typing import TypedDict
+
+        class Address(TypedDict):
+            street: str
+            city: str
+
+        class Person(TypedDict):
+            name: str
+            address: Address
+
+        result = typeddict_to_json_schema(Person)
+        assert result["type"] == "object"
+        assert result["properties"]["name"] == {"type": "string"}
+        address_schema = result["properties"]["address"]
+        assert address_schema["type"] == "object"
+        assert address_schema["properties"]["street"] == {"type": "string"}
+        assert address_schema["properties"]["city"] == {"type": "string"}
+
+    def test_typeddict_empty(self) -> None:
+        from typing import TypedDict
+
+        class Empty(TypedDict):
+            pass
+
+        result = typeddict_to_json_schema(Empty)
+        assert result == {
+            "type": "object",
+            "properties": {},
+        }
+
+
+class TestTypedDictMcpIntegration:
+    """Tests for TypedDict schemas flowing through create_sdk_mcp_server."""
+
+    @pytest.mark.asyncio
+    async def test_typeddict_tool_schema_in_list_tools(self) -> None:
+        from typing import TypedDict
+
+        class SearchParams(TypedDict):
+            query: str
+            max_results: int
+
+        @tool("search", "Search for items", SearchParams)
+        async def search(args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "content": [{"type": "text", "text": f"Results for {args['query']}"}]
+            }
+
+        server_config = create_sdk_mcp_server(name="typeddict-test", tools=[search])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        request = ListToolsRequest(method="tools/list")
+        response = await list_handler(request)
+
+        tools = response.root.tools
+        assert len(tools) == 1
+        schema = tools[0].inputSchema
+        assert schema["type"] == "object"
+        assert schema["properties"]["query"] == {"type": "string"}
+        assert schema["properties"]["max_results"] == {"type": "integer"}
+        assert sorted(schema["required"]) == ["max_results", "query"]
+
+    @pytest.mark.asyncio
+    async def test_typeddict_tool_call_works(self) -> None:
+        from typing import TypedDict
+
+        class MathParams(TypedDict):
+            a: float
+            b: float
+
+        @tool("multiply", "Multiply two numbers", MathParams)
+        async def multiply(args: dict[str, Any]) -> dict[str, Any]:
+            result = args["a"] * args["b"]
+            return {"content": [{"type": "text", "text": f"Product: {result}"}]}
+
+        server_config = create_sdk_mcp_server(
+            name="typeddict-call-test", tools=[multiply]
+        )
+        server = server_config["instance"]
+        call_handler = server.request_handlers[CallToolRequest]
+
+        request = CallToolRequest(
+            method="tools/call",
+            params=CallToolRequestParams(name="multiply", arguments={"a": 6, "b": 7}),
+        )
+        result = await call_handler(request)
+        assert "42" in result.root.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_dict_schema_still_works(self) -> None:
+        @tool("echo", "Echo input", {"message": str})
+        async def echo(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": args["message"]}]}
+
+        server_config = create_sdk_mcp_server(name="dict-schema-test", tools=[echo])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        request = ListToolsRequest(method="tools/list")
+        response = await list_handler(request)
+
+        schema = response.root.tools[0].inputSchema
+        assert schema["type"] == "object"
+        assert schema["properties"]["message"] == {"type": "string"}
+        assert schema["required"] == ["message"]
+
+    @pytest.mark.asyncio
+    async def test_json_schema_dict_passthrough(self) -> None:
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "age": {"type": "integer", "minimum": 0},
+            },
+            "required": ["name"],
+        }
+
+        @tool("validate", "Validate input", json_schema)
+        async def validate(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "OK"}]}
+
+        server_config = create_sdk_mcp_server(name="passthrough-test", tools=[validate])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        request = ListToolsRequest(method="tools/list")
+        response = await list_handler(request)
+
+        schema = response.root.tools[0].inputSchema
+        assert schema == json_schema
+
+    @pytest.mark.asyncio
+    async def test_cached_tool_list_is_stable(self) -> None:
+        @tool("cached", "Test caching", {"x": str})
+        async def cached(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": args["x"]}]}
+
+        server_config = create_sdk_mcp_server(name="cache-test", tools=[cached])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        request = ListToolsRequest(method="tools/list")
+
+        response1 = await list_handler(request)
+        response2 = await list_handler(request)
+        assert response1.root.tools == response2.root.tools

@@ -752,22 +752,37 @@ class SandboxSettings(TypedDict, total=False):
 
 
 # Content block types
-@dataclass
+
+
+def _truncate(text: str, max_length: int = 80) -> str:
+    """Truncate text for repr display."""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
+
+
+@dataclass(repr=False)
 class TextBlock:
     """Text content block."""
 
     text: str
 
+    def __repr__(self) -> str:
+        return f"TextBlock(text={_truncate(self.text)!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class ThinkingBlock:
     """Thinking content block."""
 
     thinking: str
     signature: str
 
+    def __repr__(self) -> str:
+        return f"ThinkingBlock(thinking={_truncate(self.thinking)!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class ToolUseBlock:
     """Tool use content block."""
 
@@ -775,14 +790,28 @@ class ToolUseBlock:
     name: str
     input: dict[str, Any]
 
+    def __repr__(self) -> str:
+        return f"ToolUseBlock(id={self.id!r}, name={self.name!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class ToolResultBlock:
     """Tool result content block."""
 
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+
+    def __repr__(self) -> str:
+        parts = [f"tool_use_id={self.tool_use_id!r}"]
+        if self.content is not None:
+            if isinstance(self.content, str):
+                parts.append(f"content={_truncate(self.content)!r}")
+            else:
+                parts.append(f"content={self.content!r}")
+        if self.is_error:
+            parts.append("is_error=True")
+        return f"ToolResultBlock({', '.join(parts)})"
 
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
@@ -799,7 +828,7 @@ AssistantMessageError = Literal[
 ]
 
 
-@dataclass
+@dataclass(repr=False)
 class UserMessage:
     """User message."""
 
@@ -808,8 +837,13 @@ class UserMessage:
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
 
+    def __repr__(self) -> str:
+        if isinstance(self.content, str):
+            return f"UserMessage(content={_truncate(self.content)!r})"
+        return f"UserMessage(content={self.content!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class AssistantMessage:
     """Assistant message with content blocks."""
 
@@ -823,13 +857,22 @@ class AssistantMessage:
     session_id: str | None = None
     uuid: str | None = None
 
+    def __repr__(self) -> str:
+        parts = [f"model={self.model!r}", f"content={self.content!r}"]
+        if self.error is not None:
+            parts.append(f"error={self.error!r}")
+        return f"AssistantMessage({', '.join(parts)})"
 
-@dataclass
+
+@dataclass(repr=False)
 class SystemMessage:
     """System message with metadata."""
 
     subtype: str
     data: dict[str, Any]
+
+    def __repr__(self) -> str:
+        return f"SystemMessage(subtype={self.subtype!r})"
 
 
 class TaskUsage(TypedDict):
@@ -844,7 +887,7 @@ class TaskUsage(TypedDict):
 TaskNotificationStatus = Literal["completed", "failed", "stopped"]
 
 
-@dataclass
+@dataclass(repr=False)
 class TaskStartedMessage(SystemMessage):
     """System message emitted when a task starts.
 
@@ -860,8 +903,11 @@ class TaskStartedMessage(SystemMessage):
     tool_use_id: str | None = None
     task_type: str | None = None
 
+    def __repr__(self) -> str:
+        return f"TaskStartedMessage(task_id={self.task_id!r}, description={_truncate(self.description)!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class TaskProgressMessage(SystemMessage):
     """System message emitted while a task is in progress.
 
@@ -878,8 +924,11 @@ class TaskProgressMessage(SystemMessage):
     tool_use_id: str | None = None
     last_tool_name: str | None = None
 
+    def __repr__(self) -> str:
+        return f"TaskProgressMessage(task_id={self.task_id!r}, description={_truncate(self.description)!r})"
 
-@dataclass
+
+@dataclass(repr=False)
 class TaskNotificationMessage(SystemMessage):
     """System message emitted when a task completes, fails, or is stopped.
 
@@ -897,8 +946,13 @@ class TaskNotificationMessage(SystemMessage):
     tool_use_id: str | None = None
     usage: TaskUsage | None = None
 
+    def __repr__(self) -> str:
+        return (
+            f"TaskNotificationMessage(task_id={self.task_id!r}, status={self.status!r})"
+        )
 
-@dataclass
+
+@dataclass(repr=False)
 class ResultMessage:
     """Result message with cost and usage information."""
 
@@ -917,8 +971,18 @@ class ResultMessage:
     permission_denials: list[Any] | None = None
     uuid: str | None = None
 
+    def __repr__(self) -> str:
+        parts = [f"num_turns={self.num_turns}"]
+        if self.is_error:
+            parts.append("is_error=True")
+        if self.total_cost_usd is not None:
+            parts.append(f"total_cost_usd={self.total_cost_usd}")
+        if self.stop_reason is not None:
+            parts.append(f"stop_reason={self.stop_reason!r}")
+        return f"ResultMessage({', '.join(parts)})"
 
-@dataclass
+
+@dataclass(repr=False)
 class StreamEvent:
     """Stream event for partial message updates during streaming."""
 
@@ -926,6 +990,9 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+
+    def __repr__(self) -> str:
+        return f"StreamEvent(session_id={self.session_id!r})"
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
@@ -935,7 +1002,7 @@ RateLimitType = Literal[
 ]
 
 
-@dataclass
+@dataclass(repr=False)
 class RateLimitInfo:
     """Rate limit status emitted by the CLI when rate limit state changes.
 
@@ -960,8 +1027,16 @@ class RateLimitInfo:
     overage_disabled_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        parts = [f"status={self.status!r}"]
+        if self.utilization is not None:
+            parts.append(f"utilization={self.utilization}")
+        if self.rate_limit_type is not None:
+            parts.append(f"rate_limit_type={self.rate_limit_type!r}")
+        return f"RateLimitInfo({', '.join(parts)})"
 
-@dataclass
+
+@dataclass(repr=False)
 class RateLimitEvent:
     """Rate limit event emitted when rate limit info changes.
 
@@ -973,6 +1048,9 @@ class RateLimitEvent:
     rate_limit_info: RateLimitInfo
     uuid: str
     session_id: str
+
+    def __repr__(self) -> str:
+        return f"RateLimitEvent(status={self.rate_limit_info.status!r})"
 
 
 Message = (

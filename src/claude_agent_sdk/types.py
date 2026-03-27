@@ -915,6 +915,7 @@ class ResultMessage:
     structured_output: Any = None
     model_usage: dict[str, Any] | None = None
     permission_denials: list[Any] | None = None
+    errors: list[str] | None = None
     uuid: str | None = None
 
 

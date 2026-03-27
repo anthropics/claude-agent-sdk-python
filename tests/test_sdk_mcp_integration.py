@@ -763,9 +763,12 @@ class TestTypedDictToJsonSchema:
         assert sorted(result["required"]) == ["active", "count", "name", "score"]
 
     def test_typeddict_with_optional_fields(self) -> None:
-        from typing import TypedDict
+        import sys
 
-        from typing_extensions import NotRequired
+        if sys.version_info >= (3, 11):
+            from typing import NotRequired, TypedDict
+        else:
+            from typing_extensions import NotRequired, TypedDict
 
         class Config(TypedDict):
             name: str

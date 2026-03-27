@@ -109,6 +109,7 @@ class Query:
         ](max_buffer_size=100)
         self._read_task: asyncio.Task[None] | None = None
         self._child_tasks: set[asyncio.Task[Any]] = set()
+        self._inflight_requests: dict[str, asyncio.Task[Any]] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -204,12 +205,27 @@ class Query:
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
                     if not self._closed:
-                        self.spawn_task(self._handle_control_request(request))
+                        req_id = request["request_id"]
+                        loop = asyncio.get_running_loop()
+                        task = loop.create_task(self._handle_control_request(request))
+                        self._child_tasks.add(task)
+                        self._inflight_requests[req_id] = task
+                        task.add_done_callback(self._child_tasks.discard)
+
+                        def _cleanup_inflight(
+                            _t: asyncio.Task[Any], rid: str = req_id
+                        ) -> None:
+                            self._inflight_requests.pop(rid, None)
+
+                        task.add_done_callback(_cleanup_inflight)
                     continue
 
                 elif msg_type == "control_cancel_request":
-                    # Handle cancel requests
-                    # TODO: Implement cancellation support
+                    cancel_id = message.get("request_id")
+                    if cancel_id:
+                        inflight = self._inflight_requests.pop(cancel_id, None)
+                        if inflight:
+                            inflight.cancel()
                     continue
 
                 # Track results for proper stream closure
@@ -338,6 +354,10 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
+        except asyncio.CancelledError:
+            # Request was cancelled via control_cancel_request; the CLI has
+            # already abandoned this request, so don't write a response.
+            raise
         except Exception as e:
             # Send error response
             error_response: SDKControlResponse = {

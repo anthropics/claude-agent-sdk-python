@@ -545,3 +545,134 @@ class TestQueryCrossTaskCleanup:
             mock_transport.close.assert_called_once()
 
         anyio.run(_test)
+
+
+class TestControlCancelRequest:
+    """Tests for control_cancel_request handling (issue #739).
+
+    When the CLI sends a control_cancel_request, the SDK should cancel the
+    matching in-flight _handle_control_request task so it stops executing and
+    does not write a response for a request the CLI has already abandoned.
+    """
+
+    def test_cancel_request_cancels_inflight_hook(self):
+        """A control_cancel_request should cancel the matching hook task."""
+        import asyncio
+
+        hook_started = asyncio.Event()
+        hook_cancelled = asyncio.Event()
+
+        async def slow_hook(input_data, tool_use_id, context):
+            hook_started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                hook_cancelled.set()
+                raise
+            return {}
+
+        async def _test():
+            mock_transport = AsyncMock()
+            emitted: list[dict] = []
+
+            async def mock_receive():
+                yield {
+                    "type": "control_request",
+                    "request_id": "hook_1",
+                    "request": {
+                        "subtype": "hook_callback",
+                        "callback_id": "hook_0",
+                    },
+                }
+                await hook_started.wait()
+                yield {
+                    "type": "control_cancel_request",
+                    "request_id": "hook_1",
+                }
+                await hook_cancelled.wait()
+
+            async def mock_write(data):
+                emitted.append(json.loads(data))
+
+            mock_transport.read_messages = mock_receive
+            mock_transport.write = mock_write
+            mock_transport.close = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            q.hook_callbacks["hook_0"] = slow_hook
+
+            await q.start()
+            await asyncio.wait_for(hook_cancelled.wait(), timeout=5)
+            await q.close()
+
+            assert hook_cancelled.is_set()
+            assert "hook_1" not in q._inflight_requests
+            responses = [m for m in emitted if m.get("type") == "control_response"]
+            assert responses == [], (
+                f"Cancelled request should not write a response, got: {responses}"
+            )
+
+        asyncio.run(_test())
+
+    def test_cancel_request_for_unknown_id_is_noop(self):
+        """A control_cancel_request for an unknown request_id should not raise."""
+        import asyncio
+
+        async def _test():
+            mock_transport = _make_mock_transport(
+                messages=[
+                    {
+                        "type": "control_cancel_request",
+                        "request_id": "nonexistent",
+                    },
+                ]
+                + _ASSISTANT_AND_RESULT
+            )
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+            messages = []
+            async for msg in q.receive_messages():
+                messages.append(msg)
+            await q.close()
+
+            assert any(m.get("type") == "result" for m in messages)
+
+        asyncio.run(_test())
+
+    def test_completed_request_is_removed_from_inflight(self):
+        """Once a control_request handler completes, it should be removed from
+        _inflight_requests so a late cancel is a no-op."""
+        import asyncio
+
+        async def fast_hook(input_data, tool_use_id, context):
+            return {}
+
+        async def _test():
+            mock_transport = _make_mock_transport(
+                messages=_ASSISTANT_AND_RESULT,
+                control_requests=[
+                    {
+                        "type": "control_request",
+                        "request_id": "fast_1",
+                        "request": {
+                            "subtype": "hook_callback",
+                            "callback_id": "hook_0",
+                        },
+                    }
+                ],
+            )
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            q.hook_callbacks["hook_0"] = fast_hook
+
+            await q.start()
+            async for msg in q.receive_messages():
+                if msg.get("type") == "result":
+                    break
+            await asyncio.sleep(0)
+            await q.close()
+
+            assert "fast_1" not in q._inflight_requests
+
+        asyncio.run(_test())

@@ -154,7 +154,7 @@ jobs:
         run: |
           python examples/quick_start.py
           $job = Start-Job { python examples/streaming_mode.py all }
-          Wait-Job $job -Timeout 120 | Out-Null
+          Wait-Job $job -Timeout 180 | Out-Null
           Stop-Job $job
           Receive-Job $job
 

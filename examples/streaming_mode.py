@@ -429,9 +429,9 @@ async def example_error_handling():
         await client.connect()
 
         # Send a message that will take time to process
-        print("User: Run a bash sleep command for 5 seconds not in the background")
+        print("User: Run a bash sleep command for 15 seconds not in the background")
         await client.query(
-            "Run a bash sleep command for 5 seconds not in the background"
+            "Run a bash sleep command for 15 seconds not in the background"
         )
 
         # Try to receive response with a short timeout

@@ -825,4 +825,53 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.model_usage is None
         assert message.permission_denials is None
+        assert message.errors is None
         assert message.uuid is None
+
+    def test_parse_result_message_with_errors(self):
+        """Test that ResultMessage preserves the errors field from error results.
+
+        The CLI emits errors: string[] on error result messages (subtypes like
+        error_during_execution, error_max_turns, etc.). Without this field,
+        SDK users cannot diagnose why a non-zero exit occurred.
+        """
+        data = {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "duration_ms": 5000,
+            "duration_api_ms": 3000,
+            "is_error": True,
+            "num_turns": 3,
+            "session_id": "session_456",
+            "errors": [
+                "Tool execution failed: permission denied",
+                "Unable to write to /etc/hosts",
+            ],
+            "uuid": "err-uuid-789",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors == [
+            "Tool execution failed: permission denied",
+            "Unable to write to /etc/hosts",
+        ]
+        assert message.is_error is True
+        assert message.subtype == "error_during_execution"
+        assert message.uuid == "err-uuid-789"
+
+    def test_parse_result_message_success_no_errors(self):
+        """Test that a successful result message has no errors field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_789",
+            "result": "Task completed successfully",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors is None
+        assert message.result == "Task completed successfully"

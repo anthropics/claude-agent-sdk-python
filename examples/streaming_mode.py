@@ -434,15 +434,15 @@ async def example_error_handling():
         await client.connect()
 
         # Send a message that will take time to process
-        print("User: Run a bash sleep command for 15 seconds not in the background")
+        print("User: Run a bash sleep command for 5 seconds not in the background")
         await client.query(
-            "Run a bash sleep command for 15 seconds not in the background"
+            "Run a bash sleep command for 5 seconds not in the background"
         )
 
         # Try to receive response with a short timeout
         try:
             messages = []
-            async with asyncio.timeout(10.0):
+            async with asyncio.timeout(3.0):
                 async for msg in client.receive_response():
                     messages.append(msg)
                     if isinstance(msg, AssistantMessage):
@@ -455,7 +455,7 @@ async def example_error_handling():
 
         except asyncio.TimeoutError:
             print(
-                "\nResponse timeout after 10 seconds - demonstrating graceful handling"
+                "\nResponse timeout after 3 seconds - demonstrating graceful handling"
             )
             print(f"Received {len(messages)} messages before timeout")
 

@@ -282,13 +282,18 @@ async def example_async_iterable_prompt():
         # Send async iterable of messages
         await client.query(create_message_stream())
 
-        # Receive the three responses
-        async for msg in client.receive_response():
-            display_message(msg)
-        async for msg in client.receive_response():
-            display_message(msg)
-        async for msg in client.receive_response():
-            display_message(msg)
+        # Collect responses — the CLI may group multiple user messages into
+        # fewer ResultMessages, so we cannot assume a 1:1 mapping.  We call
+        # receive_response() in a loop with a short timeout so we drain all
+        # available results without hanging if fewer results arrive than
+        # messages were sent.
+        while True:
+            try:
+                async with asyncio.timeout(30.0):
+                    async for msg in client.receive_response():
+                        display_message(msg)
+            except (asyncio.TimeoutError, StopAsyncIteration):
+                break
 
     print("\n")
 

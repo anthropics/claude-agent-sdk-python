@@ -259,6 +259,8 @@ class Query:
                     signal=None,  # TODO: Add abort signal support
                     suggestions=permission_request.get("permission_suggestions", [])
                     or [],
+                    tool_use_id=permission_request.get("tool_use_id"),
+                    agent_id=permission_request.get("agent_id"),
                 )
 
                 response = await self.can_use_tool(

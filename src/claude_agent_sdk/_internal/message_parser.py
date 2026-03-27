@@ -209,6 +209,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     structured_output=data.get("structured_output"),
                     model_usage=data.get("modelUsage"),
                     permission_denials=data.get("permission_denials"),
+                    errors=data.get("errors"),
                     uuid=data.get("uuid"),
                 )
             except KeyError as e:

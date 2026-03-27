@@ -143,7 +143,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python examples/quick_start.py
-          timeout 120 python examples/streaming_mode.py all
+          timeout 180 python examples/streaming_mode.py all
           timeout 120 python examples/hooks.py PreToolUse
           timeout 120 python examples/hooks.py DecisionFields
 

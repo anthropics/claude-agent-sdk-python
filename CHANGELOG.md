@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.51
+
+### New Features
+
+- **Session management**: Added `fork_session()`, `delete_session()`, and offset-based pagination for session listing (#744)
+- **Task budget**: Added `task_budget` option for token budget management (#747)
+- **SystemPromptFile**: Added support for `--system-prompt-file` CLI flag via `SystemPromptFile` (#591)
+- **AgentDefinition fields**: Added `disallowedTools`, `maxTurns`, and `initialPrompt` to `AgentDefinition` (#759)
+- **Preserved fields**: Preserve dropped fields on `AssistantMessage` and `ResultMessage` for forward compatibility (#718)
+
+### Bug Fixes
+
+- **Python 3.10 compatibility**: Use `typing_extensions.TypedDict` on Python 3.10 for `NotRequired` support (#761)
+- **ResultMessage errors field**: Added missing `errors` field to `ResultMessage` (#749)
+- **Async generator cleanup**: Resolved cross-task cancel scope `RuntimeError` on async generator cleanup (#746)
+- **MCP tool input_schema**: Convert `TypedDict` input_schema to proper JSON Schema in SDK MCP tools (#736)
+- **initialize_timeout**: Pass `initialize_timeout` from env var in `query()` (#743)
+- **Async event loop blocking**: Defer CLI discovery to `connect()` to avoid blocking async event loops (#722)
+- **Permission mode**: Added missing `dontAsk` permission mode to types (#719)
+- **Environment filtering**: Filter `CLAUDECODE` env var from subprocess environment (#732)
+- **Process cleanup**: Added `SIGKILL` fallback when `SIGTERM` handler blocks in `close()` (#729)
+- **Duplicate warning**: Removed duplicate version warning and included CLI path (#720)
+- **MCP resource types**: Handle `resource_link` and embedded resource content types in SDK MCP tools (#725)
+- **Stdin timeout**: Removed stdin timeout for hooks and SDK MCP servers (#731)
+- **Stdout parsing**: Skip non-JSON lines on CLI stdout to prevent buffer corruption (#723)
+- **MCP error propagation**: Propagate `is_error` flag from SDK MCP tool results (#717)
+- **Install script**: Retry `install.sh` fetch on 429 with pipefail + jitter (#708)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.85
+
 ## 0.1.50
 
 ### New Features

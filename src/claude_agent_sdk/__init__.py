@@ -1,15 +1,20 @@
 """Claude SDK for Python."""
 
 import logging
+import sys
 import types as builtin_types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, Union, get_type_hints, is_typeddict
+from typing import Any, Generic, TypeVar, Union
 
-try:
+if sys.version_info >= (3, 11):
+    from typing import get_type_hints as _get_type_hints
+    from typing import is_typeddict
+else:
+    # On 3.10, stdlib is_typeddict doesn't recognize typing_extensions.TypedDict
+    # subclasses, and stdlib get_type_hints doesn't strip NotRequired markers.
     from typing_extensions import get_type_hints as _get_type_hints
-except ImportError:
-    _get_type_hints = get_type_hints
+    from typing_extensions import is_typeddict
 
 from mcp.types import ToolAnnotations
 

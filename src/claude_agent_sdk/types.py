@@ -4,9 +4,15 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal
 
-from typing_extensions import NotRequired
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired, so
+    # __required_keys__ would include NotRequired fields. typing_extensions
+    # backports the correct behavior.
+    from typing_extensions import NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer

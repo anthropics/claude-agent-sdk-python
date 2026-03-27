@@ -67,11 +67,15 @@ class AgentDefinition:
     description: str
     prompt: str
     tools: list[str] | None = None
-    model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    disallowedTools: list[str] | None = None  # noqa: N815
+    # Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
+    model: str | None = None
     skills: list[str] | None = None
     memory: Literal["user", "project", "local"] | None = None
     # Each entry is a server name (str) or an inline {name: config} dict.
     mcpServers: list[str | dict[str, Any]] | None = None  # noqa: N815
+    initialPrompt: str | None = None  # noqa: N815
+    maxTurns: int | None = None  # noqa: N815
 
 
 # Permission Update types (matching TypeScript SDK)

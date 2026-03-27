@@ -207,8 +207,8 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
     """Convert a Python type annotation to a JSON Schema dict."""
     origin = get_origin(py_type)
 
-    # NotRequired/Required survive include_extras=True; unwrap them
-    if getattr(origin, "_name", None) in ("NotRequired", "Required"):
+    # NotRequired/Required/ReadOnly survive include_extras=True; unwrap them
+    if getattr(origin, "_name", None) in ("NotRequired", "Required", "ReadOnly"):
         return _python_type_to_json_schema(get_args(py_type)[0])
 
     if origin is Annotated:

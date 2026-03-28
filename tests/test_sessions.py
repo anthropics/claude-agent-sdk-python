@@ -1109,6 +1109,57 @@ class TestBuildConversationChain:
         result = _build_conversation_chain(entries)
         assert result == []
 
+    def test_parallel_tool_calls_includes_siblings(self):
+        """Parallel tool results sharing the same parentUuid are all included."""
+        entries = [
+            {"type": "user", "uuid": "U1", "parentUuid": None},
+            {"type": "assistant", "uuid": "A1", "parentUuid": "U1"},
+            {"type": "user", "uuid": "U2", "parentUuid": "A1"},  # tool_result 1
+            {"type": "user", "uuid": "U3", "parentUuid": "A1"},  # tool_result 2
+            {"type": "assistant", "uuid": "A2", "parentUuid": "U3"},
+        ]
+        result = _build_conversation_chain(entries)
+        uuids = [e["uuid"] for e in result]
+        assert uuids == ["U1", "A1", "U2", "U3", "A2"]
+
+    def test_parallel_tool_calls_three_siblings(self):
+        """Three parallel tool results are all included in file order."""
+        entries = [
+            {"type": "user", "uuid": "U1", "parentUuid": None},
+            {"type": "assistant", "uuid": "A1", "parentUuid": "U1"},
+            {"type": "user", "uuid": "U2", "parentUuid": "A1"},  # tool_result 1
+            {"type": "user", "uuid": "U3", "parentUuid": "A1"},  # tool_result 2
+            {"type": "user", "uuid": "U4", "parentUuid": "A1"},  # tool_result 3
+            {"type": "assistant", "uuid": "A2", "parentUuid": "U4"},
+        ]
+        result = _build_conversation_chain(entries)
+        uuids = [e["uuid"] for e in result]
+        assert uuids == ["U1", "A1", "U2", "U3", "U4", "A2"]
+
+    def test_parallel_siblings_excludes_sidechain(self):
+        """Sidechain siblings should not be pulled into the main chain."""
+        entries = [
+            {"type": "user", "uuid": "U1", "parentUuid": None},
+            {"type": "assistant", "uuid": "A1", "parentUuid": "U1"},
+            {"type": "user", "uuid": "U2", "parentUuid": "A1", "isSidechain": True},
+            {"type": "user", "uuid": "U3", "parentUuid": "A1"},
+            {"type": "assistant", "uuid": "A2", "parentUuid": "U3"},
+        ]
+        result = _build_conversation_chain(entries)
+        uuids = [e["uuid"] for e in result]
+        assert uuids == ["U1", "A1", "U3", "A2"]
+
+    def test_linear_chain_unchanged_with_sibling_fix(self):
+        """Linear chains (no parallel calls) produce identical results."""
+        entries = [
+            {"type": "user", "uuid": "a", "parentUuid": None},
+            {"type": "assistant", "uuid": "b", "parentUuid": "a"},
+            {"type": "user", "uuid": "c", "parentUuid": "b"},
+            {"type": "assistant", "uuid": "d", "parentUuid": "c"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == ["a", "b", "c", "d"]
+
 
 class TestSessionMessageType:
     """Tests for the SessionMessage dataclass."""

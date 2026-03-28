@@ -983,7 +983,40 @@ def _build_conversation_chain(
         chain_cur = by_uuid.get(parent) if parent else None
 
     chain.reverse()
-    return chain
+
+    # Parallel tool calls produce multiple user messages (tool results) that
+    # share the same parentUuid.  The linear walk above follows only one path
+    # from leaf to root, so sibling tool-result messages are missed.  This
+    # pass finds and inserts those missing siblings in file order.
+    children_by_parent: dict[str, list[_TranscriptEntry]] = {}
+    for entry in entries:
+        p = entry.get("parentUuid")
+        if p:
+            children_by_parent.setdefault(p, []).append(entry)
+
+    chain_uuids: set[str] = {e["uuid"] for e in chain}
+
+    expanded: list[_TranscriptEntry] = []
+    for entry in chain:
+        p = entry.get("parentUuid")
+        if p:
+            for sib in children_by_parent.get(p, []):
+                sib_uuid = sib["uuid"]
+                # Only include user-type siblings (parallel tool results).
+                # Assistant-type siblings represent conversation branches
+                # (e.g., retries) and should not be merged.
+                if (
+                    sib_uuid not in chain_uuids
+                    and sib.get("type") == "user"
+                    and not sib.get("isSidechain")
+                    and not sib.get("teamName")
+                    and not sib.get("isMeta")
+                ):
+                    chain_uuids.add(sib_uuid)
+                    expanded.append(sib)
+        expanded.append(entry)
+
+    return expanded
 
 
 def _is_visible_message(entry: _TranscriptEntry) -> bool:

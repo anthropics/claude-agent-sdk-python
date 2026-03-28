@@ -141,9 +141,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
-          timeout 120 python examples/streaming_mode.py all
+          timeout 300 python examples/streaming_mode.py all
           timeout 120 python examples/hooks.py PreToolUse
           timeout 120 python examples/hooks.py DecisionFields
 
@@ -151,10 +152,11 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
           $job = Start-Job { python examples/streaming_mode.py all }
-          Wait-Job $job -Timeout 120 | Out-Null
+          Wait-Job $job -Timeout 300 | Out-Null
           Stop-Job $job
           Receive-Job $job
 

@@ -710,6 +710,14 @@ class Query:
                 await self._read_task
         self._read_task = None
         await self.transport.close()
+        # Clean up resources to prevent memory leaks in long-running applications
+        self.hook_callbacks.clear()
+        self.pending_control_responses.clear()
+        self.pending_control_results.clear()
+        with suppress(Exception):
+            await self._message_send.aclose()
+        with suppress(Exception):
+            await self._message_receive.aclose()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

@@ -169,12 +169,24 @@ class Query:
             loop = asyncio.get_running_loop()
             self._read_task = loop.create_task(self._read_messages())
 
-    def spawn_task(self, coro: Any) -> None:
+    def spawn_task(self, coro: Any) -> asyncio.Task[Any]:
         """Spawn a child task that will be cancelled on close()."""
         loop = asyncio.get_running_loop()
         task = loop.create_task(coro)
         self._child_tasks.add(task)
         task.add_done_callback(self._child_tasks.discard)
+        return task
+
+    def _spawn_control_request_handler(self, request: SDKControlRequest) -> None:
+        """Spawn a control request handler and track it for cancellation."""
+        req_id = request["request_id"]
+        task = self.spawn_task(self._handle_control_request(request))
+        self._inflight_requests[req_id] = task
+
+        def _done(_t: asyncio.Task[Any]) -> None:
+            self._inflight_requests.pop(req_id, None)
+
+        task.add_done_callback(_done)
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
@@ -205,19 +217,7 @@ class Query:
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
                     if not self._closed:
-                        req_id = request["request_id"]
-                        loop = asyncio.get_running_loop()
-                        task = loop.create_task(self._handle_control_request(request))
-                        self._child_tasks.add(task)
-                        self._inflight_requests[req_id] = task
-                        task.add_done_callback(self._child_tasks.discard)
-
-                        def _cleanup_inflight(
-                            _t: asyncio.Task[Any], rid: str = req_id
-                        ) -> None:
-                            self._inflight_requests.pop(rid, None)
-
-                        task.add_done_callback(_cleanup_inflight)
+                        self._spawn_control_request_handler(request)
                     continue
 
                 elif msg_type == "control_cancel_request":

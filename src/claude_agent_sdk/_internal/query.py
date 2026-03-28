@@ -576,6 +576,10 @@ class Query:
         """Get current MCP server connection status."""
         return await self._send_control_request({"subtype": "mcp_status"})
 
+    async def get_context_usage(self) -> dict[str, Any]:
+        """Get a breakdown of current context window usage by category."""
+        return await self._send_control_request({"subtype": "get_context_usage"})
+
     async def interrupt(self) -> None:
         """Send interrupt control request."""
         await self._send_control_request({"subtype": "interrupt"})

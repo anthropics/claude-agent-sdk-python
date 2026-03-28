@@ -679,6 +679,80 @@ class McpStatusResponse(TypedDict):
     mcpServers: list[McpServerStatus]
 
 
+class ContextUsageCategory(TypedDict):
+    """A single context usage category (system prompt, tools, messages, etc.)."""
+
+    name: str
+    tokens: int
+    color: str
+    isDeferred: NotRequired[bool]
+
+
+class ContextUsageResponse(TypedDict):
+    """Response from `ClaudeSDKClient.get_context_usage()`.
+
+    Provides a breakdown of current context window usage by category,
+    matching the data shown by the `/context` command in the CLI.
+    """
+
+    categories: list[ContextUsageCategory]
+    """Token usage broken down by category (system prompt, tools, messages, etc.)."""
+
+    totalTokens: int
+    """Total tokens currently in the context window."""
+
+    maxTokens: int
+    """Effective maximum tokens (may be reduced by autocompact buffer)."""
+
+    rawMaxTokens: int
+    """Raw model context window size."""
+
+    percentage: float
+    """Percentage of context window used (0-100)."""
+
+    model: str
+    """Model name the context usage is calculated for."""
+
+    isAutoCompactEnabled: bool
+    """Whether autocompact is enabled for this session."""
+
+    memoryFiles: list[dict[str, Any]]
+    """CLAUDE.md and memory files loaded, with path, type, and token counts."""
+
+    mcpTools: list[dict[str, Any]]
+    """MCP tools with name, serverName, tokens, and isLoaded status."""
+
+    agents: list[dict[str, Any]]
+    """Agent definitions with agentType, source, and token counts."""
+
+    gridRows: list[list[dict[str, Any]]]
+    """Visual grid representation used by the CLI context display."""
+
+    autoCompactThreshold: NotRequired[int]
+    """Token threshold at which autocompact triggers."""
+
+    deferredBuiltinTools: NotRequired[list[dict[str, Any]]]
+    """Built-in tools deferred from the initial tool list."""
+
+    systemTools: NotRequired[list[dict[str, Any]]]
+    """System (built-in) tools with name and token counts."""
+
+    systemPromptSections: NotRequired[list[dict[str, Any]]]
+    """System prompt sections with name and token counts."""
+
+    slashCommands: NotRequired[dict[str, Any]]
+    """Slash command usage summary."""
+
+    skills: NotRequired[dict[str, Any]]
+    """Skill usage summary with frontmatter breakdown."""
+
+    messageBreakdown: NotRequired[dict[str, Any]]
+    """Detailed breakdown of message tokens by type (tool calls, results, etc.)."""
+
+    apiUsage: NotRequired[dict[str, Any] | None]
+    """Cumulative API usage for the session."""
+
+
 class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 

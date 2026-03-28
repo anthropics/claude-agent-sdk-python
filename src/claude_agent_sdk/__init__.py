@@ -44,6 +44,8 @@ from .types import (
     CanUseTool,
     ClaudeAgentOptions,
     ContentBlock,
+    ContextUsageCategory,
+    ContextUsageResponse,
     HookCallback,
     HookContext,
     HookInput,
@@ -515,6 +517,8 @@ __all__ = [
     "ToolUseBlock",
     "ToolResultBlock",
     "ContentBlock",
+    "ContextUsageCategory",
+    "ContextUsageResponse",
     # Tool callbacks
     "CanUseTool",
     "ToolPermissionContext",

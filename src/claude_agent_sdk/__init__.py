@@ -5,7 +5,7 @@ import sys
 import types as builtin_types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, Union
+from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
 
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
@@ -151,6 +151,8 @@ def tool(
             - A dictionary mapping parameter names to types (e.g., {"text": str})
             - A TypedDict class for more complex schemas
             - A JSON Schema dictionary for full validation
+            Use ``Annotated[type, "description"]`` to add a description to a
+            parameter in either dict-style or TypedDict schemas.
 
     Returns:
         A decorator function that wraps the tool implementation and returns
@@ -198,6 +200,21 @@ def tool(
 
 def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
     """Convert a Python type annotation to a JSON Schema dict."""
+    origin = get_origin(py_type)
+
+    # NotRequired/Required/ReadOnly survive include_extras=True; unwrap them
+    if getattr(origin, "_name", None) in ("NotRequired", "Required", "ReadOnly"):
+        return _python_type_to_json_schema(get_args(py_type)[0])
+
+    if origin is Annotated:
+        args = get_args(py_type)
+        schema = _python_type_to_json_schema(args[0])
+        for meta in args[1:]:
+            if isinstance(meta, str):
+                schema["description"] = meta
+                break
+        return schema
+
     if py_type is str:
         return {"type": "string"}
     if py_type is int:
@@ -237,7 +254,7 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
 
 def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     """Convert a TypedDict class to a JSON Schema dict."""
-    hints = _get_type_hints(td_class, include_extras=False)
+    hints = _get_type_hints(td_class, include_extras=True)
 
     properties: dict[str, Any] = {}
     for field_name, field_type in hints.items():

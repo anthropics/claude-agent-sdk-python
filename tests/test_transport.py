@@ -268,6 +268,28 @@ class TestSubprocessCLITransport:
         assert "--resume" in cmd
         assert "session-123" in cmd
 
+    def test_session_id(self):
+        """Test custom session ID option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(session_id="550e8400-e29b-41d4-a716-446655440000"),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" in cmd
+        idx = cmd.index("--session-id")
+        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_session_id_not_set_by_default(self):
+        """Test that --session-id is not passed when session_id is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" not in cmd
+
     def test_connect_close(self):
         """Test connect and close lifecycle."""
 

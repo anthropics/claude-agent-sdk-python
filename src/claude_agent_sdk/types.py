@@ -1088,6 +1088,7 @@ class ClaudeAgentOptions:
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False
     resume: str | None = None
+    session_id: str | None = None
     max_turns: int | None = None
     max_budget_usd: float | None = None
     disallowed_tools: list[str] = field(default_factory=list)

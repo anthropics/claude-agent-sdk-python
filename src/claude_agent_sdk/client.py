@@ -107,7 +107,9 @@ class ClaudeSDKClient:
             return
             yield {}  # type: ignore[unreachable]
 
-        actual_prompt = _empty_stream() if prompt is None else prompt
+        # String prompts are sent via transport.write() below, so the transport
+        # only needs an AsyncIterable (or an empty stream for None/str cases).
+        actual_prompt = prompt if isinstance(prompt, AsyncIterable) else _empty_stream()
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:

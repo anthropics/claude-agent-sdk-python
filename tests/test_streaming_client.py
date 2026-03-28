@@ -203,7 +203,7 @@ class TestClaudeSDKClientStreaming:
         anyio.run(_test)
 
     def test_connect_with_string_prompt(self):
-        """Test connecting with a string prompt."""
+        """Test connecting with a string prompt writes it as a user message."""
 
         async def _test():
             with patch(
@@ -215,9 +215,17 @@ class TestClaudeSDKClientStreaming:
                 client = ClaudeSDKClient()
                 await client.connect("Hello Claude")
 
-                # Verify transport was created with string prompt
-                call_kwargs = mock_transport_class.call_args.kwargs
-                assert call_kwargs["prompt"] == "Hello Claude"
+                # Verify the string prompt was written as a user message to stdin.
+                # Previously the string was stored but never sent, causing
+                # receive_messages() to hang indefinitely (#766).
+                user_messages = [
+                    json.loads(call.args[0].strip())
+                    for call in mock_transport.write.call_args_list
+                    if '"type": "user"' in call.args[0]
+                ]
+                assert len(user_messages) == 1
+                assert user_messages[0]["message"]["content"] == "Hello Claude"
+                assert user_messages[0]["session_id"] == "default"
 
         anyio.run(_test)
 

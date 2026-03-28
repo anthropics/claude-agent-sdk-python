@@ -16,6 +16,7 @@ import anyio
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ProcessError,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -676,3 +677,64 @@ class TestControlCancelRequest:
             assert "fast_1" not in q._inflight_requests
 
         asyncio.run(_test())
+
+
+class TestInitializeErrorPropagation:
+    """Test initialize error propagation for process exit cases."""
+
+    def test_initialize_uses_error_during_execution_result_text(self):
+        """When CLI exits after error_during_execution, propagate real error text."""
+
+        async def _test():
+            control_request_received = anyio.Event()
+
+            class FailingInitializeTransport:
+                async def connect(self):
+                    return None
+
+                async def close(self):
+                    return None
+
+                async def end_input(self):
+                    return None
+
+                def is_ready(self) -> bool:
+                    return True
+
+                async def write(self, data: str):
+                    payload = json.loads(data)
+                    if payload.get("type") == "control_request":
+                        control_request_received.set()
+
+                async def read_messages(self):
+                    await control_request_received.wait()
+                    yield {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "duration_ms": 1,
+                        "duration_api_ms": 0,
+                        "is_error": True,
+                        "num_turns": 0,
+                        "session_id": "session_123",
+                        "result": "No conversation found with session ID ab2c985b",
+                    }
+                    raise ProcessError(
+                        "Command failed with exit code 1",
+                        exit_code=1,
+                        stderr="Check stderr output for details",
+                    )
+
+            transport = FailingInitializeTransport()
+
+            caught: Exception | None = None
+            try:
+                async for _msg in query(prompt="Hello", transport=transport):
+                    pass
+            except Exception as e:
+                caught = e
+
+            assert caught is not None
+            assert "No conversation found with session ID ab2c985b" in str(caught)
+            assert "Check stderr output for details" not in str(caught)
+
+        anyio.run(_test)

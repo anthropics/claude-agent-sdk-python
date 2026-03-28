@@ -855,9 +855,13 @@ class TestTypedDictToJsonSchema:
         assert sorted(result["required"]) == ["limit", "query", "verbose"]
 
     def test_typeddict_annotated_with_notrequired(self) -> None:
-        from typing import Annotated, TypedDict
+        import sys
+        from typing import Annotated
 
-        from typing_extensions import NotRequired
+        if sys.version_info >= (3, 11):
+            from typing import NotRequired, TypedDict
+        else:
+            from typing_extensions import NotRequired, TypedDict
 
         class Config(TypedDict):
             name: Annotated[str, "Config name"]

@@ -15,6 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ClaudeSDKError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -253,7 +254,7 @@ class Query:
                 original_input = permission_request["input"]
                 # Handle tool permission request
                 if not self.can_use_tool:
-                    raise Exception("canUseTool callback is not provided")
+                    raise ClaudeSDKError("canUseTool callback is not provided")
 
                 context = ToolPermissionContext(
                     signal=None,  # TODO: Add abort signal support
@@ -297,7 +298,9 @@ class Query:
                 callback_id = hook_callback_request["callback_id"]
                 callback = self.hook_callbacks.get(callback_id)
                 if not callback:
-                    raise Exception(f"No hook callback found for ID: {callback_id}")
+                    raise ClaudeSDKError(
+                        f"No hook callback found for ID: {callback_id}"
+                    )
 
                 hook_output = await callback(
                     request_data.get("input"),
@@ -313,7 +316,9 @@ class Query:
                 mcp_message = request_data.get("message")
 
                 if not server_name or not mcp_message:
-                    raise Exception("Missing server_name or message for MCP request")
+                    raise ClaudeSDKError(
+                        "Missing server_name or message for MCP request"
+                    )
 
                 # Type narrowing - we've verified these are not None above
                 assert isinstance(server_name, str)
@@ -325,7 +330,7 @@ class Query:
                 response_data = {"mcp_response": mcp_response}
 
             else:
-                raise Exception(f"Unsupported control request subtype: {subtype}")
+                raise ClaudeSDKError(f"Unsupported control request subtype: {subtype}")
 
             # Send success response
             success_response: SDKControlResponse = {
@@ -360,7 +365,7 @@ class Query:
             timeout: Timeout in seconds to wait for response (default 60s)
         """
         if not self.is_streaming_mode:
-            raise Exception("Control requests require streaming mode")
+            raise ClaudeSDKError("Control requests require streaming mode")
 
         # Generate unique request ID
         self._request_counter += 1
@@ -395,7 +400,9 @@ class Query:
         except TimeoutError as e:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+            raise ClaudeSDKError(
+                f"Control request timeout: {request.get('subtype')}"
+            ) from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]
@@ -695,7 +702,7 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
-                raise Exception(message.get("error", "Unknown error"))
+                raise ClaudeSDKError(message.get("error", "Unknown error"))
 
             yield message
 

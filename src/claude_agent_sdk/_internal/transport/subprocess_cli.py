@@ -312,7 +312,7 @@ class SubprocessCLITransport(Transport):
             elif t["type"] == "enabled":
                 resolved_max_thinking_tokens = t["budget_tokens"]
             elif t["type"] == "disabled":
-                resolved_max_thinking_tokens = 0
+                cmd.append("--thinking-disabled")
         if resolved_max_thinking_tokens is not None:
             cmd.extend(["--max-thinking-tokens", str(resolved_max_thinking_tokens)])
 

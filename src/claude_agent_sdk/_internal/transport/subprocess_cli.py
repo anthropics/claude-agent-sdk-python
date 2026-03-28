@@ -51,6 +51,7 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_buffer: list[str] = []
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -372,14 +373,9 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
-            should_pipe_stderr = (
-                self._options.stderr is not None
-                or "debug-to-stderr" in self._options.extra_args
-            )
-
-            # For backward compat: use debug_stderr file object if no callback and debug is on
-            stderr_dest = PIPE if should_pipe_stderr else None
+            # Always pipe stderr so we can capture it for error reporting.
+            # User callbacks and debug mode are still honored in _handle_stderr().
+            stderr_dest = PIPE
 
             self._process = await anyio.open_process(
                 cmd,
@@ -394,8 +390,8 @@ class SubprocessCLITransport(Transport):
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
-            # Setup stderr stream if piped
-            if should_pipe_stderr and self._process.stderr:
+            # Setup stderr stream (always piped for error capture)
+            if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
                 # Start async task to read stderr
                 self._stderr_task_group = anyio.create_task_group()
@@ -425,7 +421,7 @@ class SubprocessCLITransport(Transport):
             raise error from e
 
     async def _handle_stderr(self) -> None:
-        """Handle stderr stream - read and invoke callbacks."""
+        """Handle stderr stream - read, buffer, and invoke callbacks."""
         if not self._stderr_stream:
             return
 
@@ -434,6 +430,9 @@ class SubprocessCLITransport(Transport):
                 line_str = line.rstrip()
                 if not line_str:
                     continue
+
+                # Always capture stderr for error reporting
+                self._stderr_buffer.append(line_str)
 
                 # Call the stderr callback if provided
                 if self._options.stderr:
@@ -504,6 +503,7 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream = None
         self._stdin_stream = None
         self._stderr_stream = None
+        self._stderr_buffer = []
         self._exit_error = None
 
     async def write(self, data: str) -> None:
@@ -614,10 +614,11 @@ class SubprocessCLITransport(Transport):
 
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            captured_stderr = "\n".join(self._stderr_buffer) if self._stderr_buffer else None
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=captured_stderr,
             )
             raise self._exit_error
 

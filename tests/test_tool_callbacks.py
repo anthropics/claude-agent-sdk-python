@@ -173,6 +173,83 @@ class TestToolPermissionCallbacks:
         assert '"safe_mode": true' in response
 
     @pytest.mark.asyncio
+    async def test_permission_callback_receives_tool_use_id(self):
+        """Test that tool_use_id and agent_id are passed through to the context."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-toolid",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01ABC123",
+                "agent_id": "agent-456",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.tool_use_id == "toolu_01ABC123"
+        assert received_context.agent_id == "agent-456"
+
+    @pytest.mark.asyncio
+    async def test_permission_callback_missing_agent_id(self):
+        """Test that agent_id defaults to None when not sent (top-level agent)."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-noagent",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01XYZ789",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.tool_use_id == "toolu_01XYZ789"
+        assert received_context.agent_id is None
+
+    @pytest.mark.asyncio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 

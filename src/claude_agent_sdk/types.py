@@ -164,6 +164,11 @@ class ToolPermissionContext:
     suggestions: list[PermissionUpdate] = field(
         default_factory=list
     )  # Permission suggestions from CLI
+    tool_use_id: str | None = None
+    """Unique identifier for this specific tool call within the assistant message.
+    Multiple tool calls in the same assistant message will have different tool_use_ids."""
+    agent_id: str | None = None
+    """If running within the context of a sub-agent, the sub-agent's ID."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -1166,6 +1171,8 @@ class SDKControlPermissionRequest(TypedDict):
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None
+    tool_use_id: str
+    agent_id: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):

@@ -1,6 +1,7 @@
 """Claude SDK Client for interacting with Claude Code."""
 
 import json
+import math
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
@@ -18,6 +19,29 @@ from .types import (
     PermissionMode,
     ResultMessage,
 )
+
+
+def _parse_timeout_ms_from_env(
+    env_var: str, default_timeout_ms: float = 60000.0
+) -> float:
+    """Parse timeout milliseconds from environment, falling back safely.
+
+    Accepts integer or float-like strings. Invalid or non-finite values return
+    the provided default.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return default_timeout_ms
+
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return default_timeout_ms
+
+    if not math.isfinite(parsed):
+        return default_timeout_ms
+
+    return parsed
 
 
 class ClaudeSDKClient:
@@ -152,8 +176,8 @@ class ClaudeSDKClient:
 
         # Calculate initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT env var if set
         # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is in milliseconds, convert to seconds
-        initialize_timeout_ms = int(
-            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
+        initialize_timeout_ms = _parse_timeout_ms_from_env(
+            "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 

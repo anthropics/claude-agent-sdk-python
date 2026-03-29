@@ -551,6 +551,48 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_experimental_agent_teams_flag_injected_for_agents(self):
+        """Test that CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is injected when agents are configured."""
+
+        async def _test():
+            # Configure with agents
+            options = make_options(agents={"test_agent": {"description": "A test agent"}})
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Verify the flag is injected when agents are provided
+                assert "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" in env_passed
+                assert env_passed["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
+
+        anyio.run(_test)
+
     def test_caller_can_override_entrypoint(self):
         """Test that a caller-supplied CLAUDE_CODE_ENTRYPOINT survives the env merge."""
 

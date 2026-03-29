@@ -369,6 +369,11 @@ class SubprocessCLITransport(Transport):
             if self._options.enable_file_checkpointing:
                 process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
 
+            # Enable experimental agent teams if agents are configured, so that the
+            # SendMessage tool is available to the model for resuming subagents.
+            if self._options.agents:
+                process_env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+
             if self._cwd:
                 process_env["PWD"] = self._cwd
 

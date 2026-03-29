@@ -106,7 +106,7 @@
 ### New Features
 
 - **Session history functions**: Added `list_sessions()` and `get_session_messages()` top-level functions for retrieving past session data (#622)
-- **MCP control methods**: Added `add_mcp_server()`, `remove_mcp_server()`, and typed `McpServerStatus` for runtime MCP server management (#620)
+- **MCP control methods**: Added `reconnect_mcp_server()`, `toggle_mcp_server()`, `stop_task()`, and typed `McpStatusResponse` / `McpServerStatus` for runtime MCP server management (#620)
 - **Typed task messages**: Added `TaskStarted`, `TaskProgress`, and `TaskNotification` message subclasses for better type safety when handling task-related events (#621)
 - **ResultMessage stop_reason**: Added `stop_reason` field to `ResultMessage` for inspecting why a conversation turn ended (#619)
 - **Hook input enhancements**: Added `agent_id` and `agent_type` fields to tool-lifecycle hook inputs (`PreToolUseHookInput`, `PostToolUseHookInput`, `PostToolUseFailureHookInput`) (#628)

@@ -1,30 +1,15 @@
 #!/usr/bin/env python
-"""session_monitor.py — behavioral consistency monitoring using existing SDK hooks.
+"""session_monitor.py — behavioral consistency monitoring for long SDK sessions.
 
-Demonstrates how to use the claude-agent-sdk-python hooks surface (PostToolUse,
-PreToolUse, SessionStart) to build a lightweight behavioral fingerprint that
-detects drift across long sessions.
+This example stays on the public SDK surface:
 
-Works with the current SDK surface today. The patterns here also motivate the
-OnCompaction + OnContextThreshold hooks proposed in Issue #772, which would allow
-earlier interception rather than inferring boundaries from token count changes.
+- `HookMatcher`-based `PreToolUse` / `PostToolUse` callbacks
+- `ClaudeSDKClient.query()` + `receive_response()` for turns
+- `ClaudeSDKClient.get_context_usage()` for context-window telemetry
 
-Usage:
-    python examples/session_monitor.py
-
-What it shows:
-  - Tracking tool call distribution across turns via PostToolUse
-  - Detecting token-count drops between turns (heuristic compaction boundary)
-  - Capturing a pre-session vocabulary baseline via SessionStart
-  - Computing behavioral drift score: did the agent's output profile change?
-  - Logging compaction-boundary events for downstream analysis
-
-Context:
-    Long-running agents hit context limits, triggering compaction/summarization.
-    After compaction, the agent may lose task-specific vocabulary, shift its tool
-    call mix, or change its response style — behavioral drift that is invisible to
-    the user and often undetected by the agent itself. This example shows how to
-    measure it using the hooks the SDK already has.
+Together, those are enough to build a lightweight monitor for long-running
+sessions where context compaction or summarization may silently change the
+agent's behavior.
 
 Reference: https://github.com/anthropics/claude-agent-sdk-python/issues/772
 """
@@ -34,57 +19,43 @@ import json
 import math
 import re
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 from claude_agent_sdk.types import (
     AssistantMessage,
     HookContext,
-    HookInput,
     HookJSONOutput,
-    Message,
+    PostToolUseHookInput,
+    PreToolUseHookInput,
     ResultMessage,
     TextBlock,
-    ToolUseBlock,
 )
 
 
-# ---------------------------------------------------------------------------
-# Behavioral snapshot — what the agent looks like at one point in time
-# ---------------------------------------------------------------------------
-
 @dataclass
 class BehavioralSnapshot:
+    """What the agent looks like at one point in the session."""
+
     turn: int
     tokens: int
     timestamp: float
     tool_counts: Counter = field(default_factory=Counter)
-    output_tokens: list[int] = field(default_factory=list)
     vocabulary: set[str] = field(default_factory=set)
 
 
-# ---------------------------------------------------------------------------
-# Session monitor — accumulates snapshots, detects compaction, scores drift
-# ---------------------------------------------------------------------------
-
 class SessionMonitor:
-    """
-    Monitors behavioral consistency across a claude-agent-sdk session.
-
-    Connects to the SDK via hook callbacks. Each hook updates an internal
-    snapshot. After each turn, compute_drift() compares the current snapshot
-    to the baseline and flags anomalies.
-    """
+    """Track vocabulary and tool-use drift across a Claude SDK session."""
 
     def __init__(
         self,
-        compaction_drop_ratio: float = 0.20,   # token count drops > 20% → suspect compaction
-        drift_threshold: float = 0.30,          # CCS below 0.70 → drift alert
+        compaction_drop_ratio: float = 0.20,
+        drift_threshold: float = 0.30,
         log_path: Optional[Path] = None,
-    ):
+    ) -> None:
         self.compaction_drop_ratio = compaction_drop_ratio
         self.drift_threshold = drift_threshold
         self.log_path = log_path
@@ -92,56 +63,44 @@ class SessionMonitor:
         self._baseline: Optional[BehavioralSnapshot] = None
         self._current: Optional[BehavioralSnapshot] = None
         self._turn = 0
-        self._compaction_events: list[dict] = []
+        self._compaction_events: list[dict[str, Any]] = []
         self._drift_scores: list[float] = []
         self._pending_tool_counts: Counter = Counter()
         self._pending_vocabulary: set[str] = set()
 
-    # -----------------------------------------------------------------------
-    # Hook callbacks — wire these into ClaudeAgentOptions.hooks
-    # -----------------------------------------------------------------------
-
-    async def on_session_start(
-        self, input_data: HookInput, tool_use_id: Optional[str], context: HookContext
-    ) -> HookJSONOutput:
-        """Capture the session's initial state as a baseline."""
-        self._baseline = BehavioralSnapshot(turn=0, tokens=0, timestamp=time.time())
-        self._current = BehavioralSnapshot(turn=0, tokens=0, timestamp=time.time())
-        return {}
-
     async def on_pre_tool_use(
-        self, input_data: HookInput, tool_use_id: Optional[str], context: HookContext
+        self,
+        input_data: PreToolUseHookInput,
+        tool_use_id: Optional[str],
+        context: HookContext,
     ) -> HookJSONOutput:
-        """Record each tool call before it executes."""
-        tool_name = input_data.get("tool_name", "unknown")
-        self._pending_tool_counts[tool_name] += 1
+        """Record each tool call before execution."""
+
+        del tool_use_id, context
+        self._pending_tool_counts[input_data["tool_name"]] += 1
         return {}
 
     async def on_post_tool_use(
-        self, input_data: HookInput, tool_use_id: Optional[str], context: HookContext
+        self,
+        input_data: PostToolUseHookInput,
+        tool_use_id: Optional[str],
+        context: HookContext,
     ) -> HookJSONOutput:
-        """Record tool output vocabulary — useful for detecting forgotten context."""
+        """Capture vocabulary emitted by tool results."""
+
+        del tool_use_id, context
         tool_response = str(input_data.get("tool_response", ""))
         words = set(re.findall(r"\b[a-zA-Z_]\w{3,}\b", tool_response.lower()))
         self._pending_vocabulary.update(words)
         return {}
 
-    # -----------------------------------------------------------------------
-    # Call this after each agent turn with the turn's AssistantMessage tokens
-    # -----------------------------------------------------------------------
+    def record_turn(self, message_text: str, total_tokens: int) -> Optional[dict[str, Any]]:
+        """Record a completed turn and return any detected event."""
 
-    def record_turn(self, message_text: str, total_tokens: int) -> Optional[dict]:
-        """
-        Record a completed turn and check for compaction boundary + behavioral drift.
-
-        Returns a dict describing any detected event (compaction or drift), or None.
-        """
         self._turn += 1
         words = set(re.findall(r"\b[a-zA-Z_]\w{3,}\b", message_text.lower()))
-
         prev_tokens = self._current.tokens if self._current else 0
 
-        # Update current snapshot
         self._current = BehavioralSnapshot(
             turn=self._turn,
             tokens=total_tokens,
@@ -150,11 +109,22 @@ class SessionMonitor:
             vocabulary=words | self._pending_vocabulary,
         )
 
-        # Reset accumulators
         self._pending_tool_counts.clear()
         self._pending_vocabulary.clear()
 
-        # Detect compaction boundary: token count drops significantly
+        if self._baseline is None and total_tokens > 0:
+            self._baseline = BehavioralSnapshot(
+                turn=self._turn,
+                tokens=total_tokens,
+                timestamp=self._current.timestamp,
+                tool_counts=Counter(self._current.tool_counts),
+                vocabulary=set(self._current.vocabulary),
+            )
+            return None
+
+        if self._baseline is None:
+            return None
+
         compaction_detected = False
         if prev_tokens > 0 and total_tokens < prev_tokens * (1 - self.compaction_drop_ratio):
             compaction_detected = True
@@ -169,170 +139,167 @@ class SessionMonitor:
             self._compaction_events.append(event)
             self._log(event)
 
-            # Re-baseline after compaction
-            if self._baseline and self._baseline.tokens == 0:
-                self._baseline = self._current
-            
-        # Seed baseline from first real turn
-        if self._baseline and self._baseline.tokens == 0 and total_tokens > 0:
-            self._baseline = BehavioralSnapshot(
-                turn=self._turn,
-                tokens=total_tokens,
-                timestamp=self._current.timestamp,
-                tool_counts=Counter(self._current.tool_counts),
-                vocabulary=set(self._current.vocabulary),
-            )
-            return None  # Nothing to compare yet
-
-        if not self._baseline or self._baseline.tokens == 0:
-            return None
-
-        # Compute behavioral drift score (Context Consistency Score)
         ccs = self._compute_ccs()
         self._drift_scores.append(ccs)
 
-        result = None
         if ccs < (1.0 - self.drift_threshold) or compaction_detected:
-            result = {
-                "event": "behavioral_drift" if not compaction_detected else "post_compaction_drift",
+            event = {
+                "event": "post_compaction_drift" if compaction_detected else "behavioral_drift",
                 "turn": self._turn,
                 "ccs": round(ccs, 3),
                 "compaction_at_this_turn": compaction_detected,
-                "ghost_terms": list(self._ghost_terms()),
+                "ghost_terms": self._ghost_terms(),
                 "tool_shift": self._tool_shift_summary(),
             }
-            self._log(result)
+            self._log(event)
+            return event
 
-        return result
-
-    # -----------------------------------------------------------------------
-    # Scoring helpers
-    # -----------------------------------------------------------------------
+        return None
 
     def _compute_ccs(self) -> float:
-        """
-        Context Consistency Score: [0, 1] where 1.0 = no behavioral change.
+        """Context Consistency Score: 1.0 means no behavioral change."""
 
-        Combines:
-          - Vocabulary overlap: Jaccard similarity vs baseline
-          - Tool distribution shift: Jensen-Shannon divergence (inverted)
-        """
-        vocab_score = self._vocab_overlap()
-        tool_score = self._tool_consistency()
-        return 0.6 * vocab_score + 0.4 * tool_score
+        return 0.6 * self._vocab_overlap() + 0.4 * self._tool_consistency()
 
     def _vocab_overlap(self) -> float:
-        if not self._baseline.vocabulary or not self._current.vocabulary:
+        if not self._baseline or not self._baseline.vocabulary or not self._current:
+            return 1.0
+        if not self._current.vocabulary:
             return 1.0
         intersection = self._baseline.vocabulary & self._current.vocabulary
         union = self._baseline.vocabulary | self._current.vocabulary
         return len(intersection) / len(union) if union else 1.0
 
     def _ghost_terms(self) -> list[str]:
-        """Terms present at baseline but absent from recent output — 'forgotten' vocabulary."""
         if not self._baseline or not self._current:
             return []
         return sorted(self._baseline.vocabulary - self._current.vocabulary)[:20]
 
     def _tool_consistency(self) -> float:
-        """Jensen-Shannon divergence inverted: 1.0 = identical tool distribution."""
+        if not self._baseline or not self._current:
+            return 1.0
         if not self._baseline.tool_counts or not self._current.tool_counts:
             return 1.0
+
         all_tools = set(self._baseline.tool_counts) | set(self._current.tool_counts)
-        base_total = sum(self._baseline.tool_counts.values()) or 1
-        curr_total = sum(self._current.tool_counts.values()) or 1
-        p = {t: self._baseline.tool_counts.get(t, 0) / base_total for t in all_tools}
-        q = {t: self._current.tool_counts.get(t, 0) / curr_total for t in all_tools}
-        m = {t: 0.5 * (p[t] + q[t]) for t in all_tools}
+        baseline_total = sum(self._baseline.tool_counts.values()) or 1
+        current_total = sum(self._current.tool_counts.values()) or 1
+        baseline_distribution = {
+            tool: self._baseline.tool_counts.get(tool, 0) / baseline_total
+            for tool in all_tools
+        }
+        current_distribution = {
+            tool: self._current.tool_counts.get(tool, 0) / current_total
+            for tool in all_tools
+        }
+        midpoint = {
+            tool: 0.5 * (baseline_distribution[tool] + current_distribution[tool])
+            for tool in all_tools
+        }
 
-        def kl(a, b):
-            return sum(a[t] * math.log(a[t] / b[t] + 1e-10) for t in all_tools if a[t] > 0)
+        def kl_divergence(lhs: dict[str, float], rhs: dict[str, float]) -> float:
+            return sum(
+                lhs[tool] * math.log(lhs[tool] / rhs[tool] + 1e-10)
+                for tool in all_tools
+                if lhs[tool] > 0
+            )
 
-        jsd = 0.5 * kl(p, m) + 0.5 * kl(q, m)
+        jsd = 0.5 * kl_divergence(baseline_distribution, midpoint) + 0.5 * kl_divergence(
+            current_distribution, midpoint
+        )
         return max(0.0, 1.0 - jsd)
 
-    def _tool_shift_summary(self) -> dict:
+    def _tool_shift_summary(self) -> dict[str, dict[str, int]]:
         if not self._baseline or not self._current:
             return {}
         all_tools = set(self._baseline.tool_counts) | set(self._current.tool_counts)
         return {
-            t: {
-                "baseline": self._baseline.tool_counts.get(t, 0),
-                "current": self._current.tool_counts.get(t, 0),
+            tool: {
+                "baseline": self._baseline.tool_counts.get(tool, 0),
+                "current": self._current.tool_counts.get(tool, 0),
             }
-            for t in all_tools
+            for tool in all_tools
         }
 
-    def summary(self) -> dict:
+    def summary(self) -> dict[str, Any]:
         return {
             "turns": self._turn,
             "compaction_events": len(self._compaction_events),
             "avg_ccs": round(sum(self._drift_scores) / len(self._drift_scores), 3)
-            if self._drift_scores else None,
+            if self._drift_scores
+            else None,
             "min_ccs": round(min(self._drift_scores), 3) if self._drift_scores else None,
             "compaction_detail": self._compaction_events,
         }
 
-    def _log(self, event: dict) -> None:
+    def _log(self, event: dict[str, Any]) -> None:
         if self.log_path:
-            with open(self.log_path, "a") as f:
-                f.write(json.dumps(event) + "\n")
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event) + "\n")
         else:
             print(f"[session_monitor] {json.dumps(event)}")
 
 
-# ---------------------------------------------------------------------------
-# Demo: run a short session and monitor behavioral consistency
-# ---------------------------------------------------------------------------
+async def run_monitored_turn(
+    client: ClaudeSDKClient,
+    monitor: SessionMonitor,
+    prompt: str,
+) -> Optional[dict[str, Any]]:
+    """Run one SDK turn, then score it using public message + usage APIs."""
 
-async def main():
+    await client.query(prompt)
+
+    text_parts: list[str] = []
+    async for message in client.receive_response():
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    text_parts.append(block.text)
+        elif isinstance(message, ResultMessage) and message.is_error:
+            raise RuntimeError(message.result or "Claude SDK turn failed")
+
+    usage = await client.get_context_usage()
+    total_tokens = int(usage.get("totalTokens", 0))
+    return monitor.record_turn(" ".join(text_parts), total_tokens)
+
+
+async def main() -> None:
     monitor = SessionMonitor(
         compaction_drop_ratio=0.20,
         drift_threshold=0.30,
-        log_path=None,  # set to Path("session_monitor.jsonl") to persist
+        log_path=None,
     )
 
     options = ClaudeAgentOptions(
+        allowed_tools=["Bash"],
         hooks={
-            "SessionStart": [monitor.on_session_start],
-            "PreToolUse": [monitor.on_pre_tool_use],
-            "PostToolUse": [monitor.on_post_tool_use],
-        }
+            "PreToolUse": [
+                HookMatcher(matcher="Bash", hooks=[monitor.on_pre_tool_use]),
+            ],
+            "PostToolUse": [
+                HookMatcher(matcher="Bash", hooks=[monitor.on_post_tool_use]),
+            ],
+        },
     )
 
+    prompts = [
+        "Use Bash to print 'jwt bcrypt redis', then explain how those terms fit together in a web auth stack.",
+        "Use Bash to print 'id,name\\n1,Ada', then explain how pandas would load this CSV.",
+        "Use Bash to print '[0 1 2]', then explain numpy arrays in one short paragraph.",
+    ]
+
     async with ClaudeSDKClient(options=options) as client:
-        # Example: run a short multi-turn session
-        prompts = [
-            "What Python libraries are good for data analysis?",
-            "How do I read a CSV with pandas?",
-            "Now forget everything about pandas. Tell me about numpy arrays.",
-        ]
-
-        total_tokens = 0
-
-        async for message in client.process_query(
-            "\n\n".join(prompts),
-            options=options,
-        ):
-            text = ""
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text += block.text
-            elif isinstance(message, ResultMessage):
-                # ResultMessage carries cumulative token usage
-                total_tokens = getattr(message, "usage", {}).get("output_tokens", total_tokens)
-
-            if text:
-                event = monitor.record_turn(text, total_tokens)
-                if event:
-                    print(f"\n⚠  Behavioral event: {json.dumps(event, indent=2)}")
+        for prompt in prompts:
+            event = await run_monitored_turn(client, monitor, prompt)
+            if event:
+                print(f"\n[session_monitor] Behavioral event: {json.dumps(event, indent=2)}")
 
     print("\n=== Session summary ===")
     print(json.dumps(monitor.summary(), indent=2))
     print()
-    print("Note: OnCompaction + OnContextThreshold hooks (Issue #772) would allow")
-    print("exact compaction-boundary capture instead of the token-drop heuristic above.")
+    print("Note: native OnCompaction / OnContextThreshold hooks would still be better.")
+    print("This sample shows the closest monitor you can build today with public hooks")
+    print("plus get_context_usage() as the compaction-boundary heuristic.")
 
 
 if __name__ == "__main__":

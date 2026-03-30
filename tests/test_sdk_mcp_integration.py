@@ -724,6 +724,47 @@ class TestPythonTypeToJsonSchema:
         assert result["properties"]["city"] == {"type": "string"}
         assert sorted(result["required"]) == ["city", "street"]
 
+    def test_annotated_with_description(self) -> None:
+        from typing import Annotated
+
+        result = python_type_to_json_schema(Annotated[str, "The search query"])
+        assert result == {"type": "string", "description": "The search query"}
+
+    def test_annotated_list_with_description(self) -> None:
+        from typing import Annotated
+
+        result = python_type_to_json_schema(Annotated[list[int], "List of IDs"])
+        assert result == {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "List of IDs",
+        }
+
+    def test_annotated_without_string_metadata(self) -> None:
+        from typing import Annotated
+
+        result = python_type_to_json_schema(Annotated[int, 42])
+        assert result == {"type": "integer"}
+
+    def test_annotated_in_dict_style_schema(self) -> None:
+        from typing import Annotated
+
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
+        @tool(
+            "search",
+            "Search for items",
+            {
+                "query": Annotated[str, "The search query"],
+                "limit": Annotated[int, "Max results to return"],
+            },
+        )
+        async def search(args: dict) -> dict:
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        server = create_sdk_mcp_server("test", tools=[search])
+        assert server["type"] == "sdk"
+
 
 class TestTypedDictToJsonSchema:
     """Tests for the _typeddict_to_json_schema helper."""
@@ -792,6 +833,50 @@ class TestTypedDictToJsonSchema:
             "type": "array",
             "items": {"type": "string"},
         }
+
+    def test_typeddict_with_annotated_descriptions(self) -> None:
+        from typing import Annotated, TypedDict
+
+        class SearchParams(TypedDict):
+            query: Annotated[str, "The search query"]
+            limit: Annotated[int, "Max results to return"]
+            verbose: bool
+
+        result = typeddict_to_json_schema(SearchParams)
+        assert result["properties"]["query"] == {
+            "type": "string",
+            "description": "The search query",
+        }
+        assert result["properties"]["limit"] == {
+            "type": "integer",
+            "description": "Max results to return",
+        }
+        assert result["properties"]["verbose"] == {"type": "boolean"}
+        assert sorted(result["required"]) == ["limit", "query", "verbose"]
+
+    def test_typeddict_annotated_with_notrequired(self) -> None:
+        import sys
+        from typing import Annotated
+
+        if sys.version_info >= (3, 11):
+            from typing import NotRequired, TypedDict
+        else:
+            from typing_extensions import NotRequired, TypedDict
+
+        class Config(TypedDict):
+            name: Annotated[str, "Config name"]
+            timeout: NotRequired[Annotated[int, "Timeout in seconds"]]
+
+        result = typeddict_to_json_schema(Config)
+        assert result["properties"]["name"] == {
+            "type": "string",
+            "description": "Config name",
+        }
+        assert result["properties"]["timeout"] == {
+            "type": "integer",
+            "description": "Timeout in seconds",
+        }
+        assert result["required"] == ["name"]
 
     def test_nested_typeddict(self) -> None:
         from typing import TypedDict

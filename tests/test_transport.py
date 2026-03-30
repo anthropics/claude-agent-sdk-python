@@ -268,6 +268,28 @@ class TestSubprocessCLITransport:
         assert "--resume" in cmd
         assert "session-123" in cmd
 
+    def test_session_id(self):
+        """Test custom session ID option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(session_id="550e8400-e29b-41d4-a716-446655440000"),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" in cmd
+        idx = cmd.index("--session-id")
+        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_session_id_not_set_by_default(self):
+        """Test that --session-id is not passed when session_id is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" not in cmd
+
     def test_connect_close(self):
         """Test connect and close lifecycle."""
 
@@ -366,6 +388,35 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--settings" in cmd
         assert settings_json in cmd
+
+    def test_build_command_setting_sources_omitted_when_not_provided(self):
+        """Test that --setting-sources is omitted when setting_sources is not provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" not in cmd
+
+    def test_build_command_setting_sources_omitted_when_empty(self):
+        """Test that --setting-sources is omitted when setting_sources is empty list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=[]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" not in cmd
+
+    def test_build_command_setting_sources_included_when_provided(self):
+        """Test that --setting-sources is included when setting_sources has values."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=["user", "project"]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" in cmd
+        idx = cmd.index("--setting-sources")
+        assert cmd[idx + 1] == "user,project"
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""

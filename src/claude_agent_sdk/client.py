@@ -11,6 +11,7 @@ from . import Transport
 from ._errors import CLIConnectionError
 from .types import (
     ClaudeAgentOptions,
+    ContextUsageResponse,
     HookEvent,
     HookMatcher,
     McpStatusResponse,
@@ -131,7 +132,9 @@ class ClaudeSDKClient:
             return
             yield {}  # type: ignore[unreachable]
 
-        actual_prompt = _empty_stream() if prompt is None else prompt
+        # String prompts are sent via transport.write() below, so the transport
+        # only needs an AsyncIterable (or an empty stream for None/str cases).
+        actual_prompt = prompt if isinstance(prompt, AsyncIterable) else _empty_stream()
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:
@@ -203,8 +206,16 @@ class ClaudeSDKClient:
         await self._query.start()
         await self._query.initialize()
 
-        # If we have an initial prompt stream, start streaming it
-        if prompt is not None and isinstance(prompt, AsyncIterable):
+        # If we have an initial prompt, send it
+        if isinstance(prompt, str):
+            message = {
+                "type": "user",
+                "message": {"role": "user", "content": prompt},
+                "parent_tool_use_id": None,
+                "session_id": "default",
+            }
+            await self._transport.write(json.dumps(message) + "\n")
+        elif prompt is not None and isinstance(prompt, AsyncIterable):
             self._query.spawn_task(self._query.stream_input(prompt))
 
     async def receive_messages(self) -> AsyncIterator[Message]:
@@ -439,6 +450,42 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         result: McpStatusResponse = await self._query.get_mcp_status()
+        return result
+
+    async def get_context_usage(self) -> ContextUsageResponse:
+        """Get a breakdown of current context window usage by category.
+
+        Returns the same data shown by the `/context` command in the CLI,
+        including token counts per category, total usage, and detailed
+        breakdowns of MCP tools, memory files, and agents.
+
+        Returns:
+            ContextUsageResponse dictionary with keys including:
+            - 'categories': List of categories with name, tokens, color
+            - 'totalTokens': Total tokens in context
+            - 'maxTokens': Effective context limit
+            - 'percentage': Percent of context used (0-100)
+            - 'model': Model the usage is calculated for
+            - 'mcpTools': Per-tool token breakdown for MCP servers
+            - 'memoryFiles': Per-file token breakdown for CLAUDE.md files
+            - 'agents': Per-agent token breakdown
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Read this file")
+                async for _ in client.receive_response():
+                    pass
+
+                usage = await client.get_context_usage()
+                print(f"Using {usage['percentage']:.1f}% of context")
+                for cat in usage['categories']:
+                    print(f"  {cat['name']}: {cat['tokens']} tokens")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: ContextUsageResponse = await self._query.get_context_usage()
         return result
 
     async def get_server_info(self) -> dict[str, Any] | None:

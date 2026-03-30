@@ -231,6 +231,9 @@ class SubprocessCLITransport(Transport):
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
 
+        if self._options.session_id:
+            cmd.extend(["--session-id", self._options.session_id])
+
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
         if settings_value:
@@ -277,12 +280,8 @@ class SubprocessCLITransport(Transport):
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 
-        sources_value = (
-            ",".join(self._options.setting_sources)
-            if self._options.setting_sources is not None
-            else ""
-        )
-        cmd.extend(["--setting-sources", sources_value])
+        if self._options.setting_sources:
+            cmd.extend(["--setting-sources", ",".join(self._options.setting_sources)])
 
         # Add plugin directories
         if self._options.plugins:

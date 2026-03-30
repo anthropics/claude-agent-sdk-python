@@ -138,7 +138,7 @@ class InternalClient:
                     "parent_tool_use_id": None,
                 }
                 await chosen_transport.write(json.dumps(user_message) + "\n")
-                await query.wait_for_result_and_end_input()
+                query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables
                 query.spawn_task(query.stream_input(prompt))

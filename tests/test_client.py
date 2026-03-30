@@ -155,6 +155,12 @@ class TestQueryFunction:
                 mock_query.close = AsyncMock()
                 mock_query._tg = None
 
+                def _consume_coro(coro):
+                    coro.close()
+                    return Mock()
+
+                mock_query.spawn_task = Mock(side_effect=_consume_coro)
+
                 async def mock_receive():
                     yield {
                         "type": "result",
@@ -192,3 +198,60 @@ class TestQueryFunction:
                 env_patch={},
                 expected_timeout=60.0,
             )
+
+    def test_string_prompt_spawns_wait_for_result_as_task(self):
+        """Test that string prompts spawn wait_for_result_and_end_input as a background
+        task instead of awaiting it inline, preventing deadlock when the message
+        buffer fills up (e.g. >50 tool calls with hooks)."""
+
+        async def _test():
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch("claude_agent_sdk._internal.client.Query") as mock_query_class,
+            ):
+                mock_transport = AsyncMock()
+                mock_transport_class.return_value = mock_transport
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.write = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                mock_query = AsyncMock()
+                mock_query_class.return_value = mock_query
+                mock_query.start = AsyncMock()
+                mock_query.initialize = AsyncMock()
+                mock_query.close = AsyncMock()
+                mock_query._tg = None
+
+                def _consume_coro(coro):
+                    coro.close()
+                    return Mock()
+
+                mock_query.spawn_task = Mock(side_effect=_consume_coro)
+
+                async def mock_receive():
+                    yield {
+                        "type": "result",
+                        "subtype": "success",
+                        "duration_ms": 100,
+                        "duration_api_ms": 80,
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "test",
+                    }
+
+                mock_query.receive_messages = mock_receive
+
+                async for _ in query(prompt="test", options=ClaudeAgentOptions()):
+                    pass
+
+                mock_query.spawn_task.assert_called_once()
+                assert not mock_query.wait_for_result_and_end_input.await_args_list, (
+                    "wait_for_result_and_end_input should be spawned as a task, "
+                    "not awaited directly"
+                )
+
+        anyio.run(_test)

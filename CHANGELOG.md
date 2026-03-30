@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.52
+
+### New Features
+
+- **Context usage**: Added `get_context_usage()` method to `ClaudeSDKClient` for querying context window usage by category (#764)
+- **Annotated parameter descriptions**: The `@tool` decorator and `create_sdk_mcp_server` now support `typing.Annotated` for per-parameter descriptions in JSON Schema (#762)
+- **ToolPermissionContext fields**: Exposed `tool_use_id` and `agent_id` in `ToolPermissionContext` for distinguishing parallel permission requests (#754)
+- **Session ID option**: Added `session_id` option to `ClaudeAgentOptions` for specifying custom session IDs (#750)
+
+### Bug Fixes
+
+- **String prompt in connect()**: Fixed `connect(prompt="...")` silently dropping the string prompt, causing `receive_messages()` to hang indefinitely (#769)
+- **Cancel request handling**: Implemented `control_cancel_request` handling so in-flight hook callbacks are properly cancelled when the CLI abandons them (#751)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.87
+- Increased CI timeout for example tests and reduced sleep duration in error handling example (#760)
+
 ## 0.1.51
 
 ### New Features

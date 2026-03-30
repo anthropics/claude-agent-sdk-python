@@ -6,8 +6,12 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    RateLimitEvent,
     ResultMessage,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -270,12 +274,246 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_assistant_message_with_usage(self):
+        """Per-turn usage is preserved on AssistantMessage.
+
+        The CLI emits the API's full usage dict (including cache token
+        breakdown) on every assistant message. Previously this was dropped
+        by the parser, forcing consumers to wait for the aggregate in
+        ResultMessage. See issue #673.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_read_input_tokens": 2000,
+                    "cache_creation_input_tokens": 500,
+                },
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage == {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 2000,
+            "cache_creation_input_tokens": 500,
+        }
+
+    def test_parse_assistant_message_without_usage(self):
+        """usage defaults to None when absent (e.g. synthetic messages)."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.usage is None
+
     def test_parse_valid_system_message(self):
         """Test parsing a valid system message."""
         data = {"type": "system", "subtype": "start"}
         message = parse_message(data)
         assert isinstance(message, SystemMessage)
         assert message.subtype == "start"
+
+    def test_parse_task_started_message(self):
+        """Test parsing a task_started system message yields a TaskStartedMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "description": "Reticulating splines",
+            "task_type": "background",
+            "uuid": "uuid-1",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        assert message.task_id == "task-abc"
+        assert message.description == "Reticulating splines"
+        assert message.uuid == "uuid-1"
+        assert message.session_id == "session-1"
+        assert message.tool_use_id == "toolu_01"
+        assert message.task_type == "background"
+
+    def test_parse_task_started_message_optional_fields_absent(self):
+        """task_started with no optional fields should still parse, optionals set to None."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-abc",
+            "description": "Working",
+            "uuid": "uuid-1",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        assert message.tool_use_id is None
+        assert message.task_type is None
+
+    def test_parse_task_progress_message(self):
+        """Test parsing a task_progress system message yields a TaskProgressMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "description": "Halfway there",
+            "usage": {
+                "total_tokens": 1234,
+                "tool_uses": 5,
+                "duration_ms": 9876,
+            },
+            "last_tool_name": "Read",
+            "uuid": "uuid-2",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskProgressMessage)
+        assert message.task_id == "task-abc"
+        assert message.description == "Halfway there"
+        assert message.usage == {
+            "total_tokens": 1234,
+            "tool_uses": 5,
+            "duration_ms": 9876,
+        }
+        assert message.last_tool_name == "Read"
+        assert message.tool_use_id == "toolu_01"
+        assert message.uuid == "uuid-2"
+        assert message.session_id == "session-1"
+
+    def test_parse_task_notification_message(self):
+        """Test parsing a task_notification system message yields a TaskNotificationMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-abc",
+            "tool_use_id": "toolu_01",
+            "status": "completed",
+            "output_file": "/tmp/out.md",
+            "summary": "All done",
+            "usage": {
+                "total_tokens": 2000,
+                "tool_uses": 7,
+                "duration_ms": 12345,
+            },
+            "uuid": "uuid-3",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskNotificationMessage)
+        assert message.task_id == "task-abc"
+        assert message.status == "completed"
+        assert message.output_file == "/tmp/out.md"
+        assert message.summary == "All done"
+        assert message.usage == {
+            "total_tokens": 2000,
+            "tool_uses": 7,
+            "duration_ms": 12345,
+        }
+        assert message.tool_use_id == "toolu_01"
+        assert message.uuid == "uuid-3"
+        assert message.session_id == "session-1"
+
+    def test_parse_task_notification_message_optional_fields_absent(self):
+        """task_notification with no optional fields (usage, tool_use_id) still parses."""
+        data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-abc",
+            "status": "failed",
+            "output_file": "/tmp/out.md",
+            "summary": "Boom",
+            "uuid": "uuid-3",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskNotificationMessage)
+        assert message.status == "failed"
+        assert message.usage is None
+        assert message.tool_use_id is None
+
+    def test_task_message_backward_compat_isinstance(self):
+        """Backward-compat: typed task messages are still SystemMessage instances."""
+        started_data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "desc",
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        progress_data = {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t1",
+            "description": "desc",
+            "usage": {"total_tokens": 1, "tool_uses": 0, "duration_ms": 10},
+            "uuid": "u2",
+            "session_id": "s1",
+        }
+        notif_data = {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t1",
+            "status": "stopped",
+            "output_file": "/o",
+            "summary": "s",
+            "uuid": "u3",
+            "session_id": "s1",
+        }
+        started = parse_message(started_data)
+        progress = parse_message(progress_data)
+        notif = parse_message(notif_data)
+        # isinstance checks against the base class still work
+        assert isinstance(started, SystemMessage)
+        assert isinstance(progress, SystemMessage)
+        assert isinstance(notif, SystemMessage)
+        # match-case against SystemMessage still works
+        matched = False
+        match started:
+            case SystemMessage():
+                matched = True
+        assert matched
+
+    def test_task_message_backward_compat_base_fields(self):
+        """Backward-compat: subtype and data fields on typed task messages are populated."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "desc",
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        # Base class fields still populated for legacy code paths
+        assert message.subtype == "task_started"
+        assert message.data == data
+        assert message.data["task_id"] == "t1"
+
+    def test_unknown_system_subtype_yields_generic(self):
+        """Unknown system subtypes fall through to generic SystemMessage (not a subclass)."""
+        data = {"type": "system", "subtype": "some_future_subtype", "foo": "bar"}
+        message = parse_message(data)
+        assert isinstance(message, SystemMessage)
+        # Ensure it's exactly SystemMessage, not one of the typed subclasses
+        assert type(message) is SystemMessage
+        assert not isinstance(message, TaskStartedMessage)
+        assert not isinstance(message, TaskProgressMessage)
+        assert not isinstance(message, TaskNotificationMessage)
+        assert message.subtype == "some_future_subtype"
+        assert message.data == data
 
     def test_parse_assistant_message_inside_subagent(self):
         """Test parsing a valid assistant message."""
@@ -313,6 +551,67 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, ResultMessage)
         assert message.subtype == "success"
+        assert message.stop_reason is None
+
+    def test_parse_result_message_with_stop_reason(self):
+        """Test parsing a result message with stop_reason field.
+
+        The stop_reason field mirrors the Anthropic API's stop_reason on the
+        final assistant turn (e.g., "end_turn", "max_tokens", "tool_use").
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "stop_reason": "end_turn",
+            "result": "Done",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.stop_reason == "end_turn"
+        assert message.result == "Done"
+
+    def test_parse_result_message_with_null_stop_reason(self):
+        """Test parsing a result message with explicit null stop_reason."""
+        data = {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": True,
+            "num_turns": 10,
+            "session_id": "session_123",
+            "stop_reason": None,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.stop_reason is None
+
+    def test_parse_rate_limit_event(self):
+        """Test parsing a rate_limit_event into a typed RateLimitEvent."""
+        data = {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed_warning",
+                "resetsAt": 1700000000,
+                "rateLimitType": "five_hour",
+                "utilization": 0.91,
+            },
+            "uuid": "abc-123",
+            "session_id": "session_xyz",
+        }
+        message = parse_message(data)
+        assert isinstance(message, RateLimitEvent)
+        assert message.uuid == "abc-123"
+        assert message.session_id == "session_xyz"
+        assert message.rate_limit_info.status == "allowed_warning"
+        assert message.rate_limit_info.resets_at == 1700000000
+        assert message.rate_limit_info.rate_limit_type == "five_hour"
+        assert message.rate_limit_info.utilization == 0.91
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""
@@ -437,3 +736,142 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_with_all_fields(self):
+        """Test that AssistantMessage preserves id, stop_reason, session_id, uuid."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-sonnet-4-5-20250929",
+                "id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id == "msg_01HRq7YZE3apPqSHydvG77Ve"
+        assert message.stop_reason == "end_turn"
+        assert message.session_id == "fdf2d90a-fd9e-4736-ae35-806edd13643f"
+        assert message.uuid == "0dbd2453-1209-4fe9-bd51-4102f64e33df"
+        assert message.usage == {"input_tokens": 10, "output_tokens": 5}
+
+    def test_parse_assistant_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id is None
+        assert message.stop_reason is None
+        assert message.session_id is None
+        assert message.uuid is None
+
+    def test_parse_result_message_with_model_usage(self):
+        """Test that ResultMessage preserves modelUsage, permission_denials, uuid."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 3000,
+            "duration_api_ms": 2000,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "stop_reason": "end_turn",
+            "total_cost_usd": 0.0106,
+            "usage": {"input_tokens": 3, "output_tokens": 24},
+            "result": "Hello",
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 3,
+                    "outputTokens": 24,
+                    "cacheReadInputTokens": 20012,
+                    "costUSD": 0.0106,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 64000,
+                }
+            },
+            "permission_denials": [],
+            "uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is not None
+        assert "claude-sonnet-4-5-20250929" in message.model_usage
+        assert message.model_usage["claude-sonnet-4-5-20250929"]["costUSD"] == 0.0106
+        assert message.permission_denials == []
+        assert message.uuid == "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+
+    def test_parse_result_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is None
+        assert message.permission_denials is None
+        assert message.errors is None
+        assert message.uuid is None
+
+    def test_parse_result_message_with_errors(self):
+        """Test that ResultMessage preserves the errors field from error results.
+
+        The CLI emits errors: string[] on error result messages (subtypes like
+        error_during_execution, error_max_turns, etc.). Without this field,
+        SDK users cannot diagnose why a non-zero exit occurred.
+        """
+        data = {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "duration_ms": 5000,
+            "duration_api_ms": 3000,
+            "is_error": True,
+            "num_turns": 3,
+            "session_id": "session_456",
+            "errors": [
+                "Tool execution failed: permission denied",
+                "Unable to write to /etc/hosts",
+            ],
+            "uuid": "err-uuid-789",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors == [
+            "Tool execution failed: permission denied",
+            "Unable to write to /etc/hosts",
+        ]
+        assert message.is_error is True
+        assert message.subtype == "error_during_execution"
+        assert message.uuid == "err-uuid-789"
+
+    def test_parse_result_message_success_no_errors(self):
+        """Test that a successful result message has no errors field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_789",
+            "result": "Task completed successfully",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors is None
+        assert message.result == "Task completed successfully"

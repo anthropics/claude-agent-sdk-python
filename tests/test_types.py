@@ -115,6 +115,9 @@ class TestOptions:
         options_accept = ClaudeAgentOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
+        options_dont_ask = ClaudeAgentOptions(permission_mode="dontAsk")
+        assert options_dont_ask.permission_mode == "dontAsk"
+
     def test_claude_code_options_with_system_prompt_string(self):
         """Test Options with system prompt as string."""
         options = ClaudeAgentOptions(
@@ -142,6 +145,16 @@ class TestOptions:
             "type": "preset",
             "preset": "claude_code",
             "append": "Be concise.",
+        }
+
+    def test_claude_code_options_with_system_prompt_file(self):
+        """Test Options with system prompt file."""
+        options = ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+        )
+        assert options.system_prompt == {
+            "type": "file",
+            "path": "/path/to/prompt.md",
         }
 
     def test_claude_code_options_with_session_continuation(self):
@@ -202,6 +215,62 @@ class TestHookInputTypes:
         assert hook_input["hook_event_name"] == "SubagentStart"
         assert hook_input["agent_id"] == "agent-42"
         assert hook_input["agent_type"] == "researcher"
+
+    def test_pre_tool_use_hook_input_with_agent_id(self):
+        """PreToolUseHookInput accepts optional agent_id/agent_type.
+
+        When a tool is called from inside a Task sub-agent, the CLI includes
+        the calling agent's id so consumers can correlate the tool call to
+        the correct sub-agent — parallel sub-agents interleave their hook
+        callbacks over the same control channel and are otherwise
+        indistinguishable.
+        """
+        from claude_agent_sdk.types import PreToolUseHookInput
+
+        # Tool called from inside a sub-agent: agent_id present,
+        # same value SubagentStart emits.
+        hook_input: PreToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_use_id": "toolu_abc123",
+            "agent_id": "agent-42",
+            "agent_type": "researcher",
+        }
+        assert hook_input.get("agent_id") == "agent-42"
+        assert hook_input.get("agent_type") == "researcher"
+
+        # Tool called on the main thread: agent_id absent. Still type-valid.
+        hook_input_main: PreToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_use_id": "toolu_def456",
+        }
+        assert hook_input_main.get("agent_id") is None
+
+    def test_post_tool_use_hook_input_with_agent_id(self):
+        """PostToolUseHookInput accepts optional agent_id."""
+        from claude_agent_sdk.types import PostToolUseHookInput
+
+        hook_input: PostToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"},
+            "tool_response": {"content": [{"type": "text", "text": "hello"}]},
+            "tool_use_id": "toolu_abc123",
+            "agent_id": "agent-42",
+        }
+        assert hook_input.get("agent_id") == "agent-42"
 
     def test_permission_request_hook_input(self):
         """Test PermissionRequestHookInput construction."""
@@ -275,3 +344,197 @@ class TestHookSpecificOutputTypes:
             "updatedMCPToolOutput": {"result": "modified"},
         }
         assert output["updatedMCPToolOutput"] == {"result": "modified"}
+
+
+class TestMcpServerStatusTypes:
+    """Test MCP server status type definitions."""
+
+    def test_mcp_server_status_importable_from_package(self):
+        """Verify McpServerStatus and related types are exported."""
+        from claude_agent_sdk import (
+            McpServerConnectionStatus,  # noqa: F401
+            McpServerInfo,  # noqa: F401
+            McpServerStatus,  # noqa: F401
+            McpServerStatusConfig,  # noqa: F401
+            McpStatusResponse,  # noqa: F401
+            McpToolAnnotations,  # noqa: F401
+            McpToolInfo,  # noqa: F401
+        )
+
+    def test_mcp_server_status_connected(self):
+        """Test constructing a connected McpServerStatus with full fields."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "my-server",
+            "status": "connected",
+            "serverInfo": {"name": "my-server", "version": "1.2.3"},
+            "config": {"type": "http", "url": "https://example.com"},
+            "scope": "project",
+            "tools": [
+                {
+                    "name": "greet",
+                    "description": "Greet a user",
+                    "annotations": {
+                        "readOnly": True,
+                        "destructive": False,
+                        "openWorld": False,
+                    },
+                }
+            ],
+        }
+        assert status["name"] == "my-server"
+        assert status["status"] == "connected"
+        assert status["serverInfo"]["version"] == "1.2.3"
+        assert status["tools"][0]["annotations"]["readOnly"] is True
+
+    def test_mcp_server_status_minimal(self):
+        """Test constructing a minimal McpServerStatus (only required fields)."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {"name": "pending-server", "status": "pending"}
+        assert status["name"] == "pending-server"
+        assert status["status"] == "pending"
+        assert "error" not in status
+        assert "config" not in status
+
+    def test_mcp_server_status_failed_with_error(self):
+        """Test McpServerStatus for a failed server includes error."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "broken-server",
+            "status": "failed",
+            "error": "Connection refused",
+        }
+        assert status["status"] == "failed"
+        assert status["error"] == "Connection refused"
+
+    def test_mcp_server_status_config_claudeai_proxy(self):
+        """Test McpServerStatusConfig accepts claudeai-proxy variant."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "proxy-server",
+            "status": "needs-auth",
+            "config": {
+                "type": "claudeai-proxy",
+                "url": "https://claude.ai/proxy",
+                "id": "proxy-abc",
+            },
+        }
+        assert status["config"]["type"] == "claudeai-proxy"
+        assert status["config"]["id"] == "proxy-abc"
+
+    def test_mcp_status_response_wraps_servers(self):
+        """Test McpStatusResponse wraps mcpServers list."""
+        from claude_agent_sdk import McpStatusResponse
+
+        response: McpStatusResponse = {
+            "mcpServers": [
+                {"name": "a", "status": "connected"},
+                {"name": "b", "status": "disabled"},
+            ]
+        }
+        assert len(response["mcpServers"]) == 2
+        assert response["mcpServers"][0]["status"] == "connected"
+        assert response["mcpServers"][1]["status"] == "disabled"
+
+
+class TestAgentDefinition:
+    """Test AgentDefinition serialization contract.
+
+    AgentDefinition is sent to the CLI via the initialize control request.
+    The _internal/client.py serializer uses ``asdict()`` directly, so field
+    names here must match the CLI's expected JSON keys exactly.
+    """
+
+    def _serialize(self, agent):
+        # Mirror the transform in _internal/client.py and client.py:
+        #   {k: v for k, v in asdict(agent_def).items() if v is not None}
+        from dataclasses import asdict
+
+        return {k: v for k, v in asdict(agent).items() if v is not None}
+
+    def test_minimal_definition_omits_unset_fields(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="You are a test")
+        payload = self._serialize(agent)
+
+        assert payload == {"description": "test", "prompt": "You are a test"}
+
+    def test_skills_and_memory_serialize_with_cli_keys(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            skills=["skill-a", "skill-b"],
+            memory="project",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["skills"] == ["skill-a", "skill-b"]
+        assert payload["memory"] == "project"
+
+    def test_mcp_servers_serializes_as_camelcase(self):
+        """CLI expects ``mcpServers`` (camelCase), not snake_case."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            mcpServers=[
+                "slack",
+                {"local": {"command": "python", "args": ["server.py"]}},
+            ],
+        )
+        payload = self._serialize(agent)
+
+        assert "mcpServers" in payload
+        assert "mcp_servers" not in payload
+        assert payload["mcpServers"][0] == "slack"
+        assert payload["mcpServers"][1]["local"]["command"] == "python"
+
+    def test_disallowed_tools_and_max_turns_serialize_as_camelcase(self):
+        """CLI expects ``disallowedTools`` and ``maxTurns`` (camelCase)."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            disallowedTools=["Bash", "Write"],
+            maxTurns=10,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["disallowedTools"] == ["Bash", "Write"]
+        assert "disallowed_tools" not in payload
+        assert payload["maxTurns"] == 10
+        assert "max_turns" not in payload
+
+    def test_initial_prompt_serializes_as_camelcase(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            initialPrompt="/review-pr 123",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["initialPrompt"] == "/review-pr 123"
+        assert "initial_prompt" not in payload
+
+    def test_model_accepts_full_model_id(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            model="claude-opus-4-5",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["model"] == "claude-opus-4-5"

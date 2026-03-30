@@ -1,0 +1,107 @@
+name: Build Wheel Check
+
+# Dry-run the wheel build on PRs so we catch packaging regressions
+# before a release, instead of discovering them at publish time.
+on:
+  pull_request:
+    paths:
+      - 'scripts/build_wheel.py'
+      - 'scripts/download_cli.py'
+      - '.github/workflows/build-and-publish.yml'
+      - '.github/workflows/build-wheel-check.yml'
+      - 'pyproject.toml'
+      - 'MANIFEST.in'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            expected_tag: manylinux_2_17_x86_64
+          - os: ubuntu-24.04-arm
+            expected_tag: manylinux_2_17_aarch64
+          - os: macos-latest
+            expected_tag: macosx_11_0_arm64
+          - os: macos-15-intel
+            expected_tag: macosx_11_0_x86_64
+          - os: windows-latest
+            expected_tag: win_amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install build twine wheel
+        shell: bash
+
+      - name: Build wheel with bundled CLI
+        run: python scripts/build_wheel.py --skip-sdist --clean
+        shell: bash
+
+      - name: Verify wheel filename contains expected platform tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          wheel=$(ls dist/*.whl)
+          echo "Built wheel: $wheel"
+          if [[ "$wheel" != *"${{ matrix.expected_tag }}"* ]]; then
+            echo "::error::Expected platform tag '${{ matrix.expected_tag }}' in wheel filename, got: $wheel"
+            exit 1
+          fi
+
+      - name: Verify wheel contains bundled CLI binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          python -m zipfile -l "$wheel" > wheel_contents.txt
+          cat wheel_contents.txt
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            grep -q "_bundled/claude.exe" wheel_contents.txt || {
+              echo "::error::Bundled CLI (claude.exe) not found in wheel"
+              exit 1
+            }
+          else
+            grep -q "_bundled/claude" wheel_contents.txt || {
+              echo "::error::Bundled CLI (claude) not found in wheel"
+              exit 1
+            }
+          fi
+          echo "Bundled CLI found in wheel ✓"
+
+      - name: Smoke-test install and import
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          python -c "import claude_agent_sdk; print('import ok')"
+          python -c "import claude_agent_sdk, pathlib, platform; cli_name = 'claude.exe' if platform.system() == 'Windows' else 'claude'; p = pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled' / cli_name; assert p.exists() and p.is_file(), f'bundled CLI missing after install: {p}'; print('bundled CLI at', p)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-check-${{ matrix.expected_tag }}
+          path: dist/*.whl
+          retention-days: 7
+
+  verify-matrix-sync:
+    # Guard against the build matrix here drifting from the publish matrix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build matrices are in sync
+        run: |
+          set -euo pipefail
+          publish=$(grep -oP 'os:\s*\[\K[^\]]+' .github/workflows/build-and-publish.yml | tr -d ' ' | tr ',' '\n' | sort)
+          check=$(python3 -c "import yaml; d = yaml.safe_load(open('.github/workflows/build-wheel-check.yml')); print('\n'.join(sorted(i['os'] for i in d['jobs']['build']['strategy']['matrix']['include'])))")
+          echo "publish matrix:"; echo "$publish"
+          echo "check matrix:"; echo "$check"
+          diff <(echo "$publish") <(echo "$check") || {
+            echo "::error::build-wheel-check.yml matrix is out of sync with build-and-publish.yml"
+            exit 1
+          }

@@ -1,8 +1,20 @@
 """Claude SDK for Python."""
 
+import logging
+import sys
+import types as builtin_types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
+
+if sys.version_info >= (3, 11):
+    from typing import get_type_hints as _get_type_hints
+    from typing import is_typeddict
+else:
+    # On 3.10, stdlib is_typeddict doesn't recognize typing_extensions.TypedDict
+    # subclasses, and stdlib get_type_hints doesn't strip NotRequired markers.
+    from typing_extensions import get_type_hints as _get_type_hints
+    from typing_extensions import is_typeddict
 
 from mcp.types import ToolAnnotations
 
@@ -13,6 +25,14 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
+from ._internal.session_mutations import (
+    ForkSessionResult,
+    delete_session,
+    fork_session,
+    rename_session,
+    tag_session,
+)
+from ._internal.sessions import get_session_info, get_session_messages, list_sessions
 from ._internal.transport import Transport
 from ._version import __version__
 from .client import ClaudeSDKClient
@@ -24,6 +44,8 @@ from .types import (
     CanUseTool,
     ClaudeAgentOptions,
     ContentBlock,
+    ContextUsageCategory,
+    ContextUsageResponse,
     HookCallback,
     HookContext,
     HookInput,
@@ -31,6 +53,13 @@ from .types import (
     HookMatcher,
     McpSdkServerConfig,
     McpServerConfig,
+    McpServerConnectionStatus,
+    McpServerInfo,
+    McpServerStatus,
+    McpServerStatusConfig,
+    McpStatusResponse,
+    McpToolAnnotations,
+    McpToolInfo,
     Message,
     NotificationHookInput,
     NotificationHookSpecificOutput,
@@ -46,18 +75,31 @@ from .types import (
     PostToolUseHookInput,
     PreCompactHookInput,
     PreToolUseHookInput,
+    RateLimitEvent,
+    RateLimitInfo,
+    RateLimitStatus,
+    RateLimitType,
     ResultMessage,
     SandboxIgnoreViolations,
     SandboxNetworkConfig,
     SandboxSettings,
     SdkBeta,
     SdkPluginConfig,
+    SDKSessionInfo,
+    SessionMessage,
     SettingSource,
     StopHookInput,
+    StreamEvent,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
     SubagentStopHookInput,
     SystemMessage,
+    TaskBudget,
+    TaskNotificationMessage,
+    TaskNotificationStatus,
+    TaskProgressMessage,
+    TaskStartedMessage,
+    TaskUsage,
     TextBlock,
     ThinkingBlock,
     ThinkingConfig,
@@ -72,6 +114,8 @@ from .types import (
 )
 
 # MCP Server Support
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -109,6 +153,8 @@ def tool(
             - A dictionary mapping parameter names to types (e.g., {"text": str})
             - A TypedDict class for more complex schemas
             - A JSON Schema dictionary for full validation
+            Use ``Annotated[type, "description"]`` to add a description to a
+            parameter in either dict-style or TypedDict schemas.
 
     Returns:
         A decorator function that wraps the tool implementation and returns
@@ -152,6 +198,78 @@ def tool(
         )
 
     return decorator
+
+
+def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
+    """Convert a Python type annotation to a JSON Schema dict."""
+    origin = get_origin(py_type)
+
+    # NotRequired/Required/ReadOnly survive include_extras=True; unwrap them
+    if getattr(origin, "_name", None) in ("NotRequired", "Required", "ReadOnly"):
+        return _python_type_to_json_schema(get_args(py_type)[0])
+
+    if origin is Annotated:
+        args = get_args(py_type)
+        schema = _python_type_to_json_schema(args[0])
+        for meta in args[1:]:
+            if isinstance(meta, str):
+                schema["description"] = meta
+                break
+        return schema
+
+    if py_type is str:
+        return {"type": "string"}
+    if py_type is int:
+        return {"type": "integer"}
+    if py_type is float:
+        return {"type": "number"}
+    if py_type is bool:
+        return {"type": "boolean"}
+
+    origin = getattr(py_type, "__origin__", None)
+
+    if origin is Union or isinstance(py_type, builtin_types.UnionType):
+        args = py_type.__args__
+        non_none = [a for a in args if a is not builtin_types.NoneType]
+        if len(non_none) == 1:
+            return _python_type_to_json_schema(non_none[0])
+        return {"anyOf": [_python_type_to_json_schema(a) for a in non_none]}
+
+    if origin is list:
+        item_args = getattr(py_type, "__args__", None)
+        if item_args:
+            return {"type": "array", "items": _python_type_to_json_schema(item_args[0])}
+        return {"type": "array"}
+    if origin is dict:
+        return {"type": "object"}
+
+    if py_type is list:
+        return {"type": "array"}
+    if py_type is dict:
+        return {"type": "object"}
+
+    if is_typeddict(py_type):
+        return _typeddict_to_json_schema(py_type)
+
+    return {"type": "string"}
+
+
+def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
+    """Convert a TypedDict class to a JSON Schema dict."""
+    hints = _get_type_hints(td_class, include_extras=True)
+
+    properties: dict[str, Any] = {}
+    for field_name, field_type in hints.items():
+        properties[field_name] = _python_type_to_json_schema(field_type)
+
+    required_keys = getattr(td_class, "__required_keys__", set(properties.keys()))
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+    if required_keys:
+        schema["required"] = sorted(required_keys)
+    return schema
 
 
 def create_sdk_mcp_server(
@@ -227,7 +345,15 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     from mcp.server import Server
-    from mcp.types import ImageContent, TextContent, Tool
+    from mcp.types import (
+        AudioContent,
+        CallToolResult,
+        EmbeddedResource,
+        ImageContent,
+        ResourceLink,
+        TextContent,
+        Tool,
+    )
 
     # Create MCP server instance
     server = Server(name, version=version)
@@ -237,52 +363,42 @@ def create_sdk_mcp_server(
         # Store tools for access in handlers
         tool_map = {tool_def.name: tool_def for tool_def in tools}
 
+        # Pre-compute tool schemas once at creation time
+        def _build_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
+            if isinstance(tool_def.input_schema, dict):
+                if (
+                    "type" in tool_def.input_schema
+                    and "properties" in tool_def.input_schema
+                    and isinstance(tool_def.input_schema["type"], str)
+                ):
+                    return tool_def.input_schema
+                properties = {}
+                for param_name, param_type in tool_def.input_schema.items():
+                    properties[param_name] = _python_type_to_json_schema(param_type)
+                return {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(properties.keys()),
+                }
+            if is_typeddict(tool_def.input_schema):
+                return _typeddict_to_json_schema(tool_def.input_schema)
+            return {"type": "object", "properties": {}}
+
+        cached_tool_list = [
+            Tool(
+                name=tool_def.name,
+                description=tool_def.description,
+                inputSchema=_build_schema(tool_def),
+                annotations=tool_def.annotations,
+            )
+            for tool_def in tools
+        ]
+
         # Register list_tools handler to expose available tools
         @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
         async def list_tools() -> list[Tool]:
             """Return the list of available tools."""
-            tool_list = []
-            for tool_def in tools:
-                # Convert input_schema to JSON Schema format
-                if isinstance(tool_def.input_schema, dict):
-                    # Check if it's already a JSON schema
-                    if (
-                        "type" in tool_def.input_schema
-                        and "properties" in tool_def.input_schema
-                    ):
-                        schema = tool_def.input_schema
-                    else:
-                        # Simple dict mapping names to types - convert to JSON schema
-                        properties = {}
-                        for param_name, param_type in tool_def.input_schema.items():
-                            if param_type is str:
-                                properties[param_name] = {"type": "string"}
-                            elif param_type is int:
-                                properties[param_name] = {"type": "integer"}
-                            elif param_type is float:
-                                properties[param_name] = {"type": "number"}
-                            elif param_type is bool:
-                                properties[param_name] = {"type": "boolean"}
-                            else:
-                                properties[param_name] = {"type": "string"}  # Default
-                        schema = {
-                            "type": "object",
-                            "properties": properties,
-                            "required": list(properties.keys()),
-                        }
-                else:
-                    # For TypedDict or other types, create basic schema
-                    schema = {"type": "object", "properties": {}}
-
-                tool_list.append(
-                    Tool(
-                        name=tool_def.name,
-                        description=tool_def.description,
-                        inputSchema=schema,
-                        annotations=tool_def.annotations,
-                    )
-                )
-            return tool_list
+            return cached_tool_list
 
         # Register call_tool handler to execute tools
         @server.call_tool()  # type: ignore[untyped-decorator]
@@ -296,14 +412,19 @@ def create_sdk_mcp_server(
             result = await tool_def.handler(arguments)
 
             # Convert result to MCP format
-            # The decorator expects us to return the content, not a CallToolResult
-            # It will wrap our return value in CallToolResult
-            content: list[TextContent | ImageContent] = []
+            content: list[
+                TextContent
+                | ImageContent
+                | AudioContent
+                | ResourceLink
+                | EmbeddedResource
+            ] = []
             if "content" in result:
                 for item in result["content"]:
-                    if item.get("type") == "text":
+                    item_type = item.get("type")
+                    if item_type == "text":
                         content.append(TextContent(type="text", text=item["text"]))
-                    if item.get("type") == "image":
+                    elif item_type == "image":
                         content.append(
                             ImageContent(
                                 type="image",
@@ -311,9 +432,42 @@ def create_sdk_mcp_server(
                                 mimeType=item["mimeType"],
                             )
                         )
+                    elif item_type == "resource_link":
+                        parts = []
+                        link_name = item.get("name")
+                        uri = item.get("uri")
+                        desc = item.get("description")
+                        if link_name:
+                            parts.append(link_name)
+                        if uri:
+                            parts.append(str(uri))
+                        if desc:
+                            parts.append(desc)
+                        content.append(
+                            TextContent(
+                                type="text",
+                                text="\n".join(parts) if parts else "Resource link",
+                            )
+                        )
+                    elif item_type == "resource":
+                        resource = item.get("resource") or {}
+                        if "text" in resource:
+                            content.append(
+                                TextContent(type="text", text=resource["text"])
+                            )
+                        else:
+                            logger.warning(
+                                "Binary embedded resource cannot be converted to text, skipping"
+                            )
+                    else:
+                        logger.warning(
+                            "Unsupported content type %r in tool result, skipping",
+                            item_type,
+                        )
 
-            # Return just the content list - the decorator wraps it
-            return content
+            return CallToolResult(
+                content=content, isError=result.get("is_error", False)
+            )
 
     # Return SDK server configuration
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
@@ -330,12 +484,30 @@ __all__ = [
     "PermissionMode",
     "McpServerConfig",
     "McpSdkServerConfig",
+    "McpServerStatus",
+    "McpServerStatusConfig",
+    "McpServerConnectionStatus",
+    "McpServerInfo",
+    "McpStatusResponse",
+    "McpToolAnnotations",
+    "McpToolInfo",
     "UserMessage",
     "AssistantMessage",
     "SystemMessage",
+    "TaskStartedMessage",
+    "TaskProgressMessage",
+    "TaskNotificationMessage",
+    "TaskNotificationStatus",
+    "TaskUsage",
     "ResultMessage",
+    "RateLimitEvent",
+    "RateLimitInfo",
+    "RateLimitStatus",
+    "RateLimitType",
+    "StreamEvent",
     "Message",
     "ClaudeAgentOptions",
+    "TaskBudget",
     "TextBlock",
     "ThinkingBlock",
     "ThinkingConfig",
@@ -345,6 +517,8 @@ __all__ = [
     "ToolUseBlock",
     "ToolResultBlock",
     "ContentBlock",
+    "ContextUsageCategory",
+    "ContextUsageResponse",
     # Tool callbacks
     "CanUseTool",
     "ToolPermissionContext",
@@ -378,6 +552,18 @@ __all__ = [
     "SettingSource",
     # Plugin support
     "SdkPluginConfig",
+    # Session listing
+    "list_sessions",
+    "get_session_info",
+    "get_session_messages",
+    "SDKSessionInfo",
+    "SessionMessage",
+    # Session mutations
+    "rename_session",
+    "tag_session",
+    "delete_session",
+    "fork_session",
+    "ForkSessionResult",
     # Beta support
     "SdkBeta",
     # Sandbox support

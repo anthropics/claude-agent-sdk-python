@@ -215,7 +215,7 @@ You are a simple test agent. When asked a question, provide a brief, helpful ans
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_setting_sources_default():
-    """Test that default (no setting_sources) loads no settings."""
+    """Test that default (no setting_sources) lets CLI load all settings normally."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a temporary project with local settings
         project_dir = Path(tmpdir)
@@ -226,7 +226,8 @@ async def test_setting_sources_default():
         settings_file = claude_dir / "settings.local.json"
         settings_file.write_text('{"outputStyle": "local-test-style"}')
 
-        # Don't provide setting_sources - should default to no settings
+        # Don't provide setting_sources - CLI uses its default behavior
+        # which loads all settings (user, project, local)
         options = ClaudeAgentOptions(
             cwd=project_dir,
             max_turns=1,
@@ -235,15 +236,12 @@ async def test_setting_sources_default():
         async with ClaudeSDKClient(options=options) as client:
             await client.query("What is 2 + 2?")
 
-            # Check that settings were NOT loaded
+            # Check that settings WERE loaded (CLI default loads all sources)
             async for message in client.receive_response():
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     output_style = message.data.get("output_style")
-                    assert output_style != "local-test-style", (
-                        f"outputStyle should NOT be from local settings (default is no settings), got: {output_style}"
-                    )
-                    assert output_style == "default", (
-                        f"outputStyle should be 'default', got: {output_style}"
+                    assert output_style == "local-test-style", (
+                        f"outputStyle should be from local settings (CLI default loads all sources), got: {output_style}"
                     )
                     break
 

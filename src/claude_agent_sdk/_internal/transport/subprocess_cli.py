@@ -6,12 +6,11 @@ import os
 import platform
 import re
 import shutil
-import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import anyio.abc
@@ -21,7 +20,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeAgentOptions
+from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -43,8 +42,8 @@ class SubprocessCLITransport(Transport):
         # This allows agents and other large configs to be sent via initialize request
         self._is_streaming = True
         self._options = options
-        self._cli_path = (
-            str(options.cli_path) if options.cli_path is not None else self._find_cli()
+        self._cli_path: str | None = (
+            str(options.cli_path) if options.cli_path is not None else None
         )
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
@@ -176,6 +175,8 @@ class SubprocessCLITransport(Transport):
 
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
@@ -183,12 +184,12 @@ class SubprocessCLITransport(Transport):
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
-            if (
-                self._options.system_prompt.get("type") == "preset"
-                and "append" in self._options.system_prompt
-            ):
+            sp = self._options.system_prompt
+            if sp.get("type") == "file":
+                cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+            elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
-                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                    ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
                 )
 
         # Handle tools option (base set of tools)
@@ -215,6 +216,9 @@ class SubprocessCLITransport(Transport):
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
+        if self._options.task_budget is not None:
+            cmd.extend(["--task-budget", str(self._options.task_budget["total"])])
+
         if self._options.model:
             cmd.extend(["--model", self._options.model])
 
@@ -237,6 +241,9 @@ class SubprocessCLITransport(Transport):
 
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
+
+        if self._options.session_id:
+            cmd.extend(["--session-id", self._options.session_id])
 
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
@@ -284,12 +291,8 @@ class SubprocessCLITransport(Transport):
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 
-        sources_value = (
-            ",".join(self._options.setting_sources)
-            if self._options.setting_sources is not None
-            else ""
-        )
-        cmd.extend(["--setting-sources", sources_value])
+        if self._options.setting_sources:
+            cmd.extend(["--setting-sources", ",".join(self._options.setting_sources)])
 
         # Add plugin directories
         if self._options.plugins:
@@ -348,31 +351,30 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
+        if self._cli_path is None:
+            self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
+
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()
 
         cmd = self._build_command()
         try:
-            # Merge environment variables: system -> user -> SDK required
+            # Merge environment variables. CLAUDE_CODE_ENTRYPOINT defaults to
+            # sdk-py regardless of inherited process env; options.env can override
+            # it. CLAUDE_AGENT_SDK_VERSION is always set by the SDK.
+            # Filter out CLAUDECODE so SDK-spawned subprocesses don't think
+            # they're running inside a Claude Code parent (see #573).
+            inherited_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             process_env = {
-                **os.environ,
-                **self._options.env,  # User-provided env vars
+                **inherited_env,
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                **self._options.env,
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:
                 process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
-
-            # Enable fine-grained tool streaming when partial messages are requested.
-            # --include-partial-messages emits stream_event messages, but tool input
-            # parameters are still buffered by the API unless eager_input_streaming is
-            # also enabled at the per-tool level via this env var.
-            if self._options.include_partial_messages:
-                process_env.setdefault(
-                    "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING", "1"
-                )
 
             if self._cwd:
                 process_env["PWD"] = self._cwd
@@ -483,14 +485,27 @@ class SubprocessCLITransport(Transport):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
 
-        # Terminate and wait for process
+        # Wait for graceful shutdown after stdin EOF, then terminate if needed.
+        # The subprocess needs time to flush its session file after receiving
+        # EOF on stdin. Without this grace period, SIGTERM can interrupt the
+        # write and cause the last assistant message to be lost (see #625).
         if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-                # Wait for process to finish with timeout
-                with suppress(Exception):
-                    # Just try to wait, but don't block if it fails
+            try:
+                with anyio.fail_after(5):
                     await self._process.wait()
+            except TimeoutError:
+                # Graceful shutdown timed out — force terminate
+                with suppress(ProcessLookupError):
+                    self._process.terminate()
+                try:
+                    with anyio.fail_after(5):
+                        await self._process.wait()
+                except TimeoutError:
+                    # SIGTERM handler blocked — force kill (SIGKILL)
+                    with suppress(ProcessLookupError):
+                        self._process.kill()
+                    with suppress(Exception):
+                        await self._process.wait()
 
         self._process = None
         self._stdout_stream = None
@@ -560,6 +575,15 @@ class SubprocessCLITransport(Transport):
                     if not json_line:
                         continue
 
+                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
+                    # mid-parse — they corrupt the buffer otherwise (#347).
+                    if not json_buffer and not json_line.startswith("{"):
+                        logger.debug(
+                            "Skipping non-JSON line from CLI stdout: %s",
+                            json_line[:200],
+                        )
+                        continue
+
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
@@ -606,6 +630,8 @@ class SubprocessCLITransport(Transport):
 
     async def _check_claude_version(self) -> None:
         """Check Claude Code version and warn if below minimum."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
@@ -628,13 +654,14 @@ class SubprocessCLITransport(Transport):
                         ]
 
                         if version_parts < min_parts:
-                            warning = (
-                                f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
-                                f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
-                                "Some features may not work correctly."
+                            logger.warning(
+                                "Claude Code version %s at %s is unsupported in the Agent SDK. "
+                                "Minimum required version is %s. "
+                                "Some features may not work correctly.",
+                                version,
+                                self._cli_path,
+                                MINIMUM_CLAUDE_CODE_VERSION,
                             )
-                            logger.warning(warning)
-                            print(warning, file=sys.stderr)
         except Exception:
             pass
         finally:

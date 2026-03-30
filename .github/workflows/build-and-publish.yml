@@ -86,11 +86,87 @@ jobs:
           done
           echo "All ${#expected[@]} expected wheels present ✓"
 
-      - name: Build sdist and publish to PyPI
+      - name: Install build dependencies
+        run: pip install build twine
+
+      - name: Build sdist
         run: |
-          pip install build twine
-          python -m build --sdist
-          twine upload dist/*
+          python -m build --sdist --outdir sdist/
+          ls -la sdist/
+
+      - name: Pre-flight PyPI quota check
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
+          THRESHOLD_BYTES = 47.5 * 1024**3  # Fail above 95% (2.5 GiB buffer)
+
+          version = os.environ.get("VERSION", "")
+
+          # Fetch current usage from PyPI JSON API
+          try:
+              with urllib.request.urlopen(
+                  "https://pypi.org/pypi/claude-agent-sdk/json", timeout=30
+              ) as r:
+                  data = json.load(r)
+          except Exception as exc:
+              print(f"::warning::Could not fetch PyPI metadata: {exc}")
+              print("Skipping quota pre-flight check.")
+              sys.exit(0)
+
+          current_total = sum(
+              f["size"]
+              for files in data["releases"].values()
+              for f in files
+          )
+
+          # Collect filenames already uploaded for the current version so we
+          # don't double-count them when summing local artifacts (re-run after
+          # a partial upload).
+          already_uploaded = set()
+          if version and version in data["releases"]:
+              already_uploaded = {f["filename"] for f in data["releases"][version]}
+
+          # Sum local artifacts about to be uploaded, skipping already-uploaded files
+          new_total = 0
+          for d in ("dist", "sdist"):
+              if os.path.isdir(d):
+                  for fn in os.listdir(d):
+                      if fn in already_uploaded:
+                          print(f"  (skipping already-uploaded file: {fn})")
+                          continue
+                      new_total += os.path.getsize(os.path.join(d, fn))
+
+          projected = current_total + new_total
+          pct = 100.0 * current_total / QUOTA_BYTES
+          projected_pct = 100.0 * projected / QUOTA_BYTES
+
+          print(f"Current PyPI usage: {current_total / 1024**3:.3f} GiB / {QUOTA_BYTES / 1024**3:.0f} GiB ({pct:.1f}%)")
+          print(f"New upload size:    {new_total / 1024**2:.2f} MiB")
+          print(f"Projected usage:    {projected / 1024**3:.3f} GiB / {QUOTA_BYTES / 1024**3:.0f} GiB ({projected_pct:.1f}%)")
+
+          if projected > THRESHOLD_BYTES:
+              print(
+                  f"::error::Projected PyPI usage {projected / 1024**3:.3f} GiB exceeds "
+                  f"{THRESHOLD_BYTES / 1024**3:.1f} GiB safety threshold. Delete old releases or "
+                  f"request a further quota increase at https://pypi.org/help/#project-size-limit "
+                  f"before publishing."
+              )
+              sys.exit(1)
+          EOF
+
+      - name: Publish to PyPI (sdist first, then wheels)
+        # Upload the tiny sdist first so `pip install` has a universal fallback
+        # even if wheel uploads fail partway. --skip-existing makes re-runs
+        # safe after a partial upload (PyPI rejects re-uploads of identical
+        # filenames, which would otherwise abort the whole job).
+        run: |
+          twine upload --skip-existing sdist/*.tar.gz
+          twine upload --skip-existing dist/*.whl
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

@@ -115,6 +115,9 @@ class TestOptions:
         options_accept = ClaudeAgentOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
+        options_dont_ask = ClaudeAgentOptions(permission_mode="dontAsk")
+        assert options_dont_ask.permission_mode == "dontAsk"
+
     def test_claude_code_options_with_system_prompt_string(self):
         """Test Options with system prompt as string."""
         options = ClaudeAgentOptions(
@@ -142,6 +145,16 @@ class TestOptions:
             "type": "preset",
             "preset": "claude_code",
             "append": "Be concise.",
+        }
+
+    def test_claude_code_options_with_system_prompt_file(self):
+        """Test Options with system prompt file."""
+        options = ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+        )
+        assert options.system_prompt == {
+            "type": "file",
+            "path": "/path/to/prompt.md",
         }
 
     def test_claude_code_options_with_session_continuation(self):
@@ -426,3 +439,102 @@ class TestMcpServerStatusTypes:
         assert len(response["mcpServers"]) == 2
         assert response["mcpServers"][0]["status"] == "connected"
         assert response["mcpServers"][1]["status"] == "disabled"
+
+
+class TestAgentDefinition:
+    """Test AgentDefinition serialization contract.
+
+    AgentDefinition is sent to the CLI via the initialize control request.
+    The _internal/client.py serializer uses ``asdict()`` directly, so field
+    names here must match the CLI's expected JSON keys exactly.
+    """
+
+    def _serialize(self, agent):
+        # Mirror the transform in _internal/client.py and client.py:
+        #   {k: v for k, v in asdict(agent_def).items() if v is not None}
+        from dataclasses import asdict
+
+        return {k: v for k, v in asdict(agent).items() if v is not None}
+
+    def test_minimal_definition_omits_unset_fields(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="You are a test")
+        payload = self._serialize(agent)
+
+        assert payload == {"description": "test", "prompt": "You are a test"}
+
+    def test_skills_and_memory_serialize_with_cli_keys(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            skills=["skill-a", "skill-b"],
+            memory="project",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["skills"] == ["skill-a", "skill-b"]
+        assert payload["memory"] == "project"
+
+    def test_mcp_servers_serializes_as_camelcase(self):
+        """CLI expects ``mcpServers`` (camelCase), not snake_case."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            mcpServers=[
+                "slack",
+                {"local": {"command": "python", "args": ["server.py"]}},
+            ],
+        )
+        payload = self._serialize(agent)
+
+        assert "mcpServers" in payload
+        assert "mcp_servers" not in payload
+        assert payload["mcpServers"][0] == "slack"
+        assert payload["mcpServers"][1]["local"]["command"] == "python"
+
+    def test_disallowed_tools_and_max_turns_serialize_as_camelcase(self):
+        """CLI expects ``disallowedTools`` and ``maxTurns`` (camelCase)."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            disallowedTools=["Bash", "Write"],
+            maxTurns=10,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["disallowedTools"] == ["Bash", "Write"]
+        assert "disallowed_tools" not in payload
+        assert payload["maxTurns"] == 10
+        assert "max_turns" not in payload
+
+    def test_initial_prompt_serializes_as_camelcase(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            initialPrompt="/review-pr 123",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["initialPrompt"] == "/review-pr 123"
+        assert "initial_prompt" not in payload
+
+    def test_model_accepts_full_model_id(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            model="claude-opus-4-5",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["model"] == "claude-opus-4-5"

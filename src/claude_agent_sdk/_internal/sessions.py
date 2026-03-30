@@ -1,6 +1,5 @@
 """Session listing implementation.
 
-Ported from TypeScript SDK (listSessionsImpl.ts + sessionStoragePortable.ts).
 Scans ~/.claude/projects/<sanitized-cwd>/ for .jsonl session files and
 extracts metadata from stat + head/tail reads without full JSONL parsing.
 """
@@ -13,6 +12,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -67,11 +67,7 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 
 
 def _simple_hash(s: str) -> str:
-    """Port of the JS simpleHash function (32-bit integer hash, base36).
-
-    Uses the same algorithm as the TS fallback so directory names match
-    when the CLI was running under Node.js (not Bun).
-    """
+    """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
     for ch in s:
         char = ord(ch)
@@ -396,6 +392,100 @@ def _get_worktree_paths(cwd: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Field extraction — shared by list_sessions and get_session_info
+# ---------------------------------------------------------------------------
+
+
+def _parse_session_info_from_lite(
+    session_id: str,
+    lite: _LiteSessionFile,
+    project_path: str | None = None,
+) -> SDKSessionInfo | None:
+    """Parses SDKSessionInfo fields from a lite session read (head/tail/stat).
+
+    Returns None for sidechain sessions or metadata-only sessions with no
+    extractable summary.
+
+    Shared by list_sessions and get_session_info.
+    """
+    head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
+
+    # Check first line for sidechain sessions
+    first_newline = head.find("\n")
+    first_line = head[:first_newline] if first_newline >= 0 else head
+    if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
+        return None
+
+    # User-set title (customTitle) wins over AI-generated title (aiTitle).
+    # Head fallback covers short sessions where the title entry may not be in tail.
+    custom_title = (
+        _extract_last_json_string_field(tail, "customTitle")
+        or _extract_last_json_string_field(head, "customTitle")
+        or _extract_last_json_string_field(tail, "aiTitle")
+        or _extract_last_json_string_field(head, "aiTitle")
+        or None
+    )
+    first_prompt = _extract_first_prompt_from_head(head) or None
+    # lastPrompt tail entry shows what the user was most recently doing.
+    summary = (
+        custom_title
+        or _extract_last_json_string_field(tail, "lastPrompt")
+        or _extract_last_json_string_field(tail, "summary")
+        or first_prompt
+    )
+
+    # Skip metadata-only sessions (no title, no summary, no prompt)
+    if not summary:
+        return None
+
+    git_branch = (
+        _extract_last_json_string_field(tail, "gitBranch")
+        or _extract_json_string_field(head, "gitBranch")
+        or None
+    )
+    session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
+    # Scope tag extraction to {"type":"tag"} lines — a bare tail scan for
+    # "tag" would match tool_use inputs (git tag, Docker tags, cloud resource
+    # tags).
+    tag_line = next(
+        (ln for ln in reversed(tail.split("\n")) if ln.startswith('{"type":"tag"')),
+        None,
+    )
+    tag = (
+        (_extract_last_json_string_field(tag_line, "tag") or None) if tag_line else None
+    )
+
+    # created_at from first entry's ISO timestamp (epoch ms). More reliable
+    # than stat().birthtime which is unsupported on some filesystems.
+    created_at: int | None = None
+    first_timestamp = _extract_json_string_field(first_line, "timestamp")
+    if first_timestamp:
+        try:
+            # Python 3.10's fromisoformat doesn't support trailing 'Z'
+            ts = (
+                first_timestamp.replace("Z", "+00:00")
+                if first_timestamp.endswith("Z")
+                else first_timestamp
+            )
+            created_at = int(datetime.fromisoformat(ts).timestamp() * 1000)
+        except ValueError:
+            pass
+
+    return SDKSessionInfo(
+        session_id=session_id,
+        summary=summary,
+        last_modified=mtime,
+        file_size=size,
+        custom_title=custom_title,
+        first_prompt=first_prompt,
+        git_branch=git_branch,
+        cwd=session_cwd,
+        tag=tag,
+        created_at=created_at,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core implementation
 # ---------------------------------------------------------------------------
 
@@ -427,45 +517,9 @@ def _read_sessions_from_dir(
         if lite is None:
             continue
 
-        head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
-
-        # Check first line for sidechain sessions
-        first_newline = head.find("\n")
-        first_line = head[:first_newline] if first_newline >= 0 else head
-        if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
-            continue
-
-        custom_title = _extract_last_json_string_field(tail, "customTitle") or None
-        first_prompt = _extract_first_prompt_from_head(head) or None
-        summary = (
-            custom_title
-            or _extract_last_json_string_field(tail, "summary")
-            or first_prompt
-        )
-
-        # Skip metadata-only sessions (no title, no summary, no prompt)
-        if not summary:
-            continue
-
-        git_branch = (
-            _extract_last_json_string_field(tail, "gitBranch")
-            or _extract_json_string_field(head, "gitBranch")
-            or None
-        )
-        session_cwd = _extract_json_string_field(head, "cwd") or project_path or None
-
-        results.append(
-            SDKSessionInfo(
-                session_id=session_id,
-                summary=summary,
-                last_modified=mtime,
-                file_size=size,
-                custom_title=custom_title,
-                first_prompt=first_prompt,
-                git_branch=git_branch,
-                cwd=session_cwd,
-            )
-        )
+        info = _parse_session_info_from_lite(session_id, lite, project_path)
+        if info is not None:
+            results.append(info)
 
     return results
 
@@ -482,18 +536,25 @@ def _deduplicate_by_session_id(
     return list(by_id.values())
 
 
-def _apply_sort_and_limit(
-    sessions: list[SDKSessionInfo], limit: int | None
+def _apply_sort_limit_offset(
+    sessions: list[SDKSessionInfo],
+    limit: int | None,
+    offset: int = 0,
 ) -> list[SDKSessionInfo]:
-    """Sorts sessions by last_modified descending and applies optional limit."""
+    """Sorts sessions by last_modified descending and applies offset + limit."""
     sessions.sort(key=lambda s: s.last_modified, reverse=True)
+    if offset > 0:
+        sessions = sessions[offset:]
     if limit is not None and limit > 0:
-        return sessions[:limit]
+        sessions = sessions[:limit]
     return sessions
 
 
 def _list_sessions_for_project(
-    directory: str, limit: int | None, include_worktrees: bool
+    directory: str,
+    limit: int | None,
+    offset: int,
+    include_worktrees: bool,
 ) -> list[SDKSessionInfo]:
     """Lists sessions for a specific project directory (and its worktrees)."""
     canonical_dir = _canonicalize_path(directory)
@@ -513,7 +574,7 @@ def _list_sessions_for_project(
         if project_dir is None:
             return []
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_and_limit(sessions, limit)
+        return _apply_sort_limit_offset(sessions, limit, offset)
 
     # Worktree-aware scanning: find all project dirs matching any worktree
     projects_dir = _get_projects_dir()
@@ -534,9 +595,9 @@ def _list_sessions_for_project(
         # Fall back to single project dir
         project_dir = _find_project_dir(canonical_dir)
         if project_dir is None:
-            return _apply_sort_and_limit([], limit)
+            return _apply_sort_limit_offset([], limit, offset)
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_and_limit(sessions, limit)
+        return _apply_sort_limit_offset(sessions, limit, offset)
 
     all_sessions: list[SDKSessionInfo] = []
     seen_dirs: set[str] = set()
@@ -570,10 +631,10 @@ def _list_sessions_for_project(
                 break
 
     deduped = _deduplicate_by_session_id(all_sessions)
-    return _apply_sort_and_limit(deduped, limit)
+    return _apply_sort_limit_offset(deduped, limit, offset)
 
 
-def _list_all_sessions(limit: int | None) -> list[SDKSessionInfo]:
+def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
     """Lists sessions across all project directories."""
     projects_dir = _get_projects_dir()
 
@@ -587,12 +648,13 @@ def _list_all_sessions(limit: int | None) -> list[SDKSessionInfo]:
         all_sessions.extend(_read_sessions_from_dir(project_dir))
 
     deduped = _deduplicate_by_session_id(all_sessions)
-    return _apply_sort_and_limit(deduped, limit)
+    return _apply_sort_limit_offset(deduped, limit, offset)
 
 
 def list_sessions(
     directory: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
     include_worktrees: bool = True,
 ) -> list[SDKSessionInfo]:
     """Lists sessions with metadata extracted from stat + head/tail reads.
@@ -601,11 +663,15 @@ def list_sessions(
     directory and its git worktrees. When omitted, returns sessions
     across all projects.
 
+    Use ``limit`` and ``offset`` for pagination.
+
     Args:
         directory: Directory to list sessions for. When provided, returns
             sessions for this project directory (and optionally its git
             worktrees). When omitted, returns sessions across all projects.
         limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip from the start of the sorted
+            result set. Use with ``limit`` for pagination. Defaults to 0.
         include_worktrees: When ``directory`` is provided and the directory
             is inside a git repository, include sessions from all git
             worktree paths. Defaults to ``True``.
@@ -618,9 +684,10 @@ def list_sessions(
 
             sessions = list_sessions(directory="/path/to/project")
 
-        List all sessions across all projects::
+        Paginate::
 
-            all_sessions = list_sessions()
+            page1 = list_sessions(limit=50)
+            page2 = list_sessions(limit=50, offset=50)
 
         List sessions without scanning git worktrees::
 
@@ -630,8 +697,91 @@ def list_sessions(
             )
     """
     if directory:
-        return _list_sessions_for_project(directory, limit, include_worktrees)
-    return _list_all_sessions(limit)
+        return _list_sessions_for_project(directory, limit, offset, include_worktrees)
+    return _list_all_sessions(limit, offset)
+
+
+# ---------------------------------------------------------------------------
+# get_session_info — single-session metadata lookup
+# ---------------------------------------------------------------------------
+
+
+def get_session_info(
+    session_id: str,
+    directory: str | None = None,
+) -> SDKSessionInfo | None:
+    """Reads metadata for a single session by ID.
+
+    Wraps ``_read_session_lite`` for one file — no O(n) directory scan.
+    Directory resolution matches ``get_session_messages``: ``directory`` is
+    the project path; when omitted, all project directories are searched for
+    the session file.
+
+    Args:
+        session_id: UUID of the session to look up.
+        directory: Project directory path (same semantics as
+            ``list_sessions(directory=...)``). When omitted, all project
+            directories are searched for the session file.
+
+    Returns:
+        ``SDKSessionInfo`` for the session, or ``None`` if the session file
+        is not found, is a sidechain session, or has no extractable summary.
+
+    Example:
+        Look up a session in a specific project::
+
+            info = get_session_info(
+                "550e8400-e29b-41d4-a716-446655440000",
+                directory="/path/to/project",
+            )
+            if info:
+                print(info.summary)
+
+        Search all projects for a session::
+
+            info = get_session_info("550e8400-e29b-41d4-a716-446655440000")
+    """
+    uuid = _validate_uuid(session_id)
+    if not uuid:
+        return None
+    file_name = f"{uuid}.jsonl"
+
+    if directory:
+        canonical = _canonicalize_path(directory)
+        project_dir = _find_project_dir(canonical)
+        if project_dir is not None:
+            lite = _read_session_lite(project_dir / file_name)
+            if lite is not None:
+                return _parse_session_info_from_lite(uuid, lite, canonical)
+
+        # Worktree fallback — matches get_session_messages semantics.
+        # Sessions may live under a different worktree root.
+        try:
+            worktree_paths = _get_worktree_paths(canonical)
+        except Exception:
+            worktree_paths = []
+        for wt in worktree_paths:
+            if wt == canonical:
+                continue
+            wt_project_dir = _find_project_dir(wt)
+            if wt_project_dir is not None:
+                lite = _read_session_lite(wt_project_dir / file_name)
+                if lite is not None:
+                    return _parse_session_info_from_lite(uuid, lite, wt)
+
+        return None
+
+    # No directory — search all project directories for the session file.
+    projects_dir = _get_projects_dir()
+    try:
+        dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
+    except OSError:
+        return None
+    for entry in dirents:
+        lite = _read_session_lite(entry / file_name)
+        if lite is not None:
+            return _parse_session_info_from_lite(uuid, lite)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -749,7 +899,7 @@ def _build_conversation_chain(
 ) -> list[_TranscriptEntry]:
     """Builds the conversation chain by finding the leaf and walking parentUuid.
 
-    Returns messages in chronological order (root → leaf).
+    Returns messages in chronological order (root -> leaf).
 
     Note: logicalParentUuid (set on compact_boundary entries) is intentionally
     NOT followed. This matches VS Code IDE behavior — post-compaction, the

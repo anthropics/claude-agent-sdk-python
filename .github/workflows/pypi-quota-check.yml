@@ -1,0 +1,71 @@
+name: PyPI Quota Check
+
+on:
+  schedule:
+    - cron: '23 13 * * *'  # daily at 13:23 UTC (off-peak to avoid runner queue delays)
+  pull_request:
+    paths:
+      - 'scripts/check_pypi_quota.py'
+      - '.github/workflows/pypi-quota-check.yml'
+  workflow_dispatch:
+    inputs:
+      project_limit:
+        description: 'Project size limit in bytes (defaults to 50 GiB)'
+        required: false
+      file_limit:
+        description: 'Per-file size limit in bytes (defaults to PyPI 100 MiB)'
+        required: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check PyPI storage usage
+        id: quota
+        run: |
+          python scripts/check_pypi_quota.py \
+            ${PROJECT_LIMIT:+--project-limit "$PROJECT_LIMIT"} \
+            ${FILE_LIMIT:+--file-limit "$FILE_LIMIT"}
+        env:
+          PROJECT_LIMIT: ${{ inputs.project_limit }}
+          FILE_LIMIT: ${{ inputs.file_limit }}
+
+      - name: Post to Slack
+        if: steps.quota.outputs.alert == 'true' && github.event_name != 'pull_request'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # 2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "C09HY5E0K60",
+              "text": "PyPI quota warning for ${{ github.repository }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(steps.quota.outputs.summary) }}
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run> · <https://docs.pypi.org/project-management/storage-limits/|PyPI limits docs>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Fail job if over threshold
+        if: steps.quota.outputs.alert == 'true' && github.event_name != 'pull_request'
+        run: exit 1

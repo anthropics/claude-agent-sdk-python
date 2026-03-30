@@ -8,6 +8,8 @@ from ..types import (
     AssistantMessage,
     ContentBlock,
     Message,
+    RateLimitEvent,
+    RateLimitInfo,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -130,6 +132,11 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
+                    usage=data["message"].get("usage"),
+                    message_id=data["message"].get("id"),
+                    stop_reason=data["message"].get("stop_reason"),
+                    session_id=data.get("session_id"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -200,6 +207,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     usage=data.get("usage"),
                     result=data.get("result"),
                     structured_output=data.get("structured_output"),
+                    model_usage=data.get("modelUsage"),
+                    permission_denials=data.get("permission_denials"),
+                    errors=data.get("errors"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -217,6 +228,28 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in stream_event message: {e}", data
+                ) from e
+
+        case "rate_limit_event":
+            try:
+                info = data["rate_limit_info"]
+                return RateLimitEvent(
+                    rate_limit_info=RateLimitInfo(
+                        status=info["status"],
+                        resets_at=info.get("resetsAt"),
+                        rate_limit_type=info.get("rateLimitType"),
+                        utilization=info.get("utilization"),
+                        overage_status=info.get("overageStatus"),
+                        overage_resets_at=info.get("overageResetsAt"),
+                        overage_disabled_reason=info.get("overageDisabledReason"),
+                        raw=info,
+                    ),
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in rate_limit_event message: {e}", data
                 ) from e
 
         case _:

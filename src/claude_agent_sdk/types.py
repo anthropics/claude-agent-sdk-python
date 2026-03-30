@@ -4,9 +4,15 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal
 
-from typing_extensions import NotRequired
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired, so
+    # __required_keys__ would include NotRequired fields. typing_extensions
+    # backports the correct behavior.
+    from typing_extensions import NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
@@ -15,7 +21,9 @@ else:
     McpServer = Any
 
 # Permission modes
-PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
+PermissionMode = Literal[
+    "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk"
+]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
 SdkBeta = Literal["context-1m-2025-08-07"]
@@ -32,6 +40,25 @@ class SystemPromptPreset(TypedDict):
     append: NotRequired[str]
 
 
+class SystemPromptFile(TypedDict):
+    """System prompt file configuration."""
+
+    type: Literal["file"]
+    path: str
+
+
+class TaskBudget(TypedDict):
+    """API-side task budget in tokens.
+
+    When set, the model is made aware of its remaining token budget so it can
+    pace tool use and wrap up before the limit. Sent as
+    ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
+    header.
+    """
+
+    total: int
+
+
 class ToolsPreset(TypedDict):
     """Tools preset configuration."""
 
@@ -46,7 +73,15 @@ class AgentDefinition:
     description: str
     prompt: str
     tools: list[str] | None = None
-    model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    disallowedTools: list[str] | None = None  # noqa: N815
+    # Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
+    model: str | None = None
+    skills: list[str] | None = None
+    memory: Literal["user", "project", "local"] | None = None
+    # Each entry is a server name (str) or an inline {name: config} dict.
+    mcpServers: list[str | dict[str, Any]] | None = None  # noqa: N815
+    initialPrompt: str | None = None  # noqa: N815
+    maxTurns: int | None = None  # noqa: N815
 
 
 # Permission Update types (matching TypeScript SDK)
@@ -129,6 +164,11 @@ class ToolPermissionContext:
     suggestions: list[PermissionUpdate] = field(
         default_factory=list
     )  # Permission suggestions from CLI
+    tool_use_id: str | None = None
+    """Unique identifier for this specific tool call within the assistant message.
+    Multiple tool calls in the same assistant message will have different tool_use_ids."""
+    agent_id: str | None = None
+    """If running within the context of a sub-agent, the sub-agent's ID."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -639,6 +679,80 @@ class McpStatusResponse(TypedDict):
     mcpServers: list[McpServerStatus]
 
 
+class ContextUsageCategory(TypedDict):
+    """A single context usage category (system prompt, tools, messages, etc.)."""
+
+    name: str
+    tokens: int
+    color: str
+    isDeferred: NotRequired[bool]
+
+
+class ContextUsageResponse(TypedDict):
+    """Response from `ClaudeSDKClient.get_context_usage()`.
+
+    Provides a breakdown of current context window usage by category,
+    matching the data shown by the `/context` command in the CLI.
+    """
+
+    categories: list[ContextUsageCategory]
+    """Token usage broken down by category (system prompt, tools, messages, etc.)."""
+
+    totalTokens: int
+    """Total tokens currently in the context window."""
+
+    maxTokens: int
+    """Effective maximum tokens (may be reduced by autocompact buffer)."""
+
+    rawMaxTokens: int
+    """Raw model context window size."""
+
+    percentage: float
+    """Percentage of context window used (0-100)."""
+
+    model: str
+    """Model name the context usage is calculated for."""
+
+    isAutoCompactEnabled: bool
+    """Whether autocompact is enabled for this session."""
+
+    memoryFiles: list[dict[str, Any]]
+    """CLAUDE.md and memory files loaded, with path, type, and token counts."""
+
+    mcpTools: list[dict[str, Any]]
+    """MCP tools with name, serverName, tokens, and isLoaded status."""
+
+    agents: list[dict[str, Any]]
+    """Agent definitions with agentType, source, and token counts."""
+
+    gridRows: list[list[dict[str, Any]]]
+    """Visual grid representation used by the CLI context display."""
+
+    autoCompactThreshold: NotRequired[int]
+    """Token threshold at which autocompact triggers."""
+
+    deferredBuiltinTools: NotRequired[list[dict[str, Any]]]
+    """Built-in tools deferred from the initial tool list."""
+
+    systemTools: NotRequired[list[dict[str, Any]]]
+    """System (built-in) tools with name and token counts."""
+
+    systemPromptSections: NotRequired[list[dict[str, Any]]]
+    """System prompt sections with name and token counts."""
+
+    slashCommands: NotRequired[dict[str, Any]]
+    """Slash command usage summary."""
+
+    skills: NotRequired[dict[str, Any]]
+    """Skill usage summary with frontmatter breakdown."""
+
+    messageBreakdown: NotRequired[dict[str, Any]]
+    """Detailed breakdown of message tokens by type (tool calls, results, etc.)."""
+
+    apiUsage: NotRequired[dict[str, Any] | None]
+    """Cumulative API usage for the session."""
+
+
 class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 
@@ -792,6 +906,11 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    usage: dict[str, Any] | None = None
+    message_id: str | None = None
+    stop_reason: str | None = None
+    session_id: str | None = None
+    uuid: str | None = None
 
 
 @dataclass
@@ -883,6 +1002,10 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     result: str | None = None
     structured_output: Any = None
+    model_usage: dict[str, Any] | None = None
+    permission_denials: list[Any] | None = None
+    errors: list[str] | None = None
+    uuid: str | None = None
 
 
 @dataclass
@@ -895,7 +1018,61 @@ class StreamEvent:
     parent_tool_use_id: str | None = None
 
 
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
+# Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
+RateLimitStatus = Literal["allowed", "allowed_warning", "rejected"]
+RateLimitType = Literal[
+    "five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"
+]
+
+
+@dataclass
+class RateLimitInfo:
+    """Rate limit status emitted by the CLI when rate limit state changes.
+
+    Attributes:
+        status: Current rate limit status. ``allowed_warning`` means approaching
+            the limit; ``rejected`` means the limit has been hit.
+        resets_at: Unix timestamp when the rate limit window resets.
+        rate_limit_type: Which rate limit window applies.
+        utilization: Fraction of the rate limit consumed (0.0 - 1.0).
+        overage_status: Status of overage/pay-as-you-go usage if applicable.
+        overage_resets_at: Unix timestamp when overage window resets.
+        overage_disabled_reason: Why overage is unavailable if status is rejected.
+        raw: Full raw dict from the CLI, including any fields not modeled above.
+    """
+
+    status: RateLimitStatus
+    resets_at: int | None = None
+    rate_limit_type: RateLimitType | None = None
+    utilization: float | None = None
+    overage_status: RateLimitStatus | None = None
+    overage_resets_at: int | None = None
+    overage_disabled_reason: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RateLimitEvent:
+    """Rate limit event emitted when rate limit info changes.
+
+    The CLI emits this whenever the rate limit status transitions (e.g. from
+    ``allowed`` to ``allowed_warning``). Use this to warn users before they
+    hit a hard limit, or to gracefully back off when ``status == "rejected"``.
+    """
+
+    rate_limit_info: RateLimitInfo
+    uuid: str
+    session_id: str
+
+
+Message = (
+    UserMessage
+    | AssistantMessage
+    | SystemMessage
+    | ResultMessage
+    | StreamEvent
+    | RateLimitEvent
+)
 
 
 # ---------------------------------------------------------------------------
@@ -915,21 +1092,28 @@ class SDKSessionInfo:
         summary: Display title for the session — custom title, auto-generated
             summary, or first prompt.
         last_modified: Last modified time in milliseconds since epoch.
-        file_size: Session file size in bytes.
-        custom_title: User-set session title via /rename.
+        file_size: Session file size in bytes. Only populated for local
+            JSONL storage; may be ``None`` for remote storage backends.
+        custom_title: Session title — user-set custom title or AI-generated title.
         first_prompt: First meaningful user prompt in the session.
         git_branch: Git branch at the end of the session.
         cwd: Working directory for the session.
+        tag: User-set session tag.
+        created_at: Creation time in milliseconds since epoch, extracted
+            from the first entry's ISO timestamp field. More reliable
+            than stat().birthtime which is unsupported on some filesystems.
     """
 
     session_id: str
     summary: str
     last_modified: int
-    file_size: int
+    file_size: int | None = None
     custom_title: str | None = None
     first_prompt: str | None = None
     git_branch: str | None = None
     cwd: str | None = None
+    tag: str | None = None
+    created_at: int | None = None
 
 
 @dataclass
@@ -978,11 +1162,12 @@ class ClaudeAgentOptions:
 
     tools: list[str] | ToolsPreset | None = None
     allowed_tools: list[str] = field(default_factory=list)
-    system_prompt: str | SystemPromptPreset | None = None
+    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False
     resume: str | None = None
+    session_id: str | None = None
     max_turns: int | None = None
     max_budget_usd: float | None = None
     disallowed_tools: list[str] = field(default_factory=list)
@@ -1042,6 +1227,10 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # API-side task budget in tokens. When set, the model is made aware of
+    # its remaining token budget so it can pace tool use and wrap up before
+    # the limit.
+    task_budget: TaskBudget | None = None
 
 
 # SDK Control Protocol
@@ -1056,6 +1245,8 @@ class SDKControlPermissionRequest(TypedDict):
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None
+    tool_use_id: str
+    agent_id: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):
@@ -1066,8 +1257,7 @@ class SDKControlInitializeRequest(TypedDict):
 
 class SDKControlSetPermissionModeRequest(TypedDict):
     subtype: Literal["set_permission_mode"]
-    # TODO: Add PermissionMode
-    mode: str
+    mode: PermissionMode
 
 
 class SDKHookCallbackRequest(TypedDict):

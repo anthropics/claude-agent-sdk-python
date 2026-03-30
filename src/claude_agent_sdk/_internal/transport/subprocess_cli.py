@@ -280,12 +280,8 @@ class SubprocessCLITransport(Transport):
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 
-        sources_value = (
-            ",".join(self._options.setting_sources)
-            if self._options.setting_sources is not None
-            else ""
-        )
-        cmd.extend(["--setting-sources", sources_value])
+        if self._options.setting_sources:
+            cmd.extend(["--setting-sources", ",".join(self._options.setting_sources)])
 
         # Add plugin directories
         if self._options.plugins:

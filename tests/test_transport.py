@@ -389,6 +389,35 @@ class TestSubprocessCLITransport:
         assert "--settings" in cmd
         assert settings_json in cmd
 
+    def test_build_command_setting_sources_omitted_when_not_provided(self):
+        """Test that --setting-sources is omitted when setting_sources is not provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" not in cmd
+
+    def test_build_command_setting_sources_omitted_when_empty(self):
+        """Test that --setting-sources is omitted when setting_sources is empty list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=[]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" not in cmd
+
+    def test_build_command_setting_sources_included_when_provided(self):
+        """Test that --setting-sources is included when setting_sources has values."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=["user", "project"]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources" in cmd
+        idx = cmd.index("--setting-sources")
+        assert cmd[idx + 1] == "user,project"
+
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""
         transport = SubprocessCLITransport(

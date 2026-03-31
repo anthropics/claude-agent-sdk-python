@@ -82,6 +82,9 @@ class AgentDefinition:
     mcpServers: list[str | dict[str, Any]] | None = None  # noqa: N815
     initialPrompt: str | None = None  # noqa: N815
     maxTurns: int | None = None  # noqa: N815
+    background: bool | None = None
+    effort: Literal["low", "medium", "high", "max"] | int | None = None
+    permissionMode: PermissionMode | None = None  # noqa: N815
 
 
 # Permission Update types (matching TypeScript SDK)

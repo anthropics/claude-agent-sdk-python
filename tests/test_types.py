@@ -538,3 +538,64 @@ class TestAgentDefinition:
         payload = self._serialize(agent)
 
         assert payload["model"] == "claude-opus-4-5"
+
+    def test_background_serializes_correctly(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            background=True,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["background"] is True
+
+    def test_effort_accepts_named_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="high",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "high"
+
+    def test_effort_accepts_integer(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort=32000,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == 32000
+
+    def test_permission_mode_serializes_as_camelcase(self):
+        """CLI expects ``permissionMode`` (camelCase)."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            permissionMode="bypassPermissions",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["permissionMode"] == "bypassPermissions"
+        assert "permission_mode" not in payload
+
+    def test_new_fields_omitted_when_none(self):
+        """New optional fields should not appear in payload when unset."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="p")
+        payload = self._serialize(agent)
+
+        assert "background" not in payload
+        assert "effort" not in payload
+        assert "permissionMode" not in payload

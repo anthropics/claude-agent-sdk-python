@@ -469,21 +469,20 @@ def test_max_result_size_chars_annotation_flows_to_cli():
     response = anyio.run(_run)
     tools_by_name = {t["name"]: t for t in response["result"]["tools"]}
 
-    # maxResultSizeChars must appear in the annotations the CLI receives.
-    # The CLI reads this to set the layer-2 persistence threshold per tool.
-    assert "annotations" in tools_by_name["get_large_schema"], (
-        "Tool annotations missing from tools/list response — "
-        "the CLI will not see maxResultSizeChars and layer-2 spill cannot be bypassed."
+    # maxResultSizeChars must appear in _meta so the CLI can read it.
+    # The MCP SDK's Zod schema strips unknown annotation fields, so we use
+    # _meta with a namespaced key instead (matching anthropic/searchHint pattern).
+    assert "_meta" in tools_by_name["get_large_schema"], (
+        "_meta missing from tools/list response — "
+        "the CLI will not see anthropic/maxResultSizeChars and layer-2 spill cannot be bypassed."
     )
-    assert tools_by_name["get_large_schema"]["annotations"]["maxResultSizeChars"] == 500_000, (
-        "maxResultSizeChars not forwarded correctly — "
+    assert tools_by_name["get_large_schema"]["_meta"]["anthropic/maxResultSizeChars"] == 500_000, (
+        "anthropic/maxResultSizeChars not forwarded correctly in _meta — "
         "CLI MCPTool will use its hardcoded 100K default instead."
     )
 
-    # Tools without the annotation must not have the key so the CLI
-    # keeps its default clamped behavior for them.
-    annotations = tools_by_name["small_tool"].get("annotations", {})
-    assert "maxResultSizeChars" not in annotations
+    # Tools without the annotation must not have the key.
+    assert "anthropic/maxResultSizeChars" not in tools_by_name["small_tool"].get("_meta", {})
 
 
 @pytest.mark.asyncio

@@ -438,6 +438,7 @@ def test_max_result_size_chars_annotation_flows_to_cli():
     No SDK code change is required — this test documents and locks in the behavior.
     """
     import anyio
+
     from claude_agent_sdk._internal.query import Query
 
     @tool(

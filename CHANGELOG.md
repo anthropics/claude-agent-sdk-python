@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.53
+
+### Bug Fixes
+
+- **Setting sources flag**: Fixed `--setting-sources` being passed as an empty string when not provided, which caused the CLI to misparse subsequent flags (#778)
+- **String prompt deadlock**: Fixed deadlock when using `query()` with a string prompt and hooks/MCP servers that trigger many tool calls, by spawning `wait_for_result_and_end_input()` as a background task (#780)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.88
+
 ## 0.1.52
 
 ### New Features

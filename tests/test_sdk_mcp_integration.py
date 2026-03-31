@@ -461,7 +461,9 @@ def test_max_result_size_chars_annotation_flows_to_cli():
 
     async def _run():
         query_instance = Query.__new__(Query)
-        query_instance.sdk_mcp_servers = {"large-output-test": server_config["instance"]}
+        query_instance.sdk_mcp_servers = {
+            "large-output-test": server_config["instance"]
+        }
         return await query_instance._handle_sdk_mcp_request(
             "large-output-test",
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
@@ -477,13 +479,18 @@ def test_max_result_size_chars_annotation_flows_to_cli():
         "_meta missing from tools/list response — "
         "the CLI will not see anthropic/maxResultSizeChars and layer-2 spill cannot be bypassed."
     )
-    assert tools_by_name["get_large_schema"]["_meta"]["anthropic/maxResultSizeChars"] == 500_000, (
+    assert (
+        tools_by_name["get_large_schema"]["_meta"]["anthropic/maxResultSizeChars"]
+        == 500_000
+    ), (
         "anthropic/maxResultSizeChars not forwarded correctly in _meta — "
         "CLI MCPTool will use its hardcoded 100K default instead."
     )
 
     # Tools without the annotation must not have the key.
-    assert "anthropic/maxResultSizeChars" not in tools_by_name["small_tool"].get("_meta", {})
+    assert "anthropic/maxResultSizeChars" not in tools_by_name["small_tool"].get(
+        "_meta", {}
+    )
 
 
 @pytest.mark.asyncio

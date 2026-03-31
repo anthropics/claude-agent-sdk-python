@@ -62,6 +62,7 @@ def make_transport(env: dict | None = None, **kwargs) -> SubprocessCLITransport:
 # Helpers to capture the env dict passed to anyio.open_process
 # ---------------------------------------------------------------------------
 
+
 def _capture_env(transport: SubprocessCLITransport) -> dict[str, str]:
     """Run transport.connect() with a mocked process and return the env dict."""
     captured: dict[str, str] = {}
@@ -96,6 +97,7 @@ def _capture_env(transport: SubprocessCLITransport) -> dict[str, str]:
 # 1. MAX_MCP_OUTPUT_TOKENS (layer-1) passthrough
 # ---------------------------------------------------------------------------
 
+
 class TestLayer1EnvPassthrough:
     def test_max_mcp_output_tokens_reaches_subprocess(self):
         """MAX_MCP_OUTPUT_TOKENS set in options.env must appear in the subprocess env.
@@ -114,7 +116,9 @@ class TestLayer1EnvPassthrough:
 
     def test_default_absent_when_not_set(self):
         """When not set, the SDK must not inject a default — the CLI's own governs."""
-        env_without = {k: v for k, v in os.environ.items() if k != "MAX_MCP_OUTPUT_TOKENS"}
+        env_without = {
+            k: v for k, v in os.environ.items() if k != "MAX_MCP_OUTPUT_TOKENS"
+        }
         with patch.dict(os.environ, env_without, clear=True):
             transport = make_transport(env={})
             captured = _capture_env(transport)
@@ -130,6 +134,7 @@ class TestLayer1EnvPassthrough:
 # ---------------------------------------------------------------------------
 # 2. os.environ inheritance and options.env precedence
 # ---------------------------------------------------------------------------
+
 
 class TestEnvInheritanceAndPrecedence:
     def test_inherited_from_os_environ(self):
@@ -162,6 +167,7 @@ class TestEnvInheritanceAndPrecedence:
 
     def test_options_env_cannot_override_sdk_version(self):
         from claude_agent_sdk._version import __version__
+
         transport = make_transport(env={"CLAUDE_AGENT_SDK_VERSION": "0.0.0"})
         env = _capture_env(transport)
         assert env.get("CLAUDE_AGENT_SDK_VERSION") == __version__
@@ -170,6 +176,7 @@ class TestEnvInheritanceAndPrecedence:
 # ---------------------------------------------------------------------------
 # 3. Layer-2 threshold boundary (documents the unresolved gap)
 # ---------------------------------------------------------------------------
+
 
 class TestLayer2Boundary:
     """Layer 2 (toolResultStorage.ts maybePersistLargeToolResult) spills any result
@@ -220,6 +227,7 @@ class TestLayer2Boundary:
 # 4. Message parser: inline vs persisted-output tool results
 # ---------------------------------------------------------------------------
 
+
 def _user_message_with_tool_result(content: str, is_error: bool = False) -> dict:
     return {
         "type": "user",
@@ -248,9 +256,7 @@ INLINE_CONTENT = "x" * 1000
 PERSISTED_CONTENT = (
     "<persisted-output>\n"
     "Output too large (73.0KB). Full output saved to: /tmp/.claude/tool-results/abc123.txt\n"
-    "\nPreview (first 2KB):\n"
-    + "x" * 2000
-    + "\n...\n</persisted-output>"
+    "\nPreview (first 2KB):\n" + "x" * 2000 + "\n...\n</persisted-output>"
 )
 
 
@@ -285,13 +291,17 @@ class TestToolResultParsing:
         assert blocks[0].content != large_content
 
     def test_error_tool_result_flagged(self):
-        msg = parse_message(_user_message_with_tool_result("tool failed", is_error=True))
+        msg = parse_message(
+            _user_message_with_tool_result("tool failed", is_error=True)
+        )
         assert isinstance(msg, UserMessage)
         blocks = [b for b in msg.content if isinstance(b, ToolResultBlock)]
         assert blocks[0].is_error is True
 
     def test_normal_tool_result_not_flagged(self):
-        msg = parse_message(_user_message_with_tool_result(INLINE_CONTENT, is_error=False))
+        msg = parse_message(
+            _user_message_with_tool_result(INLINE_CONTENT, is_error=False)
+        )
         assert isinstance(msg, UserMessage)
         blocks = [b for b in msg.content if isinstance(b, ToolResultBlock)]
         assert blocks[0].is_error is False
@@ -301,9 +311,12 @@ class TestToolResultParsing:
 # Utility: recommended caller pattern for detecting the degraded path
 # ---------------------------------------------------------------------------
 
+
 def is_persisted_output(block: ToolResultBlock) -> bool:
     """Return True if the CLI spilled this tool result to a temp file (layer 2)."""
-    return isinstance(block.content, str) and block.content.startswith("<persisted-output>")
+    return isinstance(block.content, str) and block.content.startswith(
+        "<persisted-output>"
+    )
 
 
 class TestPersistedOutputDetectionHelper:

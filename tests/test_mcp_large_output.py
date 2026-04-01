@@ -284,11 +284,13 @@ class TestToolResultParsing:
 
     def test_persisted_output_is_not_full_content(self):
         """Claude receives only the 2 KB preview, not the original large content."""
-        large_content = "THE ANSWER IS: 42\n" + "padding\n" * 5000
         msg = parse_message(_user_message_with_tool_result(PERSISTED_CONTENT))
         assert isinstance(msg, UserMessage)
         blocks = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-        assert blocks[0].content != large_content
+        content = str(blocks[0].content)
+        assert len(content) < _LAYER2_THRESHOLD_CHARS, (
+            f"Expected preview under {_LAYER2_THRESHOLD_CHARS} chars, got {len(content)}"
+        )
 
     def test_error_tool_result_flagged(self):
         msg = parse_message(

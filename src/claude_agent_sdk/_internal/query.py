@@ -496,6 +496,8 @@ class Query:
                             tool_data["annotations"] = tool.annotations.model_dump(
                                 exclude_none=True
                             )
+                        if tool.meta:
+                            tool_data["_meta"] = tool.meta
                         tools_data.append(tool_data)
                     return {
                         "jsonrpc": "2.0",

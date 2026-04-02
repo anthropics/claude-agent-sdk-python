@@ -384,12 +384,27 @@ def create_sdk_mcp_server(
                 return _typeddict_to_json_schema(tool_def.input_schema)
             return {"type": "object", "properties": {}}
 
+        def _build_meta(tool_def: "SdkMcpTool[Any]") -> dict[str, Any] | None:
+            # The MCP SDK's Zod schema strips unknown annotation fields, so
+            # Anthropic-specific hints use _meta with namespaced keys instead.
+            # maxResultSizeChars controls the CLI's layer-2 tool-result spill
+            # threshold (toolResultStorage.ts maybePersistLargeToolResult).
+            if tool_def.annotations is None:
+                return None
+            max_size = getattr(tool_def.annotations, "maxResultSizeChars", None)
+            if max_size is None:
+                return None
+            return {"anthropic/maxResultSizeChars": max_size}
+
         cached_tool_list = [
-            Tool(
-                name=tool_def.name,
-                description=tool_def.description,
-                inputSchema=_build_schema(tool_def),
-                annotations=tool_def.annotations,
+            Tool.model_validate(
+                {
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "inputSchema": _build_schema(tool_def),
+                    "annotations": tool_def.annotations,
+                    "_meta": _build_meta(tool_def),
+                }
             )
             for tool_def in tools
         ]

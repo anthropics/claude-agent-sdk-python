@@ -424,6 +424,75 @@ async def test_tool_annotations_in_jsonrpc():
     assert "annotations" not in tools_by_name["plain_tool"]
 
 
+def test_max_result_size_chars_annotation_flows_to_cli():
+    """maxResultSizeChars annotation reaches the CLI via the tools/list JSONRPC response.
+
+    This is the Python SDK half of the fix for large-MCP-result spill (Option 3).
+    The CLI's layer-2 spill threshold (toolResultStorage.ts maybePersistLargeToolResult)
+    defaults to 50 000 chars regardless of tool output size.  The companion CLI change
+    reads annotations.maxResultSizeChars from the tools/list response and uses it as
+    the per-tool threshold, bypassing the 50 K clamp when explicitly declared.
+
+    ToolAnnotations from mcp.types has extra="allow", so maxResultSizeChars is
+    preserved through model_dump() and included in the JSONRPC payload the CLI reads.
+    No SDK code change is required — this test documents and locks in the behavior.
+    """
+    import anyio
+
+    from claude_agent_sdk._internal.query import Query
+
+    @tool(
+        "get_large_schema",
+        "Returns a large DB schema that may exceed 50K chars.",
+        {},
+        annotations=ToolAnnotations(maxResultSizeChars=500_000),
+    )
+    async def get_large_schema(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "schema"}]}
+
+    @tool("small_tool", "Returns a small result.", {})
+    async def small_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    server_config = create_sdk_mcp_server(
+        name="large-output-test",
+        tools=[get_large_schema, small_tool],
+    )
+
+    async def _run():
+        query_instance = Query.__new__(Query)
+        query_instance.sdk_mcp_servers = {
+            "large-output-test": server_config["instance"]
+        }
+        return await query_instance._handle_sdk_mcp_request(
+            "large-output-test",
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+
+    response = anyio.run(_run)
+    tools_by_name = {t["name"]: t for t in response["result"]["tools"]}
+
+    # maxResultSizeChars must appear in _meta so the CLI can read it.
+    # The MCP SDK's Zod schema strips unknown annotation fields, so we use
+    # _meta with a namespaced key instead (matching anthropic/searchHint pattern).
+    assert "_meta" in tools_by_name["get_large_schema"], (
+        "_meta missing from tools/list response — "
+        "the CLI will not see anthropic/maxResultSizeChars and layer-2 spill cannot be bypassed."
+    )
+    assert (
+        tools_by_name["get_large_schema"]["_meta"]["anthropic/maxResultSizeChars"]
+        == 500_000
+    ), (
+        "anthropic/maxResultSizeChars not forwarded correctly in _meta — "
+        "CLI MCPTool will use its hardcoded 100K default instead."
+    )
+
+    # Tools without the annotation must not have the key.
+    assert "anthropic/maxResultSizeChars" not in tools_by_name["small_tool"].get(
+        "_meta", {}
+    )
+
+
 @pytest.mark.asyncio
 async def test_resource_link_content_converted_to_text():
     """Test that resource_link content blocks are converted to text."""

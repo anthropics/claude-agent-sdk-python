@@ -274,6 +274,29 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_assistant_message_with_thinking_missing_signature(self):
+        """Test parsing an assistant message with thinking block missing signature."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Redacted thinking content",
+                    },
+                    {"type": "text", "text": "Here's my response"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], ThinkingBlock)
+        assert message.content[0].thinking == "Redacted thinking content"
+        assert message.content[0].signature == ""
+        assert isinstance(message.content[1], TextBlock)
+
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.
 

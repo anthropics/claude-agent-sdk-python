@@ -11,7 +11,7 @@ from .types import ClaudeAgentOptions, Message
 async def query(
     *,
     prompt: str | AsyncIterable[dict[str, Any]],
-    options: ClaudeAgentOptions | None = None,
+    options: ClaudeAgentOptions | dict[str, Any] | None = None,
     transport: Transport | None = None,
 ) -> AsyncIterator[Message]:
     """
@@ -116,6 +116,8 @@ async def query(
     """
     if options is None:
         options = ClaudeAgentOptions()
+    elif isinstance(options, dict):
+        options = ClaudeAgentOptions(**options)
 
     client = InternalClient()
 

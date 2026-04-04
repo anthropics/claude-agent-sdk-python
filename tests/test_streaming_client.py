@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -1200,6 +1201,34 @@ class TestClaudeSDKClientEdgeCases:
 
                 # Should have been called twice
                 assert mock_transport_class.call_count == 2
+
+        anyio.run(_test)
+
+    def test_connect_with_invalid_timeout_env_falls_back_to_default(self):
+        """Malformed timeout env values should not break connect()."""
+
+        async def _test():
+            with (
+                patch.dict(
+                    os.environ,
+                    {"CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "60s"},
+                    clear=False,
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+                ) as mock_transport_class,
+            ):
+                mock_transport = create_mock_transport()
+                mock_transport_class.return_value = mock_transport
+
+                client = ClaudeSDKClient()
+                await client.connect()
+
+                assert client._query is not None
+                # Default is 60000ms, and initialize timeout enforces a 60s minimum.
+                assert client._query._initialize_timeout == 60.0
+
+                await client.disconnect()
 
         anyio.run(_test)
 

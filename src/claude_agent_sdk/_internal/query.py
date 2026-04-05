@@ -26,6 +26,7 @@ from ..types import (
     ToolPermissionContext,
 )
 from .transport import Transport
+from .._errors import ProcessError
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
@@ -239,6 +240,21 @@ class Query:
             # Task was cancelled - this is expected behavior
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
+        except ProcessError as e:
+            # The CLI can exit non-zero after delivering a valid result (e.g.,
+            # StructuredOutput tool_use triggers exit code 1). When we already
+            # received a result message, treat the process error as non-fatal.
+            if self._first_result_event.is_set():
+                logger.warning(
+                    f"Process exited with code {e.exit_code} after result — ignoring"
+                )
+            else:
+                logger.error(f"Process error before result: {e}")
+                for request_id, event in list(self.pending_control_responses.items()):
+                    if request_id not in self.pending_control_results:
+                        self.pending_control_results[request_id] = e
+                        event.set()
+                await self._message_send.send({"type": "error", "error": str(e)})
         except Exception as e:
             logger.error(f"Fatal error in message reader: {e}")
             # Signal all pending control requests so they fail fast instead of timing out

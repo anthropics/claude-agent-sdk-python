@@ -8,9 +8,14 @@ from ..types import (
     AssistantMessage,
     ContentBlock,
     Message,
+    RateLimitEvent,
+    RateLimitInfo,
     ResultMessage,
     StreamEvent,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -21,7 +26,7 @@ from ..types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_message(data: dict[str, Any]) -> Message:
+def parse_message(data: dict[str, Any]) -> Message | None:
     """
     Parse message from CLI output into typed Message objects.
 
@@ -127,6 +132,11 @@ def parse_message(data: dict[str, Any]) -> Message:
                     model=data["message"]["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
+                    usage=data["message"].get("usage"),
+                    message_id=data["message"].get("id"),
+                    stop_reason=data["message"].get("stop_reason"),
+                    session_id=data.get("session_id"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -135,10 +145,49 @@ def parse_message(data: dict[str, Any]) -> Message:
 
         case "system":
             try:
-                return SystemMessage(
-                    subtype=data["subtype"],
-                    data=data,
-                )
+                subtype = data["subtype"]
+                match subtype:
+                    case "task_started":
+                        return TaskStartedMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            description=data["description"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            task_type=data.get("task_type"),
+                        )
+                    case "task_progress":
+                        return TaskProgressMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            description=data["description"],
+                            usage=data["usage"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            last_tool_name=data.get("last_tool_name"),
+                        )
+                    case "task_notification":
+                        return TaskNotificationMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data["task_id"],
+                            status=data["status"],
+                            output_file=data["output_file"],
+                            summary=data["summary"],
+                            uuid=data["uuid"],
+                            session_id=data["session_id"],
+                            tool_use_id=data.get("tool_use_id"),
+                            usage=data.get("usage"),
+                        )
+                    case _:
+                        return SystemMessage(
+                            subtype=subtype,
+                            data=data,
+                        )
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in system message: {e}", data
@@ -153,10 +202,15 @@ def parse_message(data: dict[str, Any]) -> Message:
                     is_error=data["is_error"],
                     num_turns=data["num_turns"],
                     session_id=data["session_id"],
+                    stop_reason=data.get("stop_reason"),
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
                     result=data.get("result"),
                     structured_output=data.get("structured_output"),
+                    model_usage=data.get("modelUsage"),
+                    permission_denials=data.get("permission_denials"),
+                    errors=data.get("errors"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -176,5 +230,30 @@ def parse_message(data: dict[str, Any]) -> Message:
                     f"Missing required field in stream_event message: {e}", data
                 ) from e
 
+        case "rate_limit_event":
+            try:
+                info = data["rate_limit_info"]
+                return RateLimitEvent(
+                    rate_limit_info=RateLimitInfo(
+                        status=info["status"],
+                        resets_at=info.get("resetsAt"),
+                        rate_limit_type=info.get("rateLimitType"),
+                        utilization=info.get("utilization"),
+                        overage_status=info.get("overageStatus"),
+                        overage_resets_at=info.get("overageResetsAt"),
+                        overage_disabled_reason=info.get("overageDisabledReason"),
+                        raw=info,
+                    ),
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in rate_limit_event message: {e}", data
+                ) from e
+
         case _:
-            raise MessageParseError(f"Unknown message type: {message_type}", data)
+            # Forward-compatible: skip unrecognized message types so newer
+            # CLI versions don't crash older SDK versions.
+            logger.debug("Skipping unknown message type: %s", message_type)
+            return None

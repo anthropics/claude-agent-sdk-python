@@ -4,9 +4,15 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal
 
-from typing_extensions import NotRequired
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired, so
+    # __required_keys__ would include NotRequired fields. typing_extensions
+    # backports the correct behavior.
+    from typing_extensions import NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
@@ -15,7 +21,9 @@ else:
     McpServer = Any
 
 # Permission modes
-PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
+PermissionMode = Literal[
+    "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk"
+]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
 SdkBeta = Literal["context-1m-2025-08-07"]
@@ -32,6 +40,25 @@ class SystemPromptPreset(TypedDict):
     append: NotRequired[str]
 
 
+class SystemPromptFile(TypedDict):
+    """System prompt file configuration."""
+
+    type: Literal["file"]
+    path: str
+
+
+class TaskBudget(TypedDict):
+    """API-side task budget in tokens.
+
+    When set, the model is made aware of its remaining token budget so it can
+    pace tool use and wrap up before the limit. Sent as
+    ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
+    header.
+    """
+
+    total: int
+
+
 class ToolsPreset(TypedDict):
     """Tools preset configuration."""
 
@@ -46,7 +73,18 @@ class AgentDefinition:
     description: str
     prompt: str
     tools: list[str] | None = None
-    model: Literal["sonnet", "opus", "haiku", "inherit"] | None = None
+    disallowedTools: list[str] | None = None  # noqa: N815
+    # Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
+    model: str | None = None
+    skills: list[str] | None = None
+    memory: Literal["user", "project", "local"] | None = None
+    # Each entry is a server name (str) or an inline {name: config} dict.
+    mcpServers: list[str | dict[str, Any]] | None = None  # noqa: N815
+    initialPrompt: str | None = None  # noqa: N815
+    maxTurns: int | None = None  # noqa: N815
+    background: bool | None = None
+    effort: Literal["low", "medium", "high", "max"] | int | None = None
+    permissionMode: PermissionMode | None = None  # noqa: N815
 
 
 # Permission Update types (matching TypeScript SDK)
@@ -129,6 +167,11 @@ class ToolPermissionContext:
     suggestions: list[PermissionUpdate] = field(
         default_factory=list
     )  # Permission suggestions from CLI
+    tool_use_id: str | None = None
+    """Unique identifier for this specific tool call within the assistant message.
+    Multiple tool calls in the same assistant message will have different tool_use_ids."""
+    agent_id: str | None = None
+    """If running within the context of a sub-agent, the sub-agent's ID."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -182,7 +225,32 @@ class BaseHookInput(TypedDict):
     permission_mode: NotRequired[str]
 
 
-class PreToolUseHookInput(BaseHookInput):
+# agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
+# declared per-hook here because SubagentStartHookInput/SubagentStopHookInput
+# need them as *required*, and PEP 655 forbids narrowing NotRequired->Required
+# in a TypedDict subclass. The four tool-lifecycle types below are the only
+# ones the CLI actually populates (the other BaseHookInput consumers don't
+# have a toolUseContext in scope at their build site).
+class _SubagentContextMixin(TypedDict, total=False):
+    """Optional sub-agent attribution fields for tool-lifecycle hooks.
+
+    agent_id: Sub-agent identifier. Present only when the hook fires from
+    inside a Task-spawned sub-agent; absent on the main thread. Matches the
+    agent_id emitted by that sub-agent's SubagentStart/SubagentStop hooks.
+    When multiple sub-agents run in parallel their tool-lifecycle hooks
+    interleave over the same control channel — this is the only reliable
+    way to attribute each one to the correct sub-agent.
+
+    agent_type: Agent type name (e.g. "general-purpose", "code-reviewer").
+    Present inside a sub-agent (alongside agent_id), or on the main thread
+    of a session started with --agent (without agent_id).
+    """
+
+    agent_id: str
+    agent_type: str
+
+
+class PreToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PreToolUse hook events."""
 
     hook_event_name: Literal["PreToolUse"]
@@ -191,7 +259,7 @@ class PreToolUseHookInput(BaseHookInput):
     tool_use_id: str
 
 
-class PostToolUseHookInput(BaseHookInput):
+class PostToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PostToolUse hook events."""
 
     hook_event_name: Literal["PostToolUse"]
@@ -201,7 +269,7 @@ class PostToolUseHookInput(BaseHookInput):
     tool_use_id: str
 
 
-class PostToolUseFailureHookInput(BaseHookInput):
+class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PostToolUseFailure hook events."""
 
     hook_event_name: Literal["PostToolUseFailure"]
@@ -261,7 +329,7 @@ class SubagentStartHookInput(BaseHookInput):
     agent_type: str
 
 
-class PermissionRequestHookInput(BaseHookInput):
+class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PermissionRequest hook events."""
 
     hook_event_name: Literal["PermissionRequest"]
@@ -504,6 +572,190 @@ McpServerConfig = (
 )
 
 
+# MCP Server Status types (returned by get_mcp_status)
+# These mirror the TypeScript SDK's McpServerStatus type and use wire-format
+# field names (camelCase where applicable) since they come directly from CLI
+# JSON output.
+
+
+class McpSdkServerConfigStatus(TypedDict):
+    """SDK MCP server config as returned in status responses.
+
+    Unlike McpSdkServerConfig (which includes the in-process `instance`),
+    this output-only type only has serializable fields.
+    """
+
+    type: Literal["sdk"]
+    name: str
+
+
+class McpClaudeAIProxyServerConfig(TypedDict):
+    """Claude.ai proxy MCP server config.
+
+    Output-only type that appears in status responses for servers proxied
+    through Claude.ai.
+    """
+
+    type: Literal["claudeai-proxy"]
+    url: str
+    id: str
+
+
+# Broader config type for status responses (includes claudeai-proxy which is
+# output-only)
+McpServerStatusConfig = (
+    McpStdioServerConfig
+    | McpSSEServerConfig
+    | McpHttpServerConfig
+    | McpSdkServerConfigStatus
+    | McpClaudeAIProxyServerConfig
+)
+
+
+class McpToolAnnotations(TypedDict, total=False):
+    """Tool annotations as returned in MCP server status.
+
+    Wire format uses camelCase field names (from CLI JSON output).
+    """
+
+    readOnly: bool
+    destructive: bool
+    openWorld: bool
+
+
+class McpToolInfo(TypedDict):
+    """Information about a tool provided by an MCP server."""
+
+    name: str
+    description: NotRequired[str]
+    annotations: NotRequired[McpToolAnnotations]
+
+
+class McpServerInfo(TypedDict):
+    """Server info from MCP initialize handshake (available when connected)."""
+
+    name: str
+    version: str
+
+
+# Connection status values for an MCP server
+McpServerConnectionStatus = Literal[
+    "connected", "failed", "needs-auth", "pending", "disabled"
+]
+
+
+class McpServerStatus(TypedDict):
+    """Status information for an MCP server connection.
+
+    Returned by `ClaudeSDKClient.get_mcp_status()` in the `mcpServers` list.
+    """
+
+    name: str
+    """Server name as configured."""
+
+    status: McpServerConnectionStatus
+    """Current connection status."""
+
+    serverInfo: NotRequired[McpServerInfo]
+    """Server information from MCP handshake (available when connected)."""
+
+    error: NotRequired[str]
+    """Error message (available when status is 'failed')."""
+
+    config: NotRequired[McpServerStatusConfig]
+    """Server configuration (includes URL for HTTP/SSE servers)."""
+
+    scope: NotRequired[str]
+    """Configuration scope (e.g., project, user, local, claudeai, managed)."""
+
+    tools: NotRequired[list[McpToolInfo]]
+    """Tools provided by this server (available when connected)."""
+
+
+class McpStatusResponse(TypedDict):
+    """Response from `ClaudeSDKClient.get_mcp_status()`.
+
+    Wraps the list of server statuses under the `mcpServers` key, matching
+    the wire-format response shape.
+    """
+
+    mcpServers: list[McpServerStatus]
+
+
+class ContextUsageCategory(TypedDict):
+    """A single context usage category (system prompt, tools, messages, etc.)."""
+
+    name: str
+    tokens: int
+    color: str
+    isDeferred: NotRequired[bool]
+
+
+class ContextUsageResponse(TypedDict):
+    """Response from `ClaudeSDKClient.get_context_usage()`.
+
+    Provides a breakdown of current context window usage by category,
+    matching the data shown by the `/context` command in the CLI.
+    """
+
+    categories: list[ContextUsageCategory]
+    """Token usage broken down by category (system prompt, tools, messages, etc.)."""
+
+    totalTokens: int
+    """Total tokens currently in the context window."""
+
+    maxTokens: int
+    """Effective maximum tokens (may be reduced by autocompact buffer)."""
+
+    rawMaxTokens: int
+    """Raw model context window size."""
+
+    percentage: float
+    """Percentage of context window used (0-100)."""
+
+    model: str
+    """Model name the context usage is calculated for."""
+
+    isAutoCompactEnabled: bool
+    """Whether autocompact is enabled for this session."""
+
+    memoryFiles: list[dict[str, Any]]
+    """CLAUDE.md and memory files loaded, with path, type, and token counts."""
+
+    mcpTools: list[dict[str, Any]]
+    """MCP tools with name, serverName, tokens, and isLoaded status."""
+
+    agents: list[dict[str, Any]]
+    """Agent definitions with agentType, source, and token counts."""
+
+    gridRows: list[list[dict[str, Any]]]
+    """Visual grid representation used by the CLI context display."""
+
+    autoCompactThreshold: NotRequired[int]
+    """Token threshold at which autocompact triggers."""
+
+    deferredBuiltinTools: NotRequired[list[dict[str, Any]]]
+    """Built-in tools deferred from the initial tool list."""
+
+    systemTools: NotRequired[list[dict[str, Any]]]
+    """System (built-in) tools with name and token counts."""
+
+    systemPromptSections: NotRequired[list[dict[str, Any]]]
+    """System prompt sections with name and token counts."""
+
+    slashCommands: NotRequired[dict[str, Any]]
+    """Slash command usage summary."""
+
+    skills: NotRequired[dict[str, Any]]
+    """Skill usage summary with frontmatter breakdown."""
+
+    messageBreakdown: NotRequired[dict[str, Any]]
+    """Detailed breakdown of message tokens by type (tool calls, results, etc.)."""
+
+    apiUsage: NotRequired[dict[str, Any] | None]
+    """Cumulative API usage for the session."""
+
+
 class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 
@@ -657,6 +909,11 @@ class AssistantMessage:
     model: str
     parent_tool_use_id: str | None = None
     error: AssistantMessageError | None = None
+    usage: dict[str, Any] | None = None
+    message_id: str | None = None
+    stop_reason: str | None = None
+    session_id: str | None = None
+    uuid: str | None = None
 
 
 @dataclass
@@ -665,6 +922,72 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+
+class TaskUsage(TypedDict):
+    """Usage statistics reported in task_progress and task_notification messages."""
+
+    total_tokens: int
+    tool_uses: int
+    duration_ms: int
+
+
+# Possible status values for a task_notification message.
+TaskNotificationStatus = Literal["completed", "failed", "stopped"]
+
+
+@dataclass
+class TaskStartedMessage(SystemMessage):
+    """System message emitted when a task starts.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    description: str
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    task_type: str | None = None
+
+
+@dataclass
+class TaskProgressMessage(SystemMessage):
+    """System message emitted while a task is in progress.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    description: str
+    usage: TaskUsage
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    last_tool_name: str | None = None
+
+
+@dataclass
+class TaskNotificationMessage(SystemMessage):
+    """System message emitted when a task completes, fails, or is stopped.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    status: TaskNotificationStatus
+    output_file: str
+    summary: str
+    uuid: str
+    session_id: str
+    tool_use_id: str | None = None
+    usage: TaskUsage | None = None
 
 
 @dataclass
@@ -677,10 +1000,15 @@ class ResultMessage:
     is_error: bool
     num_turns: int
     session_id: str
+    stop_reason: str | None = None
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None
     structured_output: Any = None
+    model_usage: dict[str, Any] | None = None
+    permission_denials: list[Any] | None = None
+    errors: list[str] | None = None
+    uuid: str | None = None
 
 
 @dataclass
@@ -693,7 +1021,126 @@ class StreamEvent:
     parent_tool_use_id: str | None = None
 
 
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
+# Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
+RateLimitStatus = Literal["allowed", "allowed_warning", "rejected"]
+RateLimitType = Literal[
+    "five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"
+]
+
+
+@dataclass
+class RateLimitInfo:
+    """Rate limit status emitted by the CLI when rate limit state changes.
+
+    Attributes:
+        status: Current rate limit status. ``allowed_warning`` means approaching
+            the limit; ``rejected`` means the limit has been hit.
+        resets_at: Unix timestamp when the rate limit window resets.
+        rate_limit_type: Which rate limit window applies.
+        utilization: Fraction of the rate limit consumed (0.0 - 1.0).
+        overage_status: Status of overage/pay-as-you-go usage if applicable.
+        overage_resets_at: Unix timestamp when overage window resets.
+        overage_disabled_reason: Why overage is unavailable if status is rejected.
+        raw: Full raw dict from the CLI, including any fields not modeled above.
+    """
+
+    status: RateLimitStatus
+    resets_at: int | None = None
+    rate_limit_type: RateLimitType | None = None
+    utilization: float | None = None
+    overage_status: RateLimitStatus | None = None
+    overage_resets_at: int | None = None
+    overage_disabled_reason: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RateLimitEvent:
+    """Rate limit event emitted when rate limit info changes.
+
+    The CLI emits this whenever the rate limit status transitions (e.g. from
+    ``allowed`` to ``allowed_warning``). Use this to warn users before they
+    hit a hard limit, or to gracefully back off when ``status == "rejected"``.
+    """
+
+    rate_limit_info: RateLimitInfo
+    uuid: str
+    session_id: str
+
+
+Message = (
+    UserMessage
+    | AssistantMessage
+    | SystemMessage
+    | ResultMessage
+    | StreamEvent
+    | RateLimitEvent
+)
+
+
+# ---------------------------------------------------------------------------
+# Session Listing Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SDKSessionInfo:
+    """Session metadata returned by ``list_sessions()``.
+
+    Contains only data extractable from stat + head/tail reads — no full
+    JSONL parsing required.
+
+    Attributes:
+        session_id: Unique session identifier (UUID).
+        summary: Display title for the session — custom title, auto-generated
+            summary, or first prompt.
+        last_modified: Last modified time in milliseconds since epoch.
+        file_size: Session file size in bytes. Only populated for local
+            JSONL storage; may be ``None`` for remote storage backends.
+        custom_title: Session title — user-set custom title or AI-generated title.
+        first_prompt: First meaningful user prompt in the session.
+        git_branch: Git branch at the end of the session.
+        cwd: Working directory for the session.
+        tag: User-set session tag.
+        created_at: Creation time in milliseconds since epoch, extracted
+            from the first entry's ISO timestamp field. More reliable
+            than stat().birthtime which is unsupported on some filesystems.
+    """
+
+    session_id: str
+    summary: str
+    last_modified: int
+    file_size: int | None = None
+    custom_title: str | None = None
+    first_prompt: str | None = None
+    git_branch: str | None = None
+    cwd: str | None = None
+    tag: str | None = None
+    created_at: int | None = None
+
+
+@dataclass
+class SessionMessage:
+    """A user or assistant message from a session transcript.
+
+    Returned by ``get_session_messages()`` for reading historical session
+    data. Fields match the SDK wire protocol types (SDKUserMessage /
+    SDKAssistantMessage).
+
+    Attributes:
+        type: Message type — ``"user"`` or ``"assistant"``.
+        uuid: Unique message identifier.
+        session_id: ID of the session this message belongs to.
+        message: Raw Anthropic API message dict (role, content, etc.).
+        parent_tool_use_id: Always ``None`` for top-level conversation
+            messages (tool-use sidechain messages are filtered out).
+    """
+
+    type: Literal["user", "assistant"]
+    uuid: str
+    session_id: str
+    message: Any
+    parent_tool_use_id: None = None
 
 
 class ThinkingConfigAdaptive(TypedDict):
@@ -718,11 +1165,12 @@ class ClaudeAgentOptions:
 
     tools: list[str] | ToolsPreset | None = None
     allowed_tools: list[str] = field(default_factory=list)
-    system_prompt: str | SystemPromptPreset | None = None
+    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     permission_mode: PermissionMode | None = None
     continue_conversation: bool = False
     resume: str | None = None
+    session_id: str | None = None
     max_turns: int | None = None
     max_budget_usd: float | None = None
     disallowed_tools: list[str] = field(default_factory=list)
@@ -782,6 +1230,10 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # API-side task budget in tokens. When set, the model is made aware of
+    # its remaining token budget so it can pace tool use and wrap up before
+    # the limit.
+    task_budget: TaskBudget | None = None
 
 
 # SDK Control Protocol
@@ -796,6 +1248,8 @@ class SDKControlPermissionRequest(TypedDict):
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None
+    tool_use_id: str
+    agent_id: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):
@@ -806,8 +1260,7 @@ class SDKControlInitializeRequest(TypedDict):
 
 class SDKControlSetPermissionModeRequest(TypedDict):
     subtype: Literal["set_permission_mode"]
-    # TODO: Add PermissionMode
-    mode: str
+    mode: PermissionMode
 
 
 class SDKHookCallbackRequest(TypedDict):
@@ -828,6 +1281,28 @@ class SDKControlRewindFilesRequest(TypedDict):
     user_message_id: str
 
 
+class SDKControlMcpReconnectRequest(TypedDict):
+    """Reconnects a disconnected or failed MCP server."""
+
+    subtype: Literal["mcp_reconnect"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+
+
+class SDKControlMcpToggleRequest(TypedDict):
+    """Enables or disables an MCP server."""
+
+    subtype: Literal["mcp_toggle"]
+    # Note: wire protocol uses camelCase for this field
+    serverName: str
+    enabled: bool
+
+
+class SDKControlStopTaskRequest(TypedDict):
+    subtype: Literal["stop_task"]
+    task_id: str
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -839,6 +1314,9 @@ class SDKControlRequest(TypedDict):
         | SDKHookCallbackRequest
         | SDKControlMcpMessageRequest
         | SDKControlRewindFilesRequest
+        | SDKControlMcpReconnectRequest
+        | SDKControlMcpToggleRequest
+        | SDKControlStopTaskRequest
     )
 
 

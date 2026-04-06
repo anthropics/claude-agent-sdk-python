@@ -1,5 +1,209 @@
 # Changelog
 
+## 0.1.56
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.92
+
+## 0.1.55
+
+### Bug Fixes
+
+- **MCP large tool results**: Forward `maxResultSizeChars` from `ToolAnnotations` via `_meta` to bypass Zod annotation stripping in the CLI, fixing silent truncation of large MCP tool results (>50K chars) (#756)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.91
+
+## 0.1.53
+
+### Bug Fixes
+
+- **Setting sources flag**: Fixed `--setting-sources` being passed as an empty string when not provided, which caused the CLI to misparse subsequent flags (#778)
+- **String prompt deadlock**: Fixed deadlock when using `query()` with a string prompt and hooks/MCP servers that trigger many tool calls, by spawning `wait_for_result_and_end_input()` as a background task (#780)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.88
+
+## 0.1.52
+
+### New Features
+
+- **Context usage**: Added `get_context_usage()` method to `ClaudeSDKClient` for querying context window usage by category (#764)
+- **Annotated parameter descriptions**: The `@tool` decorator and `create_sdk_mcp_server` now support `typing.Annotated` for per-parameter descriptions in JSON Schema (#762)
+- **ToolPermissionContext fields**: Exposed `tool_use_id` and `agent_id` in `ToolPermissionContext` for distinguishing parallel permission requests (#754)
+- **Session ID option**: Added `session_id` option to `ClaudeAgentOptions` for specifying custom session IDs (#750)
+
+### Bug Fixes
+
+- **String prompt in connect()**: Fixed `connect(prompt="...")` silently dropping the string prompt, causing `receive_messages()` to hang indefinitely (#769)
+- **Cancel request handling**: Implemented `control_cancel_request` handling so in-flight hook callbacks are properly cancelled when the CLI abandons them (#751)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.87
+- Increased CI timeout for example tests and reduced sleep duration in error handling example (#760)
+
+## 0.1.51
+
+### New Features
+
+- **Session management**: Added `fork_session()`, `delete_session()`, and offset-based pagination for session listing (#744)
+- **Task budget**: Added `task_budget` option for token budget management (#747)
+- **SystemPromptFile**: Added support for `--system-prompt-file` CLI flag via `SystemPromptFile` (#591)
+- **AgentDefinition fields**: Added `disallowedTools`, `maxTurns`, and `initialPrompt` to `AgentDefinition` (#759)
+- **Preserved fields**: Preserve dropped fields on `AssistantMessage` and `ResultMessage` for forward compatibility (#718)
+
+### Bug Fixes
+
+- **Python 3.10 compatibility**: Use `typing_extensions.TypedDict` on Python 3.10 for `NotRequired` support (#761)
+- **ResultMessage errors field**: Added missing `errors` field to `ResultMessage` (#749)
+- **Async generator cleanup**: Resolved cross-task cancel scope `RuntimeError` on async generator cleanup (#746)
+- **MCP tool input_schema**: Convert `TypedDict` input_schema to proper JSON Schema in SDK MCP tools (#736)
+- **initialize_timeout**: Pass `initialize_timeout` from env var in `query()` (#743)
+- **Async event loop blocking**: Defer CLI discovery to `connect()` to avoid blocking async event loops (#722)
+- **Permission mode**: Added missing `dontAsk` permission mode to types (#719)
+- **Environment filtering**: Filter `CLAUDECODE` env var from subprocess environment (#732)
+- **Process cleanup**: Added `SIGKILL` fallback when `SIGTERM` handler blocks in `close()` (#729)
+- **Duplicate warning**: Removed duplicate version warning and included CLI path (#720)
+- **MCP resource types**: Handle `resource_link` and embedded resource content types in SDK MCP tools (#725)
+- **Stdin timeout**: Removed stdin timeout for hooks and SDK MCP servers (#731)
+- **Stdout parsing**: Skip non-JSON lines on CLI stdout to prevent buffer corruption (#723)
+- **MCP error propagation**: Propagate `is_error` flag from SDK MCP tool results (#717)
+- **Install script**: Retry `install.sh` fetch on 429 with pipefail + jitter (#708)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.85
+
+## 0.1.50
+
+### New Features
+
+- **Session info**: Added `tag` and `created_at` fields to `SDKSessionInfo` and new `get_session_info()` function for retrieving session metadata (#667)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.81
+- Hardened PyPI publish workflow against partial-upload failures (#700)
+- Added daily PyPI storage quota monitoring (#705)
+
+## 0.1.49
+
+### New Features
+
+- **AgentDefinition**: Added `skills`, `memory`, and `mcpServers` fields (#684)
+- **AssistantMessage usage**: Preserve per-turn `usage` on `AssistantMessage` (#685)
+- **Session tagging**: Added `tag_session()` with Unicode sanitization (#670)
+- **Session renaming**: Added `rename_session()` (#668)
+- **RateLimitEvent**: Added typed `RateLimitEvent` message (#648)
+
+### Bug Fixes
+
+- **CLAUDE_CODE_ENTRYPOINT**: Use default-if-absent semantics to match TS SDK (#686)
+- **Fine-grained tool streaming**: Reverted the env-var workaround from 0.1.48; partial-message delivery is now handled upstream (#671)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.77
+- Added macOS x86_64 wheel to the published matrix (#661)
+- Upload wheel-check artifacts in CI (#662)
+- Docs: clarified `allowed_tools` as a permission allowlist (#649)
+
+## 0.1.48
+
+### Bug Fixes
+
+- **Fine-grained tool streaming**: Fixed `include_partial_messages=True` not delivering `input_json_delta` events by enabling the `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING` environment variable in the subprocess. This regression affected versions 0.1.36 through 0.1.47 for users without the server-side feature flag (#644)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.71
+
+## 0.1.47
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.70
+
+## 0.1.46
+
+### New Features
+
+- **Session history functions**: Added `list_sessions()` and `get_session_messages()` top-level functions for retrieving past session data (#622)
+- **MCP control methods**: Added `add_mcp_server()`, `remove_mcp_server()`, and typed `McpServerStatus` for runtime MCP server management (#620)
+- **Typed task messages**: Added `TaskStarted`, `TaskProgress`, and `TaskNotification` message subclasses for better type safety when handling task-related events (#621)
+- **ResultMessage stop_reason**: Added `stop_reason` field to `ResultMessage` for inspecting why a conversation turn ended (#619)
+- **Hook input enhancements**: Added `agent_id` and `agent_type` fields to tool-lifecycle hook inputs (`PreToolUseHookInput`, `PostToolUseHookInput`, `PostToolUseFailureHookInput`) (#628)
+
+### Bug Fixes
+
+- **String prompt MCP initialization**: Fixed an issue where passing a string prompt would close stdin before MCP server initialization completed, causing MCP servers to fail to register (#630)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.69
+
+## 0.1.45
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.63
+
+## 0.1.44
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.59
+
+## 0.1.43
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.56
+
+## 0.1.42
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.55
+
+## 0.1.41
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.52
+
+## 0.1.40
+
+### Bug Fixes
+
+- **Unknown message type handling**: Fixed an issue where unrecognized CLI message types (e.g., `rate_limit_event`) would crash the session by raising `MessageParseError`. Unknown message types are now silently skipped, making the SDK forward-compatible with future CLI message types (#598)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.51
+
+## 0.1.39
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.49
+
+## 0.1.38
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.47
+
+## 0.1.37
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.44
+
 ## 0.1.36
 
 ### New Features

@@ -1,5 +1,6 @@
 """Query class for handling bidirectional control protocol."""
 
+import asyncio
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ from mcp.types import (
 )
 
 from ..types import (
+    PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
     SDKControlPermissionRequest,
@@ -117,16 +119,15 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=math.inf)
-        self._tg: anyio.abc.TaskGroup | None = None
+        self._read_task: asyncio.Task[None] | None = None
+        self._child_tasks: set[asyncio.Task[Any]] = set()
+        self._inflight_requests: dict[str, asyncio.Task[Any]] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
-        self._stream_close_timeout = (
-            float(os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")) / 1000.0
-        )  # Convert ms to seconds
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -176,10 +177,28 @@ class Query:
 
     async def start(self) -> None:
         """Start reading messages from transport."""
-        if self._tg is None:
-            self._tg = anyio.create_task_group()
-            await self._tg.__aenter__()
-            self._tg.start_soon(self._read_messages)
+        if self._read_task is None:
+            loop = asyncio.get_running_loop()
+            self._read_task = loop.create_task(self._read_messages())
+
+    def spawn_task(self, coro: Any) -> asyncio.Task[Any]:
+        """Spawn a child task that will be cancelled on close()."""
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(coro)
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
+        return task
+
+    def _spawn_control_request_handler(self, request: SDKControlRequest) -> None:
+        """Spawn a control request handler and track it for cancellation."""
+        req_id = request["request_id"]
+        task = self.spawn_task(self._handle_control_request(request))
+        self._inflight_requests[req_id] = task
+
+        def _done(_t: asyncio.Task[Any]) -> None:
+            self._inflight_requests.pop(req_id, None)
+
+        task.add_done_callback(_done)
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
@@ -209,13 +228,16 @@ class Query:
                     # Handle incoming control requests from CLI
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
-                    if self._tg:
-                        self._tg.start_soon(self._handle_control_request, request)
+                    if not self._closed:
+                        self._spawn_control_request_handler(request)
                     continue
 
                 elif msg_type == "control_cancel_request":
-                    # Handle cancel requests
-                    # TODO: Implement cancellation support
+                    cancel_id = message.get("request_id")
+                    if cancel_id:
+                        inflight = self._inflight_requests.pop(cancel_id, None)
+                        if inflight:
+                            inflight.cancel()
                     continue
 
                 # Track results for proper stream closure
@@ -239,6 +261,9 @@ class Query:
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": str(e)})
         finally:
+            # Unblock any waiters (e.g. string-prompt path waiting for first
+            # result) so they don't stall for the full timeout on early exit.
+            self._first_result_event.set()
             # Always signal end of stream
             await self._message_send.send({"type": "end"})
 
@@ -262,6 +287,8 @@ class Query:
                     signal=None,  # TODO: Add abort signal support
                     suggestions=permission_request.get("permission_suggestions", [])
                     or [],
+                    tool_use_id=permission_request.get("tool_use_id"),
+                    agent_id=permission_request.get("agent_id"),
                 )
 
                 response = await self.can_use_tool(
@@ -341,6 +368,10 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
+        except asyncio.CancelledError:
+            # Request was cancelled via control_cancel_request; the CLI has
+            # already abandoned this request, so don't write a response.
+            raise
         except Exception as e:
             # Send error response
             error_response: SDKControlResponse = {
@@ -477,6 +508,8 @@ class Query:
                             tool_data["annotations"] = tool.annotations.model_dump(
                                 exclude_none=True
                             )
+                        if tool.meta:
+                            tool_data["_meta"] = tool.meta
                         tools_data.append(tool_data)
                     return {
                         "jsonrpc": "2.0",
@@ -497,20 +530,55 @@ class Query:
                     # Convert MCP result to JSONRPC response
                     content = []
                     for item in result.root.content:  # type: ignore[union-attr]
-                        if hasattr(item, "text"):
-                            content.append({"type": "text", "text": item.text})
-                        elif hasattr(item, "data") and hasattr(item, "mimeType"):
+                        item_type = getattr(item, "type", None)
+                        if item_type == "text":
+                            content.append(
+                                {"type": "text", "text": getattr(item, "text", "")}
+                            )
+                        elif item_type == "image":
                             content.append(
                                 {
                                     "type": "image",
-                                    "data": item.data,
-                                    "mimeType": item.mimeType,
+                                    "data": getattr(item, "data", ""),
+                                    "mimeType": getattr(item, "mimeType", ""),
                                 }
+                            )
+                        elif item_type == "resource_link":
+                            parts = []
+                            name = getattr(item, "name", None)
+                            uri = getattr(item, "uri", None)
+                            desc = getattr(item, "description", None)
+                            if name:
+                                parts.append(name)
+                            if uri:
+                                parts.append(str(uri))
+                            if desc:
+                                parts.append(desc)
+                            content.append(
+                                {
+                                    "type": "text",
+                                    "text": "\n".join(parts)
+                                    if parts
+                                    else "Resource link",
+                                }
+                            )
+                        elif item_type == "resource":
+                            resource = getattr(item, "resource", None)
+                            if resource and hasattr(resource, "text"):
+                                content.append({"type": "text", "text": resource.text})
+                            else:
+                                logger.warning(
+                                    "Binary embedded resource cannot be converted to text, skipping"
+                                )
+                        else:
+                            logger.warning(
+                                "Unsupported content type %r in tool result, skipping",
+                                item_type,
                             )
 
                     response_data = {"content": content}
-                    if hasattr(result.root, "is_error") and result.root.is_error:
-                        response_data["is_error"] = True  # type: ignore[assignment]
+                    if hasattr(result.root, "isError") and result.root.isError:
+                        response_data["isError"] = True  # type: ignore[assignment]
 
                     return {
                         "jsonrpc": "2.0",
@@ -542,11 +610,15 @@ class Query:
         """Get current MCP server connection status."""
         return await self._send_control_request({"subtype": "mcp_status"})
 
+    async def get_context_usage(self) -> dict[str, Any]:
+        """Get a breakdown of current context window usage by category."""
+        return await self._send_control_request({"subtype": "get_context_usage"})
+
     async def interrupt(self) -> None:
         """Send interrupt control request."""
         await self._send_control_request({"subtype": "interrupt"})
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode."""
         await self._send_control_request(
             {
@@ -579,6 +651,67 @@ class Query:
             }
         )
 
+    async def reconnect_mcp_server(self, server_name: str) -> None:
+        """Reconnect a disconnected or failed MCP server.
+
+        Args:
+            server_name: The name of the MCP server to reconnect
+        """
+        await self._send_control_request(
+            {
+                "subtype": "mcp_reconnect",
+                "serverName": server_name,
+            }
+        )
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None:
+        """Enable or disable an MCP server.
+
+        Args:
+            server_name: The name of the MCP server to toggle
+            enabled: Whether the server should be enabled
+        """
+        await self._send_control_request(
+            {
+                "subtype": "mcp_toggle",
+                "serverName": server_name,
+                "enabled": enabled,
+            }
+        )
+
+    async def stop_task(self, task_id: str) -> None:
+        """Stop a running task.
+
+        Args:
+            task_id: The task ID from task_notification events
+        """
+        await self._send_control_request(
+            {
+                "subtype": "stop_task",
+                "task_id": task_id,
+            }
+        )
+
+    async def wait_for_result_and_end_input(self) -> None:
+        """Wait for the first result (if needed) then close stdin.
+
+        If SDK MCP servers or hooks require bidirectional communication,
+        keeps stdin open until the first result arrives. The control protocol
+        requires stdin to remain open for the entire conversation, so no
+        timeout is applied. The event is guaranteed to fire: either when the
+        result message arrives, or in _read_messages' finally block if the
+        process exits early.
+        """
+        if self.sdk_mcp_servers or self.hooks:
+            logger.debug(
+                "Waiting for first result before closing stdin "
+                f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
+                f"has_hooks={bool(self.hooks)})"
+            )
+            await self._first_result_event.wait()
+
+        await self.transport.end_input()
+
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
@@ -591,25 +724,7 @@ class Query:
                     break
                 await self.transport.write(json.dumps(message) + "\n")
 
-            # If we have SDK MCP servers or hooks that need bidirectional communication,
-            # wait for first result before closing the channel
-            has_hooks = bool(self.hooks)
-            if self.sdk_mcp_servers or has_hooks:
-                logger.debug(
-                    f"Waiting for first result before closing stdin "
-                    f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, has_hooks={has_hooks})"
-                )
-                try:
-                    with anyio.move_on_after(self._stream_close_timeout):
-                        await self._first_result_event.wait()
-                        logger.debug("Received first result, closing input stream")
-                except Exception:
-                    logger.debug(
-                        "Timed out waiting for first result, closing input stream"
-                    )
-
-            # After all messages sent (and result received if needed), end input
-            await self.transport.end_input()
+            await self.wait_for_result_and_end_input()
         except Exception as e:
             logger.debug(f"Error streaming input: {e}")
 
@@ -627,11 +742,13 @@ class Query:
     async def close(self) -> None:
         """Close the query and transport."""
         self._closed = True
-        if self._tg:
-            self._tg.cancel_scope.cancel()
-            # Wait for task group to complete cancellation
-            with suppress(anyio.get_cancelled_exc_class()):
-                await self._tg.__aexit__(None, None, None)
+        for task in list(self._child_tasks):
+            task.cancel()
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._read_task
+        self._read_task = None
         await self.transport.close()
 
     # Make Query an async iterator

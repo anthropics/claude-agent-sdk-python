@@ -8,7 +8,16 @@ from typing import Any
 
 from . import Transport
 from ._errors import CLIConnectionError
-from .types import ClaudeAgentOptions, HookEvent, HookMatcher, Message, ResultMessage
+from .types import (
+    ClaudeAgentOptions,
+    ContextUsageResponse,
+    HookEvent,
+    HookMatcher,
+    McpStatusResponse,
+    Message,
+    PermissionMode,
+    ResultMessage,
+)
 
 
 class ClaudeSDKClient:
@@ -64,7 +73,6 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
-        os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py-client"
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -100,7 +108,9 @@ class ClaudeSDKClient:
             return
             yield {}  # type: ignore[unreachable]
 
-        actual_prompt = _empty_stream() if prompt is None else prompt
+        # String prompts are sent via transport.write() below, so the transport
+        # only needs an AsyncIterable (or an empty stream for None/str cases).
+        actual_prompt = prompt if isinstance(prompt, AsyncIterable) else _empty_stream()
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:
@@ -172,9 +182,17 @@ class ClaudeSDKClient:
         await self._query.start()
         await self._query.initialize()
 
-        # If we have an initial prompt stream, start streaming it
-        if prompt is not None and isinstance(prompt, AsyncIterable) and self._query._tg:
-            self._query._tg.start_soon(self._query.stream_input, prompt)
+        # If we have an initial prompt, send it
+        if isinstance(prompt, str):
+            message = {
+                "type": "user",
+                "message": {"role": "user", "content": prompt},
+                "parent_tool_use_id": None,
+                "session_id": "default",
+            }
+            await self._transport.write(json.dumps(message) + "\n")
+        elif prompt is not None and isinstance(prompt, AsyncIterable):
+            self._query.spawn_task(self._query.stream_input(prompt))
 
     async def receive_messages(self) -> AsyncIterator[Message]:
         """Receive all messages from Claude."""
@@ -184,7 +202,9 @@ class ClaudeSDKClient:
         from ._internal.message_parser import parse_message
 
         async for data in self._query.receive_messages():
-            yield parse_message(data)
+            message = parse_message(data)
+            if message is not None:
+                yield message
 
     async def query(
         self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"
@@ -222,14 +242,16 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).
 
         Args:
             mode: The permission mode to set. Valid options:
                 - 'default': CLI prompts for dangerous tools
                 - 'acceptEdits': Auto-accept file edits
+                - 'plan': Plan-only mode (no tool execution)
                 - 'bypassPermissions': Allow all tools (use with caution)
+                - 'dontAsk': Allow all tools without prompting
 
         Example:
             ```python
@@ -302,30 +324,144 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.rewind_files(user_message_id)
 
-    async def get_mcp_status(self) -> dict[str, Any]:
-        """Get current MCP server connection status (only works with streaming mode).
+    async def reconnect_mcp_server(self, server_name: str) -> None:
+        """Reconnect a disconnected or failed MCP server (only works with streaming mode).
 
-        Queries the Claude Code CLI for the live connection status of all
-        configured MCP servers.
+        Use this to retry connecting to an MCP server that failed to connect
+        or was disconnected. Raises an exception if the reconnection fails.
 
-        Returns:
-            Dictionary with MCP server status information. Contains a
-            'mcpServers' key with a list of server status objects, each having:
-            - 'name': Server name (str)
-            - 'status': Connection status ('connected', 'pending', 'failed',
-              'needs-auth', 'disabled')
+        Args:
+            server_name: The name of the MCP server to reconnect
 
         Example:
             ```python
             async with ClaudeSDKClient(options) as client:
                 status = await client.get_mcp_status()
                 for server in status.get("mcpServers", []):
-                    print(f"{server['name']}: {server['status']}")
+                    if server["status"] == "failed":
+                        await client.reconnect_mcp_server(server["name"])
             ```
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        result: dict[str, Any] = await self._query.get_mcp_status()
+        await self._query.reconnect_mcp_server(server_name)
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None:
+        """Enable or disable an MCP server (only works with streaming mode).
+
+        Disabling a server disconnects it and removes its tools from the
+        available tool set. Enabling a server reconnects it and makes its
+        tools available again. Raises an exception on failure.
+
+        Args:
+            server_name: The name of the MCP server to toggle
+            enabled: True to enable the server, False to disable it
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                # Temporarily disable a server
+                await client.toggle_mcp_server("my-server", enabled=False)
+                await client.query("Do something without my-server tools")
+
+                # Re-enable it later
+                await client.toggle_mcp_server("my-server", enabled=True)
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.toggle_mcp_server(server_name, enabled)
+
+    async def stop_task(self, task_id: str) -> None:
+        """Stop a running task (only works with streaming mode).
+
+        After this resolves, a `task_notification` system message with
+        status `'stopped'` will be emitted by the CLI in the message stream.
+
+        Args:
+            task_id: The task ID from `task_notification` events.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Start a long-running task")
+
+                # Listen for task_notification to get task_id, then:
+                await client.stop_task("task-abc123")
+                # A task_notification with status 'stopped' will follow
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.stop_task(task_id)
+
+    async def get_mcp_status(self) -> McpStatusResponse:
+        """Get current MCP server connection status (only works with streaming mode).
+
+        Queries the Claude Code CLI for the live connection status of all
+        configured MCP servers.
+
+        Returns:
+            McpStatusResponse dictionary with an 'mcpServers' key containing
+            a list of McpServerStatus entries. Each entry includes:
+            - 'name': Server name (str)
+            - 'status': Connection status ('connected', 'pending', 'failed',
+              'needs-auth', 'disabled')
+            - 'serverInfo': MCP server name/version (when connected)
+            - 'error': Error message (when status is 'failed')
+            - 'config': Server configuration (stdio/sse/http/sdk/claudeai-proxy)
+            - 'scope': Configuration scope (e.g., project, user, local)
+            - 'tools': List of tools provided by the server (when connected)
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                status = await client.get_mcp_status()
+                for server in status["mcpServers"]:
+                    print(f"{server['name']}: {server['status']}")
+                    if server["status"] == "failed":
+                        print(f"  Error: {server.get('error')}")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: McpStatusResponse = await self._query.get_mcp_status()
+        return result
+
+    async def get_context_usage(self) -> ContextUsageResponse:
+        """Get a breakdown of current context window usage by category.
+
+        Returns the same data shown by the `/context` command in the CLI,
+        including token counts per category, total usage, and detailed
+        breakdowns of MCP tools, memory files, and agents.
+
+        Returns:
+            ContextUsageResponse dictionary with keys including:
+            - 'categories': List of categories with name, tokens, color
+            - 'totalTokens': Total tokens in context
+            - 'maxTokens': Effective context limit
+            - 'percentage': Percent of context used (0-100)
+            - 'model': Model the usage is calculated for
+            - 'mcpTools': Per-tool token breakdown for MCP servers
+            - 'memoryFiles': Per-file token breakdown for CLAUDE.md files
+            - 'agents': Per-agent token breakdown
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Read this file")
+                async for _ in client.receive_response():
+                    pass
+
+                usage = await client.get_context_usage()
+                print(f"Using {usage['percentage']:.1f}% of context")
+                for cat in usage['categories']:
+                    print(f"  {cat['name']}: {cat['tokens']} tokens")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: ContextUsageResponse = await self._query.get_context_usage()
         return result
 
     async def get_server_info(self) -> dict[str, Any] | None:

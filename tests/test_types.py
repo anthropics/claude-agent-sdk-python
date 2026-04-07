@@ -150,6 +150,23 @@ class TestOptions:
             "append": "Be concise.",
         }
 
+    def test_claude_code_options_with_system_prompt_preset_exclude_dynamic_sections(
+        self,
+    ):
+        """Test Options with system prompt preset and exclude_dynamic_sections."""
+        options = ClaudeAgentOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "exclude_dynamic_sections": True,
+            },
+        )
+        assert options.system_prompt == {
+            "type": "preset",
+            "preset": "claude_code",
+            "exclude_dynamic_sections": True,
+        }
+
     def test_claude_code_options_with_system_prompt_file(self):
         """Test Options with system prompt file."""
         options = ClaudeAgentOptions(

@@ -76,6 +76,7 @@ class Query:
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
+        exclude_dynamic_sections: bool | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -87,6 +88,8 @@ class Query:
             sdk_mcp_servers: Optional SDK MCP server instances
             initialize_timeout: Timeout in seconds for the initialize request
             agents: Optional agent definitions to send via initialize
+            exclude_dynamic_sections: Optional preset-prompt flag to send via
+                initialize (see ``SystemPromptPreset``)
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -95,6 +98,7 @@ class Query:
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
         self._agents = agents
+        self._exclude_dynamic_sections = exclude_dynamic_sections
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -154,6 +158,8 @@ class Query:
         }
         if self._agents:
             request["agents"] = self._agents
+        if self._exclude_dynamic_sections is not None:
+            request["excludeDynamicSections"] = self._exclude_dynamic_sections
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

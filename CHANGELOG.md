@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add `exclude_dynamic_sections` to `SystemPromptPreset` for cross-user prompt caching (parity with TypeScript SDK) (#784)
+
 ## 0.1.56
 
 ### Internal/Other Changes

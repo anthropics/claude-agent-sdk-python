@@ -252,6 +252,7 @@ class ClaudeSDKClient:
                 - 'plan': Plan-only mode (no tool execution)
                 - 'bypassPermissions': Allow all tools (use with caution)
                 - 'dontAsk': Allow all tools without prompting
+                - 'auto': Automatically determine permission mode
 
         Example:
             ```python

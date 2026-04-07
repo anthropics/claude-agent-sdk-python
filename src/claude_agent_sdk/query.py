@@ -58,6 +58,7 @@ async def query(
                  - 'plan': Plan-only mode (no tool execution)
                  - 'bypassPermissions': Allow all tools (use with caution)
                  - 'dontAsk': Allow all tools without prompting
+                 - 'auto': Automatically determine permission mode
                  Set options.cwd for working directory.
         transport: Optional transport implementation. If provided, this will be used
                   instead of the default transport selection based on options.

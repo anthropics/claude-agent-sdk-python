@@ -25,6 +25,40 @@ from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
 
+def _capture_initialize_request(**query_kwargs):
+    """Run Query.initialize() with a stubbed control channel and return the request dict."""
+    captured: dict = {}
+
+    async def _run():
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=True, **query_kwargs)
+
+        async def fake_send(request, timeout):
+            captured.update(request)
+            return {"commands": []}
+
+        with patch.object(q, "_send_control_request", side_effect=fake_send):
+            await q.initialize()
+
+    anyio.run(_run)
+    return captured
+
+
+def test_initialize_sends_exclude_dynamic_sections():
+    """Query.initialize() includes excludeDynamicSections in the control request."""
+    sent = _capture_initialize_request(exclude_dynamic_sections=True)
+    assert sent["subtype"] == "initialize"
+    assert sent["excludeDynamicSections"] is True
+
+
+def test_initialize_omits_exclude_dynamic_sections_when_unset():
+    """excludeDynamicSections is absent from initialize when not configured."""
+    sent = _capture_initialize_request()
+    assert sent["subtype"] == "initialize"
+    assert "excludeDynamicSections" not in sent
+
+
 def _make_mock_transport(messages, control_requests=None):
     """Create a mock transport that yields messages and optionally sends control requests.
 

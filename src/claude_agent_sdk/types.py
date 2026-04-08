@@ -38,6 +38,18 @@ class SystemPromptPreset(TypedDict):
     type: Literal["preset"]
     preset: Literal["claude_code"]
     append: NotRequired[str]
+    exclude_dynamic_sections: NotRequired[bool]
+    """Strip per-user dynamic sections (working directory, auto-memory, git
+    status) from the system prompt so it stays static and cacheable across
+    users. The stripped content is re-injected into the first user message
+    so the model still has access to it.
+
+    Use this when many users share the same preset system prompt and you
+    want the prompt-caching prefix to hit cross-user.
+
+    Requires a Claude Code CLI version that supports this option; older
+    CLIs silently ignore it.
+    """
 
 
 class SystemPromptFile(TypedDict):

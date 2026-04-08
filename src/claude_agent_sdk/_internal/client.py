@@ -91,6 +91,15 @@ class InternalClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
+        # Extract exclude_dynamic_sections from preset system prompt for the
+        # initialize request (older CLIs ignore unknown initialize fields).
+        exclude_dynamic_sections: bool | None = None
+        sp = configured_options.system_prompt
+        if isinstance(sp, dict) and sp.get("type") == "preset":
+            eds = sp.get("exclude_dynamic_sections")
+            if isinstance(eds, bool):
+                exclude_dynamic_sections = eds
+
         # Convert agents to dict format for initialize request
         agents_dict = None
         if configured_options.agents:
@@ -118,6 +127,7 @@ class InternalClient:
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
+            exclude_dynamic_sections=exclude_dynamic_sections,
         )
 
         try:

@@ -157,6 +157,15 @@ class ClaudeSDKClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
+        # Extract exclude_dynamic_sections from preset system prompt for the
+        # initialize request (older CLIs ignore unknown initialize fields).
+        exclude_dynamic_sections: bool | None = None
+        sp = self.options.system_prompt
+        if isinstance(sp, dict) and sp.get("type") == "preset":
+            eds = sp.get("exclude_dynamic_sections")
+            if isinstance(eds, bool):
+                exclude_dynamic_sections = eds
+
         # Convert agents to dict format for initialize request
         agents_dict: dict[str, dict[str, Any]] | None = None
         if self.options.agents:
@@ -176,6 +185,7 @@ class ClaudeSDKClient:
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
+            exclude_dynamic_sections=exclude_dynamic_sections,
         )
 
         # Start reading messages and initialize

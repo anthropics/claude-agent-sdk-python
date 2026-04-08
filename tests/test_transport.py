@@ -233,6 +233,44 @@ class TestSubprocessCLITransport:
         assert "--max-thinking-tokens" in cmd
         assert "5000" in cmd
 
+    @pytest.mark.parametrize(
+        ("thinking", "expected", "absent"),
+        [
+            ({"type": "adaptive"}, ["--thinking", "adaptive"], "--max-thinking-tokens"),
+            (
+                {"type": "enabled", "budget_tokens": 5000},
+                ["--max-thinking-tokens", "5000"],
+                "--thinking",
+            ),
+            ({"type": "disabled"}, ["--thinking", "disabled"], "--max-thinking-tokens"),
+        ],
+    )
+    def test_build_command_with_thinking(self, thinking, expected, absent):
+        """Test building CLI command with thinking option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking=thinking),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index(expected[0])
+        assert cmd[idx : idx + 2] == expected
+        assert absent not in cmd
+
+    def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
+        """thinking takes precedence over deprecated max_thinking_tokens."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                thinking={"type": "adaptive"}, max_thinking_tokens=9999
+            ),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index("--thinking")
+        assert cmd[idx : idx + 2] == ["--thinking", "adaptive"]
+        assert "--max-thinking-tokens" not in cmd
+
     def test_build_command_with_add_dirs(self):
         """Test building CLI command with add_dirs option."""
         from pathlib import Path

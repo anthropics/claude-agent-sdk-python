@@ -300,20 +300,20 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
-        # Resolve thinking config → --max-thinking-tokens
+        # Resolve thinking config -> --thinking / --max-thinking-tokens
         # `thinking` takes precedence over the deprecated `max_thinking_tokens`
-        resolved_max_thinking_tokens = self._options.max_thinking_tokens
         if self._options.thinking is not None:
             t = self._options.thinking
             if t["type"] == "adaptive":
-                if resolved_max_thinking_tokens is None:
-                    resolved_max_thinking_tokens = 32_000
+                cmd.extend(["--thinking", "adaptive"])
             elif t["type"] == "enabled":
-                resolved_max_thinking_tokens = t["budget_tokens"]
+                cmd.extend(["--max-thinking-tokens", str(t["budget_tokens"])])
             elif t["type"] == "disabled":
-                resolved_max_thinking_tokens = 0
-        if resolved_max_thinking_tokens is not None:
-            cmd.extend(["--max-thinking-tokens", str(resolved_max_thinking_tokens)])
+                cmd.extend(["--thinking", "disabled"])
+        elif self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
 
         if self._options.effort is not None:
             cmd.extend(["--effort", self._options.effort])

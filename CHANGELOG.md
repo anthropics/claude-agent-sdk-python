@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.56
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.92
+
+## 0.1.55
+
+### Bug Fixes
+
+- **MCP large tool results**: Forward `maxResultSizeChars` from `ToolAnnotations` via `_meta` to bypass Zod annotation stripping in the CLI, fixing silent truncation of large MCP tool results (>50K chars) (#756)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.91
+
 ## 0.1.53
 
 ### Bug Fixes

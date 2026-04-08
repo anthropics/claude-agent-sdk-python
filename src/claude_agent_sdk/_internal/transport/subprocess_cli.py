@@ -594,6 +594,21 @@ class SubprocessCLITransport(Transport):
                         # We are speculatively decoding the buffer until we get
                         # a full JSON object. If there is an actual issue, we
                         # raise an error after exceeding the configured limit.
+                        # However, if the buffer doesn't start with '{', no
+                        # amount of additional data will make it valid JSON —
+                        # fail immediately instead of hanging forever.
+                        if json_buffer and not json_buffer.startswith("{"):
+                            bad_prefix = json_buffer[:80]
+                            json_buffer = ""
+                            raise SDKJSONDecodeError(
+                                f"Malformed JSON message: buffer does not start with '{{' "
+                                f"(starts with: {bad_prefix!r}). "
+                                f"Non-JSON data is being written to the CLI's stdout pipe. "
+                                f"Check that hooks and scripts in ~/.claude/settings.json "
+                                f"do not write to stdout — use stderr instead (>&2).",
+                                ValueError(f"Unexpected data on stdout: {bad_prefix!r}"),
+                            )
+                        
                         continue
 
         except anyio.ClosedResourceError:

@@ -310,6 +310,48 @@ async def test_image_content_support():
 
 
 @pytest.mark.asyncio
+async def test_audio_content_support():
+    """Test that tools can return audio content with base64 data."""
+
+    wav_data = base64.b64encode(b"RIFF....WAVEfmt ").decode("utf-8")
+
+    @tool("generate_audio", "Generates an audio clip", {"prompt": str})
+    async def generate_audio(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [
+                {"type": "text", "text": f"Generated audio: {args['prompt']}"},
+                {
+                    "type": "audio",
+                    "data": wav_data,
+                    "mimeType": "audio/wav",
+                },
+            ]
+        }
+
+    server_config = create_sdk_mcp_server(
+        name="audio-test-server", version="1.0.0", tools=[generate_audio]
+    )
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(
+            name="generate_audio",
+            arguments={"prompt": "Dial tone"},
+        ),
+    )
+    result = await call_handler(request)
+
+    assert len(result.root.content) == 2
+    assert result.root.content[0].type == "text"
+    assert result.root.content[0].text == "Generated audio: Dial tone"
+    assert result.root.content[1].type == "audio"
+    assert result.root.content[1].data == wav_data
+    assert result.root.content[1].mimeType == "audio/wav"
+
+
+@pytest.mark.asyncio
 async def test_tool_annotations():
     """Test that tool annotations are stored and flow through list_tools."""
 
@@ -713,6 +755,47 @@ async def test_jsonrpc_bridge_resource_link():
     assert result_content[0]["type"] == "text"
     assert "API Docs" in result_content[0]["text"]
     assert "https://api.example.com" in result_content[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_bridge_audio_content():
+    """Test that the JSONRPC bridge preserves audio content blocks."""
+    from unittest.mock import AsyncMock
+
+    from mcp.server import Server
+    from mcp.types import AudioContent, CallToolResult, ServerResult
+
+    from claude_agent_sdk._internal.query import Query
+
+    audio = AudioContent(type="audio", data="ZGF0YQ==", mimeType="audio/wav")
+    fake_result = ServerResult(root=CallToolResult(content=[audio]))
+
+    server = Server("test-server")
+    handler = AsyncMock(return_value=fake_result)
+    server.request_handlers[CallToolRequest] = handler
+
+    query_instance = Query.__new__(Query)
+    query_instance.sdk_mcp_servers = {"test": server}
+
+    response = await query_instance._handle_sdk_mcp_request(
+        "test",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "test_tool", "arguments": {}},
+        },
+    )
+
+    assert response is not None
+    result_content = response["result"]["content"]
+    assert result_content == [
+        {
+            "type": "audio",
+            "data": "ZGF0YQ==",
+            "mimeType": "audio/wav",
+        }
+    ]
 
 
 # --- Tests for _python_type_to_json_schema and TypedDict schema conversion ---

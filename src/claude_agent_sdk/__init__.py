@@ -453,6 +453,14 @@ def create_sdk_mcp_server(
                                 mimeType=item["mimeType"],
                             )
                         )
+                    elif item_type == "audio":
+                        content.append(
+                            AudioContent(
+                                type="audio",
+                                data=item["data"],
+                                mimeType=item["mimeType"],
+                            )
+                        )
                     elif item_type == "resource_link":
                         parts = []
                         link_name = item.get("name")

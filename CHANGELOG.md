@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.57
+
+### New Features
+
+- **Cross-user prompt caching**: Added `exclude_dynamic_sections` option to `SystemPromptPreset`, enabling cross-user prompt cache hits by moving per-user dynamic sections (working directory, memory, git status) out of the system prompt (#797)
+- **Auto permission mode**: Added `"auto"` to the `PermissionMode` type, bringing parity with the TypeScript SDK and CLI v2.1.90+ (#785)
+
+### Bug Fixes
+
+- **Thinking configuration**: Fixed `thinking={"type": "adaptive"}` incorrectly mapping to `--max-thinking-tokens 32000` instead of `--thinking adaptive`. The `disabled` type similarly now uses `--thinking disabled` instead of `--max-thinking-tokens 0`, matching the TypeScript SDK behavior (#796)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.96
+
 ## 0.1.56
 
 ### Internal/Other Changes

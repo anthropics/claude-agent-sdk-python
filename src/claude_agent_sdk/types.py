@@ -1225,7 +1225,9 @@ class ClaudeAgentOptions:
     # Skills to enable for the main session. When set, the SDK automatically
     # enables the ``Skill`` tool and defaults ``setting_sources`` to
     # ``["user", "project"]`` (if not already set) so installed SKILL.md
-    # files are discovered.
+    # files are discovered. The list is also sent on the ``initialize`` control
+    # request so a supporting CLI can filter which skills are loaded into the
+    # system prompt (older CLIs ignore the field).
     #   * ``None`` (default): no automatic skill configuration — manage
     #     ``allowed_tools`` and ``setting_sources`` directly.
     #   * ``[]``: enable all discovered skills.

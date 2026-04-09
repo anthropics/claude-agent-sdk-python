@@ -59,6 +59,21 @@ def test_initialize_omits_exclude_dynamic_sections_when_unset():
     assert "excludeDynamicSections" not in sent
 
 
+def test_initialize_sends_skills_when_set():
+    """Query.initialize() includes skills (including empty list) in the control request."""
+    sent = _capture_initialize_request(skills=["pdf", "docx"])
+    assert sent["skills"] == ["pdf", "docx"]
+
+    sent_empty = _capture_initialize_request(skills=[])
+    assert sent_empty["skills"] == []
+
+
+def test_initialize_omits_skills_when_unset():
+    """skills is absent from initialize when not configured."""
+    sent = _capture_initialize_request()
+    assert "skills" not in sent
+
+
 def _make_mock_transport(messages, control_requests=None):
     """Create a mock transport that yields messages and optionally sends control requests.
 

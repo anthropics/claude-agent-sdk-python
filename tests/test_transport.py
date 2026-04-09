@@ -456,6 +456,84 @@ class TestSubprocessCLITransport:
         idx = cmd.index("--setting-sources")
         assert cmd[idx + 1] == "user,project"
 
+    def test_build_command_skills_none_leaves_options_untouched(self):
+        """When skills is None (default), neither allowed_tools nor setting_sources change."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert "--setting-sources" not in cmd
+
+    def test_build_command_skills_empty_list_enables_skill_tool(self):
+        """Empty skills list enables the bare Skill tool and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+
+    def test_build_command_skills_named_list_uses_skill_patterns(self):
+        """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["pdf", "docx"]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+
+    def test_build_command_skills_merges_with_existing_allowed_tools(self):
+        """skills augment (not replace) an existing allowed_tools list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Read", "Write"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Write,Skill(pdf)"
+
+    def test_build_command_skills_preserves_user_setting_sources(self):
+        """When setting_sources is explicitly provided, skills should not override it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                skills=[],
+                setting_sources=["local"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--setting-sources") + 1] == "local"
+
+    def test_build_command_skills_does_not_mutate_options(self):
+        """Applying skills defaults must not mutate the caller's options object."""
+        options = make_options(allowed_tools=["Read"], skills=["pdf"])
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        transport._build_command()
+        assert options.allowed_tools == ["Read"]
+        assert options.setting_sources is None
+
+    def test_build_command_skills_does_not_duplicate_entries(self):
+        """Injecting Skill entries is idempotent when caller already listed them."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Skill(pdf)"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""
         transport = SubprocessCLITransport(

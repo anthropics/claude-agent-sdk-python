@@ -1222,6 +1222,16 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
+    # Skills to enable for the main session. When set, the SDK automatically
+    # enables the ``Skill`` tool and defaults ``setting_sources`` to
+    # ``["user", "project"]`` (if not already set) so installed SKILL.md
+    # files are discovered.
+    #   * ``None`` (default): no automatic skill configuration — manage
+    #     ``allowed_tools`` and ``setting_sources`` directly.
+    #   * ``[]``: enable all discovered skills.
+    #   * ``[name, ...]``: enable only the listed skills (added as
+    #     ``Skill(name)`` entries in ``--allowedTools``).
+    skills: list[str] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),
     # not from these sandbox settings.

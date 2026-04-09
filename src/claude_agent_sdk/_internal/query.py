@@ -537,6 +537,14 @@ class Query:
                                     "mimeType": getattr(item, "mimeType", ""),
                                 }
                             )
+                        elif item_type == "audio":
+                            content.append(
+                                {
+                                    "type": "audio",
+                                    "data": getattr(item, "data", ""),
+                                    "mimeType": getattr(item, "mimeType", ""),
+                                }
+                            )
                         elif item_type == "resource_link":
                             parts = []
                             name = getattr(item, "name", None)

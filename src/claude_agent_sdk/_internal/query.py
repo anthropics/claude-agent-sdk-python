@@ -164,7 +164,9 @@ class Query:
             request["agents"] = self._agents
         if self._exclude_dynamic_sections is not None:
             request["excludeDynamicSections"] = self._exclude_dynamic_sections
-        if self._skills is not None:
+        # 'all' and omitted are equivalent at the wire level (no filter), so
+        # only send the field when it's an explicit list.
+        if isinstance(self._skills, list):
             request["skills"] = self._skills
 
         # Use longer timeout for initialize since MCP servers may take time to start

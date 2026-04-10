@@ -214,8 +214,11 @@ class SubprocessCLITransport(Transport):
         if self._options.fallback_model:
             cmd.extend(["--fallback-model", self._options.fallback_model])
 
-        if self._options.betas:
-            cmd.extend(["--betas", ",".join(self._options.betas)])
+        if self._options.betas is not None:
+            if len(self._options.betas) == 0:
+                cmd.extend(["--betas", ""])
+            else:
+                cmd.extend(["--betas", ",".join(self._options.betas)])
 
         if self._options.permission_prompt_tool_name:
             cmd.extend(
@@ -284,7 +287,7 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--setting-sources", ",".join(self._options.setting_sources)])
 
         # Add plugin directories
-        if self._options.plugins:
+        if self._options.plugins is not None:
             for plugin in self._options.plugins:
                 if plugin["type"] == "local":
                     cmd.extend(["--plugin-dir", plugin["path"]])

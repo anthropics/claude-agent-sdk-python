@@ -7,6 +7,8 @@ from claude_agent_sdk import (
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
+    PostCompactHookInput,
+    PostCompactHookSpecificOutput,
     ResultMessage,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
@@ -319,6 +321,34 @@ class TestHookInputTypes:
         }
         assert len(hook_input["permission_suggestions"]) == 1
 
+    def test_post_compact_hook_input(self):
+        """Test PostCompactHookInput construction."""
+        hook_input: PostCompactHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "cwd": "/home/user/project",
+            "hook_event_name": "PostCompact",
+            "trigger": "auto",
+            "compact_summary": "Summary of the compacted conversation...",
+        }
+        assert hook_input["hook_event_name"] == "PostCompact"
+        assert hook_input["trigger"] == "auto"
+        assert (
+            hook_input["compact_summary"] == "Summary of the compacted conversation..."
+        )
+
+    def test_post_compact_hook_input_manual_trigger(self):
+        """Test PostCompactHookInput with manual trigger."""
+        hook_input: PostCompactHookInput = {
+            "session_id": "sess-2",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "cwd": "/home/user/project",
+            "hook_event_name": "PostCompact",
+            "trigger": "manual",
+            "compact_summary": "User-initiated compaction summary",
+        }
+        assert hook_input["trigger"] == "manual"
+
 
 class TestHookSpecificOutputTypes:
     """Test hook-specific output type definitions."""
@@ -364,6 +394,15 @@ class TestHookSpecificOutputTypes:
             "updatedMCPToolOutput": {"result": "modified"},
         }
         assert output["updatedMCPToolOutput"] == {"result": "modified"}
+
+    def test_post_compact_hook_specific_output(self):
+        """Test PostCompactHookSpecificOutput construction."""
+        output: PostCompactHookSpecificOutput = {
+            "hookEventName": "PostCompact",
+            "additionalContext": "Compaction complete, summary logged",
+        }
+        assert output["hookEventName"] == "PostCompact"
+        assert output["additionalContext"] == "Compaction complete, summary logged"
 
 
 class TestMcpServerStatusTypes:

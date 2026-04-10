@@ -1222,17 +1222,17 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
-    # Skills to enable for the main session. When set, the SDK automatically
-    # enables the ``Skill`` tool and defaults ``setting_sources`` to
-    # ``["user", "project"]`` (if not already set) so installed SKILL.md
-    # files are discovered. The list is also sent on the ``initialize`` control
-    # request so a supporting CLI can filter which skills are loaded into the
-    # system prompt (older CLIs ignore the field).
-    #   * ``None`` (default): no automatic skill configuration — manage
-    #     ``allowed_tools`` and ``setting_sources`` directly.
-    #   * ``[]``: enable all discovered skills.
-    #   * ``[name, ...]``: enable only the listed skills (added as
-    #     ``Skill(name)`` entries in ``--allowedTools``).
+    # Skills to enable for the main session. This is the one place to turn
+    # skills on; you do not need to add ``"Skill"`` to ``allowed_tools`` or
+    # set ``setting_sources`` yourself — the SDK does both when this is set.
+    # The value is also sent on the ``initialize`` control request so a
+    # supporting CLI can filter which skills are loaded into the system prompt
+    # (older CLIs ignore the field).
+    #   * ``None`` (default): skills are off.
+    #   * ``"all"``: enable every discovered skill.
+    #   * ``[name, ...]``: enable only the listed skills. Names match the
+    #     SKILL.md ``name`` / directory name, or ``plugin:skill`` for
+    #     plugin-qualified skills.
     #
     # .. note::
     #     This is a **context filter**, not a sandbox. Unlisted skills are
@@ -1243,7 +1243,7 @@ class ClaudeAgentOptions:
     #     bundle the desired subset as a local plugin (``plugins=[...]`` with
     #     ``setting_sources=None``), or add explicit permission deny rules.
     #     Do not store secrets in skill files.
-    skills: list[str] | None = None
+    skills: list[str] | Literal["all"] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),
     # not from these sandbox settings.

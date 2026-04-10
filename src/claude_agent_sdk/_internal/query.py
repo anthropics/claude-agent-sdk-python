@@ -6,7 +6,7 @@ import logging
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 from mcp.types import (
@@ -77,7 +77,7 @@ class Query:
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
-        skills: list[str] | None = None,
+        skills: list[str] | Literal["all"] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 

@@ -60,9 +60,12 @@ def test_initialize_omits_exclude_dynamic_sections_when_unset():
 
 
 def test_initialize_sends_skills_when_set():
-    """Query.initialize() includes skills (including empty list) in the control request."""
+    """Query.initialize() includes skills (list, 'all', or empty) in the control request."""
     sent = _capture_initialize_request(skills=["pdf", "docx"])
     assert sent["skills"] == ["pdf", "docx"]
+
+    sent_all = _capture_initialize_request(skills="all")
+    assert sent_all["skills"] == "all"
 
     sent_empty = _capture_initialize_request(skills=[])
     assert sent_empty["skills"] == []

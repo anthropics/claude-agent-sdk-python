@@ -466,15 +466,26 @@ class TestSubprocessCLITransport:
         assert "--allowedTools" not in cmd
         assert "--setting-sources" not in cmd
 
-    def test_build_command_skills_empty_list_enables_skill_tool(self):
-        """Empty skills list enables the bare Skill tool and defaults setting_sources."""
+    def test_build_command_skills_all_enables_skill_tool(self):
+        """skills='all' enables the bare Skill tool and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+
+    def test_build_command_skills_empty_list_adds_no_skill_entries(self):
+        """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(skills=[]),
         )
         cmd = transport._build_command()
-        assert "--allowedTools" in cmd
-        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--allowedTools" not in cmd
         assert "--setting-sources" in cmd
         assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
 
@@ -507,7 +518,7 @@ class TestSubprocessCLITransport:
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(
-                skills=[],
+                skills="all",
                 setting_sources=["local"],
             ),
         )

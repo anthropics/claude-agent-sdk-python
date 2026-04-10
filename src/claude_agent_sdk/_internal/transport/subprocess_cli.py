@@ -167,11 +167,11 @@ class SubprocessCLITransport(Transport):
     ) -> tuple[list[str], list[str] | None]:
         """Compute effective allowed_tools and setting_sources for skills.
 
-        If ``options.skills`` is not None, injects the ``Skill`` tool (or
-        ``Skill(name)`` entries) into allowed_tools and defaults
-        setting_sources to ``["user", "project"]`` when unset, so that the
-        CLI discovers installed skills without the caller having to wire up
-        both options manually.
+        When ``options.skills`` is ``"all"``, injects the bare ``Skill`` tool;
+        when it is a list, injects ``Skill(name)`` for each entry. In either
+        case ``setting_sources`` defaults to ``["user", "project"]`` when
+        unset so the CLI discovers installed skills without the caller having
+        to wire up both options manually. ``None`` is a no-op.
 
         Does not mutate the original options object.
         """
@@ -186,7 +186,7 @@ class SubprocessCLITransport(Transport):
         if skills is None:
             return allowed_tools, setting_sources
 
-        if not skills:
+        if skills == "all":
             if "Skill" not in allowed_tools:
                 allowed_tools.append("Skill")
         else:

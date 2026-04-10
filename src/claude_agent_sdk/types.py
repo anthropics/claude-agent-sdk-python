@@ -1233,6 +1233,16 @@ class ClaudeAgentOptions:
     #   * ``[]``: enable all discovered skills.
     #   * ``[name, ...]``: enable only the listed skills (added as
     #     ``Skill(name)`` entries in ``--allowedTools``).
+    #
+    # .. note::
+    #     This is a **context filter**, not a sandbox. Unlisted skills are
+    #     hidden from the model's skill listing and cannot be invoked via the
+    #     Skill tool, but their files remain on disk — a session with ``Read``
+    #     or ``Bash`` can still access ``.claude/skills/**`` directly. For
+    #     hard isolation, either omit those files from the working directory,
+    #     bundle the desired subset as a local plugin (``plugins=[...]`` with
+    #     ``setting_sources=None``), or add explicit permission deny rules.
+    #     Do not store secrets in skill files.
     skills: list[str] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),

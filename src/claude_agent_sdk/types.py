@@ -862,6 +862,12 @@ class TextBlock:
 
     text: str
 
+    def __repr__(self) -> str:
+        preview = self.text.replace("\n", "\\n")
+        if len(preview) > 80:
+            preview = f"{preview[:77]}..."
+        return f"TextBlock(text={preview!r})"
+
 
 @dataclass
 class ThinkingBlock:
@@ -869,6 +875,12 @@ class ThinkingBlock:
 
     thinking: str
     signature: str
+
+    def __repr__(self) -> str:
+        preview = self.thinking.replace("\n", "\\n")
+        if len(preview) > 80:
+            preview = f"{preview[:77]}..."
+        return f"ThinkingBlock(thinking={preview!r})"
 
 
 @dataclass
@@ -879,6 +891,15 @@ class ToolUseBlock:
     name: str
     input: dict[str, Any]
 
+    def __repr__(self) -> str:
+        input_keys = list(self.input.keys())
+        if len(input_keys) > 5:
+            input_keys = [*input_keys[:5], "..."]
+        return (
+            f"ToolUseBlock(id={self.id!r}, name={self.name!r}, "
+            f"input_keys={input_keys!r})"
+        )
+
 
 @dataclass
 class ToolResultBlock:
@@ -887,6 +908,20 @@ class ToolResultBlock:
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+
+    def __repr__(self) -> str:
+        if isinstance(self.content, str):
+            content_preview = self.content.replace("\n", "\\n")
+            if len(content_preview) > 80:
+                content_preview = f"{content_preview[:77]}..."
+        elif isinstance(self.content, list):
+            content_preview = f"list[{len(self.content)}]"
+        else:
+            content_preview = None
+        return (
+            f"ToolResultBlock(tool_use_id={self.tool_use_id!r}, "
+            f"is_error={self.is_error!r}, content={content_preview!r})"
+        )
 
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
@@ -912,6 +947,18 @@ class UserMessage:
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
 
+    def __repr__(self) -> str:
+        if isinstance(self.content, str):
+            content_preview = self.content.replace("\n", "\\n")
+            if len(content_preview) > 120:
+                content_preview = f"{content_preview[:117]}..."
+        else:
+            content_preview = f"list[{len(self.content)}]"
+        return (
+            f"UserMessage(content={content_preview!r}, uuid={self.uuid!r}, "
+            f"parent_tool_use_id={self.parent_tool_use_id!r})"
+        )
+
 
 @dataclass
 class AssistantMessage:
@@ -927,6 +974,16 @@ class AssistantMessage:
     session_id: str | None = None
     uuid: str | None = None
 
+    def __repr__(self) -> str:
+        return (
+            "AssistantMessage("
+            f"content_blocks={len(self.content)}, "
+            f"model={self.model!r}, "
+            f"stop_reason={self.stop_reason!r}, "
+            f"error={self.error!r}, "
+            f"uuid={self.uuid!r})"
+        )
+
 
 @dataclass
 class SystemMessage:
@@ -934,6 +991,12 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+    def __repr__(self) -> str:
+        keys = list(self.data.keys())
+        if len(keys) > 8:
+            keys = [*keys[:8], "..."]
+        return f"SystemMessage(subtype={self.subtype!r}, data_keys={keys!r})"
 
 
 class TaskUsage(TypedDict):
@@ -1021,6 +1084,17 @@ class ResultMessage:
     permission_denials: list[Any] | None = None
     errors: list[str] | None = None
     uuid: str | None = None
+
+    def __repr__(self) -> str:
+        return (
+            "ResultMessage("
+            f"subtype={self.subtype!r}, "
+            f"stop_reason={self.stop_reason!r}, "
+            f"is_error={self.is_error!r}, "
+            f"num_turns={self.num_turns}, "
+            f"total_cost_usd={self.total_cost_usd!r}, "
+            f"uuid={self.uuid!r})"
+        )
 
 
 @dataclass

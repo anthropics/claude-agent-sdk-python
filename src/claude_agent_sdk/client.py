@@ -63,12 +63,14 @@ class ClaudeSDKClient:
 
     def __init__(
         self,
-        options: ClaudeAgentOptions | None = None,
+        options: ClaudeAgentOptions | dict[str, Any] | None = None,
         transport: Transport | None = None,
     ):
         """Initialize Claude SDK client."""
         if options is None:
             options = ClaudeAgentOptions()
+        elif isinstance(options, dict):
+            options = ClaudeAgentOptions(**options)
         self.options = options
         self._custom_transport = transport
         self._transport: Transport | None = None

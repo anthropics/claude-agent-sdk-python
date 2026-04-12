@@ -184,6 +184,24 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### Plugin MCP Permissions
+
+Plugins that register MCP servers expose tools that are evaluated by the same
+permission pipeline as other tools.
+
+- They do **not** bypass `permission_mode`, `can_use_tool`, or hooks.
+- Add a tool name to `allowed_tools` to auto-approve it.
+- Leave a tool out of `allowed_tools` to require normal permission evaluation.
+
+```python
+options = ClaudeAgentOptions(
+    plugins=[{"type": "local", "path": "/path/to/plugin"}],
+    permission_mode="default",
+    # Explicitly auto-approve one plugin tool:
+    allowed_tools=["mcp__my_plugin__my_tool"],
+)
+```
+
 ### Hooks
 
 A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).

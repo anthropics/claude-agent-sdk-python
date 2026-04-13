@@ -128,6 +128,7 @@ class InternalClient:
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            skills=configured_options.skills,
         )
 
         try:

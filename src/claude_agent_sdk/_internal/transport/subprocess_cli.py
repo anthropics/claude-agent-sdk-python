@@ -663,3 +663,31 @@ class SubprocessCLITransport(Transport):
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""
         return self._ready
+
+    @property
+    def pid(self) -> int | None:
+        """OS process ID of the spawned Claude Code CLI subprocess, or None if not running.
+
+        Exposed for callers that need to implement external cleanup (e.g.
+        ``os.killpg``, ``psutil.Process``, or cgroup management) beyond what
+        :meth:`close` provides. Returns None before :meth:`connect` has been
+        called and after :meth:`close` has completed.
+        """
+        if self._process is None:
+            return None
+        return self._process.pid
+
+    @property
+    def process(self) -> Process | None:
+        """The underlying ``anyio.abc.Process`` handle, or None if not running.
+
+        Exposed for advanced cleanup or signal handling. Prefer :meth:`close`
+        for normal shutdown — it already implements bounded-wait graceful
+        termination followed by SIGKILL fallback. Use this property only when
+        you need finer control (e.g. sending SIGTERM to an entire process
+        group, or attaching observability tooling to the subprocess).
+
+        Returns None before :meth:`connect` has been called and after
+        :meth:`close` has completed.
+        """
+        return self._process

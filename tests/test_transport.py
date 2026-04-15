@@ -62,6 +62,31 @@ class TestSubprocessCLITransport:
         )
         assert transport._cli_path == "/usr/bin/claude"
 
+    def test_pid_returns_none_before_connect(self):
+        """pid is None before connect() spawns the subprocess."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert transport.pid is None
+
+    def test_process_returns_none_before_connect(self):
+        """process is None before connect() spawns the subprocess."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert transport.process is None
+
+    def test_pid_returns_subprocess_pid_when_running(self):
+        """pid returns the underlying subprocess PID when the process exists."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        transport._process = mock_process
+        assert transport.pid == 12345
+
+    def test_process_returns_process_when_running(self):
+        """process returns the underlying anyio Process handle when it exists."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        mock_process = MagicMock()
+        transport._process = mock_process
+        assert transport.process is mock_process
+
     def test_build_command_basic(self):
         """Test building basic CLI command."""
         transport = SubprocessCLITransport(prompt="Hello", options=make_options())

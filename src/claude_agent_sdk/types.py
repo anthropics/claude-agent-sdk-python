@@ -1241,8 +1241,10 @@ class ClaudeAgentOptions:
     #     or ``Bash`` can still access ``.claude/skills/**`` directly. For
     #     hard isolation, either omit those files from the working directory,
     #     bundle the desired subset as a local plugin (``plugins=[...]`` with
-    #     ``setting_sources=None``), or add explicit permission deny rules.
-    #     Do not store secrets in skill files.
+    #     ``setting_sources=[]`` to disable filesystem discovery — leaving it
+    #     ``None`` falls through to the CLI default, which loads all sources),
+    #     or add explicit permission deny rules. Do not store secrets in skill
+    #     files.
     skills: list[str] | Literal["all"] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),

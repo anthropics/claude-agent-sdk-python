@@ -1239,12 +1239,13 @@ class ClaudeAgentOptions:
     #     hidden from the model's skill listing and cannot be invoked via the
     #     Skill tool, but their files remain on disk — a session with ``Read``
     #     or ``Bash`` can still access ``.claude/skills/**`` directly. For
-    #     hard isolation, either omit those files from the working directory,
-    #     bundle the desired subset as a local plugin (``plugins=[...]`` with
-    #     ``setting_sources=[]`` to disable filesystem discovery — leaving it
-    #     ``None`` falls through to the CLI default, which loads all sources),
-    #     or add explicit permission deny rules. Do not store secrets in skill
-    #     files.
+    #     hard isolation, point ``cwd`` at a directory whose
+    #     ``.claude/skills/`` contains only the desired subset, or add
+    #     permission deny rules for ``Read``/``Bash`` on skill paths. Note
+    #     that bundled skills and installed-plugin skills are discovered
+    #     regardless of ``setting_sources``; the ``skills`` allowlist is the
+    #     single mechanism that hides them from the model's listing. Do not
+    #     store secrets in skill files.
     skills: list[str] | Literal["all"] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),

@@ -39,6 +39,9 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
 ]
+otel = [
+    "opentelemetry-api>=1.20.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/anthropics/claude-agent-sdk-python"
@@ -83,6 +86,12 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+[[tool.mypy.overrides]]
+# opentelemetry-api is an optional dependency (the [otel] extra); the
+# import in subprocess_cli.py is guarded by try/except ImportError.
+module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py310"

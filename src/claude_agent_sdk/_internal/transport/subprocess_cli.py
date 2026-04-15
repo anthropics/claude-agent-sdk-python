@@ -361,6 +361,19 @@ class SubprocessCLITransport(Transport):
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
+            # Propagate active OTEL trace context to the CLI so its spans
+            # parent under the caller's distributed trace. No-op if
+            # opentelemetry-api is not installed or there's no active span.
+            try:
+                from opentelemetry import propagate
+
+                carrier: dict[str, str] = {}
+                propagate.inject(carrier)
+                for k, v in carrier.items():
+                    process_env.setdefault(k.upper(), v)  # TRACEPARENT, TRACESTATE
+            except ImportError:
+                pass
+
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:
                 process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"

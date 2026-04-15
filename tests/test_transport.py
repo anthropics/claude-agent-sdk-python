@@ -661,6 +661,155 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_otel_trace_context_propagated_to_subprocess(self):
+        """Active OTEL trace context is injected as TRACEPARENT/TRACESTATE."""
+
+        async def _test():
+            options = make_options()
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = (
+                    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                carrier["tracestate"] = "vendor=value"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                assert (
+                    env_passed["TRACEPARENT"]
+                    == "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                assert env_passed["TRACESTATE"] == "vendor=value"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_does_not_override_user_env(self):
+        """User-supplied TRACEPARENT in options.env wins over OTEL propagator."""
+
+        async def _test():
+            options = make_options(env={"TRACEPARENT": "custom"})
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = "00-aaaa-bbbb-01"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # setdefault must not clobber the user's explicit value
+                assert env_passed["TRACEPARENT"] == "custom"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_noop_without_opentelemetry(self):
+        """connect() succeeds and sets no TRACEPARENT when opentelemetry is absent."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict("sys.modules", {"opentelemetry": None}),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                # Ensure no inherited TRACEPARENT leaks in
+                os.environ.pop("TRACEPARENT", None)
+
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()  # must not raise
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert "TRACEPARENT" not in env_passed
+
+        anyio.run(_test)
+
     def test_claudecode_env_var_not_inherited(self):
         """Test that CLAUDECODE env var is filtered from the subprocess environment."""
 

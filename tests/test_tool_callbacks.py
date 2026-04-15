@@ -250,6 +250,84 @@ class TestToolPermissionCallbacks:
         assert received_context.agent_id is None
 
     @pytest.mark.asyncio
+    async def test_permission_callback_receives_hook_decision_reason(self):
+        """Test that hook_decision_reason is passed through to the context."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-hook-reason",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "input": {"command": "rm -rf /"},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01REASON",
+                "agent_id": "agent-789",
+                "hook_decision_reason": "Destructive command detected by safety hook",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.hook_decision_reason == "Destructive command detected by safety hook"
+        assert received_context.tool_use_id == "toolu_01REASON"
+        assert received_context.agent_id == "agent-789"
+
+    @pytest.mark.asyncio
+    async def test_permission_callback_missing_hook_decision_reason(self):
+        """Test that hook_decision_reason defaults to None when not sent."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-no-reason",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01NOREASON",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.hook_decision_reason is None
+
+    @pytest.mark.asyncio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 

@@ -283,6 +283,9 @@ class Query:
                     or [],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    hook_decision_reason=permission_request.get(
+                        "hook_decision_reason"
+                    ),
                 )
 
                 response = await self.can_use_tool(

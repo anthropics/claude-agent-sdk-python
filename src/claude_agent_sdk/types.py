@@ -1155,6 +1155,59 @@ class SessionMessage:
     parent_tool_use_id: None = None
 
 
+@dataclass
+class ToolContext:
+    """Execution context available to SDK MCP tool handlers.
+
+    Populated automatically when the CLI sends hook callbacks containing
+    session metadata *before* a ``tools/call`` request.  Call
+    :func:`get_tool_context` from inside an ``@tool`` handler to retrieve
+    this.
+
+    .. note::
+
+       This is a **best-effort** API.  The context will be ``None`` if no
+       hook callbacks have fired prior to the tool call (e.g. the session
+       just started and no hooks were registered).
+
+    Attributes:
+        session_id: UUID of the active CLI session.
+        transcript_path: Filesystem path to the JSONL transcript file.
+        cwd: Working directory of the CLI process.
+        agent_id: Sub-agent identifier, present only inside a Task-spawned
+            sub-agent.
+        agent_type: Agent type name (e.g. ``"general-purpose"``).
+        tool_use_id: The ``tool_use_id`` of the current tool invocation,
+            if available.
+    """
+
+    session_id: str
+    transcript_path: str
+    cwd: str
+    agent_id: str | None = None
+    agent_type: str | None = None
+    tool_use_id: str | None = None
+
+    def get_conversation_history(self) -> list["SessionMessage"]:
+        """Read conversation history from the session transcript.
+
+        This performs file I/O to parse the JSONL transcript — it is an
+        explicit method (not a property) to make the cost visible to callers.
+
+        Returns:
+            List of :class:`SessionMessage` objects in chronological order.
+            Returns an empty list if the transcript cannot be found.
+        """
+        from ._internal.sessions import get_session_messages
+
+        directory = (
+            str(Path(self.transcript_path).parent.parent)
+            if self.transcript_path
+            else None
+        )
+        return get_session_messages(self.session_id, directory=directory)
+
+
 class ThinkingConfigAdaptive(TypedDict):
     type: Literal["adaptive"]
 

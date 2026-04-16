@@ -25,6 +25,7 @@ from ..types import (
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from ._tool_context import _current_tool_context
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -120,6 +121,13 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
+
+        # Session context captured from hook callbacks (best-effort)
+        self._session_id: str | None = None
+        self._transcript_path: str | None = None
+        self._cwd: str | None = None
+        self._agent_id: str | None = None
+        self._agent_type: str | None = None
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -261,6 +269,26 @@ class Query:
             # Always signal end of stream
             await self._message_send.send({"type": "end"})
 
+    def _capture_session_context(self, input_data: Any) -> None:
+        """Extract session metadata from hook/permission input data.
+
+        The CLI sends ``session_id``, ``transcript_path``, ``cwd``, and
+        optionally ``agent_id``/``agent_type`` on every hook callback and
+        permission request.  We store the latest values so they can be
+        propagated to SDK MCP tool handlers via the contextvar.
+        """
+        if not isinstance(input_data, dict):
+            return
+        if "session_id" in input_data:
+            self._session_id = input_data["session_id"]
+        if "transcript_path" in input_data:
+            self._transcript_path = input_data["transcript_path"]
+        if "cwd" in input_data:
+            self._cwd = input_data["cwd"]
+        # Optional sub-agent fields
+        self._agent_id = input_data.get("agent_id") or self._agent_id
+        self._agent_type = input_data.get("agent_type") or self._agent_type
+
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
         request_id = request["request_id"]
@@ -273,6 +301,9 @@ class Query:
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
                 original_input = permission_request["input"]
+
+                # Capture session metadata from the permission request
+                self._capture_session_context(request_data.get("input"))
                 # Handle tool permission request
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
@@ -317,6 +348,10 @@ class Query:
 
             elif subtype == "hook_callback":
                 hook_callback_request: SDKHookCallbackRequest = request_data  # type: ignore[assignment]
+
+                # Capture session metadata from hook input
+                self._capture_session_context(request_data.get("input"))
+
                 # Handle hook callback
                 callback_id = hook_callback_request["callback_id"]
                 callback = self.hook_callbacks.get(callback_id)
@@ -520,7 +555,30 @@ class Query:
                 )
                 handler = server.request_handlers.get(CallToolRequest)
                 if handler:
-                    result = await handler(call_request)
+                    # Set tool context for the duration of the handler call
+                    token = None
+                    session_id = getattr(self, "_session_id", None)
+                    transcript_path = getattr(self, "_transcript_path", None)
+                    cwd = getattr(self, "_cwd", None)
+                    if session_id and transcript_path and cwd:
+                        from ..types import ToolContext
+
+                        ctx = ToolContext(
+                            session_id=session_id,
+                            transcript_path=transcript_path,
+                            cwd=cwd,
+                            agent_id=getattr(self, "_agent_id", None),
+                            agent_type=getattr(self, "_agent_type", None),
+                            tool_use_id=params.get("_meta", {}).get("tool_use_id")
+                            if isinstance(params.get("_meta"), dict)
+                            else None,
+                        )
+                        token = _current_tool_context.set(ctx)
+                    try:
+                        result = await handler(call_request)
+                    finally:
+                        if token is not None:
+                            _current_tool_context.reset(token)
                     # Convert MCP result to JSONRPC response
                     content = []
                     for item in result.root.content:  # type: ignore[union-attr]

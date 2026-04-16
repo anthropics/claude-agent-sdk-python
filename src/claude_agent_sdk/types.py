@@ -1228,7 +1228,9 @@ class ClaudeAgentOptions:
     # The value is also sent on the ``initialize`` control request so a
     # supporting CLI can filter which skills are loaded into the system prompt
     # (older CLIs ignore the field).
-    #   * ``None`` (default): skills are off.
+    #   * ``None`` (default): no SDK auto-configuration. The CLI's own
+    #     defaults still apply, so this is **not** "skills off" — to suppress
+    #     every skill from the listing, use ``[]``.
     #   * ``"all"``: enable every discovered skill.
     #   * ``[name, ...]``: enable only the listed skills. Names match the
     #     SKILL.md ``name`` / directory name, or ``plugin:skill`` for

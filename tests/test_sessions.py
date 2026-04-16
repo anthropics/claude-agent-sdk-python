@@ -14,7 +14,9 @@ from claude_agent_sdk import (
     SessionMessage,
     get_session_info,
     get_session_messages,
+    get_subagent_messages,
     list_sessions,
+    list_subagents,
 )
 from claude_agent_sdk._internal.sessions import (
     _build_conversation_chain,
@@ -1560,3 +1562,282 @@ class TestGetSessionInfo:
             file_size=42,
         )
         assert info.tag is None
+
+
+# ---------------------------------------------------------------------------
+# list_subagents() / get_subagent_messages() helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_session_with_subagents(
+    config_dir: Path,
+    project_path: str,
+    agent_ids: list[str] | None = None,
+) -> tuple[str, Path]:
+    """Creates a session with a subagents directory.
+
+    Returns (session_id, subagents_dir).
+    """
+    project_dir = _make_project_dir(config_dir, os.path.realpath(project_path))
+    sid, _ = _make_session_file(project_dir)
+    subagents_dir = project_dir / sid / "subagents"
+    subagents_dir.mkdir(parents=True)
+    for agent_id in agent_ids or []:
+        (subagents_dir / f"agent-{agent_id}.jsonl").write_text(
+            json.dumps({"type": "user", "uuid": "u", "parentUuid": None}) + "\n"
+        )
+    return sid, subagents_dir
+
+
+# ---------------------------------------------------------------------------
+# list_subagents() tests
+# ---------------------------------------------------------------------------
+
+
+class TestListSubagents:
+    """Tests for list_subagents()."""
+
+    def test_invalid_session_id(self, claude_config_dir: Path):
+        """Non-UUID session_id returns empty list."""
+        assert list_subagents("not-a-uuid") == []
+        assert list_subagents("") == []
+
+    def test_nonexistent_session(self, claude_config_dir: Path):
+        """Session file not found returns empty list."""
+        sid = str(uuid.uuid4())
+        assert list_subagents(sid) == []
+
+    def test_session_exists_no_subagents_dir(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Session exists but has no subagents directory → empty list."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(project_dir)
+
+        assert list_subagents(sid, directory=project_path) == []
+
+    def test_empty_subagents_dir(self, claude_config_dir: Path, tmp_path: Path):
+        """Subagents directory exists but is empty → empty list."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, _ = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=[]
+        )
+
+        assert list_subagents(sid, directory=project_path) == []
+
+    def test_happy_path(self, claude_config_dir: Path, tmp_path: Path):
+        """Returns agent IDs from agent-*.jsonl filenames."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, _ = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=["abc123", "def456"]
+        )
+
+        result = list_subagents(sid, directory=project_path)
+        assert sorted(result) == ["abc123", "def456"]
+
+    def test_ignores_non_agent_files(self, claude_config_dir: Path, tmp_path: Path):
+        """Non-matching files (.meta.json, other JSONL) are ignored."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=["keep"]
+        )
+        (subagents_dir / "agent-keep.meta.json").write_text("{}")
+        (subagents_dir / "other.jsonl").write_text("{}\n")
+        (subagents_dir / "agent-noext").write_text("{}")
+
+        result = list_subagents(sid, directory=project_path)
+        assert result == ["keep"]
+
+    def test_recurses_into_subdirectories(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Agent files in nested subdirectories are found."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=["top"]
+        )
+        nested = subagents_dir / "workflows" / "run-1"
+        nested.mkdir(parents=True)
+        (nested / "agent-nested.jsonl").write_text("{}\n")
+
+        result = list_subagents(sid, directory=project_path)
+        assert sorted(result) == ["nested", "top"]
+
+    def test_searches_all_projects_without_directory(self, claude_config_dir: Path):
+        """When directory is omitted, all project directories are searched."""
+        project_dir = _make_project_dir(claude_config_dir, "/some/project")
+        sid, _ = _make_session_file(project_dir)
+        subagents_dir = project_dir / sid / "subagents"
+        subagents_dir.mkdir(parents=True)
+        (subagents_dir / "agent-x.jsonl").write_text("{}\n")
+
+        assert list_subagents(sid) == ["x"]
+
+
+# ---------------------------------------------------------------------------
+# get_subagent_messages() tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSubagentMessages:
+    """Tests for get_subagent_messages()."""
+
+    def test_invalid_session_id(self, claude_config_dir: Path):
+        """Non-UUID session_id returns empty list."""
+        assert get_subagent_messages("not-a-uuid", "abc") == []
+        assert get_subagent_messages("", "abc") == []
+
+    def test_empty_agent_id(self, claude_config_dir: Path):
+        """Empty agent_id returns empty list."""
+        sid = str(uuid.uuid4())
+        assert get_subagent_messages(sid, "") == []
+
+    def test_nonexistent_session(self, claude_config_dir: Path):
+        """Session file not found returns empty list."""
+        sid = str(uuid.uuid4())
+        assert get_subagent_messages(sid, "abc") == []
+
+    def test_nonexistent_agent(self, claude_config_dir: Path, tmp_path: Path):
+        """Agent file not found returns empty list."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, _ = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=["other"]
+        )
+
+        assert get_subagent_messages(sid, "missing", directory=project_path) == []
+
+    def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
+        """Basic user → assistant chain from a subagent transcript."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        a2 = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="task"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="working"),
+            _make_transcript_entry("user", u2, a1, sid, content="continue"),
+            _make_transcript_entry("assistant", a2, u2, sid, content="done"),
+        ]
+        agent_file = subagents_dir / "agent-abc.jsonl"
+        agent_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        messages = get_subagent_messages(sid, "abc", directory=project_path)
+        assert len(messages) == 4
+        assert all(isinstance(m, SessionMessage) for m in messages)
+        assert [m.uuid for m in messages] == [u1, a1, u2, a2]
+        assert messages[0].type == "user"
+        assert messages[0].session_id == sid
+        assert messages[0].message == {"role": "user", "content": "task"}
+        assert messages[0].parent_tool_use_id is None
+        assert messages[3].type == "assistant"
+
+    def test_finds_agent_in_nested_subdirectory(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Agent file in a nested subdirectory is found by ID."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        nested = subagents_dir / "workflows" / "run-1"
+        nested.mkdir(parents=True)
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hi"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hello"),
+        ]
+        (nested / "agent-deep.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n"
+        )
+
+        messages = get_subagent_messages(sid, "deep", directory=project_path)
+        assert len(messages) == 2
+        assert messages[0].uuid == u1
+        assert messages[1].uuid == a1
+
+    def test_skips_corrupt_lines(self, claude_config_dir: Path, tmp_path: Path):
+        """Corrupt JSONL lines are skipped."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        lines = [
+            json.dumps(_make_transcript_entry("user", u1, None, sid, content="hi")),
+            "not valid json {",
+            "",
+            json.dumps(_make_transcript_entry("assistant", a1, u1, sid, content="ok")),
+        ]
+        (subagents_dir / "agent-x.jsonl").write_text("\n".join(lines) + "\n")
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert [m.uuid for m in messages] == [u1, a1]
+
+    def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
+        """Limit and offset pagination."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        uuids = [str(uuid.uuid4()) for _ in range(6)]
+        entries = []
+        for i, uid in enumerate(uuids):
+            parent = uuids[i - 1] if i > 0 else None
+            entry_type = "user" if i % 2 == 0 else "assistant"
+            entries.append(
+                _make_transcript_entry(entry_type, uid, parent, sid, content=f"m{i}")
+            )
+        (subagents_dir / "agent-p.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n"
+        )
+
+        all_msgs = get_subagent_messages(sid, "p", directory=project_path)
+        assert len(all_msgs) == 6
+
+        page = get_subagent_messages(sid, "p", directory=project_path, limit=2)
+        assert [m.uuid for m in page] == uuids[:2]
+
+        page = get_subagent_messages(
+            sid, "p", directory=project_path, limit=2, offset=2
+        )
+        assert [m.uuid for m in page] == uuids[2:4]
+
+        page = get_subagent_messages(sid, "p", directory=project_path, offset=4)
+        assert [m.uuid for m in page] == uuids[4:]
+
+        page = get_subagent_messages(sid, "p", directory=project_path, limit=0)
+        assert len(page) == 6
+
+    def test_empty_agent_file(self, claude_config_dir: Path, tmp_path: Path):
+        """Empty agent transcript file returns empty list."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        (subagents_dir / "agent-empty.jsonl").write_text("")
+
+        assert get_subagent_messages(sid, "empty", directory=project_path) == []

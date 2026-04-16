@@ -361,6 +361,32 @@ class SubprocessCLITransport(Transport):
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
+            # Propagate active OTEL trace context to the CLI so its spans
+            # parent under the caller's distributed trace. No-op if
+            # opentelemetry-api is not installed or there's no active span.
+            try:
+                from opentelemetry import propagate
+
+                carrier: dict[str, str] = {}
+                propagate.inject(carrier)
+                if "traceparent" in carrier:
+                    # Active span present: scrub stale inherited W3C context
+                    # (CI/k8s ambient env) before writing the fresh values, so
+                    # an inherited TRACESTATE isn't paired with a new
+                    # TRACEPARENT. Explicit ClaudeAgentOptions.env always wins.
+                    # Gate on the traceparent key (not carrier truthiness) so a
+                    # baggage-only / non-W3C carrier doesn't scrub a valid
+                    # inherited TRACEPARENT.
+                    for key in ("TRACEPARENT", "TRACESTATE"):
+                        if key not in self._options.env:
+                            process_env.pop(key, None)
+                    for k, v in carrier.items():
+                        key = k.upper()
+                        if key not in self._options.env:
+                            process_env[key] = v
+            except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
+                logger.debug("OTEL trace context injection failed", exc_info=True)
+
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:
                 process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"

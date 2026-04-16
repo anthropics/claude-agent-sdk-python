@@ -434,16 +434,16 @@ class TestSubprocessCLITransport:
             options=make_options(),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
-    def test_build_command_setting_sources_omitted_when_empty(self):
-        """Test that --setting-sources is omitted when setting_sources is empty list."""
+    def test_build_command_setting_sources_empty_list_disables_all(self):
+        """Test that setting_sources=[] passes --setting-sources= to disable all sources."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(setting_sources=[]),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" not in cmd
+        assert "--setting-sources=" in cmd
 
     def test_build_command_setting_sources_included_when_provided(self):
         """Test that --setting-sources is included when setting_sources has values."""
@@ -452,9 +452,7 @@ class TestSubprocessCLITransport:
             options=make_options(setting_sources=["user", "project"]),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" in cmd
-        idx = cmd.index("--setting-sources")
-        assert cmd[idx + 1] == "user,project"
+        assert "--setting-sources=user,project" in cmd
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""

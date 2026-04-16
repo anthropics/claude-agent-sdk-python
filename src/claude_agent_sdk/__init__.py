@@ -24,6 +24,7 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    RateLimitError,
 )
 from ._internal.session_mutations import (
     ForkSessionResult,
@@ -604,4 +605,5 @@ __all__ = [
     "CLINotFoundError",
     "ProcessError",
     "CLIJSONDecodeError",
+    "RateLimitError",
 ]

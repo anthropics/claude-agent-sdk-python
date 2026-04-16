@@ -4,10 +4,13 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import shutil
+import time
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any, cast
@@ -17,7 +20,12 @@ import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
-from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
+from ..._errors import (
+    CLIConnectionError,
+    CLINotFoundError,
+    ProcessError,
+    RateLimitError,
+)
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
 from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
@@ -27,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+_DEFAULT_RATE_LIMIT_MAX_RETRIES = 3
+_RETRY_AFTER_MAX = 60.0
 
 
 class SubprocessCLITransport(Transport):
@@ -59,6 +69,12 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._rate_limit_max_retries = (
+            options.rate_limit_max_retries or _DEFAULT_RATE_LIMIT_MAX_RETRIES
+        )
+        self._session_id: str | None = None
+        self._retry_count = 0
+        self._stderr_lines: list[str] = []
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -394,14 +410,12 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
             should_pipe_stderr = (
                 self._options.stderr is not None
                 or "debug-to-stderr" in self._options.extra_args
             )
 
-            # For backward compat: use debug_stderr file object if no callback and debug is on
-            stderr_dest = PIPE if should_pipe_stderr else None
+            stderr_dest = PIPE
 
             self._process = await anyio.open_process(
                 cmd,
@@ -416,10 +430,8 @@ class SubprocessCLITransport(Transport):
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
-            # Setup stderr stream if piped
-            if should_pipe_stderr and self._process.stderr:
+            if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
                 self._stderr_task_group = anyio.create_task_group()
                 await self._stderr_task_group.__aenter__()
                 self._stderr_task_group.start_soon(self._handle_stderr)
@@ -457,11 +469,11 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
-                # Call the stderr callback if provided
+                self._stderr_lines.append(line_str)
+
                 if self._options.stderr:
                     self._options.stderr(line_str)
 
-                # For backward compatibility: write to debug_stderr if in debug mode
                 elif (
                     "debug-to-stderr" in self._options.extra_args
                     and self._options.debug_stderr
@@ -470,9 +482,9 @@ class SubprocessCLITransport(Transport):
                     if hasattr(self._options.debug_stderr, "flush"):
                         self._options.debug_stderr.flush()
         except anyio.ClosedResourceError:
-            pass  # Stream closed, exit normally
+            pass
         except Exception:
-            pass  # Ignore other errors during stderr reading
+            pass
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""

@@ -54,3 +54,17 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class RateLimitError(ClaudeSDKError):
+    """Raised when the API returns a 429 rate limit error."""
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: float | None = None,
+        original_error: Exception | None = None,
+    ):
+        self.retry_after = retry_after
+        self.original_error = original_error
+        super().__init__(message)

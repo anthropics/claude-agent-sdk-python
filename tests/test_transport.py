@@ -820,13 +820,18 @@ class TestSubprocessCLITransport:
             active = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
             def fake_inject(carrier: dict[str, str]) -> None:
+                # Propagator emits traceparent only (active span has empty
+                # trace_state) — the common case.
                 carrier["traceparent"] = active
 
             fake_propagate = MagicMock()
             fake_propagate.inject = fake_inject
 
             with (
-                patch.dict(os.environ, {"TRACEPARENT": stale}),
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": stale, "TRACESTATE": "vendor=stale"},
+                ),
                 patch.dict(
                     "sys.modules",
                     {
@@ -864,6 +869,65 @@ class TestSubprocessCLITransport:
                 # the active span's context.
                 assert env_passed["TRACEPARENT"] == active
                 assert env_passed["TRACEPARENT"] != stale
+                # And the stale inherited TRACESTATE must be scrubbed, not
+                # paired with the fresh TRACEPARENT.
+                assert "TRACESTATE" not in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_no_active_span_preserves_inherited_env(self):
+        """With opentelemetry installed but no active span, inherited W3C env passes through."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # inject() with no active span writes nothing to the carrier.
+            fake_propagate = MagicMock()
+            fake_propagate.inject = lambda carrier: None
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # No active span -> we must NOT scrub the launcher's context.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
 
         anyio.run(_test)
 

@@ -12,10 +12,12 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ProcessError,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -144,6 +146,37 @@ def _make_greet_server():
         return {"content": [{"type": "text", "text": f"Hi {args['name']}"}]}
 
     return create_sdk_mcp_server("greeter", tools=[greet_tool])
+
+
+def test_receive_messages_preserves_process_error_attributes():
+    """Query.receive_messages re-raises ProcessError with its metadata intact."""
+
+    async def _test():
+        original_error = ProcessError(
+            "Command failed with exit code 1",
+            exit_code=1,
+            stderr="real stderr output",
+        )
+        mock_transport = AsyncMock()
+
+        async def mock_receive():
+            raise original_error
+            yield  # pragma: no cover
+
+        mock_transport.read_messages = mock_receive
+        query_instance = Query(transport=mock_transport, is_streaming_mode=True)
+
+        await query_instance._read_messages()
+
+        with pytest.raises(ProcessError) as exc_info:
+            async for _message in query_instance.receive_messages():
+                pass
+
+        assert exc_info.value is original_error
+        assert exc_info.value.exit_code == 1
+        assert exc_info.value.stderr == "real stderr output"
+
+    anyio.run(_test)
 
 
 class TestStringPromptWithSdkMcpServers:
@@ -648,6 +681,38 @@ class TestControlCancelRequest:
             )
 
         asyncio.run(_test())
+
+
+def test_receive_messages_preserves_process_error_fields():
+    """Query.receive_messages re-raises the original ProcessError."""
+
+    original_error = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr="model alias is invalid",
+    )
+
+    async def read_messages():
+        if False:
+            yield {}
+        raise original_error
+
+    async def _test():
+        mock_transport = AsyncMock()
+        mock_transport.read_messages = read_messages
+        q = Query(transport=mock_transport, is_streaming_mode=True)
+
+        await q._read_messages()
+
+        with pytest.raises(ProcessError) as exc_info:
+            async for _ in q.receive_messages():
+                pass
+
+        assert exc_info.value is original_error
+        assert exc_info.value.exit_code == 1
+        assert exc_info.value.stderr == "model alias is invalid"
+
+    anyio.run(_test)
 
     def test_cancel_request_for_unknown_id_is_noop(self):
         """A control_cancel_request for an unknown request_id should not raise."""

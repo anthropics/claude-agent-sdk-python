@@ -573,7 +573,13 @@ class TestSubprocessCLITransport:
                 ["pdf", "docx"],
             ),
             # (5) subset + explicit setting_sources (user wins)
-            (["pdf"], {"setting_sources": ["project"]}, "Skill(pdf)", "project", ["pdf"]),
+            (
+                ["pdf"],
+                {"setting_sources": ["project"]},
+                "Skill(pdf)",
+                "project",
+                ["pdf"],
+            ),
             # (6) subset merges into existing allowed_tools
             (
                 ["pdf"],

@@ -370,9 +370,13 @@ class SubprocessCLITransport(Transport):
                 carrier: dict[str, str] = {}
                 propagate.inject(carrier)
                 for k, v in carrier.items():
-                    process_env.setdefault(k.upper(), v)  # TRACEPARENT, TRACESTATE
-            except ImportError:
-                pass
+                    # Overwrite inherited env (stale ambient TRACEPARENT from CI/k8s),
+                    # but let explicit ClaudeAgentOptions.env overrides win.
+                    key = k.upper()  # TRACEPARENT, TRACESTATE
+                    if key not in self._options.env:
+                        process_env[key] = v
+            except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
+                logger.debug("OTEL trace context injection failed", exc_info=True)
 
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:

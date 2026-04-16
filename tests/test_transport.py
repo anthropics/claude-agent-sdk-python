@@ -931,6 +931,68 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_otel_baggage_only_carrier_preserves_inherited_env(self):
+        """Non-empty carrier without traceparent (e.g. baggage only) must not scrub inherited W3C env."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # Default global propagator is composite(tracecontext, baggage):
+            # with baggage in Context but no active span, inject() emits a
+            # baggage key only.
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["baggage"] = "user.id=123"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Carrier was non-empty but had no traceparent -> still no
+                # active span, so the launcher's W3C context must pass through.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
+
+        anyio.run(_test)
+
     def test_otel_propagator_error_does_not_break_connect(self):
         """A raising propagator must not surface as CLIConnectionError."""
 

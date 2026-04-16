@@ -184,6 +184,10 @@ class ToolPermissionContext:
     Multiple tool calls in the same assistant message will have different tool_use_ids."""
     agent_id: str | None = None
     """If running within the context of a sub-agent, the sub-agent's ID."""
+    hook_decision_reason: str | None = None
+    """Reason string from a PreToolUse hook that returned ``permissionDecision: "ask"``.
+    SDK consumers can surface this in custom permission UIs to explain *why*
+    the hook is requesting confirmation."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -1262,6 +1266,7 @@ class SDKControlPermissionRequest(TypedDict):
     blocked_path: str | None
     tool_use_id: str
     agent_id: NotRequired[str]
+    hook_decision_reason: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):

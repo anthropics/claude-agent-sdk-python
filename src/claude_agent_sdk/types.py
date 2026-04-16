@@ -4,7 +4,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, TypedDict
@@ -1088,6 +1088,139 @@ Message = (
     | StreamEvent
     | RateLimitEvent
 )
+
+
+# ---------------------------------------------------------------------------
+# Session Store Types
+# ---------------------------------------------------------------------------
+
+
+class SessionKey(TypedDict):
+    """Identifies a session transcript or subagent transcript in a store.
+
+    Main transcripts have no ``subpath``; subagent transcripts include a
+    ``subpath`` like ``"subagents/agent-{id}"`` that mirrors the on-disk
+    directory structure.
+    """
+
+    project_key: str
+    """Caller-defined scope. Default: sanitized cwd. Multi-tenant deployments
+    should set this to a tenant ID or project name. Paths longer than 200
+    characters are truncated and suffixed with a portable djb2 hash so the
+    same path yields the same key across runtimes."""
+
+    session_id: str
+
+    subpath: NotRequired[str]
+    """Omit for the main transcript; set for subagent files. Empty string is
+    invalid — omit the field for the main transcript. Opaque to the adapter —
+    just use it as a storage key suffix."""
+
+
+class SessionStoreListEntry(TypedDict):
+    """Entry returned by :meth:`SessionStore.list_sessions`."""
+
+    session_id: str
+    mtime: int
+    """Last-modified time in Unix epoch milliseconds. Adapters without native
+    modification time (e.g. Redis) must maintain their own index."""
+
+
+class SessionListSubkeysKey(TypedDict):
+    """Key argument to :meth:`SessionStore.list_subkeys` (no ``subpath``)."""
+
+    project_key: str
+    session_id: str
+
+
+@runtime_checkable
+class SessionStore(Protocol):
+    """Adapter for mirroring session transcripts to external storage.
+
+    The subprocess still writes to local disk (set ``CLAUDE_CONFIG_DIR=/tmp``
+    for an ephemeral local copy); the adapter receives a secondary copy.
+
+    The SDK never deletes from your store unless you call ``delete_session()``
+    with :meth:`delete` implemented. Retention is the adapter's responsibility —
+    implement TTL, object-storage lifecycle policies, or scheduled cleanup
+    according to your compliance requirements (e.g. ZDR/HIPAA retention
+    windows). Local-disk transcripts under ``CLAUDE_CONFIG_DIR`` are swept by
+    the existing ``cleanupPeriodDays`` setting independently of this adapter.
+
+    Only :meth:`append` and :meth:`load` are required. The remaining methods
+    are optional: implementers may omit them, and call sites probe for their
+    presence before invoking. The default implementations on this Protocol
+    raise :class:`NotImplementedError` so that ``isinstance`` checks succeed
+    while still signaling absence at call time.
+    """
+
+    async def append(self, key: SessionKey, entries: list[Any]) -> None:
+        """Mirror a batch of transcript entries.
+
+        Called AFTER the subprocess's local write succeeds — durability is
+        already guaranteed locally.
+
+        Batches arrive at ~100ms cadence during active turns. Entries are
+        JSON-safe plain objects — one per line in the local JSONL file.
+
+        Within a single process, persist entries in append-call order; across
+        concurrent processes, order is by storage commit time, not call time.
+
+        Exceptions are logged; the subprocess continues unaffected.
+        At-most-once delivery — failed batches are not retried.
+        """
+        ...
+
+    async def load(self, key: SessionKey) -> list[Any] | None:
+        """Load a full session for resume.
+
+        Called once, in the SDK parent, before subprocess spawn. The result is
+        materialized to a temporary JSONL file; the subprocess resumes from
+        that file using its existing resume code.
+
+        Return ``None`` for a key that was never written; adapters that cannot
+        distinguish "never written" from "emptied" (e.g. Redis ``LRANGE``) may
+        return ``None`` for both. Returned entries must be deep-equal to what
+        was appended — byte-equal serialization is NOT required (e.g. Postgres
+        ``JSONB`` may reorder object keys); the SDK never hashes or
+        byte-compares entries.
+        """
+        ...
+
+    async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
+        """List sessions for a ``project_key``. Returns IDs + modification times.
+
+        ``mtime`` is Unix epoch milliseconds; adapters without native
+        modification time (e.g. Redis) must maintain their own index. Result
+        order is unspecified — the SDK sorts by ``mtime`` descending.
+
+        Optional — if unimplemented, ``list_sessions()`` with a session store
+        raises.
+        """
+        raise NotImplementedError
+
+    async def delete(self, key: SessionKey) -> None:
+        """Delete a session.
+
+        Deleting a main-transcript key (no ``subpath``) must cascade to all
+        subkeys under that session so subagent transcripts aren't orphaned. A
+        targeted delete with an explicit ``subpath`` removes only that one
+        entry.
+
+        Optional — if unimplemented, deletion is a no-op (appropriate for
+        WORM/append-only backends like object storage).
+        """
+        raise NotImplementedError
+
+    async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]:
+        """List all subpath keys under a session (e.g. subagent transcripts).
+
+        Used during resume to discover and materialize all subagent data.
+
+        Optional — if unimplemented, resume only materializes the main
+        transcript.
+        """
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------

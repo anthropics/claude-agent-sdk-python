@@ -32,6 +32,7 @@ from ._internal.session_mutations import (
     rename_session,
     tag_session,
 )
+from ._internal.session_store import InMemorySessionStore
 from ._internal.sessions import (
     get_session_info,
     get_session_messages,
@@ -92,7 +93,11 @@ from .types import (
     SdkBeta,
     SdkPluginConfig,
     SDKSessionInfo,
+    SessionKey,
+    SessionListSubkeysKey,
     SessionMessage,
+    SessionStore,
+    SessionStoreListEntry,
     SettingSource,
     StopHookInput,
     StreamEvent,
@@ -581,6 +586,12 @@ __all__ = [
     "get_subagent_messages",
     "SDKSessionInfo",
     "SessionMessage",
+    # Session store
+    "SessionKey",
+    "SessionStore",
+    "SessionStoreListEntry",
+    "SessionListSubkeysKey",
+    "InMemorySessionStore",
     # Session mutations
     "rename_session",
     "tag_session",

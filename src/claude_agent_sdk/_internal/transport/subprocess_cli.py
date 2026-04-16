@@ -474,6 +474,18 @@ class SubprocessCLITransport(Transport):
         except Exception:
             pass  # Ignore other errors during stderr reading
 
+    @property
+    def pid(self) -> int | None:
+        """Return the PID of the underlying CLI subprocess, or ``None`` if no
+        process is currently running.
+
+        This is exposed as a public property so callers that need to clean up
+        the spawned ``claude`` CLI process out-of-band (e.g. on hard timeouts
+        or shutdown signals) can do so without walking SDK internals.
+        See anthropics/anthropic-sdk-python#1370.
+        """
+        return self._process.pid if self._process is not None else None
+
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         if not self._process:

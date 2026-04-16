@@ -12,46 +12,86 @@ pip install claude-agent-sdk
 
 - Python 3.10+
 
-**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
+### How the SDK finds Claude Code
 
-- Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
-- Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
+The SDK is always CLI-backed: your Python code talks to Claude Code by starting a Claude Code CLI process under the hood.
+
+Resolution order:
+
+1. `ClaudeAgentOptions(cli_path="/path/to/claude")`
+2. A bundled Claude Code binary, if the installed package includes one
+3. A system `claude` binary on your `PATH` or common install locations
+
+Published wheels can bundle the CLI for you. Source checkouts and editable installs usually do not, so install Claude Code separately if needed:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+The SDK warns if the resolved CLI is older than the minimum supported version (`2.0.0`).
+
+## Quick Start Matrix
+
+| If you are... | Use... | Why |
+| --- | --- | --- |
+| Running a synchronous script entry point | `anyio.run(main)` + `query()` | Keep top-level script code sync while using the async SDK |
+| Already inside an async app or service | `async for ... in query(...)` or `ClaudeSDKClient` | Reuse your existing event loop and stream responses directly |
+| Pinning a specific Claude Code binary | `ClaudeAgentOptions(cli_path="...")` | Make CLI-backed runs reproducible in CI, Docker, or staged rollouts |
 
 ## Quick Start
 
 ```python
 import anyio
-from claude_agent_sdk import query
+from claude_agent_sdk import AssistantMessage, TextBlock, query
 
 async def main():
-    async for message in query(prompt="What is 2 + 2?"):
-        print(message)
+    async for message in query(prompt="What is 2 + 2? Reply with just the number."):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    print(f"Claude: {block.text}")
 
 anyio.run(main)
 ```
 
+Expected output:
+
+```text
+Claude: 4
+```
+
 ## Basic Usage: query()
 
-`query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).
+`query()` is an async generator for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).
 
 ```python
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
 
 # Simple query
-async for message in query(prompt="Hello Claude"):
+async for message in query(prompt="Reply with exactly: ready"):
     if isinstance(message, AssistantMessage):
         for block in message.content:
             if isinstance(block, TextBlock):
-                print(block.text)
+                print(f"Claude: {block.text}")
 
 # With options
 options = ClaudeAgentOptions(
-    system_prompt="You are a helpful assistant",
+    system_prompt="Reply with exactly one lower-case word.",
     max_turns=1
 )
 
-async for message in query(prompt="Tell me a joke", options=options):
-    print(message)
+async for message in query(prompt="Return only the word: configured", options=options):
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                print(f"Claude: {block.text}")
+```
+
+Expected output:
+
+```text
+Claude: ready
+Claude: configured
 ```
 
 ### Using Tools
@@ -80,6 +120,28 @@ from pathlib import Path
 options = ClaudeAgentOptions(
     cwd="/path/to/project"  # or Path("/path/to/project")
 )
+```
+
+### Pinned CLI-Backed Flow
+
+Use `cli_path` when you want to force the SDK to use a specific Claude Code build instead of the bundled or system binary.
+
+```python
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+
+options = ClaudeAgentOptions(
+    cli_path="/usr/local/bin/claude",
+    max_turns=1,
+)
+
+async for message in query(
+    prompt="Reply with exactly: pinned",
+    options=options,
+):
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                print(f"Claude: {block.text}")
 ```
 
 ## ClaudeSDKClient
@@ -184,6 +246,14 @@ options = ClaudeAgentOptions(
 )
 ```
 
+#### MCP Integration Examples Index
+
+| Example | What it shows |
+| --- | --- |
+| [examples/mcp_calculator.py](examples/mcp_calculator.py) | Minimal in-process SDK MCP server with `@tool`, `create_sdk_mcp_server()`, and `allowed_tools` |
+| Migration snippet above | How to replace an external stdio MCP server with an in-process SDK server |
+| [src/claude_agent_sdk/client.py](src/claude_agent_sdk/client.py) | Runtime MCP controls such as `get_mcp_status()`, `reconnect_mcp_server()`, and `toggle_mcp_server()` |
+
 ### Hooks
 
 A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).
@@ -268,6 +338,25 @@ except CLIJSONDecodeError as e:
 
 See [src/claude_agent_sdk/\_errors.py](src/claude_agent_sdk/_errors.py) for all error types.
 
+## Troubleshooting
+
+### Auth and CLI startup
+
+- `CLINotFoundError` means the SDK could not resolve a Claude Code binary. Install Claude Code or set `ClaudeAgentOptions(cli_path=...)`.
+- The SDK reuses Claude Code authentication. If requests fail before the first model response, run `claude login` for the CLI binary you expect the SDK to use.
+- Source installs and editable installs typically rely on your system CLI. Bundled CLI behavior is most relevant for published wheels.
+
+### Tool execution
+
+- `allowed_tools` only auto-approves tools. It does not shrink Claude's toolset. Use `tools=[]` or `disallowed_tools=[...]` when you want stricter control.
+- `can_use_tool` requires streaming mode. Use an `AsyncIterable` prompt with `query()` or switch to `ClaudeSDKClient` when you need callback-driven tool permission handling.
+- If a tool still prompts unexpectedly, confirm the exact tool name matches what Claude emits (for MCP tools this is usually `mcp__server__tool`).
+
+### MCP servers
+
+- Call `await client.get_mcp_status()` to inspect whether a server is `connected`, `pending`, `failed`, `needs-auth`, or `disabled`.
+- For `failed` or `needs-auth` servers, fix the underlying server configuration or login state, then call `await client.reconnect_mcp_server("server-name")`.
+
 ## Available Tools
 
 See the [Claude Code documentation](https://code.claude.com/docs/en/settings#tools-available-to-claude) for a complete list of available tools.
@@ -277,6 +366,8 @@ See the [Claude Code documentation](https://code.claude.com/docs/en/settings#too
 See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
 
 See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
+
+See [examples/mcp_calculator.py](examples/mcp_calculator.py) for a minimal MCP integration example and [examples/tool_permission_callback.py](examples/tool_permission_callback.py) for callback-based tool control.
 
 ## Migrating from Claude Code SDK
 

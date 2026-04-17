@@ -15,9 +15,14 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from claude_agent_sdk import (
+    ClaudeAgentOptions,
     InMemorySessionStore,
     SessionKey,
     SessionStore,
+    project_key_for_directory,
+)
+from claude_agent_sdk._internal.session_store_validation import (
+    validate_session_store_options,
 )
 
 OptionalMethod = str  # "list_sessions" | "delete" | "list_subkeys"
@@ -337,3 +342,74 @@ class TestInMemorySessionStore:
         assert loaded is not None
         loaded.append({"n": 999})
         assert await store.load(_KEY) == [{"n": 1}]
+
+
+# ---------------------------------------------------------------------------
+# Options validation
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStoreOptionsValidation:
+    def test_no_store_is_always_valid(self) -> None:
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                continue_conversation=True, enable_file_checkpointing=True
+            )
+        )
+
+    def test_valid_store_passes(self) -> None:
+        validate_session_store_options(
+            ClaudeAgentOptions(session_store=InMemorySessionStore())
+        )
+
+    def test_continue_conversation_requires_list_sessions(self) -> None:
+        class MinimalStore(SessionStore):
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        with pytest.raises(ValueError, match="list_sessions"):
+            validate_session_store_options(
+                ClaudeAgentOptions(
+                    session_store=MinimalStore(), continue_conversation=True
+                )
+            )
+
+    def test_continue_conversation_ok_when_store_implements_list_sessions(
+        self,
+    ) -> None:
+        # InMemorySessionStore implements list_sessions — should pass.
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                session_store=InMemorySessionStore(), continue_conversation=True
+            )
+        )
+
+    def test_rejects_file_checkpointing_combo(self) -> None:
+        with pytest.raises(ValueError, match="enable_file_checkpointing"):
+            validate_session_store_options(
+                ClaudeAgentOptions(
+                    session_store=InMemorySessionStore(),
+                    enable_file_checkpointing=True,
+                )
+            )
+
+
+class TestProjectKeyForDirectory:
+    def test_defaults_to_cwd(self) -> None:
+        from pathlib import Path
+
+        assert project_key_for_directory() == project_key_for_directory(Path.cwd())
+
+    def test_sanitizes_path(self) -> None:
+        key = project_key_for_directory("/tmp/my project!")
+        assert "/" not in key
+        assert " " not in key
+        assert "!" not in key
+
+    def test_stable_for_same_path(self) -> None:
+        assert project_key_for_directory("/a/b/c") == project_key_for_directory(
+            "/a/b/c"
+        )

@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if sys.version_info >= (3, 11):
-    from typing import NotRequired, TypedDict
+    from typing import NotRequired, Required, TypedDict
 else:
-    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired, so
-    # __required_keys__ would include NotRequired fields. typing_extensions
-    # backports the correct behavior.
-    from typing_extensions import NotRequired, TypedDict
+    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired/Required,
+    # so __required_keys__ would be wrong. typing_extensions backports the
+    # correct behavior.
+    from typing_extensions import NotRequired, Required, TypedDict
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
@@ -1003,6 +1003,23 @@ class TaskNotificationMessage(SystemMessage):
 
 
 @dataclass
+class MirrorErrorMessage(SystemMessage):
+    """System message emitted when a :meth:`SessionStore.append` call fails.
+
+    Non-fatal — the local-disk transcript is already durable, so the session
+    continues unaffected. The mirrored copy in the external store will be
+    missing the failed batch.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    field is ``"mirror_error"`` and ``data`` carries the raw payload.
+    """
+
+    key: "SessionKey | None" = None
+    error: str = ""
+
+
+@dataclass
 class ResultMessage:
     """Result message with cost and usage information."""
 
@@ -1117,6 +1134,22 @@ class SessionKey(TypedDict):
     just use it as a storage key suffix."""
 
 
+class SessionStoreEntry(TypedDict, total=False):
+    """One JSONL transcript line as observed by a :class:`SessionStore` adapter.
+
+    The concrete shape is the CLI's on-disk transcript format (a large
+    discriminated union). That union is internal, so this is a minimal
+    structural supertype — adapters should treat entries as pass-through
+    blobs; round-tripping ``json.dumps``/``json.loads`` is the only
+    required invariant.
+    """
+
+    type: Required[str]
+    uuid: str
+    timestamp: str
+    # Additional fields are opaque JSON — adapters must pass them through.
+
+
 class SessionStoreListEntry(TypedDict):
     """Entry returned by :meth:`SessionStore.list_sessions`."""
 
@@ -1154,7 +1187,7 @@ class SessionStore(Protocol):
     while still signaling absence at call time.
     """
 
-    async def append(self, key: SessionKey, entries: list[Any]) -> None:
+    async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         """Mirror a batch of transcript entries.
 
         Called AFTER the subprocess's local write succeeds — durability is
@@ -1171,7 +1204,7 @@ class SessionStore(Protocol):
         """
         ...
 
-    async def load(self, key: SessionKey) -> list[Any] | None:
+    async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         """Load a full session for resume.
 
         Called once, in the SDK parent, before subprocess spawn. The result is
@@ -1375,6 +1408,15 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # Mirror session transcripts to external storage and enable store-backed
+    # resume. When set, every transcript line written locally is also passed to
+    # ``session_store.append()``, and ``resume`` can materialize from the store
+    # when the local file is absent.
+    session_store: SessionStore | None = None
+    # Upper bound on ``session_store.load()`` / ``list_subkeys()`` calls during
+    # resume materialization, in milliseconds. Prevents a slow store from
+    # blocking subprocess spawn indefinitely.
+    load_timeout_ms: int = 60_000
     # API-side task budget in tokens. When set, the model is made aware of
     # its remaining token budget so it can pace tool use and wrap up before
     # the limit.

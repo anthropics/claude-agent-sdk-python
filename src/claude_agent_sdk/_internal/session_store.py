@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from pathlib import Path
 
 from ..types import (
     SessionKey,
     SessionListSubkeysKey,
     SessionStore,
+    SessionStoreEntry,
     SessionStoreListEntry,
 )
+from .sessions import _sanitize_path
 
 
 def _key_to_string(key: SessionKey) -> str:
@@ -30,15 +32,15 @@ class InMemorySessionStore(SessionStore):
     """
 
     def __init__(self) -> None:
-        self._store: dict[str, list[Any]] = {}
+        self._store: dict[str, list[SessionStoreEntry]] = {}
         self._mtimes: dict[str, int] = {}
 
-    async def append(self, key: SessionKey, entries: list[Any]) -> None:
+    async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
         self._mtimes[k] = int(time.time() * 1000)
 
-    async def load(self, key: SessionKey) -> list[Any] | None:
+    async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         entries = self._store.get(_key_to_string(key))
         return None if entries is None else list(entries)
 
@@ -76,7 +78,7 @@ class InMemorySessionStore(SessionStore):
     # Test helpers
     # ------------------------------------------------------------------
 
-    def get_entries(self, key: SessionKey) -> list[Any]:
+    def get_entries(self, key: SessionKey) -> list[SessionStoreEntry]:
         """Test helper — get all entries for a key (empty list if absent)."""
         return list(self._store.get(_key_to_string(key), []))
 
@@ -94,3 +96,14 @@ class InMemorySessionStore(SessionStore):
         """Test helper — clear all stored data."""
         self._store.clear()
         self._mtimes.clear()
+
+
+def project_key_for_directory(directory: str | Path | None = None) -> str:
+    """Derive the :class:`SessionStore` ``project_key`` for a directory.
+
+    Defaults to the current working directory. Uses the same djb2-hashed
+    sanitization the CLI uses for project directory names, so keys match
+    between local-disk transcripts and store-mirrored transcripts.
+    """
+    abs_path = Path(directory if directory is not None else ".").resolve()
+    return _sanitize_path(str(abs_path))

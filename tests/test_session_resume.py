@@ -529,6 +529,49 @@ class TestTimeoutsAndErrors:
         assert not Path(created[0]).exists()
 
     @pytest.mark.asyncio
+    async def test_cancelled_after_mkdtemp_cleans_temp_dir(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """``asyncio.CancelledError`` is ``BaseException`` (not ``Exception``)
+        since 3.8 — the cleanup-on-failure block must catch it so a temp dir
+        already containing ``.credentials.json`` is not leaked when the outer
+        task is cancelled mid-subkey-load."""
+
+        class HungSubkeysStore(InMemorySessionStore):
+            async def list_subkeys(self, key):  # type: ignore[override]
+                await asyncio.sleep(3600)
+                return []
+
+        store = HungSubkeysStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+
+        real_mkdtemp = tempfile.mkdtemp
+        created: list[str] = []
+
+        def spy(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created.append(d)
+            return d
+
+        with patch("tempfile.mkdtemp", side_effect=spy):
+            task = asyncio.create_task(materialize_resume_session(opts))
+            # Let it run past mkdtemp and into list_subkeys.
+            for _ in range(50):
+                await asyncio.sleep(0)
+                if created:
+                    break
+            assert created, "mkdtemp should have run before cancellation"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not Path(created[0]).exists()
+
+    @pytest.mark.asyncio
     async def test_non_json_serializable_entry_surfaces_clear_error(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:

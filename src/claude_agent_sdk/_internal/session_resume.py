@@ -82,32 +82,19 @@ async def materialize_resume_session(
     project_key = project_key_for_directory(options.cwd)
 
     # Resolve the session ID — explicit resume wins; otherwise pick the
-    # most-recently-modified session from the store. Empty list_sessions()
-    # → fresh session (matches CLI --continue with no history).
-    session_id = options.resume
-    if session_id is None:
-        sessions = await _with_timeout(
-            store.list_sessions(project_key),
-            timeout_s,
-            "SessionStore.list_sessions()",
-        )
-        if not sessions:
+    # most-recently-modified non-sidechain session from the store. Empty
+    # list_sessions() → fresh session (matches CLI --continue with no history).
+    if options.resume is not None:
+        # session_id is used as a path component below; reject anything that
+        # isn't a UUID to prevent traversal and match every other resume path.
+        if _validate_uuid(options.resume) is None:
             return None
-        session_id = max(sessions, key=lambda s: s["mtime"])["session_id"]
-
-    # session_id is used as a path component below; reject anything that
-    # isn't a UUID to prevent traversal and match every other resume path.
-    if _validate_uuid(session_id) is None:
+        resolved = await _load_candidate(store, project_key, options.resume, timeout_s)
+    else:
+        resolved = await _resolve_continue_candidate(store, project_key, timeout_s)
+    if resolved is None:
         return None
-
-    main_key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    entries = await _with_timeout(
-        store.load(main_key),
-        timeout_s,
-        f"SessionStore.load() for session {session_id}",
-    )
-    if not entries:
-        return None
+    session_id, entries = resolved
 
     tmp_base = Path(tempfile.mkdtemp(prefix="claude-resume-"))
     try:
@@ -145,6 +132,53 @@ async def materialize_resume_session(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _load_candidate(
+    store: SessionStore, project_key: str, session_id: str, timeout_s: float
+) -> tuple[str, list[Any]] | None:
+    """Load entries for ``session_id``; return ``None`` if empty/missing."""
+    entries = await _with_timeout(
+        store.load({"project_key": project_key, "session_id": session_id}),
+        timeout_s,
+        f"SessionStore.load() for session {session_id}",
+    )
+    if not entries:
+        return None
+    return session_id, entries
+
+
+async def _resolve_continue_candidate(
+    store: SessionStore, project_key: str, timeout_s: float
+) -> tuple[str, list[Any]] | None:
+    """Pick the most-recently-modified non-sidechain session.
+
+    Sidechain transcripts are mirrored as ordinary top-level keys and often
+    have the highest mtime (their append lands after the main session's in
+    the same flush). Walk newest→oldest, loading each candidate (the load is
+    needed anyway) and skipping sidechains so ``--continue`` resumes the
+    user's conversation, not a subagent's. Matches the CLI's own
+    ``--continue`` filter and ``list_sessions_from_store()``.
+    """
+    sessions = await _with_timeout(
+        store.list_sessions(project_key),
+        timeout_s,
+        "SessionStore.list_sessions()",
+    )
+    if not sessions:
+        return None
+    for cand in sorted(sessions, key=lambda s: s["mtime"], reverse=True):
+        sid = cand["session_id"]
+        if _validate_uuid(sid) is None:
+            continue
+        loaded = await _load_candidate(store, project_key, sid, timeout_s)
+        if loaded is None:
+            continue
+        first = loaded[1][0]
+        if isinstance(first, dict) and first.get("isSidechain") is True:
+            continue
+        return loaded
+    return None
 
 
 async def _with_timeout(coro: Awaitable[Any], timeout_s: float, what: str) -> Any:

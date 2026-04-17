@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.62
+
+### New Features
+
+- **Top-level `skills` option**: Added `skills` parameter to `ClaudeAgentOptions` for enabling skills on the main session without manually configuring `allowed_tools` and `setting_sources`. Supports `"all"` for every discovered skill, a list of named skills, or `[]` to suppress all skills (#804)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.113
+
 ## 0.1.61
 
 ### Internal/Other Changes

@@ -82,7 +82,7 @@ async def run_session_store_conformance(
     loaded = await store.load(_KEY)
     # Deep-equal is the contract; byte-equal serialization is intentionally
     # NOT checked (Postgres JSONB may reorder keys — SDK never byte-compares).
-    assert loaded == [{"uuid": "b", "n": 1}, {"uuid": "a", "n": 2}]
+    assert loaded == [_e({"uuid": "b", "n": 1}), _e({"uuid": "a", "n": 2})]
 
     # 2. load unknown key returns None
     store = await fresh()
@@ -96,32 +96,36 @@ async def run_session_store_conformance(
     await store.append(_KEY, [_e({"uuid": "a", "n": 2}), _e({"uuid": "m", "n": 3})])
     await store.append(_KEY, [_e({"uuid": "b", "n": 4})])
     assert await store.load(_KEY) == [
-        {"uuid": "z", "n": 1},
-        {"uuid": "a", "n": 2},
-        {"uuid": "m", "n": 3},
-        {"uuid": "b", "n": 4},
+        _e({"uuid": "z", "n": 1}),
+        _e({"uuid": "a", "n": 2}),
+        _e({"uuid": "m", "n": 3}),
+        _e({"uuid": "b", "n": 4}),
     ]
 
     # 4. append([]) is a no-op
     store = await fresh()
     await store.append(_KEY, [_e({"uuid": "a", "n": 1})])
     await store.append(_KEY, [])
-    assert await store.load(_KEY) == [{"uuid": "a", "n": 1}]
+    assert await store.load(_KEY) == [_e({"uuid": "a", "n": 1})]
 
     # 5. subpath keys are stored independently of main
     store = await fresh()
     sub: SessionKey = {**_KEY, "subpath": "subagents/agent-1"}
     await store.append(_KEY, [_e({"uuid": "m", "n": 1})])
     await store.append(sub, [_e({"uuid": "s", "n": 1})])
-    assert await store.load(_KEY) == [{"uuid": "m", "n": 1}]
-    assert await store.load(sub) == [{"uuid": "s", "n": 1}]
+    assert await store.load(_KEY) == [_e({"uuid": "m", "n": 1})]
+    assert await store.load(sub) == [_e({"uuid": "s", "n": 1})]
 
     # 6. project_key isolation
     store = await fresh()
     await store.append({"project_key": "A", "session_id": "s1"}, [_e({"from": "A"})])
     await store.append({"project_key": "B", "session_id": "s1"}, [_e({"from": "B"})])
-    assert await store.load({"project_key": "A", "session_id": "s1"}) == [{"from": "A"}]
-    assert await store.load({"project_key": "B", "session_id": "s1"}) == [{"from": "B"}]
+    assert await store.load({"project_key": "A", "session_id": "s1"}) == [
+        _e({"from": "A"})
+    ]
+    assert await store.load({"project_key": "B", "session_id": "s1"}) == [
+        _e({"from": "B"})
+    ]
     if has_list_sessions:
         assert len(await store.list_sessions("A")) == 1
         assert len(await store.list_sessions("B")) == 1
@@ -245,6 +249,9 @@ async def run_session_store_conformance(
 
 
 def _e(d: dict[str, Any]) -> Any:
-    """Cast helper — test entries don't carry the required ``type`` field, but
-    adapters must treat entries as opaque pass-through blobs anyway."""
-    return d
+    """Build a test entry satisfying ``SessionStoreEntry`` (``type`` is required).
+
+    Adapters must treat entries as opaque pass-through blobs; the value of
+    ``type`` is irrelevant to the contracts under test.
+    """
+    return {"type": "x", **d}

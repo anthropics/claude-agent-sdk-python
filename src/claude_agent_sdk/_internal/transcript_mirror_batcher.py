@@ -110,12 +110,26 @@ class TranscriptMirrorBatcher:
         self._pending = []
         self._pending_entries = 0
         self._pending_bytes = 0
+        errors: list[tuple[SessionKey, str]] = []
         async with self._lock:
             if not items:
                 return
-            await self._do_flush(items)
+            await self._do_flush(items, errors)
+        # Report errors after releasing the lock so a slow on_error callback
+        # cannot block subsequent drains (which only need the lock for
+        # append-ordering).
+        for key, msg in errors:
+            try:
+                await self.on_error(key, msg)
+            except Exception as cb_err:  # pragma: no cover - defensive
+                logger.error(
+                    "[TranscriptMirrorBatcher] on_error callback raised: %s",
+                    cb_err,
+                )
 
-    async def _do_flush(self, items: list[_MirrorEntry]) -> None:
+    async def _do_flush(
+        self, items: list[_MirrorEntry], errors: list[tuple[SessionKey, str]]
+    ) -> None:
         # Coalesce by file_path so each unique file gets one append per flush
         # instead of one per enqueued frame. dict preserves first-seen order;
         # entries within a path keep enqueue order.
@@ -146,10 +160,4 @@ class TranscriptMirrorBatcher:
                 logger.error(
                     "[TranscriptMirrorBatcher] flush failed for %s: %s", file_path, e
                 )
-                try:
-                    await self.on_error(key, str(e))
-                except Exception as cb_err:  # pragma: no cover - defensive
-                    logger.error(
-                        "[TranscriptMirrorBatcher] on_error callback raised: %s",
-                        cb_err,
-                    )
+                errors.append((key, str(e)))

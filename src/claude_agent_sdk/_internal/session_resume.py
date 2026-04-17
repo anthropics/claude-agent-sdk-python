@@ -112,10 +112,13 @@ async def materialize_resume_session(
             await _materialize_subkeys(
                 store, tmp_base, project_dir, project_key, session_id, timeout_s
             )
-    except Exception:
+    except BaseException:
         # Any failure after mkdtemp leaves tmp_base (which may already
         # contain a .credentials.json copy) on disk with no path for the
-        # caller to clean it up. Remove it before rethrowing.
+        # caller to clean it up. Remove it before rethrowing. BaseException
+        # so asyncio.CancelledError (BaseException since 3.8) also triggers
+        # cleanup — callers can't compensate because the assignment raises
+        # before completing.
         shutil.rmtree(tmp_base, ignore_errors=True)
         raise
 

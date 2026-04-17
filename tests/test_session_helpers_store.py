@@ -128,6 +128,54 @@ class TestListSessionsFromStore:
         with pytest.raises(ValueError, match="does not implement list_sessions"):
             await list_sessions_from_store(store, directory=DIR)
 
+    async def test_drops_sidechain_sessions(self) -> None:
+        """Parity with TS: sidechain sessions are filtered (not surfaced as
+        empty-summary rows), matching the filesystem path."""
+        store = InMemorySessionStore()
+        normal_sid = str(uuid_mod.uuid4())
+        sidechain_sid = str(uuid_mod.uuid4())
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": normal_sid},
+            [_user("hello world", str(uuid_mod.uuid4()), None, normal_sid)],  # type: ignore[arg-type]
+        )
+        side_entry = _user("internal", str(uuid_mod.uuid4()), None, sidechain_sid)
+        side_entry["isSidechain"] = True
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sidechain_sid},
+            [side_entry],  # type: ignore[arg-type]
+        )
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        ids = {s.session_id for s in sessions}
+        assert normal_sid in ids
+        assert sidechain_sid not in ids
+        assert all(s.summary != "" for s in sessions)
+
+    async def test_does_not_mutate_adapter_returned_list(self) -> None:
+        """Parity with TS: sorting must not mutate the list object returned
+        by store.list_sessions() (adapters may return internal state)."""
+
+        class RefStore(SessionStore):
+            def __init__(self) -> None:
+                self.internal = [
+                    {"session_id": "a", "mtime": 1},
+                    {"session_id": "b", "mtime": 2},
+                ]
+
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                return None
+
+            async def list_sessions(self, project_key):  # type: ignore[override]
+                return self.internal
+
+        store = RefStore()
+        await list_sessions_from_store(store, directory=DIR)
+        assert store.internal[0]["session_id"] == "a"
+        assert store.internal[1]["session_id"] == "b"
+
     async def test_adapter_load_error_degrades_row(self) -> None:
         """One failing load() degrades that row instead of failing the list."""
 
@@ -297,6 +345,35 @@ class TestSubagentsFromStore:
         msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
         assert len(msgs) == 1
 
+    async def test_list_subagents_dedupes_agent_id_across_subpaths(self) -> None:
+        """Parity with TS: the same agent ID under multiple subpaths
+        (direct + nested workflow) is returned once."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        u = str(uuid_mod.uuid4())
+        for sp in (
+            "subagents/agent-abc",
+            "subagents/workflows/run-1/agent-abc",
+        ):
+            await store.append(
+                {"project_key": PROJECT_KEY, "session_id": sid, "subpath": sp},
+                [_user("x", u, None, sid)],  # type: ignore[arg-type]
+            )
+        ids = await list_subagents_from_store(store, sid, directory=DIR)
+        assert ids == ["abc"]
+
+    async def test_subagent_helpers_non_uuid_session_id(self) -> None:
+        """Parity with TS: list_subagents/get_subagent_messages return []
+        for a non-UUID session_id (no exception)."""
+        store = InMemorySessionStore()
+        assert await list_subagents_from_store(store, "not-a-uuid", directory=DIR) == []
+        assert (
+            await get_subagent_messages_from_store(
+                store, "not-a-uuid", "x", directory=DIR
+            )
+            == []
+        )
+
     async def test_list_subagents_raises_when_store_lacks_list_subkeys(self) -> None:
         store = _MinimalStore()
         sid = str(uuid_mod.uuid4())
@@ -403,6 +480,23 @@ class TestDeleteSessionViaStore:
         # Should not raise.
         await delete_session_via_store(store, sid, directory=DIR)
 
+    async def test_rejects_non_uuid_session_id(self) -> None:
+        """Parity with TS: delete/tag reject non-UUID without touching the store."""
+        appended = False
+
+        class SpyStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                nonlocal appended
+                appended = True
+                await super().append(key, entries)
+
+        store = SpyStore()
+        with pytest.raises(ValueError, match="not-a-uuid"):
+            await delete_session_via_store(store, "not-a-uuid", directory=DIR)
+        with pytest.raises(ValueError, match="not-a-uuid"):
+            await tag_session_via_store(store, "not-a-uuid", "tag", directory=DIR)
+        assert appended is False
+
 
 class TestForkSessionViaStore:
     async def test_round_trips_with_new_uuids(self) -> None:
@@ -427,8 +521,70 @@ class TestForkSessionViaStore:
         assert msg_entries[0]["parentUuid"] is None
         for prev, cur in zip(msg_entries, msg_entries[1:], strict=False):
             assert cur["parentUuid"] == prev["uuid"]
-        # Trailing custom-title entry present.
+        # Trailing custom-title entry present with uuid + timestamp.
+        trailer = forked[-1]
+        assert trailer["type"] == "custom-title"
+        assert isinstance(trailer["uuid"], str) and trailer["uuid"]
+        assert isinstance(trailer["timestamp"], str) and trailer["timestamp"]
+
+    async def test_derives_title_from_original_custom_title(self) -> None:
+        """P0-1 regression: title scan must read ORIGINAL store entries, not
+        the already-partitioned transcript (which drops custom-title entries).
+        """
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=1)
+        # Append a custom-title entry as rename_session_via_store would.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [{"type": "custom-title", "customTitle": "My Title", "sessionId": sid}],  # type: ignore[list-item]
+        )
+
+        result = await fork_session_via_store(store, sid, directory=DIR)
+        forked = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
         assert forked[-1]["type"] == "custom-title"
+        assert forked[-1]["customTitle"] == "My Title (fork)"
+
+    async def test_derives_title_from_ai_title_when_no_custom(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=1)
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [{"type": "ai-title", "aiTitle": "Generated", "sessionId": sid}],  # type: ignore[list-item]
+        )
+
+        result = await fork_session_via_store(store, sid, directory=DIR)
+        forked = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
+        assert forked[-1]["customTitle"] == "Generated (fork)"
+
+    async def test_content_replacement_entry_has_uuid_and_timestamp(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=1)
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [
+                {
+                    "type": "content-replacement",
+                    "sessionId": sid,
+                    "replacements": [{"toolUseId": "t1", "value": "redacted"}],
+                }
+            ],  # type: ignore[list-item]
+        )
+
+        result = await fork_session_via_store(store, sid, directory=DIR)
+        forked = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
+        cr = next(e for e in forked if e["type"] == "content-replacement")
+        assert cr["sessionId"] == result.session_id
+        assert isinstance(cr["uuid"], str) and cr["uuid"]
+        assert isinstance(cr["timestamp"], str) and cr["timestamp"]
 
     async def test_fork_readable_via_get_session_messages(self) -> None:
         store = InMemorySessionStore()
@@ -459,3 +615,66 @@ class TestForkSessionViaStore:
         store = InMemorySessionStore()
         with pytest.raises(FileNotFoundError):
             await fork_session_via_store(store, str(uuid_mod.uuid4()), directory=DIR)
+
+    async def test_rejects_non_uuid_session_id_and_up_to(self) -> None:
+        """Parity with TS: fork rejects a non-UUID session_id and a
+        non-UUID up_to_message_id."""
+        store = InMemorySessionStore()
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            await fork_session_via_store(store, "not-a-uuid", directory=DIR)
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid)
+        with pytest.raises(ValueError, match="Invalid up_to_message_id"):
+            await fork_session_via_store(
+                store, sid, directory=DIR, up_to_message_id="not-a-uuid"
+            )
+
+    async def test_fork_preserves_chain_and_stamps_synthetic_entries(self) -> None:
+        """Parity with TS forkSession test: UUIDs remapped, parentUuid chain
+        preserved, content-replacement carried with new sessionId, and both
+        synthetic entries (custom-title + content-replacement) carry
+        uuid+timestamp for the SessionStore.append dedup contract."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        u1 = _user("one", str(uuid_mod.uuid4()), None, sid)
+        a1 = _assistant("two", str(uuid_mod.uuid4()), u1["uuid"], sid)
+        u2 = _user("three", str(uuid_mod.uuid4()), a1["uuid"], sid)
+        cr = {
+            "type": "content-replacement",
+            "sessionId": sid,
+            "replacements": [{"toolUseId": "tu_1", "newContent": "x"}],
+        }
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [u1, a1, u2, cr],  # type: ignore[arg-type]
+        )
+
+        result = await fork_session_via_store(
+            store, sid, directory=DIR, up_to_message_id=a1["uuid"], title="My Fork"
+        )
+        assert result.session_id != sid
+        forked = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
+        # 2 transcript entries (sliced at a1) + 1 content-replacement + 1 custom-title
+        assert len(forked) == 4
+        f0, f1, cr_out, title = forked
+
+        # UUIDs remapped, chain preserved.
+        assert f0["uuid"] != u1["uuid"]
+        assert f0["parentUuid"] is None
+        assert f1["parentUuid"] == f0["uuid"]
+        assert f0["sessionId"] == result.session_id
+        assert f0["forkedFrom"]["messageUuid"] == u1["uuid"]
+
+        # Custom-title entry carries uuid+timestamp.
+        assert title["type"] == "custom-title"
+        assert title["customTitle"] == "My Fork"
+        assert isinstance(title["uuid"], str) and title["uuid"]
+        assert isinstance(title["timestamp"], str)
+
+        # Content-replacement entry rewritten and stamped.
+        assert cr_out["type"] == "content-replacement"
+        assert cr_out["sessionId"] == result.session_id
+        assert isinstance(cr_out["uuid"], str) and cr_out["uuid"]
+        assert isinstance(cr_out["timestamp"], str)

@@ -227,6 +227,64 @@ class TestHappyPath:
         assert m.resume_session_id == SESSION_ID_2
         await m.cleanup()
 
+    @pytest.mark.asyncio
+    async def test_continue_tie_break_is_deterministic(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """Parity with TS: when two sessions share the same mtime,
+        continue_conversation picks one deterministically (max() is stable
+        on equal keys → first listed wins; repeated calls agree)."""
+        store = InMemorySessionStore()
+        for sid in (SESSION_ID, SESSION_ID_2):
+            await store.append(
+                {"project_key": project_key, "session_id": sid},
+                [{"type": "user", "uuid": f"u-{sid}"}],
+            )
+            store._mtimes[f"{project_key}/{sid}"] = 5000  # identical mtimes
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, continue_conversation=True
+        )
+        first = await materialize_resume_session(opts)
+        assert first is not None
+        first_id = first.resume_session_id
+        await first.cleanup()
+
+        # Second call must pick the same session.
+        second = await materialize_resume_session(opts)
+        assert second is not None
+        assert second.resume_session_id == first_id
+        await second.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_write_jsonl_round_trip(self, tmp_path: Path) -> None:
+        """Parity with TS writeEntriesToJsonlFile: streamed output is
+        byte-identical to map+join and round-trips back to the input."""
+        from claude_agent_sdk._internal.session_resume import _write_jsonl
+
+        entries = [
+            {
+                "type": "user" if i % 2 == 0 else "assistant",
+                "uuid": f"uuid-{i}",
+                "message": {"role": "user", "content": f'line {i} "q" \n nl'},
+                "nested": {"a": [i, i + 1], "b": None},
+            }
+            for i in range(100)
+        ]
+        out = tmp_path / "stream.jsonl"
+        _write_jsonl(out, entries)
+
+        written = out.read_text(encoding="utf-8")
+        reference = (
+            "\n".join(json.dumps(e, separators=(",", ":")) for e in entries) + "\n"
+        )
+        assert written == reference
+
+        lines = written.split("\n")
+        assert lines[-1] == ""  # trailing newline
+        parsed = [json.loads(ln) for ln in lines[:-1]]
+        assert parsed == entries
+
 
 # ---------------------------------------------------------------------------
 # Subkey materialization
@@ -354,6 +412,105 @@ class TestTimeoutsAndErrors:
         )
         with pytest.raises(RuntimeError, match="timed out"):
             await materialize_resume_session(opts)
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_timeout_on_continue_path(self, cwd: Path) -> None:
+        """Parity with TS: load_timeout_ms applies to list_sessions() during
+        continue_conversation, not just load()."""
+
+        class HungListStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                return None
+
+            async def list_sessions(self, project_key):  # type: ignore[override]
+                await asyncio.sleep(3600)
+                return []
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd,
+            session_store=HungListStore(),
+            continue_conversation=True,
+            load_timeout_ms=50,
+        )
+        with pytest.raises(RuntimeError, match=r"list_sessions\(\).*timed out"):
+            await materialize_resume_session(opts)
+
+    @pytest.mark.asyncio
+    async def test_list_subkeys_timeout_raises_and_cleans_temp_dir(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """Parity with TS: load_timeout_ms applies to list_subkeys(); the temp
+        dir created by the (already-succeeded) load() is removed on rethrow."""
+
+        class HungSubkeysStore(InMemorySessionStore):
+            async def list_subkeys(self, key):  # type: ignore[override]
+                await asyncio.sleep(3600)
+                return []
+
+        store = HungSubkeysStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, resume=SESSION_ID, load_timeout_ms=50
+        )
+
+        real_mkdtemp = tempfile.mkdtemp
+        created: list[str] = []
+
+        def spy(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created.append(d)
+            return d
+
+        with (
+            patch("tempfile.mkdtemp", side_effect=spy),
+            pytest.raises(RuntimeError, match=r"list_subkeys\(\).*timed out"),
+        ):
+            await materialize_resume_session(opts)
+
+        assert created, "load() succeeded so mkdtemp should have run"
+        assert not Path(created[0]).exists()
+
+    @pytest.mark.asyncio
+    async def test_non_json_serializable_entry_surfaces_clear_error(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """Parity with TS: a store returning non-JSON-serializable values
+        fails materialization with a contextual error and leaves no temp dir.
+
+        The TS path serializes via JSON.stringify (which silently drops
+        functions); Python's json.dumps raises TypeError, which the
+        materialize wrapper does not catch — assert it surfaces and cleans
+        up.
+        """
+
+        class BadStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                return [{"type": "user", "uuid": "u1", "blob": {1, 2, 3}}]
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=BadStore(), resume=SESSION_ID)
+
+        real_mkdtemp = tempfile.mkdtemp
+        created: list[str] = []
+
+        def spy(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created.append(d)
+            return d
+
+        with patch("tempfile.mkdtemp", side_effect=spy), pytest.raises(TypeError):
+            await materialize_resume_session(opts)
+
+        assert created
+        assert not Path(created[0]).exists()
 
     @pytest.mark.asyncio
     async def test_load_exception_wrapped(self, cwd: Path) -> None:
@@ -631,6 +788,61 @@ class TestSpawnFailureCleanup:
         assert track_resume_dirs
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
+
+    @pytest.mark.asyncio
+    async def test_connect_cancelled_before_spawn_removes_temp_dir(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """Parity with TS 'close() before deferred spawn': Python has no
+        deferred spawn, so the equivalent race is cancelling connect() while
+        it awaits a slow store.load(). The cancel must not hang and must
+        leave no claude-resume-* dir on disk.
+
+        load() is awaited before mkdtemp(), so cancelling here exercises the
+        no-dir-yet path. The post-mkdtemp failure path is covered by
+        test_failure_after_mkdir_cleans_temp_dir.
+        """
+
+        class SlowStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                await asyncio.sleep(3600)
+                return [{"type": "user", "uuid": "u1"}]
+
+        spawn_count = 0
+
+        def fake_transport(**_kw):
+            nonlocal spawn_count
+            spawn_count += 1
+            raise AssertionError("should not spawn")
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=SlowStore(), resume=SESSION_ID, load_timeout_ms=10000
+        )
+        client = ClaudeSDKClient(options=opts)
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli."
+            "SubprocessCLITransport",
+            side_effect=fake_transport,
+        ):
+            connect_task = asyncio.create_task(client.connect())
+            await asyncio.sleep(0)  # let connect reach the awaited load()
+            connect_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(connect_task, timeout=2)
+
+        assert spawn_count == 0
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
+        # disconnect() after a cancelled connect must be a safe no-op.
+        await client.disconnect()
 
     @pytest.mark.asyncio
     async def test_query_transport_failure_removes_temp_dir(

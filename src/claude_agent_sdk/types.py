@@ -1246,6 +1246,10 @@ class ClaudeAgentOptions:
     # its remaining token budget so it can pace tool use and wrap up before
     # the limit.
     task_budget: TaskBudget | None = None
+    # Maximum number of automatic retries on 429 rate limit errors (default: 3).
+    # Set to 0 to disable automatic retries. Each retry waits with exponential
+    # backoff. When a Retry-After header is present, that value is used instead.
+    rate_limit_max_retries: int = 3
 
 
 # SDK Control Protocol

@@ -42,6 +42,13 @@ dev = [
 otel = [
     "opentelemetry-api>=1.20.0",
 ]
+examples = [
+    # Backend clients for the SessionStore reference adapters under
+    # examples/session_stores/. The corresponding tests importorskip on
+    # these so default CI is unaffected if this group isn't installed.
+    "redis>=4.2.0",
+    "fakeredis>=2.20.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/anthropics/claude-agent-sdk-python"

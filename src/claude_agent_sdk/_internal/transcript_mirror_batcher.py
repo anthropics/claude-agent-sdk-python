@@ -142,6 +142,10 @@ class TranscriptMirrorBatcher:
                 by_path[item.file_path] = list(item.entries)
 
         for file_path, entries in by_path.items():
+            if not entries:
+                # Avoid creating phantom keys in adapters that touch storage
+                # on append([]) — nothing to write.
+                continue
             key = file_path_to_session_key(file_path, self.projects_dir)
             if key is None:
                 logger.warning(

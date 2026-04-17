@@ -148,6 +148,17 @@ class TestTranscriptMirrorBatcher:
         assert entries == [{"type": "user", "n": 1}, {"type": "assistant", "n": 2}]
 
     @pytest.mark.asyncio
+    async def test_empty_entries_batch_skips_append(self) -> None:
+        store = _RecordingStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=_noop_error
+        )
+        batcher.enqueue(_main_path(), [])
+        await batcher.flush()
+        # No append for empty batch — adapters must not see phantom keys.
+        assert store.append_calls == []
+
+    @pytest.mark.asyncio
     async def test_coalesces_per_file_path_preserving_order(self) -> None:
         store = _RecordingStore()
         batcher = TranscriptMirrorBatcher(

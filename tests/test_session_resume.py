@@ -228,6 +228,50 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.asyncio
+    async def test_continue_skips_sidechain_sessions(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """Sidechain transcripts are mirrored as ordinary top-level keys and
+        often have the highest mtime. ``continue_conversation`` must skip them
+        and resume the most-recent main session, matching the CLI's own
+        ``--continue`` filter."""
+        store = InMemorySessionStore()
+        sidechain_sid = str(uuid.uuid4())
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "main"}],
+        )
+        store._mtimes[f"{project_key}/{SESSION_ID}"] = 1000
+        await store.append(
+            {"project_key": project_key, "session_id": sidechain_sid},
+            [{"type": "user", "uuid": "sc", "isSidechain": True}],
+        )
+        store._mtimes[f"{project_key}/{sidechain_sid}"] = 2000  # newer
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, continue_conversation=True
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        assert m.resume_session_id == SESSION_ID
+        await m.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_continue_returns_none_when_only_sidechains(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        store = InMemorySessionStore()
+        sc = str(uuid.uuid4())
+        await store.append(
+            {"project_key": project_key, "session_id": sc},
+            [{"type": "user", "isSidechain": True}],
+        )
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, continue_conversation=True
+        )
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
     async def test_continue_tie_break_is_deterministic(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:

@@ -43,6 +43,46 @@ S3 and Redis have in-process mocks (`moto`, `fakeredis`); Postgres is
 live-only. The live e2e suites for all three skip unless the corresponding
 `SESSION_STORE_*` env vars are set — see each section below.
 
+## Production checklist
+
+These adapters are reference code. Before running one in production, work
+through the relevant items below.
+
+### All adapters
+
+- `run_session_store_conformance` proves *correctness*, not *resilience* —
+  load-test your adapter under your expected throughput.
+- `append()` failures are logged and emit a `MirrorErrorMessage`; they never
+  block the conversation. Monitor for these so silent mirror gaps don't go
+  unnoticed.
+
+### S3
+
+- Required IAM actions on the bucket/prefix: `s3:PutObject`, `s3:GetObject`,
+  `s3:ListBucket`, `s3:DeleteObject`.
+- Part-file ordering uses the **client-side wall clock**. Multiple writer
+  instances with clock skew >1s may produce out-of-order `load()` results. Use
+  NTP or a single writer per session.
+- Consider S3 lifecycle policies for retention — the SDK never auto-deletes.
+- For sessions with >1000 part files, `load()` paginates correctly but latency
+  grows linearly; consider periodic compaction.
+
+### Redis
+
+- Set `maxmemory-policy noeviction` (or use a dedicated DB) — eviction will
+  silently drop session data.
+- Lists are unbounded; implement TTL via `EXPIRE` in a subclass if needed.
+- Redis Cluster: keys with the same `{project_key}:{session_id}` prefix should
+  hash to the same slot — wrap in `{...}` hash tags if using Cluster.
+
+### Postgres
+
+- Size the `asyncpg` pool ≥ expected concurrent sessions; don't share a pool
+  with request-handler code that holds connections.
+- `jsonb` reorders keys — contract-safe, but don't byte-compare entries.
+- Add a retention job (`DELETE WHERE mtime < ...`) — the table grows
+  unbounded.
+
 ---
 
 ## S3 — `s3_session_store.py`

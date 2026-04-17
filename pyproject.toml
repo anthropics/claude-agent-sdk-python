@@ -42,6 +42,13 @@ dev = [
 otel = [
     "opentelemetry-api>=1.20.0",
 ]
+# Backends for the reference SessionStore adapters under examples/session_stores/.
+# NOT required by the SDK itself — tests/test_example_s3_session_store.py
+# importskips when these are absent so default CI does not need them.
+examples = [
+    "boto3>=1.28.0",
+    "moto[s3]>=5.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/anthropics/claude-agent-sdk-python"

@@ -114,7 +114,14 @@ class TranscriptMirrorBatcher:
         async with self._lock:
             if not items:
                 return
-            await self._do_flush(items, errors)
+            try:
+                await self._do_flush(items, errors)
+            except Exception as e:  # pragma: no cover - defensive
+                # _do_flush already wraps store.append; this guards any
+                # remaining unguarded path so the "Never raises" contract
+                # holds against future regressions.
+                logger.error("[TranscriptMirrorBatcher] _do_flush raised: %s", e)
+                return
         # Report errors after releasing the lock so a slow on_error callback
         # cannot block subsequent drains (which only need the lock for
         # append-ordering).

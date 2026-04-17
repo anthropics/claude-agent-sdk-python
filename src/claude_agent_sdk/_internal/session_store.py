@@ -108,7 +108,13 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
     Returns ``None`` if ``file_path`` is not under ``projects_dir`` or has an
     unrecognized shape.
     """
-    rel = os.path.relpath(file_path, projects_dir)
+    try:
+        rel = os.path.relpath(file_path, projects_dir)
+    except ValueError:
+        # Windows: relpath raises when the paths are on different drives.
+        # Treat as "not under projects_dir" so the batcher drops the frame
+        # with a warning instead of letting the exception escape _drain().
+        return None
     rel_path = Path(rel)
     if rel.startswith("..") or rel_path.is_absolute():
         return None

@@ -244,7 +244,7 @@ class ClaudeSDKClient:
             projects_dir = (
                 str(self._materialized.config_dir / "projects")
                 if self._materialized is not None
-                else str(_get_projects_dir())
+                else str(_get_projects_dir(self.options.env))
             )
             batcher = TranscriptMirrorBatcher(
                 store=store,

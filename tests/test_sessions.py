@@ -30,6 +30,8 @@ from claude_agent_sdk._internal.sessions import (
     _validate_uuid,
 )
 
+pytestmark = pytest.mark.asyncio
+
 # Matches the CLI's on-disk JSONL format (JSON.stringify / json.dumps with
 # separators). Tag extraction scopes to '{"type":"tag"' (no space after colon)
 # at column 0 to avoid matching tool_use inputs — fixtures must use this form.
@@ -131,20 +133,20 @@ def _make_project_dir(config_dir: Path, project_path: str) -> Path:
 class TestHelpers:
     """Tests for internal helper functions."""
 
-    def test_validate_uuid_valid(self):
+    async def test_validate_uuid_valid(self):
         assert _validate_uuid("550e8400-e29b-41d4-a716-446655440000")
         assert _validate_uuid("550E8400-E29B-41D4-A716-446655440000")
 
-    def test_validate_uuid_invalid(self):
+    async def test_validate_uuid_invalid(self):
         assert _validate_uuid("not-a-uuid") is None
         assert _validate_uuid("") is None
         assert _validate_uuid("550e8400-e29b-41d4-a716") is None
 
-    def test_sanitize_path_basic(self):
+    async def test_sanitize_path_basic(self):
         assert _sanitize_path("/Users/foo/my-project") == "-Users-foo-my-project"
         assert _sanitize_path("plugin:name:server") == "plugin-name-server"
 
-    def test_sanitize_path_long(self):
+    async def test_sanitize_path_long(self):
         """Long paths get truncated with a hash suffix."""
         long_path = "/x" * 150  # 300 chars
         result = _sanitize_path(long_path)
@@ -153,38 +155,38 @@ class TestHelpers:
         # The hash suffix is appended after the 200-char prefix
         assert "-" in result[200:]
 
-    def test_simple_hash_deterministic(self):
+    async def test_simple_hash_deterministic(self):
         assert _simple_hash("hello") == _simple_hash("hello")
         assert _simple_hash("hello") != _simple_hash("world")
 
-    def test_simple_hash_zero(self):
+    async def test_simple_hash_zero(self):
         # Empty string should produce "0"
         assert _simple_hash("") == "0"
 
-    def test_extract_json_string_field_simple(self):
+    async def test_extract_json_string_field_simple(self):
         text = '{"foo":"bar","baz":"qux"}'
         assert _extract_json_string_field(text, "foo") == "bar"
         assert _extract_json_string_field(text, "baz") == "qux"
         assert _extract_json_string_field(text, "missing") is None
 
-    def test_extract_json_string_field_with_space(self):
+    async def test_extract_json_string_field_with_space(self):
         text = '{"foo": "bar"}'
         assert _extract_json_string_field(text, "foo") == "bar"
 
-    def test_extract_json_string_field_escaped(self):
+    async def test_extract_json_string_field_escaped(self):
         text = '{"foo":"bar\\"baz"}'
         result = _extract_json_string_field(text, "foo")
         assert result == 'bar"baz'
 
-    def test_extract_last_json_string_field(self):
+    async def test_extract_last_json_string_field(self):
         text = '{"summary":"first"}\n{"summary":"second"}\n{"summary":"third"}'
         assert _extract_last_json_string_field(text, "summary") == "third"
 
-    def test_extract_first_prompt_simple(self):
+    async def test_extract_first_prompt_simple(self):
         head = json.dumps({"type": "user", "message": {"content": "Hello!"}}) + "\n"
         assert _extract_first_prompt_from_head(head) == "Hello!"
 
-    def test_extract_first_prompt_skips_meta(self):
+    async def test_extract_first_prompt_skips_meta(self):
         head = (
             json.dumps({"type": "user", "isMeta": True, "message": {"content": "meta"}})
             + "\n"
@@ -193,7 +195,7 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "real prompt"
 
-    def test_extract_first_prompt_skips_tool_result(self):
+    async def test_extract_first_prompt_skips_tool_result(self):
         head = (
             json.dumps(
                 {
@@ -207,7 +209,7 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "actual prompt"
 
-    def test_extract_first_prompt_content_blocks(self):
+    async def test_extract_first_prompt_content_blocks(self):
         head = (
             json.dumps(
                 {
@@ -219,14 +221,14 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "block prompt"
 
-    def test_extract_first_prompt_truncates(self):
+    async def test_extract_first_prompt_truncates(self):
         long_prompt = "x" * 300
         head = json.dumps({"type": "user", "message": {"content": long_prompt}}) + "\n"
         result = _extract_first_prompt_from_head(head)
         assert len(result) <= 201  # 200 chars + ellipsis
         assert result.endswith("\u2026")
 
-    def test_extract_first_prompt_command_fallback(self):
+    async def test_extract_first_prompt_command_fallback(self):
         """If only slash-commands are found, use first command name."""
         head = (
             json.dumps(
@@ -239,7 +241,7 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "/help"
 
-    def test_extract_first_prompt_empty(self):
+    async def test_extract_first_prompt_empty(self):
         assert _extract_first_prompt_from_head("") == ""
         assert _extract_first_prompt_from_head('{"type":"assistant"}\n') == ""
 
@@ -252,16 +254,16 @@ class TestHelpers:
 class TestListSessions:
     """Tests for the list_sessions() function."""
 
-    def test_empty_projects_dir(self, claude_config_dir: Path):
+    async def test_empty_projects_dir(self, claude_config_dir: Path):
         """No sessions when projects dir is empty."""
-        assert list_sessions() == []
+        assert await list_sessions() == []
 
-    def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Gracefully handles missing config dir."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
-        assert list_sessions() == []
+        assert await list_sessions() == []
 
-    def test_single_session(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_single_session(self, claude_config_dir: Path, tmp_path: Path):
         """Single session with basic metadata."""
         project_path = str(tmp_path / "my-project")
         Path(project_path).mkdir(parents=True)
@@ -275,7 +277,7 @@ class TestListSessions:
             cwd=project_path,
         )
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         s = sessions[0]
         assert isinstance(s, SDKSessionInfo)
@@ -288,7 +290,9 @@ class TestListSessions:
         assert s.last_modified > 0
         assert s.custom_title is None
 
-    def test_custom_title_wins_summary(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_custom_title_wins_summary(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """custom_title takes precedence over summary and first_prompt."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -302,13 +306,15 @@ class TestListSessions:
             custom_title="My Custom Title",
         )
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].summary == "My Custom Title"
         assert sessions[0].custom_title == "My Custom Title"
         assert sessions[0].first_prompt == "original question"
 
-    def test_summary_wins_first_prompt(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_summary_wins_first_prompt(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Explicit summary takes precedence over first_prompt when no custom_title."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -319,12 +325,12 @@ class TestListSessions:
             project_dir, first_prompt="question", summary="better summary"
         )
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].summary == "better summary"
         assert sessions[0].custom_title is None
 
-    def test_multiple_sessions_sorted_by_mtime(
+    async def test_multiple_sessions_sorted_by_mtime(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Sessions are sorted by last_modified descending."""
@@ -338,7 +344,7 @@ class TestListSessions:
         sid_new, _ = _make_session_file(project_dir, first_prompt="new", mtime=3000.0)
         sid_mid, _ = _make_session_file(project_dir, first_prompt="mid", mtime=2000.0)
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 3
         assert [s.session_id for s in sessions] == [sid_new, sid_mid, sid_old]
         # Verify mtime conversion to milliseconds
@@ -346,7 +352,7 @@ class TestListSessions:
         assert sessions[1].last_modified == 2_000_000
         assert sessions[2].last_modified == 1_000_000
 
-    def test_limit(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_limit(self, claude_config_dir: Path, tmp_path: Path):
         """Limit option restricts number of results."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -359,14 +365,14 @@ class TestListSessions:
                 project_dir, first_prompt=f"prompt {i}", mtime=1000.0 + i
             )
 
-        sessions = list_sessions(
+        sessions = await list_sessions(
             directory=project_path, limit=2, include_worktrees=False
         )
         assert len(sessions) == 2
         # Should be the 2 newest
         assert sessions[0].last_modified >= sessions[1].last_modified
 
-    def test_offset_pagination(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_offset_pagination(self, claude_config_dir: Path, tmp_path: Path):
         """Offset skips sessions for pagination."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -380,13 +386,13 @@ class TestListSessions:
             )
 
         # Get page 1 (first 2)
-        page1 = list_sessions(
+        page1 = await list_sessions(
             directory=project_path, limit=2, offset=0, include_worktrees=False
         )
         assert len(page1) == 2
 
         # Get page 2 (next 2)
-        page2 = list_sessions(
+        page2 = await list_sessions(
             directory=project_path, limit=2, offset=2, include_worktrees=False
         )
         assert len(page2) == 2
@@ -400,12 +406,14 @@ class TestListSessions:
         assert page1[0].last_modified > page2[0].last_modified
 
         # Offset beyond available returns empty
-        page_empty = list_sessions(
+        page_empty = await list_sessions(
             directory=project_path, offset=100, include_worktrees=False
         )
         assert len(page_empty) == 0
 
-    def test_filters_sidechain_sessions(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_filters_sidechain_sessions(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Sessions with isSidechain:true are filtered out."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -416,11 +424,13 @@ class TestListSessions:
         _make_session_file(project_dir, first_prompt="normal")
         _make_session_file(project_dir, first_prompt="sidechain", is_sidechain=True)
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "normal"
 
-    def test_filters_empty_sessions(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_filters_empty_sessions(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Sessions with no summary/title/prompt are filtered (no '(session)' placeholder)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -432,11 +442,13 @@ class TestListSessions:
         _make_session_file(project_dir, first_prompt="ignored meta", is_meta_only=True)
         _make_session_file(project_dir, first_prompt="real content")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "real content"
 
-    def test_filters_non_uuid_filenames(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_filters_non_uuid_filenames(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Non-UUID .jsonl files are ignored."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -450,11 +462,13 @@ class TestListSessions:
         )
         _make_session_file(project_dir, first_prompt="valid session")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "valid session"
 
-    def test_ignores_non_jsonl_files(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_ignores_non_jsonl_files(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Files not ending in .jsonl are ignored."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -465,10 +479,10 @@ class TestListSessions:
         (project_dir / "README.md").write_text("not a session")
         _make_session_file(project_dir, first_prompt="session")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
 
-    def test_list_all_sessions(self, claude_config_dir: Path):
+    async def test_list_all_sessions(self, claude_config_dir: Path):
         """When no directory is given, lists across all projects."""
         proj1 = _make_project_dir(claude_config_dir, "/some/path/one")
         proj2 = _make_project_dir(claude_config_dir, "/some/path/two")
@@ -476,13 +490,13 @@ class TestListSessions:
         _make_session_file(proj1, first_prompt="from proj1", mtime=1000.0)
         _make_session_file(proj2, first_prompt="from proj2", mtime=2000.0)
 
-        sessions = list_sessions()
+        sessions = await list_sessions()
         assert len(sessions) == 2
         # Sorted newest first
         assert sessions[0].first_prompt == "from proj2"
         assert sessions[1].first_prompt == "from proj1"
 
-    def test_list_all_sessions_dedupes(self, claude_config_dir: Path):
+    async def test_list_all_sessions_dedupes(self, claude_config_dir: Path):
         """Duplicate session IDs across projects keep the newest."""
         proj1 = _make_project_dir(claude_config_dir, "/path/one")
         proj2 = _make_project_dir(claude_config_dir, "/path/two")
@@ -495,19 +509,21 @@ class TestListSessions:
             proj2, session_id=shared_sid, first_prompt="newer", mtime=2000.0
         )
 
-        sessions = list_sessions()
+        sessions = await list_sessions()
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "newer"
         assert sessions[0].last_modified == 2_000_000
 
-    def test_nonexistent_project_dir(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_nonexistent_project_dir(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Returns empty list when project has no session directory."""
         project_path = str(tmp_path / "never-used")
         Path(project_path).mkdir(parents=True)
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert sessions == []
 
-    def test_empty_file_filtered(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_empty_file_filtered(self, claude_config_dir: Path, tmp_path: Path):
         """Empty session files are filtered out."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -518,10 +534,12 @@ class TestListSessions:
         sid = str(uuid.uuid4())
         (project_dir / f"{sid}.jsonl").write_text("")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert sessions == []
 
-    def test_include_worktrees_disabled(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_include_worktrees_disabled(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """include_worktrees=False only scans the given directory."""
         # Create a real directory so realpath works
         project_path = str(tmp_path / "main-proj")
@@ -535,11 +553,13 @@ class TestListSessions:
         other_dir = _make_project_dir(claude_config_dir, canonical + "-worktree")
         _make_session_file(other_dir, first_prompt="worktree session")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "main session"
 
-    def test_limit_zero_returns_all(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_limit_zero_returns_all(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """limit=0 or negative returns all sessions (TS: limit > 0 check)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -550,12 +570,12 @@ class TestListSessions:
         for i in range(3):
             _make_session_file(project_dir, first_prompt=f"p{i}")
 
-        sessions = list_sessions(
+        sessions = await list_sessions(
             directory=project_path, limit=0, include_worktrees=False
         )
         assert len(sessions) == 3
 
-    def test_cwd_from_head_fallback_to_project_path(
+    async def test_cwd_from_head_fallback_to_project_path(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """cwd falls back to project path when not in head."""
@@ -567,11 +587,11 @@ class TestListSessions:
         # Session without cwd field
         _make_session_file(project_dir, first_prompt="no cwd field")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].cwd == canonical
 
-    def test_git_branch_from_tail_preferred(
+    async def test_git_branch_from_tail_preferred(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """gitBranch from tail is preferred over head."""
@@ -596,7 +616,7 @@ class TestListSessions:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].git_branch == "new-branch"
 
@@ -604,7 +624,7 @@ class TestListSessions:
 class TestSDKSessionInfoType:
     """Tests for the SDKSessionInfo dataclass."""
 
-    def test_creation_required_fields(self):
+    async def test_creation_required_fields(self):
         info = SDKSessionInfo(
             session_id="abc",
             summary="test",
@@ -620,7 +640,7 @@ class TestSDKSessionInfoType:
         assert info.git_branch is None
         assert info.cwd is None
 
-    def test_creation_all_fields(self):
+    async def test_creation_all_fields(self):
         info = SDKSessionInfo(
             session_id="abc",
             summary="test",
@@ -680,23 +700,23 @@ def _write_transcript(project_dir: Path, session_id: str, entries: list[dict]) -
 class TestGetSessionMessages:
     """Tests for get_session_messages()."""
 
-    def test_invalid_session_id(self, claude_config_dir: Path):
+    async def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns empty list."""
-        assert get_session_messages("not-a-uuid") == []
-        assert get_session_messages("") == []
+        assert await get_session_messages("not-a-uuid") == []
+        assert await get_session_messages("") == []
 
-    def test_nonexistent_session(self, claude_config_dir: Path):
+    async def test_nonexistent_session(self, claude_config_dir: Path):
         """Session file not found returns empty list."""
         sid = str(uuid.uuid4())
-        assert get_session_messages(sid) == []
+        assert await get_session_messages(sid) == []
 
-    def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Missing config dir returns empty list."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
         sid = str(uuid.uuid4())
-        assert get_session_messages(sid) == []
+        assert await get_session_messages(sid) == []
 
-    def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
         """Basic user → assistant → user → assistant chain."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -718,7 +738,7 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 4
 
         # Chronological order: root → leaf
@@ -741,7 +761,7 @@ class TestGetSessionMessages:
         # All SessionMessage instances
         assert all(isinstance(m, SessionMessage) for m in messages)
 
-    def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
         """isMeta entries in the chain are filtered from output."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -763,13 +783,13 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         # Only u1 and a1 visible (meta filtered out)
         assert len(messages) == 2
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
 
-    def test_filters_non_user_assistant_from_chain(
+    async def test_filters_non_user_assistant_from_chain(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Progress/system entries in chain are filtered from output."""
@@ -792,13 +812,13 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         # progress is walked through the chain but filtered from output
         assert len(messages) == 2
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
 
-    def test_keeps_compact_summary(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_keeps_compact_summary(self, claude_config_dir: Path, tmp_path: Path):
         """isCompactSummary messages are kept (they represent compacted content)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -823,11 +843,11 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == u1  # compact summary kept
 
-    def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
         """Limit and offset pagination."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -848,36 +868,38 @@ class TestGetSessionMessages:
         _write_transcript(project_dir, sid, entries)
 
         # No limit/offset
-        all_msgs = get_session_messages(sid, directory=project_path)
+        all_msgs = await get_session_messages(sid, directory=project_path)
         assert len(all_msgs) == 6
 
         # limit=2
-        page = get_session_messages(sid, directory=project_path, limit=2)
+        page = await get_session_messages(sid, directory=project_path, limit=2)
         assert len(page) == 2
         assert page[0].uuid == uuids[0]
         assert page[1].uuid == uuids[1]
 
         # offset=2, limit=2
-        page = get_session_messages(sid, directory=project_path, limit=2, offset=2)
+        page = await get_session_messages(
+            sid, directory=project_path, limit=2, offset=2
+        )
         assert len(page) == 2
         assert page[0].uuid == uuids[2]
         assert page[1].uuid == uuids[3]
 
         # offset only (no limit)
-        page = get_session_messages(sid, directory=project_path, offset=4)
+        page = await get_session_messages(sid, directory=project_path, offset=4)
         assert len(page) == 2
         assert page[0].uuid == uuids[4]
         assert page[1].uuid == uuids[5]
 
         # limit=0 returns all (TS: limit > 0 check)
-        page = get_session_messages(sid, directory=project_path, limit=0)
+        page = await get_session_messages(sid, directory=project_path, limit=0)
         assert len(page) == 6
 
         # offset beyond end
-        page = get_session_messages(sid, directory=project_path, offset=100)
+        page = await get_session_messages(sid, directory=project_path, offset=100)
         assert page == []
 
-    def test_picks_main_chain_over_sidechain(
+    async def test_picks_main_chain_over_sidechain(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """When multiple leaves exist, prefers non-sidechain main leaf."""
@@ -908,12 +930,12 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == root
         assert messages[1].uuid == main_leaf  # main leaf chosen, not sidechain
 
-    def test_picks_latest_leaf_by_file_position(
+    async def test_picks_latest_leaf_by_file_position(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """When multiple main leaves exist, picks the one latest in the file."""
@@ -936,13 +958,13 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == root
         # new_leaf has higher file position → chosen
         assert messages[1].uuid == new_leaf
 
-    def test_terminal_non_message_walked_back(
+    async def test_terminal_non_message_walked_back(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """A terminal progress entry is walked back to find user/assistant leaf."""
@@ -965,12 +987,12 @@ class TestGetSessionMessages:
         ]
         _write_transcript(project_dir, sid, entries)
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
 
-    def test_corrupt_lines_skipped(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_corrupt_lines_skipped(self, claude_config_dir: Path, tmp_path: Path):
         """Corrupt JSON lines are skipped without failing."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -992,10 +1014,10 @@ class TestGetSessionMessages:
         ]
         (project_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
 
-    def test_search_all_projects_when_no_dir(self, claude_config_dir: Path):
+    async def test_search_all_projects_when_no_dir(self, claude_config_dir: Path):
         """When no directory given, searches all project directories."""
         proj1 = _make_project_dir(claude_config_dir, "/path/one")
         proj2 = _make_project_dir(claude_config_dir, "/path/two")
@@ -1014,11 +1036,11 @@ class TestGetSessionMessages:
         # proj1 exists but doesn't have this session
         _ = proj1  # noqa: F841
 
-        messages = get_session_messages(sid)  # no directory
+        messages = await get_session_messages(sid)  # no directory
         assert len(messages) == 2
         assert messages[0].uuid == u1
 
-    def test_cycle_detection(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_cycle_detection(self, claude_config_dir: Path, tmp_path: Path):
         """Cyclic parentUuid references don't cause infinite loop."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1039,11 +1061,11 @@ class TestGetSessionMessages:
 
         # Should terminate without hanging. Both entries are parents of
         # each other → no terminals → empty chain.
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         # No terminals found (both are parents) → returns empty
         assert messages == []
 
-    def test_empty_transcript_file(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_empty_transcript_file(self, claude_config_dir: Path, tmp_path: Path):
         """Empty file returns empty list."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1053,9 +1075,9 @@ class TestGetSessionMessages:
         sid = str(uuid.uuid4())
 
         (project_dir / f"{sid}.jsonl").write_text("")
-        assert get_session_messages(sid, directory=project_path) == []
+        assert await get_session_messages(sid, directory=project_path) == []
 
-    def test_ignores_non_transcript_types(
+    async def test_ignores_non_transcript_types(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Lines with type=summary (no uuid/chain) are ignored during parsing."""
@@ -1078,22 +1100,22 @@ class TestGetSessionMessages:
         ]
         (project_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
 
-        messages = get_session_messages(sid, directory=project_path)
+        messages = await get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
 
 
 class TestBuildConversationChain:
     """Unit tests for the _build_conversation_chain helper."""
 
-    def test_empty_input(self):
+    async def test_empty_input(self):
         assert _build_conversation_chain([]) == []
 
-    def test_single_entry(self):
+    async def test_single_entry(self):
         entry = {"type": "user", "uuid": "a", "parentUuid": None}
         result = _build_conversation_chain([entry])
         assert result == [entry]
 
-    def test_linear_chain(self):
+    async def test_linear_chain(self):
         entries = [
             {"type": "user", "uuid": "a", "parentUuid": None},
             {"type": "assistant", "uuid": "b", "parentUuid": "a"},
@@ -1102,7 +1124,7 @@ class TestBuildConversationChain:
         result = _build_conversation_chain(entries)
         assert [e["uuid"] for e in result] == ["a", "b", "c"]
 
-    def test_only_progress_entries_returns_empty(self):
+    async def test_only_progress_entries_returns_empty(self):
         """If no user/assistant entries, no leaves found → empty."""
         entries = [
             {"type": "progress", "uuid": "a", "parentUuid": None},
@@ -1115,7 +1137,7 @@ class TestBuildConversationChain:
 class TestSessionMessageType:
     """Tests for the SessionMessage dataclass."""
 
-    def test_creation(self):
+    async def test_creation(self):
         msg = SessionMessage(
             type="user",
             uuid="abc",
@@ -1137,7 +1159,9 @@ class TestSessionMessageType:
 class TestTagExtraction:
     """Tests for tag field extraction in SDKSessionInfo."""
 
-    def test_tag_extracted_from_tail(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_tag_extracted_from_tail(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Tag is extracted from the last {type:'tag'} entry in the tail."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1152,11 +1176,11 @@ class TestTagExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag == "my-tag"
 
-    def test_tag_last_wins(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_tag_last_wins(self, claude_config_dir: Path, tmp_path: Path):
         """When multiple tag entries exist, the last one wins."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1176,11 +1200,13 @@ class TestTagExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag == "second-tag"
 
-    def test_tag_empty_string_is_none(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_tag_empty_string_is_none(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Empty-string tag (clear marker) resolves to None via 'or None'."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1196,11 +1222,11 @@ class TestTagExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag is None
 
-    def test_tag_absent(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_tag_absent(self, claude_config_dir: Path, tmp_path: Path):
         """Sessions without a tag entry have tag=None."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1209,11 +1235,13 @@ class TestTagExtraction:
         )
         _make_session_file(project_dir, first_prompt="hello")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag is None
 
-    def test_tag_ignores_tool_use_inputs(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_tag_ignores_tool_use_inputs(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Tag extraction is scoped to {type:'tag'} lines — ignores "tag" fields
         in tool_use inputs (git tag, Docker tags, cloud resource tags).
 
@@ -1249,11 +1277,11 @@ class TestTagExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag == "real-tag"  # NOT "myapp:v2"
 
-    def test_tag_none_when_only_tool_use_tag(
+    async def test_tag_none_when_only_tool_use_tag(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Session with no {type:'tag'} entry but tool_use input has tag — returns None."""
@@ -1282,11 +1310,11 @@ class TestTagExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag is None  # NOT "prod"
 
-    def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
+    async def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
         """Direct test of the refactored _parse_session_info_from_lite helper."""
         sid = str(uuid.uuid4())
         file_path = tmp_path / f"{sid}.jsonl"
@@ -1317,7 +1345,7 @@ class TestTagExtraction:
 class TestCreatedAtExtraction:
     """Tests for created_at field extraction from first entry timestamp."""
 
-    def test_created_at_from_iso_timestamp(
+    async def test_created_at_from_iso_timestamp(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """created_at is parsed from ISO timestamp in first entry (epoch ms)."""
@@ -1347,13 +1375,13 @@ class TestCreatedAtExtraction:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         # 2026-01-15T10:30:00Z = 1768473000 seconds = 1768473000000 ms
         assert sessions[0].created_at == 1768473000000
         assert isinstance(sessions[0].created_at, int)
 
-    def test_created_at_leq_last_modified(
+    async def test_created_at_leq_last_modified(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """created_at <= last_modified (creation precedes mtime)."""
@@ -1377,12 +1405,12 @@ class TestCreatedAtExtraction:
         # Set mtime to Feb 2026 (well after the Jan timestamp)
         os.utime(file_path, (1769904000, 1769904000))  # 2026-02-01 UTC
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].created_at is not None
         assert sessions[0].created_at <= sessions[0].last_modified
 
-    def test_created_at_none_when_missing(
+    async def test_created_at_none_when_missing(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """created_at is None when first entry lacks a timestamp field."""
@@ -1394,11 +1422,11 @@ class TestCreatedAtExtraction:
         # _make_session_file doesn't add a timestamp field
         _make_session_file(project_dir, first_prompt="no timestamp")
 
-        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        sessions = await list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].created_at is None
 
-    def test_created_at_none_on_invalid_format(self, tmp_path: Path):
+    async def test_created_at_none_on_invalid_format(self, tmp_path: Path):
         """Invalid ISO string results in created_at=None (no exception)."""
         sid = str(uuid.uuid4())
         file_path = tmp_path / f"{sid}.jsonl"
@@ -1419,7 +1447,7 @@ class TestCreatedAtExtraction:
         assert info is not None
         assert info.created_at is None
 
-    def test_created_at_without_z_suffix(self, tmp_path: Path):
+    async def test_created_at_without_z_suffix(self, tmp_path: Path):
         """ISO timestamp without Z suffix (with explicit offset) also works."""
         sid = str(uuid.uuid4())
         file_path = tmp_path / f"{sid}.jsonl"
@@ -1441,7 +1469,7 @@ class TestCreatedAtExtraction:
         assert info.created_at == 1768473000000
         assert isinstance(info.created_at, int)
 
-    def test_sdksessioninfo_created_at_default(self):
+    async def test_sdksessioninfo_created_at_default(self):
         """SDKSessionInfo has created_at defaulting to None."""
         info = SDKSessionInfo(
             session_id="abc",
@@ -1460,23 +1488,23 @@ class TestCreatedAtExtraction:
 class TestGetSessionInfo:
     """Tests for the get_session_info() single-session lookup."""
 
-    def test_invalid_session_id(self, claude_config_dir: Path):
+    async def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns None."""
-        assert get_session_info("not-a-uuid") is None
-        assert get_session_info("") is None
+        assert await get_session_info("not-a-uuid") is None
+        assert await get_session_info("") is None
 
-    def test_nonexistent_session(self, claude_config_dir: Path):
+    async def test_nonexistent_session(self, claude_config_dir: Path):
         """Session file not found returns None."""
         sid = str(uuid.uuid4())
-        assert get_session_info(sid) is None
+        assert await get_session_info(sid) is None
 
-    def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async def test_no_config_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Missing config dir returns None."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
         sid = str(uuid.uuid4())
-        assert get_session_info(sid) is None
+        assert await get_session_info(sid) is None
 
-    def test_found_with_directory(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_found_with_directory(self, claude_config_dir: Path, tmp_path: Path):
         """Session found in a specific project directory."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1487,23 +1515,25 @@ class TestGetSessionInfo:
             project_dir, first_prompt="hello", git_branch="main"
         )
 
-        info = get_session_info(sid, directory=project_path)
+        info = await get_session_info(sid, directory=project_path)
         assert info is not None
         assert info.session_id == sid
         assert info.summary == "hello"
         assert info.git_branch == "main"
 
-    def test_found_without_directory(self, claude_config_dir: Path):
+    async def test_found_without_directory(self, claude_config_dir: Path):
         """Session found by searching all project directories."""
         project_dir = _make_project_dir(claude_config_dir, "/some/project")
         sid, _ = _make_session_file(project_dir, first_prompt="search all")
 
-        info = get_session_info(sid)
+        info = await get_session_info(sid)
         assert info is not None
         assert info.session_id == sid
         assert info.summary == "search all"
 
-    def test_returns_none_for_sidechain(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_returns_none_for_sidechain(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Sidechain sessions return None (filtered by parse helper)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1514,9 +1544,9 @@ class TestGetSessionInfo:
             project_dir, first_prompt="sidechain", is_sidechain=True
         )
 
-        assert get_session_info(sid, directory=project_path) is None
+        assert await get_session_info(sid, directory=project_path) is None
 
-    def test_directory_not_containing_session(
+    async def test_directory_not_containing_session(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Returns None when directory provided but session not in it."""
@@ -1530,11 +1560,11 @@ class TestGetSessionInfo:
 
         # Session exists in A but we look in B — should return None
         # (no worktree relationship between them)
-        assert get_session_info(sid, directory=project_b) is None
+        assert await get_session_info(sid, directory=project_b) is None
         # But searching all projects finds it
-        assert get_session_info(sid) is not None
+        assert await get_session_info(sid) is not None
 
-    def test_includes_tag(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_includes_tag(self, claude_config_dir: Path, tmp_path: Path):
         """get_session_info includes the new tag field."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1549,11 +1579,11 @@ class TestGetSessionInfo:
         ]
         file_path.write_text("\n".join(lines) + "\n")
 
-        info = get_session_info(sid, directory=project_path)
+        info = await get_session_info(sid, directory=project_path)
         assert info is not None
         assert info.tag == "urgent"
 
-    def test_sdksessioninfo_new_fields_defaults(self):
+    async def test_sdksessioninfo_new_fields_defaults(self):
         """SDKSessionInfo has tag defaulting to None."""
         info = SDKSessionInfo(
             session_id="abc",
@@ -1597,17 +1627,17 @@ def _make_session_with_subagents(
 class TestListSubagents:
     """Tests for list_subagents()."""
 
-    def test_invalid_session_id(self, claude_config_dir: Path):
+    async def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns empty list."""
-        assert list_subagents("not-a-uuid") == []
-        assert list_subagents("") == []
+        assert await list_subagents("not-a-uuid") == []
+        assert await list_subagents("") == []
 
-    def test_nonexistent_session(self, claude_config_dir: Path):
+    async def test_nonexistent_session(self, claude_config_dir: Path):
         """Session file not found returns empty list."""
         sid = str(uuid.uuid4())
-        assert list_subagents(sid) == []
+        assert await list_subagents(sid) == []
 
-    def test_session_exists_no_subagents_dir(
+    async def test_session_exists_no_subagents_dir(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Session exists but has no subagents directory → empty list."""
@@ -1618,9 +1648,9 @@ class TestListSubagents:
         )
         sid, _ = _make_session_file(project_dir)
 
-        assert list_subagents(sid, directory=project_path) == []
+        assert await list_subagents(sid, directory=project_path) == []
 
-    def test_empty_subagents_dir(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_empty_subagents_dir(self, claude_config_dir: Path, tmp_path: Path):
         """Subagents directory exists but is empty → empty list."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1628,9 +1658,9 @@ class TestListSubagents:
             claude_config_dir, project_path, agent_ids=[]
         )
 
-        assert list_subagents(sid, directory=project_path) == []
+        assert await list_subagents(sid, directory=project_path) == []
 
-    def test_happy_path(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_happy_path(self, claude_config_dir: Path, tmp_path: Path):
         """Returns agent IDs from agent-*.jsonl filenames."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1638,10 +1668,12 @@ class TestListSubagents:
             claude_config_dir, project_path, agent_ids=["abc123", "def456"]
         )
 
-        result = list_subagents(sid, directory=project_path)
+        result = await list_subagents(sid, directory=project_path)
         assert sorted(result) == ["abc123", "def456"]
 
-    def test_ignores_non_agent_files(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_ignores_non_agent_files(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
         """Non-matching files (.meta.json, other JSONL) are ignored."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1652,10 +1684,10 @@ class TestListSubagents:
         (subagents_dir / "other.jsonl").write_text("{}\n")
         (subagents_dir / "agent-noext").write_text("{}")
 
-        result = list_subagents(sid, directory=project_path)
+        result = await list_subagents(sid, directory=project_path)
         assert result == ["keep"]
 
-    def test_recurses_into_subdirectories(
+    async def test_recurses_into_subdirectories(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Agent files in nested subdirectories are found."""
@@ -1668,10 +1700,12 @@ class TestListSubagents:
         nested.mkdir(parents=True)
         (nested / "agent-nested.jsonl").write_text("{}\n")
 
-        result = list_subagents(sid, directory=project_path)
+        result = await list_subagents(sid, directory=project_path)
         assert sorted(result) == ["nested", "top"]
 
-    def test_searches_all_projects_without_directory(self, claude_config_dir: Path):
+    async def test_searches_all_projects_without_directory(
+        self, claude_config_dir: Path
+    ):
         """When directory is omitted, all project directories are searched."""
         project_dir = _make_project_dir(claude_config_dir, "/some/project")
         sid, _ = _make_session_file(project_dir)
@@ -1679,7 +1713,7 @@ class TestListSubagents:
         subagents_dir.mkdir(parents=True)
         (subagents_dir / "agent-x.jsonl").write_text("{}\n")
 
-        assert list_subagents(sid) == ["x"]
+        assert await list_subagents(sid) == ["x"]
 
 
 # ---------------------------------------------------------------------------
@@ -1690,22 +1724,22 @@ class TestListSubagents:
 class TestGetSubagentMessages:
     """Tests for get_subagent_messages()."""
 
-    def test_invalid_session_id(self, claude_config_dir: Path):
+    async def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns empty list."""
-        assert get_subagent_messages("not-a-uuid", "abc") == []
-        assert get_subagent_messages("", "abc") == []
+        assert await get_subagent_messages("not-a-uuid", "abc") == []
+        assert await get_subagent_messages("", "abc") == []
 
-    def test_empty_agent_id(self, claude_config_dir: Path):
+    async def test_empty_agent_id(self, claude_config_dir: Path):
         """Empty agent_id returns empty list."""
         sid = str(uuid.uuid4())
-        assert get_subagent_messages(sid, "") == []
+        assert await get_subagent_messages(sid, "") == []
 
-    def test_nonexistent_session(self, claude_config_dir: Path):
+    async def test_nonexistent_session(self, claude_config_dir: Path):
         """Session file not found returns empty list."""
         sid = str(uuid.uuid4())
-        assert get_subagent_messages(sid, "abc") == []
+        assert await get_subagent_messages(sid, "abc") == []
 
-    def test_nonexistent_agent(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_nonexistent_agent(self, claude_config_dir: Path, tmp_path: Path):
         """Agent file not found returns empty list."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1713,9 +1747,9 @@ class TestGetSubagentMessages:
             claude_config_dir, project_path, agent_ids=["other"]
         )
 
-        assert get_subagent_messages(sid, "missing", directory=project_path) == []
+        assert await get_subagent_messages(sid, "missing", directory=project_path) == []
 
-    def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
         """Basic user → assistant chain from a subagent transcript."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1736,7 +1770,7 @@ class TestGetSubagentMessages:
         agent_file = subagents_dir / "agent-abc.jsonl"
         agent_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
-        messages = get_subagent_messages(sid, "abc", directory=project_path)
+        messages = await get_subagent_messages(sid, "abc", directory=project_path)
         assert len(messages) == 4
         assert all(isinstance(m, SessionMessage) for m in messages)
         assert [m.uuid for m in messages] == [u1, a1, u2, a2]
@@ -1746,7 +1780,7 @@ class TestGetSubagentMessages:
         assert messages[0].parent_tool_use_id is None
         assert messages[3].type == "assistant"
 
-    def test_finds_agent_in_nested_subdirectory(
+    async def test_finds_agent_in_nested_subdirectory(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Agent file in a nested subdirectory is found by ID."""
@@ -1768,12 +1802,12 @@ class TestGetSubagentMessages:
             "\n".join(json.dumps(e) for e in entries) + "\n"
         )
 
-        messages = get_subagent_messages(sid, "deep", directory=project_path)
+        messages = await get_subagent_messages(sid, "deep", directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
 
-    def test_skips_corrupt_lines(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_skips_corrupt_lines(self, claude_config_dir: Path, tmp_path: Path):
         """Corrupt JSONL lines are skipped."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1791,10 +1825,10 @@ class TestGetSubagentMessages:
         ]
         (subagents_dir / "agent-x.jsonl").write_text("\n".join(lines) + "\n")
 
-        messages = get_subagent_messages(sid, "x", directory=project_path)
+        messages = await get_subagent_messages(sid, "x", directory=project_path)
         assert [m.uuid for m in messages] == [u1, a1]
 
-    def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
         """Limit and offset pagination."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1814,24 +1848,24 @@ class TestGetSubagentMessages:
             "\n".join(json.dumps(e) for e in entries) + "\n"
         )
 
-        all_msgs = get_subagent_messages(sid, "p", directory=project_path)
+        all_msgs = await get_subagent_messages(sid, "p", directory=project_path)
         assert len(all_msgs) == 6
 
-        page = get_subagent_messages(sid, "p", directory=project_path, limit=2)
+        page = await get_subagent_messages(sid, "p", directory=project_path, limit=2)
         assert [m.uuid for m in page] == uuids[:2]
 
-        page = get_subagent_messages(
+        page = await get_subagent_messages(
             sid, "p", directory=project_path, limit=2, offset=2
         )
         assert [m.uuid for m in page] == uuids[2:4]
 
-        page = get_subagent_messages(sid, "p", directory=project_path, offset=4)
+        page = await get_subagent_messages(sid, "p", directory=project_path, offset=4)
         assert [m.uuid for m in page] == uuids[4:]
 
-        page = get_subagent_messages(sid, "p", directory=project_path, limit=0)
+        page = await get_subagent_messages(sid, "p", directory=project_path, limit=0)
         assert len(page) == 6
 
-    def test_empty_agent_file(self, claude_config_dir: Path, tmp_path: Path):
+    async def test_empty_agent_file(self, claude_config_dir: Path, tmp_path: Path):
         """Empty agent transcript file returns empty list."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -1840,4 +1874,4 @@ class TestGetSubagentMessages:
         )
         (subagents_dir / "agent-empty.jsonl").write_text("")
 
-        assert get_subagent_messages(sid, "empty", directory=project_path) == []
+        assert await get_subagent_messages(sid, "empty", directory=project_path) == []

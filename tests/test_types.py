@@ -14,6 +14,13 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import (
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
+    RateLimitEvent,
+    RateLimitInfo,
+    StreamEvent,
+    SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -619,3 +626,186 @@ class TestAgentDefinition:
         assert "background" not in payload
         assert "effort" not in payload
         assert "permissionMode" not in payload
+
+
+class TestMessageStr:
+    """Test __str__ methods produce human-readable output for print()."""
+
+    def test_text_block_str(self):
+        assert str(TextBlock(text="hello")) == "hello"
+
+    def test_thinking_block_str(self):
+        assert str(ThinkingBlock(thinking="hmm", signature="sig")) == "[Thinking] hmm"
+
+    def test_tool_use_block_str(self):
+        block = ToolUseBlock(id="t1", name="Read", input={"path": "/x"})
+        assert str(block) == "[Tool use: Read] {'path': '/x'}"
+
+    def test_tool_use_block_str_truncates_large_input(self):
+        block = ToolUseBlock(id="t1", name="Write", input={"content": "x" * 5000})
+        out = str(block)
+        assert out.startswith("[Tool use: Write] ")
+        assert out.endswith("...")
+        assert len(out) < 300
+
+    def test_tool_result_block_str(self):
+        block = ToolResultBlock(tool_use_id="t1", content="ok")
+        assert str(block) == "[Tool result] ok"
+
+    def test_tool_result_block_str_error(self):
+        block = ToolResultBlock(tool_use_id="t1", content="boom", is_error=True)
+        assert str(block) == "[Tool error] boom"
+
+    def test_tool_result_block_str_none_content(self):
+        block = ToolResultBlock(tool_use_id="t1")
+        assert str(block) == "[Tool result]"
+
+    def test_tool_result_block_str_truncates_large_content(self):
+        block = ToolResultBlock(tool_use_id="t1", content="y" * 5000)
+        out = str(block)
+        assert out.startswith("[Tool result] ")
+        assert out.endswith("...")
+        assert len(out) < 300
+
+    def test_user_message_str_from_string(self):
+        assert str(UserMessage(content="hi")) == "User: hi"
+
+    def test_user_message_str_from_blocks(self):
+        msg = UserMessage(content=[TextBlock(text="a"), TextBlock(text="b")])
+        assert str(msg) == "User: a b"
+
+    def test_user_message_str_empty(self):
+        assert str(UserMessage(content="")) == "User:"
+        assert str(UserMessage(content=[])) == "User:"
+
+    def test_assistant_message_str(self):
+        msg = AssistantMessage(
+            content=[
+                TextBlock(text="sure,"),
+                ToolUseBlock(id="t1", name="Read", input={"path": "/x"}),
+            ],
+            model="claude-opus-4-1-20250805",
+        )
+        assert str(msg) == "Claude: sure, [Tool use: Read] {'path': '/x'}"
+
+    def test_assistant_message_str_preserves_block_order(self):
+        """Mixed-block AssistantMessage renders blocks in their list order."""
+        msg = AssistantMessage(
+            content=[
+                ThinkingBlock(thinking="hmm", signature="sig"),
+                TextBlock(text="answer"),
+                ToolUseBlock(id="t1", name="Bash", input={"cmd": "ls"}),
+            ],
+            model="claude-opus-4-1-20250805",
+        )
+        assert str(msg) == (
+            "Claude: [Thinking] hmm answer [Tool use: Bash] {'cmd': 'ls'}"
+        )
+
+    def test_assistant_message_str_empty(self):
+        msg = AssistantMessage(content=[], model="claude-opus-4-1-20250805")
+        assert str(msg) == "Claude:"
+
+    def test_system_message_str(self):
+        assert str(SystemMessage(subtype="init", data={})) == "[System: init]"
+
+    def test_task_started_message_str(self):
+        msg = TaskStartedMessage(
+            subtype="task_started",
+            data={},
+            task_id="tsk_1",
+            description="Refactor tests",
+            uuid="u",
+            session_id="s",
+        )
+        assert str(msg) == "[Task started] Refactor tests (task_id=tsk_1)"
+
+    def test_task_progress_message_str(self):
+        msg = TaskProgressMessage(
+            subtype="task_progress",
+            data={},
+            task_id="tsk_1",
+            description="Refactor tests",
+            usage={"total_tokens": 1200, "tool_uses": 3, "duration_ms": 5000},
+            uuid="u",
+            session_id="s",
+        )
+        assert str(msg) == (
+            "[Task progress] Refactor tests (task_id=tsk_1, tokens=1200)"
+        )
+
+    def test_task_notification_message_str(self):
+        msg = TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="tsk_1",
+            status="completed",
+            output_file="/tmp/out",
+            summary="All green",
+            uuid="u",
+            session_id="s",
+        )
+        assert str(msg) == "[Task completed] All green (task_id=tsk_1)"
+
+    def test_stream_event_str(self):
+        event = StreamEvent(
+            uuid="u", session_id="s", event={"type": "content_block_delta"}
+        )
+        assert str(event) == "[StreamEvent: content_block_delta]"
+
+    def test_stream_event_str_unknown_type(self):
+        event = StreamEvent(uuid="u", session_id="s", event={})
+        assert str(event) == "[StreamEvent: unknown]"
+
+    def test_rate_limit_event_str(self):
+        info = RateLimitInfo(
+            status="allowed_warning",
+            rate_limit_type="five_hour",
+            utilization=0.85,
+        )
+        event = RateLimitEvent(rate_limit_info=info, uuid="u", session_id="s")
+        assert str(event) == "[RateLimit: allowed_warning] five_hour @ 85%"
+
+    def test_rate_limit_event_str_without_utilization(self):
+        info = RateLimitInfo(status="rejected", rate_limit_type="overage")
+        event = RateLimitEvent(rate_limit_info=info, uuid="u", session_id="s")
+        assert str(event) == "[RateLimit: rejected] overage"
+
+    def test_result_message_str(self):
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=123,
+            duration_api_ms=100,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            total_cost_usd=0.0015,
+        )
+        assert str(msg) == "[Result: success] duration=123ms, cost=$0.0015"
+
+    def test_result_message_str_without_cost(self):
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=50,
+            duration_api_ms=40,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        )
+        assert str(msg) == "[Result: success] duration=50ms"
+
+    def test_result_message_str_error(self):
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=5,
+            is_error=True,
+            num_turns=1,
+            session_id="s1",
+        )
+        assert str(msg) == "[Result: error] duration=10ms"
+
+    def test_dataclass_repr_preserved(self):
+        """Default dataclass __repr__ is still available for debugging."""
+        block = TextBlock(text="hello")
+        assert repr(block) == "TextBlock(text='hello')"

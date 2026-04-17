@@ -653,12 +653,11 @@ def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
     return _apply_sort_limit_offset(deduped, limit, offset)
 
 
-async def list_sessions(
+def list_sessions(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
     include_worktrees: bool = True,
-    session_store: SessionStore | None = None,
 ) -> list[SDKSessionInfo]:
     """Lists sessions with metadata extracted from stat + head/tail reads.
 
@@ -677,35 +676,32 @@ async def list_sessions(
             result set. Use with ``limit`` for pagination. Defaults to 0.
         include_worktrees: When ``directory`` is provided and the directory
             is inside a git repository, include sessions from all git
-            worktree paths. Defaults to ``True``. Ignored when
-            ``session_store`` is provided (worktree enumeration is a
-            filesystem concept).
-        session_store: When provided, list sessions from this
-            :class:`SessionStore` instead of the local filesystem. The
-            store must implement :meth:`SessionStore.list_sessions`.
+            worktree paths. Defaults to ``True``.
 
     Returns:
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
 
+    See Also:
+        :func:`list_sessions_from_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         List sessions for a specific project::
 
-            sessions = await list_sessions(directory="/path/to/project")
+            sessions = list_sessions(directory="/path/to/project")
 
         Paginate::
 
-            page1 = await list_sessions(limit=50)
-            page2 = await list_sessions(limit=50, offset=50)
+            page1 = list_sessions(limit=50)
+            page2 = list_sessions(limit=50, offset=50)
 
         List sessions without scanning git worktrees::
 
-            sessions = await list_sessions(
+            sessions = list_sessions(
                 directory="/path/to/project",
                 include_worktrees=False,
             )
     """
-    if session_store is not None:
-        return await _list_sessions_from_store(session_store, directory, limit, offset)
     if directory:
         return _list_sessions_for_project(directory, limit, offset, include_worktrees)
     return _list_all_sessions(limit, offset)
@@ -716,10 +712,9 @@ async def list_sessions(
 # ---------------------------------------------------------------------------
 
 
-async def get_session_info(
+def get_session_info(
     session_id: str,
     directory: str | None = None,
-    session_store: SessionStore | None = None,
 ) -> SDKSessionInfo | None:
     """Reads metadata for a single session by ID.
 
@@ -733,17 +728,19 @@ async def get_session_info(
         directory: Project directory path (same semantics as
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
-        session_store: When provided, read the session from this
-            :class:`SessionStore` instead of the local filesystem.
 
     Returns:
         ``SDKSessionInfo`` for the session, or ``None`` if the session file
         is not found, is a sidechain session, or has no extractable summary.
 
+    See Also:
+        :func:`get_session_info_from_store` for the
+        :class:`SessionStore`-backed async variant.
+
     Example:
         Look up a session in a specific project::
 
-            info = await get_session_info(
+            info = get_session_info(
                 "550e8400-e29b-41d4-a716-446655440000",
                 directory="/path/to/project",
             )
@@ -752,13 +749,11 @@ async def get_session_info(
 
         Search all projects for a session::
 
-            info = await get_session_info("550e8400-e29b-41d4-a716-446655440000")
+            info = get_session_info("550e8400-e29b-41d4-a716-446655440000")
     """
     uuid = _validate_uuid(session_id)
     if not uuid:
         return None
-    if session_store is not None:
-        return await _get_session_info_from_store(session_store, uuid, directory)
     file_name = f"{uuid}.jsonl"
 
     if directory:
@@ -1032,12 +1027,11 @@ def _to_session_message(entry: _TranscriptEntry) -> SessionMessage:
     )
 
 
-async def get_session_messages(
+def get_session_messages(
     session_id: str,
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
-    session_store: SessionStore | None = None,
 ) -> list[SessionMessage]:
     """Reads a session's conversation messages from its JSONL transcript file.
 
@@ -1050,18 +1044,20 @@ async def get_session_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
-        session_store: When provided, read the session from this
-            :class:`SessionStore` instead of the local filesystem.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
         an empty list if the session is not found, the session_id is not a
         valid UUID, or the transcript contains no visible messages.
 
+    See Also:
+        :func:`get_session_messages_from_store` for the
+        :class:`SessionStore`-backed async variant.
+
     Example:
         Read all messages from a session::
 
-            messages = await get_session_messages(
+            messages = get_session_messages(
                 "550e8400-e29b-41d4-a716-446655440000",
                 directory="/path/to/project",
             )
@@ -1070,17 +1066,12 @@ async def get_session_messages(
 
         Read with pagination::
 
-            page = await get_session_messages(
+            page = get_session_messages(
                 session_id, limit=10, offset=20
             )
     """
     if not _validate_uuid(session_id):
         return []
-
-    if session_store is not None:
-        return await _get_session_messages_from_store(
-            session_store, session_id, directory, limit, offset
-        )
 
     content = _read_session_file(session_id, directory)
     if not content:
@@ -1263,10 +1254,9 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
     return chain
 
 
-async def list_subagents(
+def list_subagents(
     session_id: str,
     directory: str | None = None,
-    session_store: SessionStore | None = None,
 ) -> list[str]:
     """Lists subagent IDs for a given session by scanning the subagents directory.
 
@@ -1278,28 +1268,26 @@ async def list_subagents(
         session_id: UUID of the parent session.
         directory: Project directory to find the session in. If omitted,
             searches all project directories under ``~/.claude/projects/``.
-        session_store: When provided, list subagents from this
-            :class:`SessionStore` instead of the local filesystem. The
-            store must implement :meth:`SessionStore.list_subkeys`.
 
     Returns:
         List of subagent ID strings. Returns an empty list if the session
         is not found, the session_id is not a valid UUID, or the session
         has no subagents.
 
+    See Also:
+        :func:`list_subagents_from_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         List subagent IDs for a session::
 
-            agent_ids = await list_subagents(
+            agent_ids = list_subagents(
                 "550e8400-e29b-41d4-a716-446655440000",
                 directory="/path/to/project",
             )
     """
     if not _validate_uuid(session_id):
         return []
-
-    if session_store is not None:
-        return await _list_subagents_from_store(session_store, session_id, directory)
 
     subagents_dir = _resolve_subagents_dir(session_id, directory)
     if subagents_dir is None:
@@ -1308,13 +1296,12 @@ async def list_subagents(
     return [agent_id for agent_id, _ in _collect_agent_files(subagents_dir)]
 
 
-async def get_subagent_messages(
+def get_subagent_messages(
     session_id: str,
     agent_id: str,
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
-    session_store: SessionStore | None = None,
 ) -> list[SessionMessage]:
     """Reads a subagent's conversation messages from its JSONL transcript file.
 
@@ -1329,8 +1316,6 @@ async def get_subagent_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
-        session_store: When provided, read the subagent transcript from
-            this :class:`SessionStore` instead of the local filesystem.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
@@ -1338,10 +1323,14 @@ async def get_subagent_messages(
         session_id is not a valid UUID, or the transcript contains no
         user/assistant messages.
 
+    See Also:
+        :func:`get_subagent_messages_from_store` for the
+        :class:`SessionStore`-backed async variant.
+
     Example:
         Read all messages from a subagent::
 
-            messages = await get_subagent_messages(
+            messages = get_subagent_messages(
                 "550e8400-e29b-41d4-a716-446655440000",
                 "abc123",
                 directory="/path/to/project",
@@ -1351,11 +1340,6 @@ async def get_subagent_messages(
         return []
     if not agent_id:
         return []
-
-    if session_store is not None:
-        return await _get_subagent_messages_from_store(
-            session_store, session_id, agent_id, directory, limit, offset
-        )
 
     subagents_dir = _resolve_subagents_dir(session_id, directory)
     if subagents_dir is None:
@@ -1497,25 +1481,46 @@ async def _load_store_entries_as_jsonl(
     return _entries_to_jsonl(entries)
 
 
-async def _list_sessions_from_store(
-    store: SessionStore,
-    directory: str | None,
-    limit: int | None,
-    offset: int,
+async def list_sessions_from_store(
+    session_store: SessionStore,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[SDKSessionInfo]:
-    """List sessions from a SessionStore.
+    """List sessions from a :class:`SessionStore`.
 
-    Requires ``store.list_sessions`` to be implemented. ``include_worktrees``
-    is a filesystem concept and is not honored on the store path — the store
-    operates on a single ``project_key``.
+    Async, store-backed counterpart to :func:`list_sessions`. Loads each
+    session's entries to derive a real summary via the same lite-parse used
+    by the filesystem path, so disk and store paths produce identical
+    results for the same transcript content.
+
+    Args:
+        session_store: The store to read from. Must implement
+            :meth:`SessionStore.list_sessions`.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip from the start of the sorted
+            result set.
+
+    Returns:
+        List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
+
+    Raises:
+        ValueError: If ``session_store`` does not implement
+            :meth:`SessionStore.list_sessions`.
+
+    Note:
+        ``include_worktrees`` is a filesystem concept and is not honored on
+        the store path — the store operates on a single ``project_key``.
     """
-    if not _store_implements(store, "list_sessions"):
+    if not _store_implements(session_store, "list_sessions"):
         raise ValueError(
             "session_store does not implement list_sessions() -- cannot list "
             "sessions. Provide a store with a list_sessions() method."
         )
     project_key = _project_key_from_dir(directory)
-    raw = await store.list_sessions(project_key)
+    raw = await session_store.list_sessions(project_key)
     # Copy before sorting — store.list_sessions() may return a reference to
     # internal state; in-place sort would mutate the adapter's cache.
     ordered = sorted(raw, key=lambda e: e["mtime"], reverse=True)
@@ -1535,7 +1540,7 @@ async def _list_sessions_from_store(
         sid = entry["session_id"]
         mtime = entry["mtime"]
         try:
-            jsonl = await _load_store_entries_as_jsonl(store, sid, directory)
+            jsonl = await _load_store_entries_as_jsonl(session_store, sid, directory)
         except Exception:
             results.append(
                 SDKSessionInfo(session_id=sid, summary="", last_modified=mtime)
@@ -1553,29 +1558,65 @@ async def _list_sessions_from_store(
     return results
 
 
-async def _get_session_info_from_store(
-    store: SessionStore, session_id: str, directory: str | None
+async def get_session_info_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
 ) -> SDKSessionInfo | None:
-    """Load session info from a SessionStore via a synthetic lite-read."""
-    jsonl = await _load_store_entries_as_jsonl(store, session_id, directory)
+    """Read metadata for a single session from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`get_session_info`.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the session to look up.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Returns:
+        ``SDKSessionInfo`` for the session, or ``None`` if the session is
+        not found, the ``session_id`` is not a valid UUID, the session is
+        a sidechain session, or it has no extractable summary.
+    """
+    if not _validate_uuid(session_id):
+        return None
+    jsonl = await _load_store_entries_as_jsonl(session_store, session_id, directory)
     if jsonl is None:
         return None
     lite = _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
     return _parse_session_info_from_lite(session_id, lite)
 
 
-async def _get_session_messages_from_store(
-    store: SessionStore,
+async def get_session_messages_from_store(
+    session_store: SessionStore,
     session_id: str,
-    directory: str | None,
-    limit: int | None,
-    offset: int,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[SessionMessage]:
-    """Load session messages by feeding ``store.load()`` directly into the chain
-    builder — no JSONL round-trip."""
+    """Read a session's conversation messages from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`get_session_messages`. Feeds
+    ``session_store.load()`` results directly into the chain builder — no
+    JSONL round-trip.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the session to read.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Empty
+        list if the session is not found or ``session_id`` is invalid.
+    """
+    if not _validate_uuid(session_id):
+        return []
     project_key = _project_key_from_dir(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    entries = await store.load(key)
+    entries = await session_store.load(key)
     if not entries:
         return []
     return _entries_to_session_messages(
@@ -1583,20 +1624,39 @@ async def _get_session_messages_from_store(
     )
 
 
-async def _list_subagents_from_store(
-    store: SessionStore, session_id: str, directory: str | None
+async def list_subagents_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
 ) -> list[str]:
-    """List subagent IDs from a SessionStore.
+    """List subagent IDs for a session from a :class:`SessionStore`.
 
-    Requires ``store.list_subkeys`` to be implemented.
+    Async, store-backed counterpart to :func:`list_subagents`.
+
+    Args:
+        session_store: The store to read from. Must implement
+            :meth:`SessionStore.list_subkeys`.
+        session_id: UUID of the parent session.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Returns:
+        List of subagent ID strings. Empty list if ``session_id`` is
+        invalid or the session has no subagents.
+
+    Raises:
+        ValueError: If ``session_store`` does not implement
+            :meth:`SessionStore.list_subkeys`.
     """
-    if not _store_implements(store, "list_subkeys"):
+    if not _validate_uuid(session_id):
+        return []
+    if not _store_implements(session_store, "list_subkeys"):
         raise ValueError(
             "session_store does not implement list_subkeys() -- cannot list "
             "subagents. Provide a store with a list_subkeys() method."
         )
     project_key = _project_key_from_dir(directory)
-    subkeys = await store.list_subkeys(
+    subkeys = await session_store.list_subkeys(
         {"project_key": project_key, "session_id": session_id}
     )
     seen: set[str] = set()
@@ -1613,25 +1673,44 @@ async def _list_subagents_from_store(
     return ids
 
 
-async def _get_subagent_messages_from_store(
-    store: SessionStore,
+async def get_subagent_messages_from_store(
+    session_store: SessionStore,
     session_id: str,
     agent_id: str,
-    directory: str | None,
-    limit: int | None,
-    offset: int,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[SessionMessage]:
-    """Load subagent messages from a SessionStore.
+    """Read a subagent's conversation messages from a :class:`SessionStore`.
 
+    Async, store-backed counterpart to :func:`get_subagent_messages`.
     Subagents may live at ``subagents/agent-<id>`` or nested under
-    ``subagents/workflows/<runId>/agent-<id>``. Scan subkeys when available;
-    otherwise try the direct path.
+    ``subagents/workflows/<runId>/agent-<id>``. Scans subkeys when the
+    store implements :meth:`SessionStore.list_subkeys`; otherwise tries
+    the direct path.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the parent session.
+        agent_id: ID of the subagent.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Empty
+        list if the session/subagent is not found.
     """
+    if not _validate_uuid(session_id):
+        return []
+    if not agent_id:
+        return []
     project_key = _project_key_from_dir(directory)
 
     subpath = f"subagents/agent-{agent_id}"
-    if _store_implements(store, "list_subkeys"):
-        subkeys = await store.list_subkeys(
+    if _store_implements(session_store, "list_subkeys"):
+        subkeys = await session_store.list_subkeys(
             {"project_key": project_key, "session_id": session_id}
         )
         target = f"agent-{agent_id}"
@@ -1652,7 +1731,7 @@ async def _get_subagent_messages_from_store(
         "session_id": session_id,
         "subpath": subpath,
     }
-    entries = await store.load(key)
+    entries = await session_store.load(key)
     if not entries:
         return []
 

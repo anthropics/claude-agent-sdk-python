@@ -22,8 +22,6 @@ from claude_agent_sdk._internal.session_mutations import (
 )
 from claude_agent_sdk._internal.sessions import _sanitize_path, get_session_messages
 
-pytestmark = pytest.mark.asyncio
-
 # ---------------------------------------------------------------------------
 # Fixtures (shared with test_sessions.py patterns)
 # ---------------------------------------------------------------------------
@@ -75,7 +73,7 @@ def _make_session_file(
 class TestTryAppend:
     """Tests for the low-level _try_append helper."""
 
-    async def test_append_to_existing_file(self, tmp_path: Path):
+    def test_append_to_existing_file(self, tmp_path: Path):
         """Appends to an existing non-empty file."""
         f = tmp_path / "test.jsonl"
         f.write_text("line1\n")
@@ -83,20 +81,20 @@ class TestTryAppend:
         assert result is True
         assert f.read_text() == "line1\nline2\n"
 
-    async def test_missing_file_returns_false(self, tmp_path: Path):
+    def test_missing_file_returns_false(self, tmp_path: Path):
         """ENOENT returns False (not an error)."""
         f = tmp_path / "nonexistent.jsonl"
         result = _try_append(f, "data\n")
         assert result is False
         assert not f.exists()  # did NOT create the file
 
-    async def test_missing_parent_dir_returns_false(self, tmp_path: Path):
+    def test_missing_parent_dir_returns_false(self, tmp_path: Path):
         """ENOTDIR/ENOENT on parent dir returns False."""
         f = tmp_path / "nonexistent" / "file.jsonl"
         result = _try_append(f, "data\n")
         assert result is False
 
-    async def test_zero_byte_file_returns_false(self, tmp_path: Path):
+    def test_zero_byte_file_returns_false(self, tmp_path: Path):
         """0-byte stub returns False (keep searching)."""
         f = tmp_path / "stub.jsonl"
         f.write_text("")
@@ -104,7 +102,7 @@ class TestTryAppend:
         assert result is False
         assert f.read_text() == ""  # not modified
 
-    async def test_multiple_appends(self, tmp_path: Path):
+    def test_multiple_appends(self, tmp_path: Path):
         """Multiple appends land in order at EOF (O_APPEND semantics)."""
         f = tmp_path / "test.jsonl"
         f.write_text("line1\n")
@@ -121,14 +119,14 @@ class TestTryAppend:
 class TestRenameSession:
     """Tests for rename_session()."""
 
-    async def test_invalid_session_id_raises(self, claude_config_dir: Path):
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
         """Non-UUID session_id raises ValueError."""
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await rename_session("not-a-uuid", "title")
+            rename_session("not-a-uuid", "title")
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await rename_session("", "title")
+            rename_session("", "title")
 
-    async def test_empty_title_raises(self, claude_config_dir: Path, tmp_path: Path):
+    def test_empty_title_raises(self, claude_config_dir: Path, tmp_path: Path):
         """Empty or whitespace-only title raises ValueError."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -138,15 +136,13 @@ class TestRenameSession:
         sid, _ = _make_session_file(project_dir)
 
         with pytest.raises(ValueError, match="title must be non-empty"):
-            await rename_session(sid, "", directory=project_path)
+            rename_session(sid, "", directory=project_path)
         with pytest.raises(ValueError, match="title must be non-empty"):
-            await rename_session(sid, "   ", directory=project_path)
+            rename_session(sid, "   ", directory=project_path)
         with pytest.raises(ValueError, match="title must be non-empty"):
-            await rename_session(sid, "\n\t", directory=project_path)
+            rename_session(sid, "\n\t", directory=project_path)
 
-    async def test_session_not_found_raises(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_session_not_found_raises(self, claude_config_dir: Path, tmp_path: Path):
         """Session not found raises FileNotFoundError."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -154,20 +150,18 @@ class TestRenameSession:
 
         sid = str(uuid.uuid4())
         with pytest.raises(FileNotFoundError):
-            await rename_session(sid, "title", directory=project_path)
+            rename_session(sid, "title", directory=project_path)
 
-    async def test_no_projects_dir_raises(
+    def test_no_projects_dir_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """Missing projects dir raises FileNotFoundError."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nonexistent"))
         sid = str(uuid.uuid4())
         with pytest.raises(FileNotFoundError, match="no projects directory"):
-            await rename_session(sid, "title")
+            rename_session(sid, "title")
 
-    async def test_appends_custom_title_entry(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_appends_custom_title_entry(self, claude_config_dir: Path, tmp_path: Path):
         """rename_session appends a {type:'custom-title'} JSON line."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -176,7 +170,7 @@ class TestRenameSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await rename_session(sid, "My New Title", directory=project_path)
+        rename_session(sid, "My New Title", directory=project_path)
 
         content = file_path.read_text()
         lines = content.strip().split("\n")
@@ -186,7 +180,7 @@ class TestRenameSession:
         assert entry["customTitle"] == "My New Title"
         assert entry["sessionId"] == sid
 
-    async def test_title_trimmed_before_storing(
+    def test_title_trimmed_before_storing(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Leading/trailing whitespace is stripped from title."""
@@ -197,15 +191,13 @@ class TestRenameSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await rename_session(sid, "  Trimmed Title  ", directory=project_path)
+        rename_session(sid, "  Trimmed Title  ", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
         assert entry["customTitle"] == "Trimmed Title"
 
-    async def test_last_wins_via_list_sessions(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_last_wins_via_list_sessions(self, claude_config_dir: Path, tmp_path: Path):
         """Multiple renames — list_sessions sees the last one."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -214,27 +206,27 @@ class TestRenameSession:
         )
         sid, _ = _make_session_file(project_dir, first_prompt="original")
 
-        await rename_session(sid, "First Title", directory=project_path)
-        await rename_session(sid, "Second Title", directory=project_path)
-        await rename_session(sid, "Final Title", directory=project_path)
+        rename_session(sid, "First Title", directory=project_path)
+        rename_session(sid, "Second Title", directory=project_path)
+        rename_session(sid, "Final Title", directory=project_path)
 
-        sessions = await list_sessions(directory=project_path, include_worktrees=False)
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].custom_title == "Final Title"
         assert sessions[0].summary == "Final Title"
 
-    async def test_search_all_projects(self, claude_config_dir: Path):
+    def test_search_all_projects(self, claude_config_dir: Path):
         """When no directory given, searches all project directories."""
         project_dir = _make_project_dir(claude_config_dir, "/some/project")
         sid, file_path = _make_session_file(project_dir)
 
-        await rename_session(sid, "Found Without Dir")
+        rename_session(sid, "Found Without Dir")
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
         assert entry["customTitle"] == "Found Without Dir"
 
-    async def test_skips_zero_byte_stub(self, claude_config_dir: Path):
+    def test_skips_zero_byte_stub(self, claude_config_dir: Path):
         """0-byte stub in earlier dir is skipped; real file in later dir is found."""
         # Create two project dirs — alphabetical order matters for iteration
         proj_a = _make_project_dir(claude_config_dir, "/aaa/project")
@@ -246,7 +238,7 @@ class TestRenameSession:
         # Real file in second dir
         _make_session_file(proj_z, session_id=sid, first_prompt="real")
 
-        await rename_session(sid, "New Title")
+        rename_session(sid, "New Title")
 
         # Stub untouched
         assert (proj_a / f"{sid}.jsonl").read_text() == ""
@@ -254,7 +246,7 @@ class TestRenameSession:
         real_content = (proj_z / f"{sid}.jsonl").read_text()
         assert '"customTitle":"New Title"' in real_content
 
-    async def test_compact_json_format(self, claude_config_dir: Path, tmp_path: Path):
+    def test_compact_json_format(self, claude_config_dir: Path, tmp_path: Path):
         """Appended JSON uses compact separators (no spaces) matching CLI."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -263,7 +255,7 @@ class TestRenameSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await rename_session(sid, "Title", directory=project_path)
+        rename_session(sid, "Title", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         # Compact JSON: no spaces after : or ,
@@ -280,14 +272,14 @@ class TestRenameSession:
 class TestTagSession:
     """Tests for tag_session()."""
 
-    async def test_invalid_session_id_raises(self, claude_config_dir: Path):
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
         """Non-UUID session_id raises ValueError."""
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await tag_session("not-a-uuid", "tag")
+            tag_session("not-a-uuid", "tag")
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await tag_session("", "tag")
+            tag_session("", "tag")
 
-    async def test_empty_tag_raises(self, claude_config_dir: Path, tmp_path: Path):
+    def test_empty_tag_raises(self, claude_config_dir: Path, tmp_path: Path):
         """Empty or whitespace-only tag raises ValueError."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -297,13 +289,11 @@ class TestTagSession:
         sid, _ = _make_session_file(project_dir)
 
         with pytest.raises(ValueError, match="tag must be non-empty"):
-            await tag_session(sid, "", directory=project_path)
+            tag_session(sid, "", directory=project_path)
         with pytest.raises(ValueError, match="tag must be non-empty"):
-            await tag_session(sid, "   ", directory=project_path)
+            tag_session(sid, "   ", directory=project_path)
 
-    async def test_session_not_found_raises(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_session_not_found_raises(self, claude_config_dir: Path, tmp_path: Path):
         """Session not found raises FileNotFoundError."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -311,9 +301,9 @@ class TestTagSession:
 
         sid = str(uuid.uuid4())
         with pytest.raises(FileNotFoundError):
-            await tag_session(sid, "tag", directory=project_path)
+            tag_session(sid, "tag", directory=project_path)
 
-    async def test_appends_tag_entry(self, claude_config_dir: Path, tmp_path: Path):
+    def test_appends_tag_entry(self, claude_config_dir: Path, tmp_path: Path):
         """tag_session appends a {type:'tag'} JSON line."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -322,7 +312,7 @@ class TestTagSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await tag_session(sid, "experiment", directory=project_path)
+        tag_session(sid, "experiment", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
@@ -330,7 +320,7 @@ class TestTagSession:
         assert entry["tag"] == "experiment"
         assert entry["sessionId"] == sid
 
-    async def test_tag_trimmed(self, claude_config_dir: Path, tmp_path: Path):
+    def test_tag_trimmed(self, claude_config_dir: Path, tmp_path: Path):
         """Leading/trailing whitespace is stripped from tag."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -339,13 +329,13 @@ class TestTagSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await tag_session(sid, "  my-tag  ", directory=project_path)
+        tag_session(sid, "  my-tag  ", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
         assert entry["tag"] == "my-tag"
 
-    async def test_none_clears_tag(self, claude_config_dir: Path, tmp_path: Path):
+    def test_none_clears_tag(self, claude_config_dir: Path, tmp_path: Path):
         """Passing None appends an empty-string tag entry (clears tag)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -354,8 +344,8 @@ class TestTagSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await tag_session(sid, "original-tag", directory=project_path)
-        await tag_session(sid, None, directory=project_path)
+        tag_session(sid, "original-tag", directory=project_path)
+        tag_session(sid, None, directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         # Last entry is the clear
@@ -364,7 +354,7 @@ class TestTagSession:
         assert entry["tag"] == ""
         assert entry["sessionId"] == sid
 
-    async def test_last_wins(self, claude_config_dir: Path, tmp_path: Path):
+    def test_last_wins(self, claude_config_dir: Path, tmp_path: Path):
         """Multiple tag calls — last one lands at EOF."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -373,9 +363,9 @@ class TestTagSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await tag_session(sid, "first", directory=project_path)
-        await tag_session(sid, "second", directory=project_path)
-        await tag_session(sid, "third", directory=project_path)
+        tag_session(sid, "first", directory=project_path)
+        tag_session(sid, "second", directory=project_path)
+        tag_session(sid, "third", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
@@ -386,7 +376,7 @@ class TestTagSession:
         ]
         assert len(tag_lines) == 3
 
-    async def test_compact_json_format(self, claude_config_dir: Path, tmp_path: Path):
+    def test_compact_json_format(self, claude_config_dir: Path, tmp_path: Path):
         """Appended JSON uses compact separators matching CLI."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -395,12 +385,12 @@ class TestTagSession:
         )
         sid, file_path = _make_session_file(project_dir)
 
-        await tag_session(sid, "mytag", directory=project_path)
+        tag_session(sid, "mytag", directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         assert lines[-1] == f'{{"type":"tag","tag":"mytag","sessionId":"{sid}"}}'
 
-    async def test_unicode_sanitization(self, claude_config_dir: Path, tmp_path: Path):
+    def test_unicode_sanitization(self, claude_config_dir: Path, tmp_path: Path):
         """Tag is sanitized: zero-width chars stripped."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -411,13 +401,13 @@ class TestTagSession:
 
         # Tag with zero-width space and BOM embedded
         dirty_tag = "clean\u200btag\ufeff"
-        await tag_session(sid, dirty_tag, directory=project_path)
+        tag_session(sid, dirty_tag, directory=project_path)
 
         lines = file_path.read_text().strip().split("\n")
         entry = json.loads(lines[-1])
         assert entry["tag"] == "cleantag"
 
-    async def test_sanitization_rejects_pure_invisible(
+    def test_sanitization_rejects_pure_invisible(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Tag that is only zero-width chars is rejected."""
@@ -429,43 +419,43 @@ class TestTagSession:
         sid, _ = _make_session_file(project_dir)
 
         with pytest.raises(ValueError, match="tag must be non-empty"):
-            await tag_session(sid, "\u200b\u200c\ufeff", directory=project_path)
+            tag_session(sid, "\u200b\u200c\ufeff", directory=project_path)
 
 
 class TestSanitizeUnicode:
     """Tests for the _sanitize_unicode helper."""
 
-    async def test_passthrough_clean_string(self):
+    def test_passthrough_clean_string(self):
         """Clean strings pass through unchanged."""
         assert _sanitize_unicode("hello") == "hello"
         assert _sanitize_unicode("tag-with-dashes_123") == "tag-with-dashes_123"
 
-    async def test_strips_zero_width(self):
+    def test_strips_zero_width(self):
         """Zero-width spaces/joiners are stripped."""
         assert _sanitize_unicode("a\u200bb") == "ab"
         assert _sanitize_unicode("a\u200cb") == "ab"  # zero-width non-joiner
         assert _sanitize_unicode("a\u200db") == "ab"  # zero-width joiner
 
-    async def test_strips_bom(self):
+    def test_strips_bom(self):
         """Byte order mark is stripped."""
         assert _sanitize_unicode("\ufeffhello") == "hello"
 
-    async def test_strips_directional_marks(self):
+    def test_strips_directional_marks(self):
         """LTR/RTL marks and isolates are stripped."""
         assert _sanitize_unicode("a\u202ab\u202cc") == "abc"
         assert _sanitize_unicode("a\u2066b\u2069c") == "abc"
 
-    async def test_strips_private_use(self):
+    def test_strips_private_use(self):
         """Private use area characters are stripped."""
         assert _sanitize_unicode("a\ue000b") == "ab"
         assert _sanitize_unicode("a\uf8ffb") == "ab"
 
-    async def test_nfkc_normalization(self):
+    def test_nfkc_normalization(self):
         """NFKC normalization is applied (composed chars)."""
         # Fullwidth 'A' → ASCII 'A'
         assert _sanitize_unicode("\uff21") == "A"
 
-    async def test_iterative_converges(self):
+    def test_iterative_converges(self):
         """Handles multi-pass cases safely (max 10 iterations)."""
         # A string that needs multiple passes still converges
         result = _sanitize_unicode("a" + "\u200b" * 20 + "b")
@@ -480,16 +470,16 @@ class TestSanitizeUnicode:
 class TestDeleteSession:
     """Tests for delete_session()."""
 
-    async def test_invalid_session_id_raises(self, claude_config_dir: Path):
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await delete_session("not-a-uuid")
+            delete_session("not-a-uuid")
 
-    async def test_session_not_found_raises(self, claude_config_dir: Path):
+    def test_session_not_found_raises(self, claude_config_dir: Path):
         sid = str(uuid.uuid4())
         with pytest.raises(FileNotFoundError, match="not found"):
-            await delete_session(sid)
+            delete_session(sid)
 
-    async def test_deletes_session_file(self, claude_config_dir: Path, tmp_path: Path):
+    def test_deletes_session_file(self, claude_config_dir: Path, tmp_path: Path):
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
         project_dir = _make_project_dir(
@@ -497,10 +487,10 @@ class TestDeleteSession:
         )
         sid, file_path = _make_session_file(project_dir)
         assert file_path.exists()
-        await delete_session(sid, directory=project_path)
+        delete_session(sid, directory=project_path)
         assert not file_path.exists()
 
-    async def test_removes_subagent_transcript_dir(
+    def test_removes_subagent_transcript_dir(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Cascades the sibling {sid}/ subagent dir alongside the .jsonl."""
@@ -514,32 +504,30 @@ class TestDeleteSession:
         subagent_dir.mkdir()
         (subagent_dir / f"{uuid.uuid4()}.jsonl").write_text("{}\n")
 
-        await delete_session(sid, directory=project_path)
+        delete_session(sid, directory=project_path)
 
         assert not file_path.exists()
         assert not subagent_dir.exists()
 
-    async def test_deletes_without_directory(self, claude_config_dir: Path):
+    def test_deletes_without_directory(self, claude_config_dir: Path):
         """Searches all project directories when no directory is given."""
         project_dir = _make_project_dir(claude_config_dir, "/any/project")
         sid, file_path = _make_session_file(project_dir)
         assert file_path.exists()
-        await delete_session(sid)
+        delete_session(sid)
         assert not file_path.exists()
 
-    async def test_no_longer_in_list_sessions(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_no_longer_in_list_sessions(self, claude_config_dir: Path, tmp_path: Path):
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
         project_dir = _make_project_dir(
             claude_config_dir, os.path.realpath(project_path)
         )
         sid, _ = _make_session_file(project_dir)
-        sessions = await list_sessions(directory=project_path)
+        sessions = list_sessions(directory=project_path)
         assert any(s.session_id == sid for s in sessions)
-        await delete_session(sid, directory=project_path)
-        sessions = await list_sessions(directory=project_path)
+        delete_session(sid, directory=project_path)
+        sessions = list_sessions(directory=project_path)
         assert not any(s.session_id == sid for s in sessions)
 
 
@@ -616,22 +604,20 @@ def _make_transcript_session(
 class TestForkSession:
     """Tests for fork_session()."""
 
-    async def test_invalid_session_id_raises(self, claude_config_dir: Path):
+    def test_invalid_session_id_raises(self, claude_config_dir: Path):
         with pytest.raises(ValueError, match="Invalid session_id"):
-            await fork_session("not-a-uuid")
+            fork_session("not-a-uuid")
 
-    async def test_session_not_found_raises(self, claude_config_dir: Path):
+    def test_session_not_found_raises(self, claude_config_dir: Path):
         sid = str(uuid.uuid4())
         with pytest.raises(FileNotFoundError, match="not found"):
-            await fork_session(sid)
+            fork_session(sid)
 
-    async def test_invalid_up_to_message_id_raises(self, claude_config_dir: Path):
+    def test_invalid_up_to_message_id_raises(self, claude_config_dir: Path):
         with pytest.raises(ValueError, match="Invalid up_to_message_id"):
-            await fork_session(str(uuid.uuid4()), up_to_message_id="not-valid")
+            fork_session(str(uuid.uuid4()), up_to_message_id="not-valid")
 
-    async def test_fork_creates_new_session(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_fork_creates_new_session(self, claude_config_dir: Path, tmp_path: Path):
         """Fork creates a new session file with a different session_id."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -640,14 +626,14 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
         assert result.session_id != sid
 
         # New file exists
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
-    async def test_fork_remaps_uuids(self, claude_config_dir: Path, tmp_path: Path):
+    def test_fork_remaps_uuids(self, claude_config_dir: Path, tmp_path: Path):
         """uuid and parentUuid fields are remapped; originals only appear in forkedFrom."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -656,7 +642,7 @@ class TestForkSession:
         )
         sid, _, original_uuids = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
@@ -666,7 +652,7 @@ class TestForkSession:
                 if entry["parentUuid"] is not None:
                     assert entry["parentUuid"] not in original_uuids
 
-    async def test_fork_preserves_message_count(
+    def test_fork_preserves_message_count(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Fork has the same number of user/assistant messages."""
@@ -677,16 +663,14 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir, num_turns=3)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
 
-        original_msgs = await get_session_messages(sid, directory=project_path)
-        fork_msgs = await get_session_messages(
-            result.session_id, directory=project_path
-        )
+        original_msgs = get_session_messages(sid, directory=project_path)
+        fork_msgs = get_session_messages(result.session_id, directory=project_path)
         # Fork has same visible messages + 1 custom-title entry (not visible)
         assert len(fork_msgs) == len(original_msgs)
 
-    async def test_fork_up_to_message_id(self, claude_config_dir: Path, tmp_path: Path):
+    def test_fork_up_to_message_id(self, claude_config_dir: Path, tmp_path: Path):
         """Fork slices at up_to_message_id (inclusive)."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -697,19 +681,17 @@ class TestForkSession:
 
         # Fork up to the first assistant response (uuid index 1)
         cutoff_uuid = uuids[1]
-        result = await fork_session(
+        result = fork_session(
             sid,
             directory=project_path,
             up_to_message_id=cutoff_uuid,
         )
 
-        fork_msgs = await get_session_messages(
-            result.session_id, directory=project_path
-        )
+        fork_msgs = get_session_messages(result.session_id, directory=project_path)
         # Should have 2 messages (1 user + 1 assistant from first turn)
         assert len(fork_msgs) == 2
 
-    async def test_fork_up_to_message_id_not_found_raises(
+    def test_fork_up_to_message_id_not_found_raises(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         project_path = str(tmp_path / "proj")
@@ -721,13 +703,13 @@ class TestForkSession:
 
         fake_uuid = str(uuid.uuid4())
         with pytest.raises(ValueError, match="not found in session"):
-            await fork_session(
+            fork_session(
                 sid,
                 directory=project_path,
                 up_to_message_id=fake_uuid,
             )
 
-    async def test_fork_custom_title(self, claude_config_dir: Path, tmp_path: Path):
+    def test_fork_custom_title(self, claude_config_dir: Path, tmp_path: Path):
         """Custom title is used when provided."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -736,13 +718,13 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path, title="My Fork")
+        result = fork_session(sid, directory=project_path, title="My Fork")
 
-        sessions = await list_sessions(directory=project_path)
+        sessions = list_sessions(directory=project_path)
         fork_info = next(s for s in sessions if s.session_id == result.session_id)
         assert fork_info.custom_title == "My Fork"
 
-    async def test_fork_default_title_has_suffix(
+    def test_fork_default_title_has_suffix(
         self, claude_config_dir: Path, tmp_path: Path
     ):
         """Default fork title is derived from original + ' (fork)'."""
@@ -753,16 +735,14 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
 
-        sessions = await list_sessions(directory=project_path)
+        sessions = list_sessions(directory=project_path)
         fork_info = next(s for s in sessions if s.session_id == result.session_id)
         assert fork_info.custom_title is not None
         assert fork_info.custom_title.endswith("(fork)")
 
-    async def test_fork_session_id_in_entries(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_fork_session_id_in_entries(self, claude_config_dir: Path, tmp_path: Path):
         """Every entry in the fork has the new session ID."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -771,16 +751,14 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
             entry = json.loads(line)
             assert entry.get("sessionId") == result.session_id
 
-    async def test_fork_forked_from_field(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_fork_forked_from_field(self, claude_config_dir: Path, tmp_path: Path):
         """Transcript entries have a forkedFrom field pointing to the source."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -789,7 +767,7 @@ class TestForkSession:
         )
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):
@@ -797,18 +775,16 @@ class TestForkSession:
             if entry.get("type") in ("user", "assistant"):
                 assert entry["forkedFrom"]["sessionId"] == sid
 
-    async def test_fork_without_directory(self, claude_config_dir: Path):
+    def test_fork_without_directory(self, claude_config_dir: Path):
         """Searches all project directories when no directory is given."""
         project_dir = _make_project_dir(claude_config_dir, "/any/project")
         sid, _, _ = _make_transcript_session(project_dir)
 
-        result = await fork_session(sid)
+        result = fork_session(sid)
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
-    async def test_fork_clears_stale_fields(
-        self, claude_config_dir: Path, tmp_path: Path
-    ):
+    def test_fork_clears_stale_fields(self, claude_config_dir: Path, tmp_path: Path):
         """teamName, agentName, slug are removed from forked entries."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -830,7 +806,7 @@ class TestForkSession:
         }
         file_path.write_text(json.dumps(entry) + "\n")
 
-        result = await fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
         fork_path = project_dir / f"{result.session_id}.jsonl"
 
         for line in fork_path.read_text().strip().split("\n"):

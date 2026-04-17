@@ -1222,6 +1222,33 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
+    # Skills to enable for the main session. This is the one place to turn
+    # skills on; you do not need to add ``"Skill"`` to ``allowed_tools`` or
+    # set ``setting_sources`` yourself — the SDK does both when this is set.
+    # The value is also sent on the ``initialize`` control request so a
+    # supporting CLI can filter which skills are loaded into the system prompt
+    # (older CLIs ignore the field).
+    #   * ``None`` (default): no SDK auto-configuration. The CLI's own
+    #     defaults still apply, so this is **not** "skills off" — to suppress
+    #     every skill from the listing, use ``[]``.
+    #   * ``"all"``: enable every discovered skill.
+    #   * ``[name, ...]``: enable only the listed skills. Names match the
+    #     SKILL.md ``name`` / directory name, or ``plugin:skill`` for
+    #     plugin-qualified skills.
+    #
+    # .. note::
+    #     This is a **context filter**, not a sandbox. Unlisted skills are
+    #     hidden from the model's skill listing and cannot be invoked via the
+    #     Skill tool, but their files remain on disk — a session with ``Read``
+    #     or ``Bash`` can still access ``.claude/skills/**`` directly. For
+    #     hard isolation, point ``cwd`` at a directory whose
+    #     ``.claude/skills/`` contains only the desired subset, or add
+    #     permission deny rules for ``Read``/``Bash`` on skill paths. Note
+    #     that bundled skills and installed-plugin skills are discovered
+    #     regardless of ``setting_sources``; the ``skills`` allowlist is the
+    #     single mechanism that hides them from the model's listing. Do not
+    #     store secrets in skill files.
+    skills: list[str] | Literal["all"] | None = None
     # Sandbox configuration for bash command isolation.
     # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),
     # not from these sandbox settings.

@@ -162,6 +162,44 @@ class SubprocessCLITransport(Transport):
 
         return json.dumps(settings_obj)
 
+    def _apply_skills_defaults(
+        self,
+    ) -> tuple[list[str], list[str] | None]:
+        """Compute effective allowed_tools and setting_sources for skills.
+
+        When ``options.skills`` is ``"all"``, injects the bare ``Skill`` tool;
+        when it is a list, injects ``Skill(name)`` for each entry. In either
+        case ``setting_sources`` defaults to ``["user", "project"]`` when
+        unset so the CLI discovers installed skills without the caller having
+        to wire up both options manually. ``None`` is a no-op.
+
+        Does not mutate the original options object.
+        """
+        allowed_tools: list[str] = list(self._options.allowed_tools)
+        setting_sources: list[str] | None = (
+            list(self._options.setting_sources)
+            if self._options.setting_sources is not None
+            else None
+        )
+
+        skills = self._options.skills
+        if skills is None:
+            return allowed_tools, setting_sources
+
+        if skills == "all":
+            if "Skill" not in allowed_tools:
+                allowed_tools.append("Skill")
+        else:
+            for name in skills:
+                pattern = f"Skill({name})"
+                if pattern not in allowed_tools:
+                    allowed_tools.append(pattern)
+
+        if setting_sources is None:
+            setting_sources = ["user", "project"]
+
+        return allowed_tools, setting_sources
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         if self._cli_path is None:
@@ -193,8 +231,12 @@ class SubprocessCLITransport(Transport):
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
 
-        if self._options.allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
+        effective_allowed_tools, effective_setting_sources = (
+            self._apply_skills_defaults()
+        )
+
+        if effective_allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])
 
         if self._options.max_turns:
             cmd.extend(["--max-turns", str(self._options.max_turns)])
@@ -280,8 +322,8 @@ class SubprocessCLITransport(Transport):
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 
-        if self._options.setting_sources is not None:
-            cmd.append(f"--setting-sources={','.join(self._options.setting_sources)}")
+        if effective_setting_sources is not None:
+            cmd.append(f"--setting-sources={','.join(effective_setting_sources)}")
 
         # Add plugin directories
         if self._options.plugins:

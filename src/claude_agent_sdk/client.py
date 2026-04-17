@@ -186,6 +186,7 @@ class ClaudeSDKClient:
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            skills=self.options.skills,
         )
 
         # Start reading messages and initialize

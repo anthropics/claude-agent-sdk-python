@@ -121,7 +121,7 @@ class InternalClient:
                         prompt=prompt,
                         options=configured_options,
                     )
-                    await chosen_transport.connect()
+                await chosen_transport.connect()
 
                 # Extract SDK MCP servers from configured options
                 sdk_mcp_servers = {}

@@ -5,9 +5,11 @@ import pytest
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
+    AdvisorToolResultBlock,
     AssistantMessage,
     RateLimitEvent,
     ResultMessage,
+    ServerToolUseBlock,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -273,6 +275,92 @@ class TestMessageParser:
         assert message.content[0].signature == "sig-123"
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
+
+    def test_parse_assistant_message_with_server_tool_use(self):
+        """server_tool_use blocks (e.g. advisor, web_search) are preserved.
+
+        Previously these were dropped, leaving an empty content list on
+        messages that only contained a server tool call.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_01ABC",
+                        "name": "advisor",
+                        "input": {},
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ServerToolUseBlock)
+        assert message.content[0].id == "srvtoolu_01ABC"
+        assert message.content[0].name == "advisor"
+        assert message.content[0].input == {}
+
+    def test_parse_assistant_message_with_advisor_tool_result(self):
+        """advisor_tool_result blocks are preserved with their raw content dict.
+
+        The content shape varies by outcome (advisor_result / advisor_redacted_result
+        / advisor_tool_result_error), so it's surfaced as a dict rather than a
+        typed union.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_result",
+                            "text": "Consider edge cases around empty input.",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], AdvisorToolResultBlock)
+        assert message.content[0].tool_use_id == "srvtoolu_01ABC"
+        assert message.content[0].content["type"] == "advisor_result"
+        assert (
+            message.content[0].content["text"]
+            == "Consider edge cases around empty input."
+        )
+
+    def test_parse_assistant_message_with_advisor_redacted_result(self):
+        """External API users get advisor output as an encrypted blob."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_redacted_result",
+                            "encrypted_content": "EuYDCioIDhgC...",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert isinstance(message.content[0], AdvisorToolResultBlock)
+        assert message.content[0].content["type"] == "advisor_redacted_result"
+        assert message.content[0].content["encrypted_content"] == "EuYDCioIDhgC..."
 
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.

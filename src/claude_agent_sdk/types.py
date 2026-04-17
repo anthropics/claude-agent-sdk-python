@@ -889,7 +889,43 @@ class ToolResultBlock:
     is_error: bool | None = None
 
 
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+@dataclass
+class ServerToolUseBlock:
+    """Server-side tool use block (e.g. advisor, web_search, web_fetch).
+
+    These are tools the API executes server-side on the model's behalf, so they
+    appear in the message stream alongside regular `tool_use` blocks but the
+    caller never needs to return a result.
+    """
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
+class AdvisorToolResultBlock:
+    """Result block returned for a server-side advisor tool call.
+
+    `content` is the raw dict from the API. Shape depends on outcome:
+    - success: `{"type": "advisor_result", "text": "..."}`
+    - success (external users): `{"type": "advisor_redacted_result",
+      "encrypted_content": "..."}`
+    - error: `{"type": "advisor_tool_result_error", "error_code": "..."}`
+    """
+
+    tool_use_id: str
+    content: dict[str, Any]
+
+
+ContentBlock = (
+    TextBlock
+    | ThinkingBlock
+    | ToolUseBlock
+    | ToolResultBlock
+    | ServerToolUseBlock
+    | AdvisorToolResultBlock
+)
 
 
 # Message types

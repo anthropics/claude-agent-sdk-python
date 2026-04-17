@@ -168,6 +168,27 @@ class TestSessionStoreOptionsValidation:
             )
         )
 
+    def test_continue_with_resume_and_store_lacking_list_sessions(self) -> None:
+        """Parity with TS: when resume is explicitly set, continue=True
+        should not require list_sessions() — list_sessions is provably
+        never called because resume wins.
+        """
+
+        class MinimalStore(SessionStore):
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                session_store=MinimalStore(),
+                continue_conversation=True,
+                resume="00000000-0000-4000-8000-000000000000",
+            )
+        )
+
     def test_rejects_file_checkpointing_combo(self) -> None:
         with pytest.raises(ValueError, match="enable_file_checkpointing"):
             validate_session_store_options(
@@ -194,3 +215,32 @@ class TestProjectKeyForDirectory:
         assert project_key_for_directory("/a/b/c") == project_key_for_directory(
             "/a/b/c"
         )
+
+    def test_relative_dir_resolved_to_absolute_before_hashing(self) -> None:
+        """Parity with TS: a relative dir like '.' must produce the
+        absolute-path key the subprocess writes under, not a key derived
+        from the literal '.' (which would silently miss store lookups)."""
+        from pathlib import Path
+
+        from claude_agent_sdk._internal.sessions import _sanitize_path
+
+        key = project_key_for_directory(".")
+        assert key == _sanitize_path(str(Path().resolve()))
+        assert key != _sanitize_path(".")
+
+    def test_long_path_uses_portable_djb2_suffix(self) -> None:
+        """Parity with TS: paths > MAX_SANITIZED_LENGTH get a djb2 hash
+        suffix (runtime-portable so parent and subprocess derive the
+        same project_key)."""
+        from pathlib import Path
+
+        from claude_agent_sdk._internal.sessions import (
+            MAX_SANITIZED_LENGTH,
+            _simple_hash,
+        )
+
+        long_dir = str(Path("/" + "a" * (MAX_SANITIZED_LENGTH + 50)).resolve())
+        key = project_key_for_directory(long_dir)
+        portable_suffix = _simple_hash(long_dir)
+        assert key.endswith("-" + portable_suffix)
+        assert len(key) > MAX_SANITIZED_LENGTH

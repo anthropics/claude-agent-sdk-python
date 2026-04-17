@@ -87,6 +87,21 @@ class TestFilePathToSessionKey:
     def test_main_transcript_without_jsonl_suffix_returns_none(self) -> None:
         assert file_path_to_session_key(_p("proj", "sess.txt"), PROJECTS_DIR) is None
 
+    def test_projects_dir_with_trailing_separator(self) -> None:
+        """Parity with TS: a trailing path separator on projects_dir must
+        not change the derived key (relpath normalizes it)."""
+        with_slash = PROJECTS_DIR + os.sep
+        assert file_path_to_session_key(
+            _p("-home-user-repo", "abc-123.jsonl"), with_slash
+        ) == {"project_key": "-home-user-repo", "session_id": "abc-123"}
+        # And a subagent path still parses identically.
+        path = _p("-home-user-repo", "abc-123", "subagents", "agent-xyz.jsonl")
+        assert file_path_to_session_key(path, with_slash) == {
+            "project_key": "-home-user-repo",
+            "session_id": "abc-123",
+            "subpath": "subagents/agent-xyz",
+        }
+
 
 # ---------------------------------------------------------------------------
 # TranscriptMirrorBatcher
@@ -251,6 +266,36 @@ class TestTranscriptMirrorBatcher:
         await batcher.flush()
         assert store.append_calls == []
         assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_two_eager_flushes_do_not_interleave_or_duplicate(self) -> None:
+        """Parity with TS: two eager flushes triggered back-to-back (the
+        second while the first is mid-append) must serialize via the lock
+        — entries land once each, in enqueue order."""
+        gate = asyncio.Event()
+        appended: list[int] = []
+
+        class SlowStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                await gate.wait()
+                appended.extend(e["n"] for e in entries)
+
+        batcher = TranscriptMirrorBatcher(
+            store=SlowStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+            max_pending_entries=0,  # every enqueue triggers an eager flush
+        )
+        batcher.enqueue(_main_path(), [{"type": "x", "n": 1}])
+        first = batcher._flush_task
+        await asyncio.sleep(0)  # let first drain detach + block on gate
+        batcher.enqueue(_main_path(), [{"type": "x", "n": 2}])
+        second = batcher._flush_task
+        assert first is not None and second is not None and first is not second
+
+        gate.set()
+        await asyncio.gather(first, second)
+        assert appended == [1, 2]  # no dup, no interleave
 
     @pytest.mark.asyncio
     async def test_flush_awaits_in_flight_eager_flush(self) -> None:
@@ -436,6 +481,54 @@ class TestReceiveLoopFramePeeling:
                         appended_before_result = len(store.append_calls)
 
             assert appended_before_result == 1
+
+        anyio.run(_test)
+
+    def test_late_mirror_frames_after_result_still_flushed(self) -> None:
+        """Parity with TS: transcript_mirror frames arriving AFTER the
+        result message (late subagent writes) are still enqueued and
+        flushed by the read-loop's finally-block flush on stream end."""
+
+        async def _test() -> None:
+            store = _RecordingStore()
+            mock_transport = _make_mock_transport(
+                [
+                    _RESULT_MSG,
+                    {
+                        "type": "transcript_mirror",
+                        "filePath": _main_path("late", "sess"),
+                        "entries": [{"type": "user", "uuid": "late-u1"}],
+                    },
+                ]
+            )
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "claude_agent_sdk._internal.client._get_projects_dir",
+                    return_value=PROJECTS_DIR,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+                messages = [
+                    m
+                    async for m in query(
+                        prompt="Hello",
+                        options=ClaudeAgentOptions(session_store=store),
+                    )
+                ]
+
+            assert any(isinstance(m, ResultMessage) for m in messages)
+            # Late frame must have been flushed via the finally-block flush.
+            assert len(store.append_calls) == 1
+            key, entries = store.append_calls[0]
+            assert key == {"project_key": "late", "session_id": "sess"}
+            assert entries == [{"type": "user", "uuid": "late-u1"}]
 
         anyio.run(_test)
 

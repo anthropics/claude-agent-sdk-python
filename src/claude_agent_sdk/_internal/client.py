@@ -14,6 +14,9 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
+from .session_store_validation import validate_session_store_options
+from .sessions import _get_projects_dir
+from .transcript_mirror_batcher import TranscriptMirrorBatcher
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
@@ -49,6 +52,10 @@ class InternalClient:
         transport: Transport | None = None,
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""
+
+        # Fail fast on invalid session_store option combinations before
+        # spawning the subprocess.
+        validate_session_store_options(options)
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
@@ -130,6 +137,19 @@ class InternalClient:
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=configured_options.skills,
         )
+
+        if configured_options.session_store is not None:
+            store = configured_options.session_store
+
+            async def _on_mirror_error(key: Any, error: str) -> None:
+                query.report_mirror_error(key, error)
+
+            batcher = TranscriptMirrorBatcher(
+                store=store,
+                projects_dir=str(_get_projects_dir()),
+                on_error=_on_mirror_error,
+            )
+            query.set_transcript_mirror_batcher(batcher)
 
         try:
             # Start reading messages

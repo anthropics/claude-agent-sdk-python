@@ -8,6 +8,7 @@ from ..types import (
     AssistantMessage,
     ContentBlock,
     Message,
+    MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
@@ -182,6 +183,13 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             session_id=data["session_id"],
                             tool_use_id=data.get("tool_use_id"),
                             usage=data.get("usage"),
+                        )
+                    case "mirror_error":
+                        return MirrorErrorMessage(
+                            subtype=subtype,
+                            data=data,
+                            key=data.get("key"),
+                            error=data.get("error", ""),
                         )
                     case _:
                         return SystemMessage(

@@ -1,4 +1,4 @@
-"""Tests for the ``session_store=`` parameter on session helper functions.
+"""Tests for the ``*_from_store`` / ``*_via_store`` async session helpers.
 
 Exercises the SessionStore-backed code paths in
 ``_internal/sessions.py`` and ``_internal/session_mutations.py`` using
@@ -14,16 +14,16 @@ import pytest
 
 from claude_agent_sdk import (
     InMemorySessionStore,
-    delete_session,
-    fork_session,
-    get_session_info,
-    get_session_messages,
-    get_subagent_messages,
-    list_sessions,
-    list_subagents,
+    delete_session_via_store,
+    fork_session_via_store,
+    get_session_info_from_store,
+    get_session_messages_from_store,
+    get_subagent_messages_from_store,
+    list_sessions_from_store,
+    list_subagents_from_store,
     project_key_for_directory,
-    rename_session,
-    tag_session,
+    rename_session_via_store,
+    tag_session_via_store,
 )
 from claude_agent_sdk.types import SessionKey, SessionStore
 
@@ -105,7 +105,7 @@ class TestListSessionsFromStore:
         await _seed_chain(store, sid_a)
         await _seed_chain(store, sid_b)
 
-        sessions = await list_sessions(directory=DIR, session_store=store)
+        sessions = await list_sessions_from_store(store, directory=DIR)
         ids = {s.session_id for s in sessions}
         assert ids == {sid_a, sid_b}
         # Summary derived from first prompt via the same lite-parse as disk.
@@ -120,15 +120,13 @@ class TestListSessionsFromStore:
         store = InMemorySessionStore()
         for _ in range(3):
             await _seed_chain(store, str(uuid_mod.uuid4()))
-        page = await list_sessions(
-            directory=DIR, session_store=store, limit=2, offset=1
-        )
+        page = await list_sessions_from_store(store, directory=DIR, limit=2, offset=1)
         assert len(page) == 2
 
     async def test_raises_when_store_lacks_list_sessions(self) -> None:
         store = _MinimalStore()
         with pytest.raises(ValueError, match="does not implement list_sessions"):
-            await list_sessions(directory=DIR, session_store=store)
+            await list_sessions_from_store(store, directory=DIR)
 
     async def test_adapter_load_error_degrades_row(self) -> None:
         """One failing load() degrades that row instead of failing the list."""
@@ -145,7 +143,7 @@ class TestListSessionsFromStore:
         await _seed_chain(store, good_sid)
         await _seed_chain(store, bad_sid)
 
-        sessions = await list_sessions(directory=DIR, session_store=store)
+        sessions = await list_sessions_from_store(store, directory=DIR)
         by_id = {s.session_id: s for s in sessions}
         assert by_id[good_sid].summary == "prompt 0"
         # Degraded row: empty summary, mtime preserved.
@@ -158,7 +156,7 @@ class TestGetSessionInfoFromStore:
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
 
-        info = await get_session_info(sid, directory=DIR, session_store=store)
+        info = await get_session_info_from_store(store, sid, directory=DIR)
         assert info is not None
         assert info.session_id == sid
         assert info.summary == "prompt 0"
@@ -167,8 +165,8 @@ class TestGetSessionInfoFromStore:
 
     async def test_returns_none_for_unknown(self) -> None:
         store = InMemorySessionStore()
-        info = await get_session_info(
-            str(uuid_mod.uuid4()), directory=DIR, session_store=store
+        info = await get_session_info_from_store(
+            store, str(uuid_mod.uuid4()), directory=DIR
         )
         assert info is None
 
@@ -176,9 +174,9 @@ class TestGetSessionInfoFromStore:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
-        await rename_session(sid, "My Title", directory=DIR, session_store=store)
+        await rename_session_via_store(store, sid, "My Title", directory=DIR)
 
-        info = await get_session_info(sid, directory=DIR, session_store=store)
+        info = await get_session_info_from_store(store, sid, directory=DIR)
         assert info is not None
         assert info.custom_title == "My Title"
         assert info.summary == "My Title"
@@ -190,7 +188,7 @@ class TestGetSessionMessagesFromStore:
         sid = str(uuid_mod.uuid4())
         uuids = await _seed_chain(store, sid, n=2)
 
-        msgs = await get_session_messages(sid, directory=DIR, session_store=store)
+        msgs = await get_session_messages_from_store(store, sid, directory=DIR)
         assert len(msgs) == 4
         assert [m.uuid for m in msgs] == uuids
         assert msgs[0].type == "user"
@@ -201,25 +199,25 @@ class TestGetSessionMessagesFromStore:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid, n=1)
-        await rename_session(sid, "Title", directory=DIR, session_store=store)
-        await tag_session(sid, "exp", directory=DIR, session_store=store)
+        await rename_session_via_store(store, sid, "Title", directory=DIR)
+        await tag_session_via_store(store, sid, "exp", directory=DIR)
 
-        msgs = await get_session_messages(sid, directory=DIR, session_store=store)
+        msgs = await get_session_messages_from_store(store, sid, directory=DIR)
         assert len(msgs) == 2
 
     async def test_limit_offset(self) -> None:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid, n=3)
-        msgs = await get_session_messages(
-            sid, directory=DIR, session_store=store, limit=2, offset=2
+        msgs = await get_session_messages_from_store(
+            store, sid, directory=DIR, limit=2, offset=2
         )
         assert len(msgs) == 2
 
     async def test_unknown_session_empty(self) -> None:
         store = InMemorySessionStore()
-        msgs = await get_session_messages(
-            str(uuid_mod.uuid4()), directory=DIR, session_store=store
+        msgs = await get_session_messages_from_store(
+            store, str(uuid_mod.uuid4()), directory=DIR
         )
         assert msgs == []
 
@@ -250,11 +248,11 @@ class TestSubagentsFromStore:
             ],  # type: ignore[arg-type]
         )
 
-        ids = await list_subagents(sid, directory=DIR, session_store=store)
+        ids = await list_subagents_from_store(store, sid, directory=DIR)
         assert ids == ["abc123"]
 
-        msgs = await get_subagent_messages(
-            sid, "abc123", directory=DIR, session_store=store
+        msgs = await get_subagent_messages_from_store(
+            store, sid, "abc123", directory=DIR
         )
         assert len(msgs) == 2
         assert msgs[0].type == "user"
@@ -272,11 +270,11 @@ class TestSubagentsFromStore:
         u = str(uuid_mod.uuid4())
         await store.append(sub_key, [_user("hi", u, None, sid)])  # type: ignore[arg-type]
 
-        ids = await list_subagents(sid, directory=DIR, session_store=store)
+        ids = await list_subagents_from_store(store, sid, directory=DIR)
         assert ids == ["nested"]
 
-        msgs = await get_subagent_messages(
-            sid, "nested", directory=DIR, session_store=store
+        msgs = await get_subagent_messages_from_store(
+            store, sid, "nested", directory=DIR
         )
         assert len(msgs) == 1
 
@@ -296,14 +294,14 @@ class TestSubagentsFromStore:
                 _user("hi", u, None, sid),
             ],  # type: ignore[arg-type]
         )
-        msgs = await get_subagent_messages(sid, "x", directory=DIR, session_store=store)
+        msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
         assert len(msgs) == 1
 
     async def test_list_subagents_raises_when_store_lacks_list_subkeys(self) -> None:
         store = _MinimalStore()
         sid = str(uuid_mod.uuid4())
         with pytest.raises(ValueError, match="does not implement list_subkeys"):
-            await list_subagents(sid, directory=DIR, session_store=store)
+            await list_subagents_from_store(store, sid, directory=DIR)
 
     async def test_get_subagent_messages_direct_path_without_list_subkeys(self) -> None:
         """Without list_subkeys, falls back to the direct subagents/agent-<id> path."""
@@ -318,8 +316,8 @@ class TestSubagentsFromStore:
             },
             [_user("hi", u, None, sid)],
         )
-        msgs = await get_subagent_messages(
-            sid, "direct", directory=DIR, session_store=store
+        msgs = await get_subagent_messages_from_store(
+            store, sid, "direct", directory=DIR
         )
         assert len(msgs) == 1
 
@@ -335,7 +333,7 @@ class TestRenameSessionViaStore:
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
 
-        await rename_session(sid, "  New Title  ", directory=DIR, session_store=store)
+        await rename_session_via_store(store, sid, "  New Title  ", directory=DIR)
 
         entries = store.get_entries({"project_key": PROJECT_KEY, "session_id": sid})
         last = entries[-1]
@@ -348,9 +346,9 @@ class TestRenameSessionViaStore:
     async def test_invalid_inputs_raise(self) -> None:
         store = InMemorySessionStore()
         with pytest.raises(ValueError):
-            await rename_session("not-a-uuid", "t", session_store=store)
+            await rename_session_via_store(store, "not-a-uuid", "t")
         with pytest.raises(ValueError):
-            await rename_session(str(uuid_mod.uuid4()), "  ", session_store=store)
+            await rename_session_via_store(store, str(uuid_mod.uuid4()), "  ")
 
 
 class TestTagSessionViaStore:
@@ -359,7 +357,7 @@ class TestTagSessionViaStore:
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
 
-        await tag_session(sid, "experiment", directory=DIR, session_store=store)
+        await tag_session_via_store(store, sid, "experiment", directory=DIR)
 
         last = store.get_entries({"project_key": PROJECT_KEY, "session_id": sid})[-1]
         assert last["type"] == "tag"
@@ -370,7 +368,7 @@ class TestTagSessionViaStore:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
-        await tag_session(sid, None, directory=DIR, session_store=store)
+        await tag_session_via_store(store, sid, None, directory=DIR)
 
         last = store.get_entries({"project_key": PROJECT_KEY, "session_id": sid})[-1]
         assert last["type"] == "tag"
@@ -380,9 +378,9 @@ class TestTagSessionViaStore:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid)
-        await tag_session(sid, "exp", directory=DIR, session_store=store)
+        await tag_session_via_store(store, sid, "exp", directory=DIR)
 
-        info = await get_session_info(sid, directory=DIR, session_store=store)
+        info = await get_session_info_from_store(store, sid, directory=DIR)
         assert info is not None
         assert info.tag == "exp"
 
@@ -394,7 +392,7 @@ class TestDeleteSessionViaStore:
         await _seed_chain(store, sid)
         assert store.size == 1
 
-        await delete_session(sid, directory=DIR, session_store=store)
+        await delete_session_via_store(store, sid, directory=DIR)
         assert store.size == 0
         assert await store.load({"project_key": PROJECT_KEY, "session_id": sid}) is None
 
@@ -403,7 +401,7 @@ class TestDeleteSessionViaStore:
         store = _MinimalStore()
         sid = str(uuid_mod.uuid4())
         # Should not raise.
-        await delete_session(sid, directory=DIR, session_store=store)
+        await delete_session_via_store(store, sid, directory=DIR)
 
 
 class TestForkSessionViaStore:
@@ -412,7 +410,7 @@ class TestForkSessionViaStore:
         sid = str(uuid_mod.uuid4())
         src_uuids = await _seed_chain(store, sid, n=2)
 
-        result = await fork_session(sid, directory=DIR, session_store=store)
+        result = await fork_session_via_store(store, sid, directory=DIR)
         assert result.session_id != sid
 
         forked = store.get_entries(
@@ -437,11 +435,9 @@ class TestForkSessionViaStore:
         sid = str(uuid_mod.uuid4())
         await _seed_chain(store, sid, n=2)
 
-        result = await fork_session(
-            sid, directory=DIR, title="Forked", session_store=store
-        )
-        msgs = await get_session_messages(
-            result.session_id, directory=DIR, session_store=store
+        result = await fork_session_via_store(store, sid, directory=DIR, title="Forked")
+        msgs = await get_session_messages_from_store(
+            store, result.session_id, directory=DIR
         )
         assert len(msgs) == 4
 
@@ -450,8 +446,8 @@ class TestForkSessionViaStore:
         sid = str(uuid_mod.uuid4())
         uuids = await _seed_chain(store, sid, n=3)
 
-        result = await fork_session(
-            sid, directory=DIR, up_to_message_id=uuids[1], session_store=store
+        result = await fork_session_via_store(
+            store, sid, directory=DIR, up_to_message_id=uuids[1]
         )
         forked = store.get_entries(
             {"project_key": PROJECT_KEY, "session_id": result.session_id}
@@ -462,6 +458,4 @@ class TestForkSessionViaStore:
     async def test_not_found_raises(self) -> None:
         store = InMemorySessionStore()
         with pytest.raises(FileNotFoundError):
-            await fork_session(
-                str(uuid_mod.uuid4()), directory=DIR, session_store=store
-            )
+            await fork_session_via_store(store, str(uuid_mod.uuid4()), directory=DIR)

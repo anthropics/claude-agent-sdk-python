@@ -181,7 +181,7 @@ class InternalClient:
             projects_dir = (
                 str(materialized.config_dir / "projects")
                 if materialized is not None
-                else str(_get_projects_dir())
+                else str(_get_projects_dir(configured_options.env))
             )
             batcher = TranscriptMirrorBatcher(
                 store=store,

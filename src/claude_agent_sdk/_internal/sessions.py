@@ -118,7 +118,17 @@ def _get_claude_config_home_dir() -> Path:
     return Path(unicodedata.normalize("NFC", str(Path.home() / ".claude")))
 
 
-def _get_projects_dir() -> Path:
+def _get_projects_dir(env_override: dict[str, str] | None = None) -> Path:
+    """Returns the projects directory.
+
+    ``env_override`` is consulted before ``os.environ`` so callers that pass
+    ``CLAUDE_CONFIG_DIR`` to the subprocess via ``options.env`` resolve the
+    same directory the subprocess will write to.
+    """
+    if env_override:
+        override = env_override.get("CLAUDE_CONFIG_DIR")
+        if override:
+            return Path(unicodedata.normalize("NFC", override)) / "projects"
     return _get_claude_config_home_dir() / "projects"
 
 

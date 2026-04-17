@@ -25,6 +25,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.session_store import file_path_to_session_key
+from claude_agent_sdk._internal.sessions import _get_projects_dir
 from claude_agent_sdk._internal.transcript_mirror_batcher import (
     MAX_PENDING_BYTES,
     MAX_PENDING_ENTRIES,
@@ -87,6 +88,14 @@ class TestFilePathToSessionKey:
     def test_main_transcript_without_jsonl_suffix_returns_none(self) -> None:
         assert file_path_to_session_key(_p("proj", "sess.txt"), PROJECTS_DIR) is None
 
+    def test_relpath_value_error_returns_none(self) -> None:
+        """On Windows, ``os.path.relpath`` raises ``ValueError`` when the two
+        paths are on different drives. The function must catch it and return
+        ``None`` so the batcher's ``_drain()`` "Never raises" contract holds.
+        Patched for portability — the real raise only happens on Windows."""
+        with patch("os.path.relpath", side_effect=ValueError("different drives")):
+            assert file_path_to_session_key("D:\\cfg\\p\\s.jsonl", "C:\\home") is None
+
     def test_projects_dir_with_trailing_separator(self) -> None:
         """Parity with TS: a trailing path separator on projects_dir must
         not change the derived key (relpath normalizes it)."""
@@ -101,6 +110,32 @@ class TestFilePathToSessionKey:
             "session_id": "abc-123",
             "subpath": "subagents/agent-xyz",
         }
+
+
+class TestGetProjectsDirEnvOverride:
+    """``_get_projects_dir`` must consult ``options.env`` before ``os.environ``
+    so the batcher's ``projects_dir`` matches what the subprocess (which
+    receives ``options.env`` merged on top) actually writes to."""
+
+    def test_env_override_takes_precedence(self, tmp_path: Path) -> None:
+        custom = tmp_path / "custom"
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(tmp_path / "ambient")}):
+            assert _get_projects_dir({"CLAUDE_CONFIG_DIR": str(custom)}) == (
+                custom / "projects"
+            )
+
+    def test_falls_back_to_os_environ_when_override_absent(
+        self, tmp_path: Path
+    ) -> None:
+        ambient = tmp_path / "ambient"
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(ambient)}):
+            assert _get_projects_dir({}) == ambient / "projects"
+            assert _get_projects_dir(None) == ambient / "projects"
+
+    def test_empty_string_override_ignored(self, tmp_path: Path) -> None:
+        ambient = tmp_path / "ambient"
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(ambient)}):
+            assert _get_projects_dir({"CLAUDE_CONFIG_DIR": ""}) == ambient / "projects"
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +296,20 @@ class TestTranscriptMirrorBatcher:
         batcher.enqueue(_main_path(), [{"type": "x"}])
         await batcher.close()
         assert len(store.append_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_drain_never_raises_on_unexpected_do_flush_error(self) -> None:
+        """Defense in depth: even if ``_do_flush`` raises something its own
+        try/except doesn't cover, ``_drain()`` must swallow it so the receive
+        loop's pre-result ``flush()`` cannot terminate the session."""
+        store = _RecordingStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=AsyncMock()
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with patch.object(batcher, "_do_flush", side_effect=RuntimeError("boom")):
+            await batcher.flush()  # must not raise
+        assert store.append_calls == []
 
     @pytest.mark.asyncio
     async def test_unmapped_file_path_is_dropped_silently(self) -> None:

@@ -174,24 +174,18 @@ class TestIsSafeSubpath:
     def test_drive_letter_absolute_rejected_on_windows(self, session_dir: Path) -> None:
         assert _is_safe_subpath("C:\\Windows\\System32", session_dir) is False
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="drive-relative paths (C:foo) only meaningful on Windows",
-    )
-    def test_drive_relative_rejected_on_windows(self, session_dir: Path) -> None:
-        """``C:foo`` is drive-relative on Windows — ``Path.is_absolute()`` is
-        False for it, so the resolve+relative_to fallback must catch it."""
+    def test_drive_relative_rejected_everywhere(self, session_dir: Path) -> None:
+        """``C:foo`` is drive-relative on Windows (``is_absolute()`` is False)
+        and a literal filename on POSIX. Either way it's never a legitimate
+        store subkey, so reject it on every platform — a Windows consumer
+        must be protected even if the store was populated on POSIX."""
         assert _is_safe_subpath("C:escape", session_dir) is False
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="on POSIX, C:\\abs is just a filename and harmlessly contained",
-    )
-    def test_drive_letter_is_literal_filename_on_posix(self, session_dir: Path) -> None:
-        """On POSIX, ``C:\\abs`` is a single path component (no separator),
-        so joining it under ``session_dir`` cannot escape — allowing it is
-        correct, not a bug."""
-        assert _is_safe_subpath("C:\\abs", session_dir) is True
+    def test_drive_absolute_rejected_everywhere(self, session_dir: Path) -> None:
+        r"""``C:\abs`` is rejected on every platform via the explicit
+        ``ntpath.splitdrive`` guard — defense in depth for cross-platform
+        store consumers."""
+        assert _is_safe_subpath("C:\\abs", session_dir) is False
 
 
 # ---------------------------------------------------------------------------

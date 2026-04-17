@@ -329,6 +329,9 @@ class SubprocessCLITransport(Transport):
             if schema is not None:
                 cmd.extend(["--json-schema", json.dumps(schema)])
 
+        if self._options.disable_parallel_tool_use:
+            cmd.append("--disable-parallel-tool-use")
+
         # Always use streaming mode with stdin (matching TypeScript SDK)
         # This allows agents and other large configs to be sent via initialize request
         cmd.extend(["--input-format", "stream-json"])

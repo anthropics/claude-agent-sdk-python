@@ -1547,29 +1547,23 @@ async def list_sessions_from_store(
         )
     project_key = _project_key_from_dir(directory)
     raw = await session_store.list_sessions(project_key)
-    # Copy before sorting — store.list_sessions() may return a reference to
-    # internal state; in-place sort would mutate the adapter's cache.
-    ordered = sorted(raw, key=lambda e: e["mtime"], reverse=True)
-    if limit is not None and limit > 0:
-        page = ordered[offset : offset + limit]
-    elif offset > 0:
-        page = ordered[offset:]
-    else:
-        page = ordered
+    # Copy — store.list_sessions() may return a reference to internal state.
+    listing = list(raw)
 
     # Derive a real summary per session by loading its entries and reusing
-    # the filesystem path's lite-parse. Runs after pagination so the
-    # per-session load is bounded by ``limit``. Loads run concurrently;
-    # adapter errors degrade that row instead of failing the whole list.
+    # the filesystem path's lite-parse. Loads run concurrently; adapter
+    # errors degrade that row instead of failing the whole list. Filtering
+    # (sidechain/empty drop) happens before pagination so ``limit``/``offset``
+    # index the same filtered set as the disk path.
     settled = await asyncio.gather(
         *(
             _load_store_entries_as_jsonl(session_store, e["session_id"], directory)
-            for e in page
+            for e in listing
         ),
         return_exceptions=True,
     )
     results: list[SDKSessionInfo] = []
-    for entry, outcome in zip(page, settled, strict=True):
+    for entry, outcome in zip(listing, settled, strict=True):
         sid = entry["session_id"]
         mtime = entry["mtime"]
         if isinstance(outcome, BaseException):
@@ -1586,7 +1580,7 @@ async def list_sessions_from_store(
             continue
         parsed.last_modified = mtime
         results.append(parsed)
-    return results
+    return _apply_sort_limit_offset(results, limit, offset)
 
 
 async def get_session_info_from_store(

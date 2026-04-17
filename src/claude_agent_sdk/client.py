@@ -73,6 +73,7 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+        self._materialized: Any | None = None
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -98,6 +99,7 @@ class ClaudeSDKClient:
         """Connect to Claude with a prompt or message stream."""
 
         from ._internal.query import Query
+        from ._internal.session_resume import materialize_resume_session
         from ._internal.session_store_validation import validate_session_store_options
         from ._internal.sessions import _get_projects_dir
         from ._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
@@ -119,6 +121,13 @@ class ClaudeSDKClient:
         # spawning the subprocess.
         validate_session_store_options(self.options)
 
+        # resume/continue + session_store: load the session from the store
+        # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
+        # When materialized, override resume/continue/env on a copy of options
+        # so the subprocess points at the temp dir; when None, fall through
+        # to normal handling (fresh session or local-disk resume).
+        self._materialized = await materialize_resume_session(self.options)
+
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:
             # canUseTool callback requires streaming mode (AsyncIterable prompt)
@@ -139,6 +148,17 @@ class ClaudeSDKClient:
             options = replace(self.options, permission_prompt_tool_name="stdio")
         else:
             options = self.options
+
+        if self._materialized is not None:
+            options = replace(
+                options,
+                env={
+                    **options.env,
+                    "CLAUDE_CONFIG_DIR": str(self._materialized.config_dir),
+                },
+                resume=self._materialized.resume_session_id,
+                continue_conversation=False,
+            )
 
         # Use provided custom transport or create subprocess transport
         if self._custom_transport:
@@ -203,9 +223,17 @@ class ClaudeSDKClient:
             async def _on_mirror_error(key: Any, error: str) -> None:
                 q.report_mirror_error(key, error)
 
+            # When materialized, the subprocess writes transcripts under the
+            # temp config dir — point the batcher there so file_path → key
+            # resolution matches.
+            projects_dir = (
+                str(self._materialized.config_dir / "projects")
+                if self._materialized is not None
+                else str(_get_projects_dir())
+            )
             batcher = TranscriptMirrorBatcher(
                 store=store,
-                projects_dir=str(_get_projects_dir()),
+                projects_dir=projects_dir,
                 on_error=_on_mirror_error,
             )
             self._query.set_transcript_mirror_batcher(batcher)
@@ -569,6 +597,9 @@ class ClaudeSDKClient:
             await self._query.close()
             self._query = None
         self._transport = None
+        if self._materialized is not None:
+            await self._materialized.cleanup()
+            self._materialized = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

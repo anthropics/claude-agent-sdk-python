@@ -1,0 +1,549 @@
+"""Tests for SessionStore-backed resume materialization."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
+
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, InMemorySessionStore
+from claude_agent_sdk._internal.session_resume import (
+    MaterializedResume,
+    materialize_resume_session,
+)
+from claude_agent_sdk._internal.session_store import project_key_for_directory
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk.types import SessionKey, SessionStore, SessionStoreEntry
+
+SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
+SESSION_ID_2 = "660e8400-e29b-41d4-a716-446655440000"
+
+
+@pytest.fixture
+def cwd(tmp_path: Path) -> Path:
+    d = tmp_path / "project"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def project_key(cwd: Path) -> str:
+    return project_key_for_directory(cwd)
+
+
+@pytest.fixture
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect ~ and clear auth env so tests don't touch the real config."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    return home
+
+
+# ---------------------------------------------------------------------------
+# materialize_resume_session — None cases
+# ---------------------------------------------------------------------------
+
+
+class TestNoMaterialization:
+    @pytest.mark.asyncio
+    async def test_no_store(self, cwd: Path) -> None:
+        opts = ClaudeAgentOptions(cwd=cwd, resume=SESSION_ID)
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
+    async def test_no_resume_or_continue(self, cwd: Path) -> None:
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=InMemorySessionStore())
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
+    async def test_non_uuid_session_id(self, cwd: Path) -> None:
+        store = InMemorySessionStore()
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, resume="../../etc/passwd"
+        )
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
+    async def test_load_returns_none(self, cwd: Path) -> None:
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=InMemorySessionStore(), resume=SESSION_ID
+        )
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
+    async def test_load_returns_empty(self, cwd: Path, project_key: str) -> None:
+        store = InMemorySessionStore()
+        await store.append({"project_key": project_key, "session_id": SESSION_ID}, [])
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        assert await materialize_resume_session(opts) is None
+
+    @pytest.mark.asyncio
+    async def test_continue_with_empty_list_sessions(self, cwd: Path) -> None:
+        opts = ClaudeAgentOptions(
+            cwd=cwd,
+            session_store=InMemorySessionStore(),
+            continue_conversation=True,
+        )
+        assert await materialize_resume_session(opts) is None
+
+
+# ---------------------------------------------------------------------------
+# materialize_resume_session — happy paths
+# ---------------------------------------------------------------------------
+
+
+class TestHappyPath:
+    @pytest.mark.asyncio
+    async def test_resume_writes_jsonl_and_cleanup_removes_dir(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        store = InMemorySessionStore()
+        entries: list[SessionStoreEntry] = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "message": {"role": "user", "content": "hi"},
+            },
+            {"type": "assistant", "uuid": "a1"},
+        ]
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID}, entries
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        assert m.resume_session_id == SESSION_ID
+        assert m.config_dir.is_dir()
+
+        jsonl = m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        assert jsonl.is_file()
+        lines = jsonl.read_text().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0]) == entries[0]
+        assert json.loads(lines[1]) == entries[1]
+
+        await m.cleanup()
+        assert not m.config_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_credentials_redacted(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        # Seed a credentials file with a refreshToken under the fake ~/.claude/.
+        config = isolated_home / ".claude"
+        config.mkdir()
+        (config / ".credentials.json").write_text(
+            json.dumps(
+                {"claudeAiOauth": {"accessToken": "at", "refreshToken": "SECRET"}}
+            )
+        )
+        (isolated_home / ".claude.json").write_text('{"theme":"dark"}')
+
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+
+        creds = json.loads((m.config_dir / ".credentials.json").read_text())
+        assert creds["claudeAiOauth"]["accessToken"] == "at"
+        assert "refreshToken" not in creds["claudeAiOauth"]
+
+        # .claude.json copied verbatim from ~ (not ~/.claude/).
+        assert (m.config_dir / ".claude.json").read_text() == '{"theme":"dark"}'
+
+        await m.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_credentials_from_caller_config_dir_env(
+        self, cwd: Path, project_key: str, tmp_path: Path
+    ) -> None:
+        # options.env CLAUDE_CONFIG_DIR takes precedence over ~ lookup.
+        custom = tmp_path / "custom-config"
+        custom.mkdir()
+        (custom / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "fromenv"}})
+        )
+
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(
+            cwd=cwd,
+            session_store=store,
+            resume=SESSION_ID,
+            env={"CLAUDE_CONFIG_DIR": str(custom)},
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        creds = json.loads((m.config_dir / ".credentials.json").read_text())
+        assert creds["claudeAiOauth"]["accessToken"] == "fromenv"
+        await m.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_continue_picks_most_recent(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        store = InMemorySessionStore()
+        # Older session first.
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "old"}],
+        )
+        store._mtimes[f"{project_key}/{SESSION_ID}"] = 1000
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID_2},
+            [{"type": "user", "uuid": "new"}],
+        )
+        store._mtimes[f"{project_key}/{SESSION_ID_2}"] = 2000
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, continue_conversation=True
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        assert m.resume_session_id == SESSION_ID_2
+        await m.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Subkey materialization
+# ---------------------------------------------------------------------------
+
+
+class TestSubkeyMaterialization:
+    @pytest.mark.asyncio
+    async def test_subagent_jsonl_and_meta_json(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        store = InMemorySessionStore()
+        main_key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        await store.append(main_key, [{"type": "user", "uuid": "u1"}])
+
+        sub_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+            "subpath": "subagents/agent-abc",
+        }
+        await store.append(
+            sub_key,
+            [
+                {"type": "user", "uuid": "su1"},
+                {"type": "assistant", "uuid": "sa1"},
+                {"type": "agent_metadata", "agentType": "general", "ver": 1},
+            ],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+
+        session_dir = m.config_dir / "projects" / project_key / SESSION_ID
+        jsonl = session_dir / "subagents" / "agent-abc.jsonl"
+        meta = session_dir / "subagents" / "agent-abc.meta.json"
+
+        assert jsonl.is_file()
+        lines = [json.loads(ln) for ln in jsonl.read_text().splitlines()]
+        assert lines == [
+            {"type": "user", "uuid": "su1"},
+            {"type": "assistant", "uuid": "sa1"},
+        ]
+
+        assert meta.is_file()
+        # 'type' field stripped from metadata.
+        assert json.loads(meta.read_text()) == {"agentType": "general", "ver": 1}
+
+        await m.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_traversal_guards(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        class EvilStore(InMemorySessionStore):
+            async def list_subkeys(self, key):  # type: ignore[override]
+                return ["", "/etc/passwd", "../escape", "a/../b", "subagents/agent-ok"]
+
+            async def load(self, key):  # type: ignore[override]
+                if key.get("subpath") == "subagents/agent-ok":
+                    return [{"type": "user", "uuid": "ok"}]
+                if key.get("subpath") is None:
+                    return [{"type": "user", "uuid": "main"}]
+                # Unsafe subpaths should never be loaded — fail loudly if they are.
+                raise AssertionError(f"loaded unsafe subpath {key!r}")
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=EvilStore(), resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+
+        session_dir = m.config_dir / "projects" / project_key / SESSION_ID
+        # Only the safe subpath was written.
+        assert (session_dir / "subagents" / "agent-ok.jsonl").is_file()
+        # Nothing escaped the temp dir.
+        for root, _dirs, files in [
+            *[(r, d, f) for r, d, f in __import__("os").walk(m.config_dir)]
+        ]:
+            for f in files:
+                p = Path(root) / f
+                assert str(p).startswith(str(m.config_dir))
+        await m.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_store_without_list_subkeys_skips_subagents(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        class MinimalStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                return [{"type": "user", "uuid": "u1"}]
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=MinimalStore(), resume=SESSION_ID
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        # Just the main transcript — no subagent dir created.
+        assert (
+            m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        ).is_file()
+        assert not (m.config_dir / "projects" / project_key / SESSION_ID).exists()
+        await m.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Timeouts and error wrapping
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutsAndErrors:
+    @pytest.mark.asyncio
+    async def test_load_timeout_raises(self, cwd: Path) -> None:
+        class SlowStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                await asyncio.sleep(3600)
+                return None
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=SlowStore(), resume=SESSION_ID, load_timeout_ms=50
+        )
+        with pytest.raises(RuntimeError, match="timed out"):
+            await materialize_resume_session(opts)
+
+    @pytest.mark.asyncio
+    async def test_load_exception_wrapped(self, cwd: Path) -> None:
+        class BrokenStore(SessionStore):
+            async def append(self, key, entries):  # type: ignore[override]
+                pass
+
+            async def load(self, key):  # type: ignore[override]
+                raise OSError("network down")
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=BrokenStore(), resume=SESSION_ID
+        )
+        with pytest.raises(RuntimeError, match="network down"):
+            await materialize_resume_session(opts)
+
+    @pytest.mark.asyncio
+    async def test_failure_after_mkdir_cleans_temp_dir(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """If list_subkeys raises after the temp dir is created, the dir is removed."""
+
+        class FailLateStore(InMemorySessionStore):
+            async def list_subkeys(self, key):  # type: ignore[override]
+                raise OSError("boom")
+
+        store = FailLateStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+
+        # Capture the temp dir created by mkdtemp so we can assert it's gone.
+        import tempfile
+
+        real_mkdtemp = tempfile.mkdtemp
+        created: list[str] = []
+
+        def spy(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created.append(d)
+            return d
+
+        with (
+            patch("tempfile.mkdtemp", side_effect=spy),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await materialize_resume_session(opts)
+
+        assert created
+        assert not Path(created[0]).exists()
+
+
+# ---------------------------------------------------------------------------
+# Integration: ClaudeSDKClient.connect() wiring
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_transport() -> Any:
+    mock_transport = AsyncMock()
+
+    async def mock_receive():
+        return
+        yield  # pragma: no cover
+
+    mock_transport.read_messages = mock_receive
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.write = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+    return mock_transport
+
+
+class TestClientIntegration:
+    @pytest.mark.asyncio
+    async def test_connect_passes_config_dir_resume_and_suppresses_continue(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        captured: dict[str, Any] = {}
+        mock_transport = _make_mock_transport()
+
+        def capture_transport(*, prompt, options):
+            captured["options"] = options
+            return mock_transport
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd,
+            session_store=store,
+            continue_conversation=True,
+            cli_path="/usr/bin/claude",
+        )
+        client = ClaudeSDKClient(options=opts)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                side_effect=capture_transport,
+            ),
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await client.connect()
+
+        # The options passed to the transport carry the materialized
+        # overrides.
+        transport_opts: ClaudeAgentOptions = captured["options"]
+        assert transport_opts.resume == SESSION_ID
+        assert transport_opts.continue_conversation is False
+        config_dir = transport_opts.env["CLAUDE_CONFIG_DIR"]
+        assert Path(config_dir).is_dir()
+        assert (
+            Path(config_dir) / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        ).is_file()
+
+        # Build the actual CLI command (real class, outside the patch) to
+        # assert exact flag behavior.
+        cmd = SubprocessCLITransport(
+            prompt="x", options=transport_opts
+        )._build_command()
+        assert "--resume" in cmd
+        assert cmd[cmd.index("--resume") + 1] == SESSION_ID
+        assert "--continue" not in cmd
+
+        # Batcher points at the temp projects dir.
+        assert client._query is not None
+        batcher = client._query._transcript_mirror_batcher
+        assert batcher.projects_dir == str(Path(config_dir) / "projects")
+
+        # Original options object untouched.
+        assert opts.continue_conversation is True
+        assert opts.resume is None
+        assert "CLAUDE_CONFIG_DIR" not in opts.env
+
+        await client.disconnect()
+
+        # Cleanup removed the temp dir.
+        assert not Path(config_dir).exists()
+
+    @pytest.mark.asyncio
+    async def test_connect_no_materialization_passthrough(
+        self, cwd: Path, isolated_home: Path
+    ) -> None:
+        """No store → options reach the transport unchanged."""
+        captured: dict[str, Any] = {}
+        mock_transport = _make_mock_transport()
+
+        def capture_transport(*, prompt, options):
+            captured["options"] = options
+            return mock_transport
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd, resume=SESSION_ID, cli_path="/usr/bin/claude"
+        )
+        client = ClaudeSDKClient(options=opts)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                side_effect=capture_transport,
+            ),
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await client.connect()
+            assert "CLAUDE_CONFIG_DIR" not in captured["options"].env
+            assert captured["options"].resume == SESSION_ID
+            await client.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# MaterializedResume shape
+# ---------------------------------------------------------------------------
+
+
+def test_materialized_resume_dataclass() -> None:
+    async def noop() -> None:
+        pass
+
+    m = MaterializedResume(
+        config_dir=Path("/tmp/x"),
+        resume_session_id=str(uuid.uuid4()),
+        cleanup=noop,
+    )
+    assert m.config_dir == Path("/tmp/x")

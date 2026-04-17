@@ -14,6 +14,7 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
+from .session_resume import materialize_resume_session
 from .session_store_validation import validate_session_store_options
 from .sessions import _get_projects_dir
 from .transcript_mirror_batcher import TranscriptMirrorBatcher
@@ -57,6 +58,10 @@ class InternalClient:
         # spawning the subprocess.
         validate_session_store_options(options)
 
+        # resume/continue + session_store: load the session from the store
+        # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
+        materialized = await materialize_resume_session(options)
+
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
@@ -76,6 +81,17 @@ class InternalClient:
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")
+
+        if materialized is not None:
+            configured_options = replace(
+                configured_options,
+                env={
+                    **configured_options.env,
+                    "CLAUDE_CONFIG_DIR": str(materialized.config_dir),
+                },
+                resume=materialized.resume_session_id,
+                continue_conversation=False,
+            )
 
         # Use provided transport or create subprocess transport
         if transport is not None:
@@ -144,9 +160,14 @@ class InternalClient:
             async def _on_mirror_error(key: Any, error: str) -> None:
                 query.report_mirror_error(key, error)
 
+            projects_dir = (
+                str(materialized.config_dir / "projects")
+                if materialized is not None
+                else str(_get_projects_dir())
+            )
             batcher = TranscriptMirrorBatcher(
                 store=store,
-                projects_dir=str(_get_projects_dir()),
+                projects_dir=projects_dir,
                 on_error=_on_mirror_error,
             )
             query.set_transcript_mirror_batcher(batcher)
@@ -182,3 +203,5 @@ class InternalClient:
 
         finally:
             await query.close()
+            if materialized is not None:
+                await materialized.cleanup()

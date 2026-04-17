@@ -1442,7 +1442,8 @@ class ClaudeAgentOptions:
     session_store: SessionStore | None = None
     # Upper bound on ``session_store.load()`` / ``list_subkeys()`` calls during
     # resume materialization, in milliseconds. Prevents a slow store from
-    # blocking subprocess spawn indefinitely.
+    # blocking subprocess spawn indefinitely. A value of 0 means immediate
+    # timeout; use a large value to effectively disable.
     load_timeout_ms: int = 60_000
     # API-side task budget in tokens. When set, the model is made aware of
     # its remaining token budget so it can pace tool use and wrap up before

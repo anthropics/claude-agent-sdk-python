@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -756,6 +758,79 @@ class TestClientIntegration:
         assert not Path(config_dir).exists()
 
     @pytest.mark.asyncio
+    async def test_custom_transport_skips_materialization(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """A pre-constructed custom transport never sees the materialized
+        options, so loading the store and writing .credentials.json to a
+        temp dir would be wasted (and leave the access token on disk for
+        the session lifetime). connect() must skip materialization."""
+
+        class SpyStore(InMemorySessionStore):
+            load_calls = 0
+
+            async def load(self, key):  # type: ignore[override]
+                SpyStore.load_calls += 1
+                return await super().load(key)
+
+        store = SpyStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        client = ClaudeSDKClient(options=opts, transport=_make_mock_transport())
+
+        with patch(
+            "claude_agent_sdk._internal.query.Query.initialize",
+            new_callable=AsyncMock,
+        ):
+            await client.connect()
+            assert SpyStore.load_calls == 0
+            assert not track_resume_dirs  # mkdtemp never ran
+            assert client._materialized is None
+            await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_query_custom_transport_skips_materialization(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """Same gate for the one-shot ``query()`` path."""
+
+        class SpyStore(InMemorySessionStore):
+            load_calls = 0
+
+            async def load(self, key):  # type: ignore[override]
+                SpyStore.load_calls += 1
+                return await super().load(key)
+
+        store = SpyStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        custom = _make_mock_transport()
+        custom.connect = AsyncMock(side_effect=OSError("spawn failed"))
+        with pytest.raises(OSError, match="spawn failed"):
+            async for _ in query(prompt="hi", options=opts, transport=custom):
+                pass  # pragma: no cover
+
+        # Gate runs before transport.connect(); materialization never happened.
+        assert SpyStore.load_calls == 0
+        assert not track_resume_dirs
+
+    @pytest.mark.asyncio
     async def test_connect_no_materialization_passthrough(
         self, cwd: Path, isolated_home: Path
     ) -> None:
@@ -814,6 +889,84 @@ class TestSpawnFailureCleanup:
     """The materialized temp dir contains a .credentials.json copy. It must be
     removed even when transport.connect() raises before any try/finally that
     normally guards cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_retries_on_transient_os_error(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Windows AV/indexer can briefly hold ``.credentials.json`` open;
+        ``cleanup()`` must retry rmtree on EPERM/EBUSY so the access token
+        doesn't leak in temp."""
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        config_dir = m.config_dir
+
+        calls: list[Any] = []
+        real_rmtree = shutil.rmtree
+
+        def fake_rmtree(p: Any, **kw: Any) -> None:
+            calls.append((p, kw))
+            if len(calls) <= 2 and not kw.get("ignore_errors"):
+                raise PermissionError(errno.EPERM, "held by indexer")
+            if Path(p).exists():
+                real_rmtree(p, **kw)
+
+        monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+        await m.cleanup()
+
+        assert not config_dir.exists()
+        assert len(calls) >= 3  # 2 failures + 1 success
+
+    @pytest.mark.asyncio
+    async def test_failure_path_retries_rmtree(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """The except-BaseException cleanup path also retries on EPERM."""
+
+        class FailLateStore(InMemorySessionStore):
+            async def list_subkeys(self, key):  # type: ignore[override]
+                raise OSError("boom")
+
+        store = FailLateStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        calls: list[Any] = []
+        real_rmtree = shutil.rmtree
+
+        def fake_rmtree(p: Any, **kw: Any) -> None:
+            calls.append((p, kw))
+            if len(calls) <= 2 and not kw.get("ignore_errors"):
+                raise PermissionError(errno.EPERM, "held by indexer")
+            if Path(p).exists():
+                real_rmtree(p, **kw)
+
+        monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        with pytest.raises(RuntimeError, match="boom"):
+            await materialize_resume_session(opts)
+
+        assert track_resume_dirs
+        assert not track_resume_dirs[0].exists()
+        assert len(calls) >= 3
 
     @pytest.mark.asyncio
     async def test_client_connect_failure_removes_temp_dir(

@@ -121,8 +121,15 @@ class ClaudeSDKClient:
         # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
         # When materialized, override resume/continue/env on a copy of options
         # so the subprocess points at the temp dir; when None, fall through
-        # to normal handling (fresh session or local-disk resume).
-        self._materialized = await materialize_resume_session(self.options)
+        # to normal handling (fresh session or local-disk resume). Skipped
+        # when a custom transport was supplied — the materialized options
+        # never reach a pre-constructed transport, so loading the store and
+        # writing .credentials.json to a temp dir would be wasted work.
+        self._materialized = (
+            await materialize_resume_session(self.options)
+            if self._custom_transport is None
+            else None
+        )
         try:
             await self._connect_inner(prompt, actual_prompt)
         except BaseException:

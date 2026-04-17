@@ -1410,8 +1410,8 @@ def _project_key_from_dir(directory: str | None) -> str:
     :func:`project_key_for_directory` but is defined locally to avoid a
     circular import with ``session_store.py``.
     """
-    abs_path = Path(directory if directory is not None else ".").resolve()
-    return _sanitize_path(str(abs_path))
+    abs_path = _canonicalize_path(directory if directory is not None else ".")
+    return _sanitize_path(abs_path)
 
 
 def _entries_to_jsonl(entries: list[Any]) -> str:

@@ -228,6 +228,20 @@ class TestProjectKeyForDirectory:
         assert key == _sanitize_path(str(Path().resolve()))
         assert key != _sanitize_path(".")
 
+    def test_nfc_normalizes_decomposed_unicode(self, tmp_path) -> None:
+        """Parity with TS: the CLI canonicalizes via realpath + NFC. On macOS
+        HFS+ a path like ``café`` may be stored decomposed (``cafe\\u0301``);
+        without NFC normalization the SDK's project_key would mismatch the
+        CLI's and store.load() would silently miss."""
+        import unicodedata
+
+        nfc = tmp_path / unicodedata.normalize("NFC", "café")
+        nfd = tmp_path / unicodedata.normalize("NFD", "café")
+        nfc.mkdir(exist_ok=True)
+        assert project_key_for_directory(str(nfc)) == project_key_for_directory(
+            str(nfd)
+        )
+
     def test_long_path_uses_portable_djb2_suffix(self) -> None:
         """Parity with TS: paths > MAX_SANITIZED_LENGTH get a djb2 hash
         suffix (runtime-portable so parent and subprocess derive the

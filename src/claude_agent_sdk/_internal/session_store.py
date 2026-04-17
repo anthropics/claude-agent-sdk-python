@@ -13,7 +13,7 @@ from ..types import (
     SessionStoreEntry,
     SessionStoreListEntry,
 )
-from .sessions import _sanitize_path
+from .sessions import _canonicalize_path, _sanitize_path
 
 
 def _key_to_string(key: SessionKey) -> str:
@@ -150,9 +150,11 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
 def project_key_for_directory(directory: str | Path | None = None) -> str:
     """Derive the :class:`SessionStore` ``project_key`` for a directory.
 
-    Defaults to the current working directory. Uses the same djb2-hashed
-    sanitization the CLI uses for project directory names, so keys match
-    between local-disk transcripts and store-mirrored transcripts.
+    Defaults to the current working directory. Uses the same realpath + NFC
+    normalization + djb2-hashed sanitization the CLI uses for project
+    directory names, so keys match between local-disk transcripts and
+    store-mirrored transcripts even on filesystems that decompose Unicode
+    (macOS HFS+).
     """
-    abs_path = Path(directory if directory is not None else ".").resolve()
-    return _sanitize_path(str(abs_path))
+    abs_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    return _sanitize_path(abs_path)

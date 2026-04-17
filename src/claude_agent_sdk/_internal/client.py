@@ -60,7 +60,12 @@ class InternalClient:
 
         # resume/continue + session_store: load the session from the store
         # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
-        materialized = await materialize_resume_session(options)
+        # Skipped when a custom transport was supplied — the materialized
+        # options never reach a pre-constructed transport, so loading the
+        # store and writing .credentials.json to a temp dir would be wasted.
+        materialized = (
+            await materialize_resume_session(options) if transport is None else None
+        )
         try:
             async for msg in self._process_query_inner(
                 prompt, options, transport, materialized

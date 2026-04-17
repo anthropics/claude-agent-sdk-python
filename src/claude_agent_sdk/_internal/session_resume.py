@@ -14,6 +14,7 @@ Port of the TypeScript SDK's ``materializeResumeSession`` (agentSdk.ts).
 from __future__ import annotations
 
 import asyncio
+import errno
 import getpass
 import json
 import logging
@@ -119,11 +120,11 @@ async def materialize_resume_session(
         # so asyncio.CancelledError (BaseException since 3.8) also triggers
         # cleanup — callers can't compensate because the assignment raises
         # before completing.
-        shutil.rmtree(tmp_base, ignore_errors=True)
+        await _rmtree_with_retry(tmp_base)
         raise
 
     async def cleanup() -> None:
-        shutil.rmtree(tmp_base, ignore_errors=True)
+        await _rmtree_with_retry(tmp_base)
 
     return MaterializedResume(
         config_dir=tmp_base,
@@ -135,6 +136,52 @@ async def materialize_resume_session(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# OSError errnos that indicate a transiently-held handle (Windows AV/indexer
+# scanning a freshly-written file) rather than a permanent failure.
+_RETRYABLE_RMTREE_ERRNOS = frozenset(
+    {
+        errno.EBUSY,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOTEMPTY,
+        errno.EPERM,
+        errno.EACCES,
+    }
+)
+
+
+async def _rmtree_with_retry(
+    path: Path, *, retries: int = 4, delay: float = 0.1
+) -> None:
+    """Best-effort ``shutil.rmtree`` with retries on transient lock errors.
+
+    On Windows, AV/indexer can briefly hold a handle on freshly-written
+    files (notably ``.credentials.json``), causing rmtree to fail with
+    EBUSY/EPERM. Retry a few times with a short backoff; after exhausting
+    retries, fall back to ``ignore_errors=True`` (matches the previous
+    behavior, but gives the handle a chance to release first so the access
+    token doesn't leak in temp). Never raises.
+    """
+    if not path.exists():
+        return
+    for _ in range(retries):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            if e.errno not in _RETRYABLE_RMTREE_ERRNOS and not isinstance(
+                e, PermissionError
+            ):
+                break
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            # Best-effort final sweep before propagating cancellation so a
+            # cancelled connect() doesn't leak the temp dir.
+            shutil.rmtree(path, ignore_errors=True)
+            raise
+    shutil.rmtree(path, ignore_errors=True)
 
 
 async def _load_candidate(

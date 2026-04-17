@@ -67,6 +67,7 @@ class InternalClient:
         for event, matchers in hooks.items():
             internal_hooks[event] = []
             for matcher in matchers:
+                # Convert HookMatcher to internal dict format
                 internal_matcher: dict[str, Any] = {
                     "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
                     "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
@@ -83,20 +84,24 @@ class InternalClient:
         transport: Transport | None = None,
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query with automatic 429 retry."""
+        # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
+            # canUseTool callback requires streaming mode (AsyncIterable prompt)
             if isinstance(prompt, str):
                 raise ValueError(
                     "can_use_tool callback requires streaming mode. "
                     "Please provide prompt as an AsyncIterable instead of a string."
                 )
 
+            # canUseTool and permission_prompt_tool_name are mutually exclusive
             if options.permission_prompt_tool_name:
                 raise ValueError(
                     "can_use_tool cannot be used with permission_prompt_tool_name. "
                     "Please use one or the other."
                 )
 
+            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")
 
         max_retries = configured_options.rate_limit_max_retries
@@ -108,6 +113,7 @@ class InternalClient:
             query: Query | None = None
 
             try:
+                # Use provided transport or create subprocess transport
                 if transport is not None and not is_retry:
                     chosen_transport = transport
                 else:
@@ -119,6 +125,7 @@ class InternalClient:
                     )
                     await chosen_transport.connect()
 
+                # Extract SDK MCP servers from configured options
                 sdk_mcp_servers = {}
                 if configured_options.mcp_servers and isinstance(
                     configured_options.mcp_servers, dict
@@ -127,6 +134,8 @@ class InternalClient:
                         if isinstance(config, dict) and config.get("type") == "sdk":
                             sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
+                # Extract exclude_dynamic_sections from preset system prompt for the
+                # initialize request (older CLIs ignore unknown initialize fields).
                 exclude_dynamic_sections: bool | None = None
                 sp = configured_options.system_prompt
                 if isinstance(sp, dict) and sp.get("type") == "preset":
@@ -134,6 +143,7 @@ class InternalClient:
                     if isinstance(eds, bool):
                         exclude_dynamic_sections = eds
 
+                # Convert agents to dict format for initialize request
                 agents_dict = None
                 if configured_options.agents:
                     agents_dict = {
@@ -143,14 +153,18 @@ class InternalClient:
                         for name, agent_def in configured_options.agents.items()
                     }
 
+                # Match ClaudeSDKClient.connect() — without this, query() ignores the env var
                 initialize_timeout_ms = int(
                     os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
                 )
                 initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
+                # Create Query to handle control protocol
+                # Always use streaming mode internally (matching TypeScript SDK)
+                # This ensures agents are always sent via initialize request
                 query = Query(
                     transport=chosen_transport,
-                    is_streaming_mode=True,
+                    is_streaming_mode=True,  # Always streaming internally
                     can_use_tool=configured_options.can_use_tool,
                     hooks=self._convert_hooks_to_internal_format(
                         configured_options.hooks
@@ -163,10 +177,17 @@ class InternalClient:
                     exclude_dynamic_sections=exclude_dynamic_sections,
                 )
 
+                # Start reading messages
+                # Start reading messages
                 await query.start()
+
+                # Always initialize to send agents via stdin (matching TypeScript SDK)
                 await query.initialize()
 
+                # Handle prompt input
                 if isinstance(prompt, str):
+                    # For string prompts, write user message to stdin after initialize
+                    # (matching TypeScript SDK behavior)
                     user_message = {
                         "type": "user",
                         "session_id": "",
@@ -176,8 +197,10 @@ class InternalClient:
                     await chosen_transport.write(json.dumps(user_message) + "\n")
                     query.spawn_task(query.wait_for_result_and_end_input())
                 elif isinstance(prompt, AsyncIterable):
+                    # Stream input in background for async iterables
                     query.spawn_task(query.stream_input(prompt))
 
+                # Yield parsed messages, skipping unknown message types
                 async for data in query.receive_messages():
                     message = parse_message(data)
                     if message is not None:

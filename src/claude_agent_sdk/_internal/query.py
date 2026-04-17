@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -107,10 +108,21 @@ class Query:
         self.next_callback_id = 0
         self._request_counter = 0
 
-        # Message stream
+        # Message stream — unbounded buffer to prevent deadlocks.
+        #
+        # The _read_messages() loop handles BOTH control protocol routing AND
+        # regular message buffering in a single async loop. If this buffer is
+        # bounded and fills up (e.g., when receive_response() stops consuming
+        # at a ResultMessage), _read_messages() blocks on send(), which
+        # prevents it from reading ANY transport data — including control
+        # messages the CLI subprocess needs answered to process new queries.
+        # This creates a deadlock: _read_messages blocked on buffer →
+        # can't read stdout → CLI stdout pipe fills → CLI blocks on write →
+        # CLI can't process stdin → next query never processed → hang.
+        # See: https://github.com/anthropics/claude-agent-sdk-python/issues/558
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
-        ](max_buffer_size=100)
+        ](max_buffer_size=math.inf)
         self._read_task: asyncio.Task[None] | None = None
         self._child_tasks: set[asyncio.Task[Any]] = set()
         self._inflight_requests: dict[str, asyncio.Task[Any]] = {}

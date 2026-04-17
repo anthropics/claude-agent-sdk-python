@@ -28,8 +28,10 @@ import uuid as uuid_mod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ..types import SessionKey, SessionStore, SessionStoreEntry
+from .session_store_validation import _store_implements
 from .sessions import (
     LITE_READ_BUF_SIZE,
     _canonicalize_path,
@@ -38,6 +40,7 @@ from .sessions import (
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
+    _project_key_from_dir,
     _validate_uuid,
 )
 
@@ -46,10 +49,11 @@ from .sessions import (
 # ---------------------------------------------------------------------------
 
 
-def rename_session(
+async def rename_session(
     session_id: str,
     title: str,
     directory: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> None:
     """Rename a session by appending a custom-title entry.
 
@@ -63,6 +67,8 @@ def rename_session(
         directory: Project directory path (same semantics as
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
+        session_store: When provided, append the custom-title entry to this
+            :class:`SessionStore` instead of the local filesystem.
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``title``
@@ -72,7 +78,7 @@ def rename_session(
     Example:
         Rename a session in a specific project::
 
-            rename_session(
+            await rename_session(
                 "550e8400-e29b-41d4-a716-446655440000",
                 "My refactoring session",
                 directory="/path/to/project",
@@ -85,6 +91,10 @@ def rename_session(
     stripped = title.strip()
     if not stripped:
         raise ValueError("title must be non-empty")
+
+    if session_store is not None:
+        await _rename_session_via_store(session_store, session_id, stripped, directory)
+        return
 
     data = (
         json.dumps(
@@ -101,10 +111,11 @@ def rename_session(
     _append_to_session(session_id, data, directory)
 
 
-def tag_session(
+async def tag_session(
     session_id: str,
     tag: str | None,
     directory: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> None:
     """Tag a session. Pass ``None`` to clear the tag.
 
@@ -125,6 +136,8 @@ def tag_session(
         directory: Project directory path (same semantics as
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
+        session_store: When provided, append the tag entry to this
+            :class:`SessionStore` instead of the local filesystem.
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
@@ -134,7 +147,7 @@ def tag_session(
     Example:
         Tag a session::
 
-            tag_session(
+            await tag_session(
                 "550e8400-e29b-41d4-a716-446655440000",
                 "experiment",
                 directory="/path/to/project",
@@ -142,7 +155,7 @@ def tag_session(
 
         Clear a tag::
 
-            tag_session(session_id, None)
+            await tag_session(session_id, None)
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
@@ -151,6 +164,10 @@ def tag_session(
         if not sanitized:
             raise ValueError("tag must be non-empty (use None to clear)")
         tag = sanitized
+
+    if session_store is not None:
+        await _tag_session_via_store(session_store, session_id, tag, directory)
+        return
 
     data = (
         json.dumps(
@@ -167,9 +184,10 @@ def tag_session(
     _append_to_session(session_id, data, directory)
 
 
-def delete_session(
+async def delete_session(
     session_id: str,
     directory: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> None:
     """Delete a session by removing its JSONL file and subagent transcripts.
 
@@ -184,6 +202,10 @@ def delete_session(
         directory: Project directory path (same semantics as
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
+        session_store: When provided, delete the session via this
+            :class:`SessionStore` instead of the local filesystem. If the
+            store does not implement :meth:`SessionStore.delete`, deletion
+            is a no-op (appropriate for WORM/append-only backends).
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
@@ -192,10 +214,20 @@ def delete_session(
     Example:
         Delete a session::
 
-            delete_session("550e8400-e29b-41d4-a716-446655440000")
+            await delete_session("550e8400-e29b-41d4-a716-446655440000")
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
+
+    if session_store is not None:
+        if not _store_implements(session_store, "delete"):
+            # No-op for WORM/append-only backends — matches the SessionStore
+            # contract.
+            return
+        project_key = _project_key_from_dir(directory)
+        key: SessionKey = {"project_key": project_key, "session_id": session_id}
+        await session_store.delete(key)
+        return
 
     path = _find_session_file(session_id, directory)
     if path is None:
@@ -221,11 +253,12 @@ class ForkSessionResult:
     """UUID of the new forked session."""
 
 
-def fork_session(
+async def fork_session(
     session_id: str,
     directory: str | None = None,
     up_to_message_id: str | None = None,
     title: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> ForkSessionResult:
     """Fork a session into a new branch with fresh UUIDs.
 
@@ -246,6 +279,9 @@ def fork_session(
             (inclusive). If omitted, copies the full transcript.
         title: Custom title for the fork. If omitted, derives from
             the original title + " (fork)".
+        session_store: When provided, read the source session from and
+            write the fork to this :class:`SessionStore` instead of the
+            local filesystem.
 
     Returns:
         ``ForkSessionResult`` with the new session's UUID.
@@ -260,12 +296,12 @@ def fork_session(
     Example:
         Fork a session::
 
-            result = fork_session("550e8400-e29b-41d4-a716-446655440000")
+            result = await fork_session("550e8400-e29b-41d4-a716-446655440000")
             print(result.session_id)
 
         Fork from a specific point::
 
-            result = fork_session(
+            result = await fork_session(
                 "550e8400-e29b-41d4-a716-446655440000",
                 up_to_message_id="660e8400-e29b-41d4-a716-446655440001",
             )
@@ -274,6 +310,11 @@ def fork_session(
         raise ValueError(f"Invalid session_id: {session_id}")
     if up_to_message_id and not _validate_uuid(up_to_message_id):
         raise ValueError(f"Invalid up_to_message_id: {up_to_message_id}")
+
+    if session_store is not None:
+        return await _fork_session_via_store(
+            session_store, session_id, directory, up_to_message_id, title
+        )
 
     source = _find_session_file_with_dir(session_id, directory)
     if source is None:
@@ -289,6 +330,43 @@ def fork_session(
 
     transcript, content_replacements = _parse_fork_transcript(content, session_id)
 
+    forked_session_id, lines = _build_fork_lines(
+        transcript,
+        content_replacements,
+        session_id,
+        up_to_message_id,
+        title,
+        content,
+    )
+
+    fork_path = project_dir / f"{forked_session_id}.jsonl"
+    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+    return ForkSessionResult(session_id=forked_session_id)
+
+
+def _build_fork_lines(
+    transcript: list[dict[str, Any]],
+    content_replacements: list[Any],
+    session_id: str,
+    up_to_message_id: str | None,
+    title: str | None,
+    raw_content: bytes | None,
+) -> tuple[str, list[str]]:
+    """Core fork transform — remap UUIDs and produce serialized JSONL lines.
+
+    Shared by the filesystem and SessionStore-backed paths. Returns
+    ``(forked_session_id, lines)`` where each line is a compact JSON string
+    without a trailing newline.
+
+    ``raw_content`` is used for title-derivation head/tail scans; pass
+    ``None`` when no raw bytes are available (store path) — the scan then
+    runs over the re-serialized transcript instead.
+    """
     # Filter out sidechains (subagent sessions with separate parentUuid
     # graphs). Keep isMeta entries — they're interleaved in the main chain.
     transcript = [e for e in transcript if not e.get("isSidechain")]
@@ -388,11 +466,18 @@ def fork_session(
     # Derive title: explicit > original customTitle/aiTitle > first prompt.
     fork_title = title.strip() if title else None
     if not fork_title:
-        buf_len = len(content)
-        head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
+        # When raw bytes aren't available (store path), scan the
+        # re-serialized lines instead so title derivation still works.
+        scan_buf = (
+            raw_content
+            if raw_content is not None
+            else ("\n".join(lines) + "\n").encode("utf-8")
+        )
+        buf_len = len(scan_buf)
+        head = scan_buf[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
             "utf-8", errors="replace"
         )
-        tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
+        tail = scan_buf[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
             "utf-8", errors="replace"
         )
         base = (
@@ -416,14 +501,7 @@ def fork_session(
         )
     )
 
-    fork_path = project_dir / f"{forked_session_id}.jsonl"
-    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-
-    return ForkSessionResult(session_id=forked_session_id)
+    return forked_session_id, lines
 
 
 # ---------------------------------------------------------------------------
@@ -669,3 +747,102 @@ def _sanitize_unicode(value: str) -> str:
         if current == previous:
             break
     return current
+
+
+# ---------------------------------------------------------------------------
+# SessionStore-backed implementations
+# ---------------------------------------------------------------------------
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def _rename_session_via_store(
+    store: SessionStore, session_id: str, title: str, directory: str | None
+) -> None:
+    """Append a custom-title entry to the store. ``title`` is pre-stripped."""
+    project_key = _project_key_from_dir(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entry: dict[str, Any] = {
+        "type": "custom-title",
+        "customTitle": title,
+        "sessionId": session_id,
+        "uuid": str(uuid_mod.uuid4()),
+        "timestamp": _iso_now(),
+    }
+    # SessionStoreEntry is a structural supertype ({type: str, ...}); the
+    # extra fields are opaque pass-through for adapters.
+    await store.append(key, [cast(SessionStoreEntry, entry)])
+
+
+async def _tag_session_via_store(
+    store: SessionStore, session_id: str, tag: str | None, directory: str | None
+) -> None:
+    """Append a tag entry to the store. ``tag`` is pre-sanitized; ``None`` clears."""
+    project_key = _project_key_from_dir(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entry: dict[str, Any] = {
+        "type": "tag",
+        "tag": tag if tag is not None else "",
+        "sessionId": session_id,
+        "uuid": str(uuid_mod.uuid4()),
+        "timestamp": _iso_now(),
+    }
+    await store.append(key, [cast(SessionStoreEntry, entry)])
+
+
+async def _fork_session_via_store(
+    store: SessionStore,
+    session_id: str,
+    directory: str | None,
+    up_to_message_id: str | None,
+    title: str | None,
+) -> ForkSessionResult:
+    """Fork a session via a SessionStore.
+
+    Runs the fork transform directly over the objects returned by
+    ``store.load()`` — no JSONL/Buffer round-trip. A storage-layer copy
+    (e.g. S3 CopyObject) is NOT sufficient: the transform remaps every UUID,
+    rewrites ``sessionId`` on each entry, and stamps ``forkedFrom``, so the
+    data must pass through this process once.
+    """
+    project_key = _project_key_from_dir(directory)
+    src_key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    loaded = await store.load(src_key)
+    if not loaded:
+        raise FileNotFoundError(f"Session {session_id} not found")
+
+    # Partition into transcript entries (with uuid) and content-replacement
+    # records, mirroring _parse_fork_transcript for the already-parsed path.
+    # SessionStoreEntry is a minimal structural supertype — widen to a plain
+    # dict for field access.
+    raw: list[dict[str, Any]] = cast("list[dict[str, Any]]", loaded)
+    transcript: list[dict[str, Any]] = []
+    content_replacements: list[Any] = []
+    for entry in raw:
+        entry_type = entry.get("type")
+        if entry_type in _TRANSCRIPT_TYPES and isinstance(entry.get("uuid"), str):
+            transcript.append(entry)
+        elif (
+            entry_type == "content-replacement"
+            and entry.get("sessionId") == session_id
+            and isinstance(entry.get("replacements"), list)
+        ):
+            content_replacements.extend(entry["replacements"])
+
+    forked_session_id, lines = _build_fork_lines(
+        transcript,
+        content_replacements,
+        session_id,
+        up_to_message_id,
+        title,
+        raw_content=None,
+    )
+
+    dst_key: SessionKey = {"project_key": project_key, "session_id": forked_session_id}
+    # _build_fork_lines emits compact JSON strings; re-parse to objects so the
+    # store receives the same shape it would from the mirror path. All entries
+    # satisfy the SessionStoreEntry structural supertype ({type: str, ...}).
+    await store.append(dst_key, [json.loads(line) for line in lines])
+    return ForkSessionResult(session_id=forked_session_id)

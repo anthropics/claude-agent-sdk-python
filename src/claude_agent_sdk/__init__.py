@@ -32,7 +32,7 @@ from ._internal.session_mutations import (
     rename_session,
     tag_session,
 )
-from ._internal.session_store import InMemorySessionStore
+from ._internal.session_store import InMemorySessionStore, project_key_for_directory
 from ._internal.sessions import (
     get_session_info,
     get_session_messages,
@@ -68,6 +68,7 @@ from .types import (
     McpToolAnnotations,
     McpToolInfo,
     Message,
+    MirrorErrorMessage,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionMode,
@@ -97,6 +98,7 @@ from .types import (
     SessionListSubkeysKey,
     SessionMessage,
     SessionStore,
+    SessionStoreEntry,
     SessionStoreListEntry,
     SettingSource,
     StopHookInput,
@@ -589,9 +591,12 @@ __all__ = [
     # Session store
     "SessionKey",
     "SessionStore",
+    "SessionStoreEntry",
     "SessionStoreListEntry",
     "SessionListSubkeysKey",
     "InMemorySessionStore",
+    "MirrorErrorMessage",
+    "project_key_for_directory",
     # Session mutations
     "rename_session",
     "tag_session",

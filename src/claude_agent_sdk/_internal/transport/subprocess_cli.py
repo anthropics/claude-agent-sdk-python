@@ -4,13 +4,10 @@ import json
 import logging
 import os
 import platform
-import random
 import re
 import shutil
-import time
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any, cast
@@ -24,7 +21,6 @@ from ..._errors import (
     CLIConnectionError,
     CLINotFoundError,
     ProcessError,
-    RateLimitError,
 )
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
@@ -35,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
-_DEFAULT_RATE_LIMIT_MAX_RETRIES = 3
-_RETRY_AFTER_MAX = 60.0
 
 
 class SubprocessCLITransport(Transport):
@@ -69,12 +63,6 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
-        self._rate_limit_max_retries = (
-            options.rate_limit_max_retries or _DEFAULT_RATE_LIMIT_MAX_RETRIES
-        )
-        self._session_id: str | None = None
-        self._retry_count = 0
-        self._stderr_lines: list[str] = []
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -415,7 +403,7 @@ class SubprocessCLITransport(Transport):
                 or "debug-to-stderr" in self._options.extra_args
             )
 
-            stderr_dest = PIPE
+            stderr_dest = PIPE if should_pipe_stderr else None
 
             self._process = await anyio.open_process(
                 cmd,
@@ -430,13 +418,12 @@ class SubprocessCLITransport(Transport):
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
-            if self._process.stderr:
+            if should_pipe_stderr and self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
                 self._stderr_task_group = anyio.create_task_group()
                 await self._stderr_task_group.__aenter__()
                 self._stderr_task_group.start_soon(self._handle_stderr)
 
-            # Setup stdin for streaming (always used now)
             if self._process.stdin:
                 self._stdin_stream = TextSendStream(self._process.stdin)
 
@@ -469,8 +456,6 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
-                self._stderr_lines.append(line_str)
-
                 if self._options.stderr:
                     self._options.stderr(line_str)
 
@@ -484,157 +469,6 @@ class SubprocessCLITransport(Transport):
         except anyio.ClosedResourceError:
             pass
         except Exception:
-            pass
-
-    async def close(self) -> None:
-        """Close the transport and clean up resources."""
-        if not self._process:
-            self._ready = False
-            return
-
-        # Close stderr task group if active
-        if self._stderr_task_group:
-            with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
-                await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
-
-        # Close stdin stream (acquire lock to prevent race with concurrent writes)
-        async with self._write_lock:
-            self._ready = False  # Set inside lock to prevent TOCTOU with write()
-            if self._stdin_stream:
-                with suppress(Exception):
-                    await self._stdin_stream.aclose()
-                self._stdin_stream = None
-
-        if self._stderr_stream:
-            with suppress(Exception):
-                await self._stderr_stream.aclose()
-            self._stderr_stream = None
-
-        # Wait for graceful shutdown after stdin EOF, then terminate if needed.
-        # The subprocess needs time to flush its session file after receiving
-        # EOF on stdin. Without this grace period, SIGTERM can interrupt the
-        # write and cause the last assistant message to be lost (see #625).
-        if self._process.returncode is None:
-            try:
-                with anyio.fail_after(5):
-                    await self._process.wait()
-            except TimeoutError:
-                # Graceful shutdown timed out — force terminate
-                with suppress(ProcessLookupError):
-                    self._process.terminate()
-                try:
-                    with anyio.fail_after(5):
-                        await self._process.wait()
-                except TimeoutError:
-                    # SIGTERM handler blocked — force kill (SIGKILL)
-                    with suppress(ProcessLookupError):
-                        self._process.kill()
-                    with suppress(Exception):
-                        await self._process.wait()
-
-        self._process = None
-        self._stdout_stream = None
-        self._stdin_stream = None
-        self._stderr_stream = None
-        self._exit_error = None
-
-    async def write(self, data: str) -> None:
-        """Write raw data to the transport."""
-        async with self._write_lock:
-            # All checks inside lock to prevent TOCTOU races with close()/end_input()
-            if not self._ready or not self._stdin_stream:
-                raise CLIConnectionError("ProcessTransport is not ready for writing")
-
-            if self._process and self._process.returncode is not None:
-                raise CLIConnectionError(
-                    f"Cannot write to terminated process (exit code: {self._process.returncode})"
-                )
-
-            if self._exit_error:
-                raise CLIConnectionError(
-                    f"Cannot write to process that exited with error: {self._exit_error}"
-                ) from self._exit_error
-
-            try:
-                await self._stdin_stream.send(data)
-            except Exception as e:
-                self._ready = False
-                self._exit_error = CLIConnectionError(
-                    f"Failed to write to process stdin: {e}"
-                )
-                raise self._exit_error from e
-
-    async def end_input(self) -> None:
-        """End the input stream (close stdin)."""
-        async with self._write_lock:
-            if self._stdin_stream:
-                with suppress(Exception):
-                    await self._stdin_stream.aclose()
-                self._stdin_stream = None
-
-    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
-        """Read and parse messages from the transport."""
-        return self._read_messages_impl()
-
-    async def _read_messages_impl(self) -> AsyncIterator[dict[str, Any]]:
-        """Internal implementation of read_messages."""
-        if not self._process or not self._stdout_stream:
-            raise CLIConnectionError("Not connected")
-
-        json_buffer = ""
-
-        # Process stdout messages
-        try:
-            async for line in self._stdout_stream:
-                line_str = line.strip()
-                if not line_str:
-                    continue
-
-                # Accumulate partial JSON until we can parse it
-                # Note: TextReceiveStream can truncate long lines, so we need to buffer
-                # and speculatively parse until we get a complete JSON object
-                json_lines = line_str.split("\n")
-
-                for json_line in json_lines:
-                    json_line = json_line.strip()
-                    if not json_line:
-                        continue
-
-                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
-                    # mid-parse — they corrupt the buffer otherwise (#347).
-                    if not json_buffer and not json_line.startswith("{"):
-                        logger.debug(
-                            "Skipping non-JSON line from CLI stdout: %s",
-                            json_line[:200],
-                        )
-                        continue
-
-                    # Keep accumulating partial JSON until we can parse it
-                    json_buffer += json_line
-
-                    if len(json_buffer) > self._max_buffer_size:
-                        buffer_length = len(json_buffer)
-                        json_buffer = ""
-                        raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
-                            ValueError(
-                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
-                            ),
-                        )
-
-                    try:
-                        data = json.loads(json_buffer)
-                        json_buffer = ""
-                        yield data
-                    except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
-                        # a full JSON object. If there is an actual issue, we
-                        # raise an error after exceeding the configured limit.
-                        continue
-
-        except anyio.ClosedResourceError:
             pass
         except GeneratorExit:
             # Client disconnected

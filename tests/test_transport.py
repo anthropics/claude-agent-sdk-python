@@ -1379,6 +1379,18 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--tools" not in cmd
 
+    def test_build_command_with_xhigh_effort(self):
+        """Test building CLI command with the xhigh effort option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="xhigh"),
+        )
+
+        cmd = transport._build_command()
+        assert "--effort" in cmd
+        effort_idx = cmd.index("--effort")
+        assert cmd[effort_idx + 1] == "xhigh"
+
     def test_concurrent_writes_are_serialized(self):
         """Test that concurrent write() calls are serialized by the lock.
 
@@ -1652,6 +1664,32 @@ class TestSubprocessCLITransport:
 
                 # Should not try to wait or terminate an already-exited process
                 mock_process.terminate.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_read_messages_includes_stderr_in_process_error(self):
+        """Test non-zero exits include captured stderr output."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+            transport._process = MagicMock()
+            transport._process.wait = AsyncMock(return_value=1)
+            transport._stdout_stream = MagicMock()
+            transport._stdout_stream.__aiter__.return_value = iter(())
+            transport._stderr_tail = ["invalid value for --effort: xhigh"]
+
+            from claude_agent_sdk._errors import ProcessError
+
+            with pytest.raises(ProcessError) as exc_info:
+                async for _ in transport.read_messages():
+                    pass
+
+            assert exc_info.value.exit_code == 1
+            assert exc_info.value.stderr == "invalid value for --effort: xhigh"
+            assert "invalid value for --effort: xhigh" in str(exc_info.value)
 
         anyio.run(_test)
 

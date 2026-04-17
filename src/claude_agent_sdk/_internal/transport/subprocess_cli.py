@@ -26,6 +26,7 @@ from . import Transport
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+_MAX_STDERR_TAIL_LINES = 50
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
@@ -51,6 +52,8 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_tail: list[str] = []
+        self._stderr_complete: anyio.Event | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -340,6 +343,9 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
+        self._stderr_tail = []
+        self._stderr_complete = None
+
         if self._cli_path is None:
             self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
 
@@ -394,14 +400,11 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
-            should_pipe_stderr = (
-                self._options.stderr is not None
-                or "debug-to-stderr" in self._options.extra_args
-            )
-
-            # For backward compat: use debug_stderr file object if no callback and debug is on
-            stderr_dest = PIPE if should_pipe_stderr else None
+            # Keep the existing live stderr forwarding behavior in
+            # _handle_stderr() for callbacks and debug mode, and always pipe
+            # stderr so non-zero exits can surface CLI error text in
+            # ProcessError.
+            stderr_dest = PIPE
 
             self._process = await anyio.open_process(
                 cmd,
@@ -417,8 +420,9 @@ class SubprocessCLITransport(Transport):
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
             # Setup stderr stream if piped
-            if should_pipe_stderr and self._process.stderr:
+            if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
+                self._stderr_complete = anyio.Event()
                 # Start async task to read stderr
                 self._stderr_task_group = anyio.create_task_group()
                 await self._stderr_task_group.__aenter__()
@@ -456,6 +460,9 @@ class SubprocessCLITransport(Transport):
                 line_str = line.rstrip()
                 if not line_str:
                     continue
+                self._stderr_tail.append(line_str)
+                if len(self._stderr_tail) > _MAX_STDERR_TAIL_LINES:
+                    self._stderr_tail.pop(0)
 
                 # Call the stderr callback if provided
                 if self._options.stderr:
@@ -473,6 +480,9 @@ class SubprocessCLITransport(Transport):
             pass  # Stream closed, exit normally
         except Exception:
             pass  # Ignore other errors during stderr reading
+        finally:
+            if self._stderr_complete is not None:
+                self._stderr_complete.set()
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""
@@ -526,6 +536,8 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream = None
         self._stdin_stream = None
         self._stderr_stream = None
+        self._stderr_tail = []
+        self._stderr_complete = None
         self._exit_error = None
 
     async def write(self, data: str) -> None:
@@ -634,12 +646,17 @@ class SubprocessCLITransport(Transport):
         except Exception:
             returncode = -1
 
+        if self._stderr_complete is not None:
+            with anyio.move_on_after(0.5):
+                await self._stderr_complete.wait()
+
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            stderr_output = "\n".join(self._stderr_tail).strip() or None
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=stderr_output or "Check stderr output for details",
             )
             raise self._exit_error
 

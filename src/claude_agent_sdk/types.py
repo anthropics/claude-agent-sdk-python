@@ -30,6 +30,7 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
+EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class SystemPromptPreset(TypedDict):
@@ -95,7 +96,7 @@ class AgentDefinition:
     initialPrompt: str | None = None  # noqa: N815
     maxTurns: int | None = None  # noqa: N815
     background: bool | None = None
-    effort: Literal["low", "medium", "high", "max"] | int | None = None
+    effort: EffortLevel | int | None = None
     permissionMode: PermissionMode | None = None  # noqa: N815
 
 
@@ -1234,7 +1235,7 @@ class ClaudeAgentOptions:
     # Controls extended thinking behavior. Takes precedence over max_thinking_tokens.
     thinking: ThinkingConfig | None = None
     # Effort level for thinking depth.
-    effort: Literal["low", "medium", "high", "max"] | None = None
+    effort: EffortLevel | None = None
     # Output format for structured outputs (matches Messages API structure)
     # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
     output_format: dict[str, Any] | None = None

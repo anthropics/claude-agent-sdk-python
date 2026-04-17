@@ -17,6 +17,7 @@ import asyncio
 import getpass
 import json
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -363,6 +364,13 @@ def _is_safe_subpath(subpath: str, session_dir: Path) -> bool:
     # PurePosixPath/PureWindowsPath both checked — subpaths are store keys
     # that may use either separator regardless of host OS.
     if Path(subpath).is_absolute() or subpath.startswith(("/", "\\")):
+        return False
+    # Drive-prefixed (``C:foo``) and UNC subpaths are never legitimate store
+    # keys. ``ntpath.splitdrive`` is used regardless of host OS so a Windows
+    # consumer is protected even if the store was populated elsewhere; on
+    # POSIX this also rejects ``C:foo``, which is acceptable since the only
+    # subpaths we ever emit are ``subagents/...``.
+    if ntpath.splitdrive(subpath)[0]:
         return False
     if ".." in re.split(r"[\\/]", subpath):
         return False

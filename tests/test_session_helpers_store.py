@@ -151,6 +151,35 @@ class TestListSessionsFromStore:
         assert sidechain_sid not in ids
         assert all(s.summary != "" for s in sessions)
 
+    async def test_limit_offset_applied_after_sidechain_filter(self) -> None:
+        """Disk-path parity: ``_read_sessions_from_dir`` filters sidechains
+        first and ``_apply_sort_limit_offset`` paginates the filtered set, so
+        ``limit=N`` returns N rows even when sidechains exist. The store path
+        must do the same — paginating before filtering would return short
+        pages and let sidechains consume page slots."""
+        store = InMemorySessionStore()
+        valid_sids: list[str] = []
+        for _ in range(5):
+            sid = str(uuid_mod.uuid4())
+            await _seed_chain(store, sid, n=1)
+            valid_sids.append(sid)
+        for _ in range(3):
+            sc = str(uuid_mod.uuid4())
+            entry = _user("sidechain", str(uuid_mod.uuid4()), None, sc)
+            entry["isSidechain"] = True
+            await store.append(
+                {"project_key": PROJECT_KEY, "session_id": sc},
+                [entry],  # type: ignore[arg-type]
+            )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=5)
+        assert len(page) == 5
+        assert {s.session_id for s in page} == set(valid_sids)
+
+        page2 = await list_sessions_from_store(store, directory=DIR, limit=5, offset=2)
+        assert len(page2) == 3
+        assert {s.session_id for s in page2}.issubset(set(valid_sids))
+
     async def test_does_not_mutate_adapter_returned_list(self) -> None:
         """Parity with TS: sorting must not mutate the list object returned
         by store.list_sessions() (adapters may return internal state)."""

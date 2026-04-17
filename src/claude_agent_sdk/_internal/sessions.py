@@ -1415,8 +1415,23 @@ def _project_key_from_dir(directory: str | None) -> str:
 
 
 def _entries_to_jsonl(entries: list[Any]) -> str:
-    """Serialize store entries to a JSONL string (one ``json.dumps`` per line)."""
-    return "\n".join(json.dumps(e, separators=(",", ":")) for e in entries) + "\n"
+    """Serialize store entries to a JSONL string (one ``json.dumps`` per line).
+
+    The ``SessionStore.load`` contract permits adapters to reorder object keys
+    (e.g. Postgres JSONB), but ``_parse_session_info_from_lite`` scans for
+    ``{"type":"tag"`` as a line prefix. Hoist ``type`` to the front so the
+    store path matches the byte shape the disk path produces.
+    """
+
+    def _type_first(e: Any) -> Any:
+        if isinstance(e, dict) and "type" in e:
+            return {"type": e["type"], **e}
+        return e
+
+    return (
+        "\n".join(json.dumps(_type_first(e), separators=(",", ":")) for e in entries)
+        + "\n"
+    )
 
 
 def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:

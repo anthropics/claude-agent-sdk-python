@@ -461,6 +461,28 @@ class TestTagSessionViaStore:
         assert info is not None
         assert info.tag == "exp"
 
+    async def test_tag_survives_adapter_key_reordering(self) -> None:
+        """The ``SessionStore.load`` contract permits adapters to reorder
+        object keys (Postgres JSONB does this). The tag extractor must not
+        depend on ``type`` being the first key in the serialized line."""
+
+        class ReorderingStore(InMemorySessionStore):
+            async def load(self, key):  # type: ignore[override]
+                entries = await super().load(key)
+                if entries is None:
+                    return None
+                # Sort keys alphabetically — deep-equal but different order.
+                return [dict(sorted(e.items())) for e in entries]
+
+        store = ReorderingStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid)
+        await tag_session_via_store(store, sid, "exp", directory=DIR)
+
+        info = await get_session_info_from_store(store, sid, directory=DIR)
+        assert info is not None
+        assert info.tag == "exp"
+
 
 class TestDeleteSessionViaStore:
     async def test_removes_session(self) -> None:

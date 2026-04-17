@@ -341,7 +341,15 @@ class TestSubkeyMaterialization:
     ) -> None:
         class EvilStore(InMemorySessionStore):
             async def list_subkeys(self, key):  # type: ignore[override]
-                return ["", "/etc/passwd", "../escape", "a/../b", "subagents/agent-ok"]
+                return [
+                    "",
+                    "/etc/passwd",
+                    "../escape",
+                    "a/../b",
+                    "C:escape",
+                    "C:\\abs",
+                    "subagents/agent-ok",
+                ]
 
             async def load(self, key):  # type: ignore[override]
                 if key.get("subpath") == "subagents/agent-ok":

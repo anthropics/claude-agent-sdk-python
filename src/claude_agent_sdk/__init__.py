@@ -44,6 +44,7 @@ from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    AdvisorToolResultBlock,
     AgentDefinition,
     AssistantMessage,
     BaseHookInput,
@@ -92,6 +93,7 @@ from .types import (
     SdkBeta,
     SdkPluginConfig,
     SDKSessionInfo,
+    ServerToolUseBlock,
     SessionMessage,
     SettingSource,
     StopHookInput,
@@ -112,8 +114,6 @@ from .types import (
     ThinkingConfigAdaptive,
     ThinkingConfigDisabled,
     ThinkingConfigEnabled,
-    AdvisorToolResultBlock,
-    ServerToolUseBlock,
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,

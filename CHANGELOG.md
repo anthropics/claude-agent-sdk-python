@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Bug Fixes
-
-- **Server-side tool blocks in the assistant stream**: `server_tool_use` and `advisor_tool_result` blocks are no longer silently dropped during message parsing. They are now surfaced as new `ServerToolUseBlock` and `AdvisorToolResultBlock` content blocks. Previously, messages that only carried a server-side tool call arrived with `content=[]`, making it impossible to detect that the advisor (or any other server-side tool) had run.
-
 ## 0.1.61
 
 ### Internal/Other Changes

@@ -112,6 +112,7 @@ from .types import (
     ThinkingConfigAdaptive,
     ThinkingConfigDisabled,
     ThinkingConfigEnabled,
+    ToolContext,
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
@@ -124,6 +125,32 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def get_tool_context() -> ToolContext | None:
+    """Get the current tool execution context, if available.
+
+    Returns the session context (session ID, transcript path, working
+    directory, etc.) when called from within an SDK MCP tool handler
+    registered via :func:`tool` / :func:`create_sdk_mcp_server`.
+
+    Returns ``None`` if called outside a tool execution or if session
+    info hasn't been received yet (e.g. no hooks have fired before the
+    first tool call).
+
+    Example::
+
+        @tool("my_tool", "Does something", {"query": str})
+        async def my_tool(args):
+            ctx = get_tool_context()
+            if ctx:
+                history = ctx.get_conversation_history()
+                # ... use history ...
+            return {"content": [{"type": "text", "text": "done"}]}
+    """
+    from ._internal._tool_context import _current_tool_context
+
+    return _current_tool_context.get()
 
 
 @dataclass
@@ -598,6 +625,9 @@ __all__ = [
     "tool",
     "SdkMcpTool",
     "ToolAnnotations",
+    # Tool context
+    "get_tool_context",
+    "ToolContext",
     # Errors
     "ClaudeSDKError",
     "CLIConnectionError",

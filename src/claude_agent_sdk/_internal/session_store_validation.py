@@ -25,7 +25,13 @@ def validate_session_store_options(options: ClaudeAgentOptions) -> None:
     if store is None:
         return
 
-    if options.continue_conversation and not _store_implements(store, "list_sessions"):
+    if (
+        options.continue_conversation
+        and options.resume is None
+        and not _store_implements(store, "list_sessions")
+    ):
+        # When resume is explicitly set, list_sessions() is provably never
+        # called (resume wins over continue), so a minimal store is fine.
         raise ValueError(
             "continue_conversation with session_store requires the store to "
             "implement list_sessions()"

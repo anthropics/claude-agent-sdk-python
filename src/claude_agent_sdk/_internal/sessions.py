@@ -6,6 +6,7 @@ extracts metadata from stat + head/tail reads without full JSONL parsing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -1533,22 +1534,27 @@ async def list_sessions_from_store(
 
     # Derive a real summary per session by loading its entries and reusing
     # the filesystem path's lite-parse. Runs after pagination so the
-    # per-session load is bounded by ``limit``. Adapter errors degrade that
-    # row instead of failing the whole list.
+    # per-session load is bounded by ``limit``. Loads run concurrently;
+    # adapter errors degrade that row instead of failing the whole list.
+    settled = await asyncio.gather(
+        *(
+            _load_store_entries_as_jsonl(session_store, e["session_id"], directory)
+            for e in page
+        ),
+        return_exceptions=True,
+    )
     results: list[SDKSessionInfo] = []
-    for entry in page:
+    for entry, outcome in zip(page, settled, strict=True):
         sid = entry["session_id"]
         mtime = entry["mtime"]
-        try:
-            jsonl = await _load_store_entries_as_jsonl(session_store, sid, directory)
-        except Exception:
+        if isinstance(outcome, BaseException):
             results.append(
                 SDKSessionInfo(session_id=sid, summary="", last_modified=mtime)
             )
             continue
-        if jsonl is None:
+        if outcome is None:
             continue
-        parsed = _parse_session_info_from_lite(sid, _jsonl_to_lite(jsonl, mtime))
+        parsed = _parse_session_info_from_lite(sid, _jsonl_to_lite(outcome, mtime))
         if parsed is None:
             # Sidechain or no extractable summary — drop, matching the
             # filesystem path.

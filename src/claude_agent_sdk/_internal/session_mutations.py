@@ -25,6 +25,7 @@ import re
 import shutil
 import unicodedata
 import uuid as uuid_mod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -308,13 +309,30 @@ def fork_session(
 
     transcript, content_replacements = _parse_fork_transcript(content, session_id)
 
+    def _derive_title() -> str | None:
+        buf_len = len(content)
+        head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
+            "utf-8", errors="replace"
+        )
+        tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
+            "utf-8", errors="replace"
+        )
+        return (
+            _extract_last_json_string_field(tail, "customTitle")
+            or _extract_last_json_string_field(head, "customTitle")
+            or _extract_last_json_string_field(tail, "aiTitle")
+            or _extract_last_json_string_field(head, "aiTitle")
+            or _extract_first_prompt_from_head(head)
+            or None
+        )
+
     forked_session_id, lines = _build_fork_lines(
         transcript,
         content_replacements,
         session_id,
         up_to_message_id,
         title,
-        content,
+        _derive_title,
     )
 
     fork_path = project_dir / f"{forked_session_id}.jsonl"
@@ -333,7 +351,7 @@ def _build_fork_lines(
     session_id: str,
     up_to_message_id: str | None,
     title: str | None,
-    raw_content: bytes | None,
+    derive_title: Callable[[], str | None],
 ) -> tuple[str, list[str]]:
     """Core fork transform — remap UUIDs and produce serialized JSONL lines.
 
@@ -341,9 +359,9 @@ def _build_fork_lines(
     ``(forked_session_id, lines)`` where each line is a compact JSON string
     without a trailing newline.
 
-    ``raw_content`` is used for title-derivation head/tail scans; pass
-    ``None`` when no raw bytes are available (store path) — the scan then
-    runs over the re-serialized transcript instead.
+    ``derive_title`` is invoked only when no explicit ``title`` is given,
+    so the disk path's head/tail byte scan and the store path's entry scan
+    only run when needed.
     """
     # Filter out sidechains (subagent sessions with separate parentUuid
     # graphs). Keep isMeta entries — they're interleaved in the main chain.
@@ -436,37 +454,19 @@ def _build_fork_lines(
                     "type": "content-replacement",
                     "sessionId": forked_session_id,
                     "replacements": content_replacements,
+                    "uuid": str(uuid_mod.uuid4()),
+                    "timestamp": now,
                 },
                 separators=(",", ":"),
             )
         )
 
-    # Derive title: explicit > original customTitle/aiTitle > first prompt.
+    # Derive title: explicit > original customTitle > original aiTitle > first
+    # prompt. Suffix with " (fork)" for derived titles. listSessions reads the
+    # LAST custom-title from the tail, so this entry is what surfaces.
     fork_title = title.strip() if title else None
     if not fork_title:
-        # When raw bytes aren't available (store path), scan the
-        # re-serialized lines instead so title derivation still works.
-        scan_buf = (
-            raw_content
-            if raw_content is not None
-            else ("\n".join(lines) + "\n").encode("utf-8")
-        )
-        buf_len = len(scan_buf)
-        head = scan_buf[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
-            "utf-8", errors="replace"
-        )
-        tail = scan_buf[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
-            "utf-8", errors="replace"
-        )
-        base = (
-            _extract_last_json_string_field(tail, "customTitle")
-            or _extract_last_json_string_field(head, "customTitle")
-            or _extract_last_json_string_field(tail, "aiTitle")
-            or _extract_last_json_string_field(head, "aiTitle")
-            or _extract_first_prompt_from_head(head)
-            or "Forked session"
-        )
-        fork_title = f"{base} (fork)"
+        fork_title = f"{derive_title() or 'Forked session'} (fork)"
 
     lines.append(
         json.dumps(
@@ -474,6 +474,8 @@ def _build_fork_lines(
                 "type": "custom-title",
                 "sessionId": forked_session_id,
                 "customTitle": fork_title,
+                "uuid": str(uuid_mod.uuid4()),
+                "timestamp": now,
             },
             separators=(",", ":"),
         )
@@ -555,6 +557,34 @@ def _find_session_file_with_dir(
 
 
 _TRANSCRIPT_TYPES = frozenset({"user", "assistant", "attachment", "system", "progress"})
+
+
+def _derive_title_from_entries(raw: list[Any]) -> str | None:
+    """Mirror the disk path's head/tail title scan over parsed entry objects.
+
+    Precedence matches ``_extract_last_json_string_field`` semantics: last
+    occurrence wins for both ``customTitle`` and ``aiTitle``; ``customTitle``
+    beats ``aiTitle``; first user prompt is the final fallback.
+    """
+    custom: str | None = None
+    ai: str | None = None
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        ct = e.get("customTitle")
+        if isinstance(ct, str) and ct:
+            custom = ct
+        at = e.get("aiTitle")
+        if isinstance(at, str) and at:
+            ai = at
+    if custom:
+        return custom
+    if ai:
+        return ai
+    # First-prompt fallback — reuse the head extractor over a re-serialized
+    # JSONL string so skip-patterns/truncation match the disk path exactly.
+    jsonl = "\n".join(json.dumps(e, separators=(",", ":")) for e in raw) + "\n"
+    return _extract_first_prompt_from_head(jsonl) or None
 
 
 def _parse_fork_transcript(
@@ -921,7 +951,7 @@ async def fork_session_via_store(
         session_id,
         up_to_message_id,
         title,
-        raw_content=None,
+        lambda: _derive_title_from_entries(raw),
     )
 
     dst_key: SessionKey = {"project_key": project_key, "session_id": forked_session_id}

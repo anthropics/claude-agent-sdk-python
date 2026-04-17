@@ -98,6 +98,9 @@ class ClaudeSDKClient:
         """Connect to Claude with a prompt or message stream."""
 
         from ._internal.query import Query
+        from ._internal.session_store_validation import validate_session_store_options
+        from ._internal.sessions import _get_projects_dir
+        from ._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Auto-connect with empty async iterable if no prompt is provided
@@ -111,6 +114,10 @@ class ClaudeSDKClient:
         # String prompts are sent via transport.write() below, so the transport
         # only needs an AsyncIterable (or an empty stream for None/str cases).
         actual_prompt = prompt if isinstance(prompt, AsyncIterable) else _empty_stream()
+
+        # Fail fast on invalid session_store option combinations before
+        # spawning the subprocess.
+        validate_session_store_options(self.options)
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:
@@ -187,6 +194,20 @@ class ClaudeSDKClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
         )
+
+        if self.options.session_store is not None:
+            store = self.options.session_store
+            q = self._query
+
+            async def _on_mirror_error(key: Any, error: str) -> None:
+                q.report_mirror_error(key, error)
+
+            batcher = TranscriptMirrorBatcher(
+                store=store,
+                projects_dir=str(_get_projects_dir()),
+                on_error=_on_mirror_error,
+            )
+            self._query.set_transcript_mirror_batcher(batcher)
 
         # Start reading messages and initialize
         await self._query.start()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -96,6 +97,48 @@ class InMemorySessionStore(SessionStore):
         """Test helper — clear all stored data."""
         self._store.clear()
         self._mtimes.clear()
+
+
+def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | None:
+    """Derive a :class:`SessionKey` from an absolute transcript file path.
+
+    Main transcripts: ``<projects_dir>/<project_key>/<session_id>.jsonl``
+    Subagent transcripts: ``<projects_dir>/<project_key>/<session_id>/subagents/agent-<id>.jsonl``
+
+    Returns ``None`` if ``file_path`` is not under ``projects_dir`` or has an
+    unrecognized shape.
+    """
+    rel = os.path.relpath(file_path, projects_dir)
+    rel_path = Path(rel)
+    if rel.startswith("..") or rel_path.is_absolute():
+        return None
+
+    parts = list(rel_path.parts)
+    if len(parts) < 2:
+        return None
+
+    project_key = parts[0]
+    second = parts[1]
+
+    # Main transcript: <project_key>/<session_id>.jsonl
+    if len(parts) == 2 and second.endswith(".jsonl"):
+        return {"project_key": project_key, "session_id": second[: -len(".jsonl")]}
+
+    # Subagent transcript: <project_key>/<session_id>/subagents/.../agent-<id>.jsonl
+    if len(parts) >= 4:
+        subpath_parts = parts[2:]
+        last = subpath_parts[-1]
+        if last.endswith(".jsonl"):
+            subpath_parts[-1] = last[: -len(".jsonl")]
+        # Subpaths are always /-joined regardless of os.sep so keys are
+        # portable across platforms.
+        return {
+            "project_key": project_key,
+            "session_id": second,
+            "subpath": "/".join(subpath_parts),
+        }
+
+    return None
 
 
 def project_key_for_directory(directory: str | Path | None = None) -> str:

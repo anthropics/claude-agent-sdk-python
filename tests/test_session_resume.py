@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, InMemorySessionStore
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    InMemorySessionStore,
+    query,
+)
 from claude_agent_sdk._internal.session_resume import (
     MaterializedResume,
     materialize_resume_session,
@@ -383,7 +389,6 @@ class TestTimeoutsAndErrors:
         opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
 
         # Capture the temp dir created by mkdtemp so we can assert it's gone.
-        import tempfile
 
         real_mkdtemp = tempfile.mkdtemp
         created: list[str] = []
@@ -530,6 +535,135 @@ class TestClientIntegration:
             assert "CLAUDE_CONFIG_DIR" not in captured["options"].env
             assert captured["options"].resume == SESSION_ID
             await client.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Temp-dir leak on spawn failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def track_resume_dirs() -> Any:
+    """Spy on ``tempfile.mkdtemp`` to capture claude-resume-* dirs."""
+    real_mkdtemp = tempfile.mkdtemp
+    created: list[Path] = []
+
+    def spy(*a: Any, **kw: Any) -> str:
+        d = real_mkdtemp(*a, **kw)
+        if "claude-resume-" in d:
+            created.append(Path(d))
+        return d
+
+    with patch("tempfile.mkdtemp", side_effect=spy):
+        yield created
+
+
+class TestSpawnFailureCleanup:
+    """The materialized temp dir contains a .credentials.json copy. It must be
+    removed even when transport.connect() raises before any try/finally that
+    normally guards cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_client_connect_failure_removes_temp_dir(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        mock_transport = _make_mock_transport()
+        mock_transport.connect = AsyncMock(side_effect=OSError("spawn failed"))
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        client = ClaudeSDKClient(options=opts)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                return_value=mock_transport,
+            ),
+            pytest.raises(OSError, match="spawn failed"),
+        ):
+            await client.connect()
+
+        assert track_resume_dirs, "materialize_resume_session never created a temp dir"
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
+        assert client._materialized is None
+
+    @pytest.mark.asyncio
+    async def test_client_aenter_failure_removes_temp_dir(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        mock_transport = _make_mock_transport()
+        mock_transport.connect = AsyncMock(side_effect=OSError("spawn failed"))
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                return_value=mock_transport,
+            ),
+            pytest.raises(OSError, match="spawn failed"),
+        ):
+            async with ClaudeSDKClient(options=opts):
+                pass  # pragma: no cover
+
+        assert track_resume_dirs
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
+
+    @pytest.mark.asyncio
+    async def test_query_transport_failure_removes_temp_dir(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        mock_transport = _make_mock_transport()
+        mock_transport.connect = AsyncMock(side_effect=OSError("spawn failed"))
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport",
+                return_value=mock_transport,
+            ),
+            pytest.raises(OSError, match="spawn failed"),
+        ):
+            async for _ in query(prompt="hi", options=opts):
+                pass  # pragma: no cover
+
+        assert track_resume_dirs
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
 
 
 # ---------------------------------------------------------------------------

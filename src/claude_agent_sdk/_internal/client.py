@@ -61,7 +61,25 @@ class InternalClient:
         # resume/continue + session_store: load the session from the store
         # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
         materialized = await materialize_resume_session(options)
+        try:
+            async for msg in self._process_query_inner(
+                prompt, options, transport, materialized
+            ):
+                yield msg
+        finally:
+            # The temp dir holds a .credentials.json copy — remove it on
+            # every exit path, including transport spawn failure before the
+            # inner try/finally is reached.
+            if materialized is not None:
+                await materialized.cleanup()
 
+    async def _process_query_inner(
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]],
+        options: ClaudeAgentOptions,
+        transport: Transport | None,
+        materialized: Any,
+    ) -> AsyncIterator[Message]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
@@ -203,5 +221,3 @@ class InternalClient:
 
         finally:
             await query.close()
-            if materialized is not None:
-                await materialized.cleanup()

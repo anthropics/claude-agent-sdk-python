@@ -98,12 +98,8 @@ class ClaudeSDKClient:
     ) -> None:
         """Connect to Claude with a prompt or message stream."""
 
-        from ._internal.query import Query
         from ._internal.session_resume import materialize_resume_session
         from ._internal.session_store_validation import validate_session_store_options
-        from ._internal.sessions import _get_projects_dir
-        from ._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
-        from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Auto-connect with empty async iterable if no prompt is provided
         async def _empty_stream() -> AsyncIterator[dict[str, Any]]:
@@ -127,6 +123,26 @@ class ClaudeSDKClient:
         # so the subprocess points at the temp dir; when None, fall through
         # to normal handling (fresh session or local-disk resume).
         self._materialized = await materialize_resume_session(self.options)
+        try:
+            await self._connect_inner(prompt, actual_prompt)
+        except BaseException:
+            # The temp dir holds a .credentials.json copy — remove it if
+            # connect fails (transport spawn, initialize, etc.) since
+            # disconnect() may never be called.
+            if self._materialized is not None:
+                await self._materialized.cleanup()
+                self._materialized = None
+            raise
+
+    async def _connect_inner(
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]] | None,
+        actual_prompt: AsyncIterable[dict[str, Any]],
+    ) -> None:
+        from ._internal.query import Query
+        from ._internal.sessions import _get_projects_dir
+        from ._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
+        from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:

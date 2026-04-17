@@ -22,6 +22,7 @@ import errno
 import json
 import os
 import re
+import shutil
 import unicodedata
 import uuid as uuid_mod
 from dataclasses import dataclass
@@ -170,11 +171,13 @@ def delete_session(
     session_id: str,
     directory: str | None = None,
 ) -> None:
-    """Delete a session by removing its JSONL file.
+    """Delete a session by removing its JSONL file and subagent transcripts.
 
-    This is a hard delete — the file is removed permanently. SDK users who
-    need soft-delete semantics can use ``tag_session(id, '__hidden')`` and
-    filter on listing instead.
+    This is a hard delete — the ``{session_id}.jsonl`` file is removed
+    permanently, along with the sibling ``{session_id}/`` subdirectory that
+    holds subagent transcripts (if it exists). SDK users who need soft-delete
+    semantics can use ``tag_session(id, '__hidden')`` and filter on listing
+    instead.
 
     Args:
         session_id: UUID of the session to delete.
@@ -206,6 +209,8 @@ def delete_session(
         if e.errno == errno.ENOENT:
             raise FileNotFoundError(f"Session {session_id} not found") from e
         raise
+    # Subagent transcripts live in a sibling {session_id}/ dir; often absent.
+    shutil.rmtree(path.parent / session_id, ignore_errors=True)
 
 
 @dataclass

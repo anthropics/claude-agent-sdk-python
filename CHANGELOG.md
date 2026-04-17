@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.61
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.112
+
+## 0.1.60
+
+### New Features
+
+- **Subagent transcript helpers**: Added `list_subagents()` and `get_subagent_messages()` session helpers for reading subagent transcripts, enabling inspection of subagent message chains spawned during a session (#825)
+- **Distributed tracing**: Propagate W3C trace context (`TRACEPARENT`/`TRACESTATE`) to the CLI subprocess when an OpenTelemetry span is active, connecting SDK and CLI traces end-to-end. Install with `pip install claude-agent-sdk[otel]` for optional OpenTelemetry support (#821)
+- **Cascading session deletion**: `delete_session()` now removes the sibling subagent transcript directory alongside the session file, matching TypeScript SDK behavior (#805)
+
+### Bug Fixes
+
+- **Empty setting sources**: Fixed `setting_sources=[]` being silently dropped (treated as falsy), which caused the CLI to load default settings instead of disabling all filesystem settings. An empty list now correctly passes `--setting-sources=` to disable all sources (#822)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.111
+
+## 0.1.59
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.105
+
 ## 0.1.58
 
 ### Internal/Other Changes

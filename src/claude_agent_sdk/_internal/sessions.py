@@ -1074,3 +1074,268 @@ def get_session_messages(
     if offset > 0:
         return messages[offset:]
     return messages
+
+
+# ---------------------------------------------------------------------------
+# list_subagents / get_subagent_messages — subagent transcript reading
+# ---------------------------------------------------------------------------
+
+
+def _resolve_session_file_path(session_id: str, directory: str | None) -> Path | None:
+    """Resolves the on-disk path of a session JSONL file.
+
+    Directory resolution mirrors ``_read_session_file``: when ``directory``
+    is provided, looks in that project directory and its git worktrees;
+    otherwise searches all project directories. Returns the path of the
+    first non-empty match, or ``None`` if not found.
+    """
+    file_name = f"{session_id}.jsonl"
+
+    def _stat_candidate(project_dir: Path) -> Path | None:
+        candidate = project_dir / file_name
+        try:
+            if candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            pass
+        return None
+
+    if directory:
+        canonical_dir = _canonicalize_path(directory)
+
+        project_dir = _find_project_dir(canonical_dir)
+        if project_dir is not None:
+            found = _stat_candidate(project_dir)
+            if found is not None:
+                return found
+
+        try:
+            worktree_paths = _get_worktree_paths(canonical_dir)
+        except Exception:
+            worktree_paths = []
+
+        for wt in worktree_paths:
+            if wt == canonical_dir:
+                continue
+            wt_project_dir = _find_project_dir(wt)
+            if wt_project_dir is not None:
+                found = _stat_candidate(wt_project_dir)
+                if found is not None:
+                    return found
+
+        return None
+
+    projects_dir = _get_projects_dir()
+    try:
+        dirents = list(projects_dir.iterdir())
+    except OSError:
+        return None
+
+    for entry in dirents:
+        if not entry.is_dir():
+            continue
+        found = _stat_candidate(entry)
+        if found is not None:
+            return found
+
+    return None
+
+
+def _resolve_subagents_dir(session_id: str, directory: str | None) -> Path | None:
+    """Resolves the subagents directory for a given session.
+
+    The session file lives at ``<projectDir>/<sessionId>.jsonl`` and the
+    subagents directory at ``<projectDir>/<sessionId>/subagents/``.
+
+    Returns ``None`` if the session cannot be found.
+    """
+    resolved = _resolve_session_file_path(session_id, directory)
+    if resolved is None:
+        return None
+    # Strip the .jsonl suffix to derive the session directory.
+    session_dir = resolved.with_suffix("")
+    return session_dir / "subagents"
+
+
+def _collect_agent_files(base_dir: Path) -> list[tuple[str, Path]]:
+    """Recursively collects ``agent-*.jsonl`` files from a directory tree.
+
+    Subagent transcripts may live directly in ``subagents/`` or in nested
+    subdirectories such as ``subagents/workflows/<runId>/``.
+
+    Returns a list of ``(agent_id, file_path)`` tuples.
+    """
+    results: list[tuple[str, Path]] = []
+
+    def _walk(current_dir: Path) -> None:
+        try:
+            dirents = sorted(current_dir.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return
+        for entry in dirents:
+            name = entry.name
+            if (
+                entry.is_file()
+                and name.startswith("agent-")
+                and name.endswith(".jsonl")
+            ):
+                agent_id = name[len("agent-") : -len(".jsonl")]
+                results.append((agent_id, entry))
+            elif entry.is_dir():
+                _walk(entry)
+
+    _walk(base_dir)
+    return results
+
+
+def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEntry]:
+    """Builds the conversation chain for a subagent transcript.
+
+    Subagent transcripts are simpler than main sessions — no compaction,
+    no sidechains, no preserved segments. Find the last user/assistant
+    entry and walk ``parentUuid`` links back to the root.
+    """
+    if not entries:
+        return []
+
+    by_uuid: dict[str, _TranscriptEntry] = {}
+    for entry in entries:
+        by_uuid[entry["uuid"]] = entry
+
+    # Subagent transcripts are linear — the last user/assistant entry is
+    # the leaf.
+    leaf: _TranscriptEntry | None = None
+    for entry in reversed(entries):
+        if entry.get("type") in ("user", "assistant"):
+            leaf = entry
+            break
+    if leaf is None:
+        return []
+
+    chain: list[_TranscriptEntry] = []
+    seen: set[str] = set()
+    current: _TranscriptEntry | None = leaf
+    while current is not None:
+        uid = current["uuid"]
+        if uid in seen:
+            break
+        seen.add(uid)
+        chain.append(current)
+        parent = current.get("parentUuid")
+        current = by_uuid.get(parent) if parent else None
+
+    chain.reverse()
+    return chain
+
+
+def list_subagents(
+    session_id: str,
+    directory: str | None = None,
+) -> list[str]:
+    """Lists subagent IDs for a given session by scanning the subagents directory.
+
+    Subagent transcripts are stored at
+    ``~/.claude/projects/<project>/<sessionId>/subagents/agent-<agentId>.jsonl``
+    (and may be nested in subdirectories such as ``workflows/<runId>/``).
+
+    Args:
+        session_id: UUID of the parent session.
+        directory: Project directory to find the session in. If omitted,
+            searches all project directories under ``~/.claude/projects/``.
+
+    Returns:
+        List of subagent ID strings. Returns an empty list if the session
+        is not found, the session_id is not a valid UUID, or the session
+        has no subagents.
+
+    Example:
+        List subagent IDs for a session::
+
+            agent_ids = list_subagents(
+                "550e8400-e29b-41d4-a716-446655440000",
+                directory="/path/to/project",
+            )
+    """
+    if not _validate_uuid(session_id):
+        return []
+
+    subagents_dir = _resolve_subagents_dir(session_id, directory)
+    if subagents_dir is None:
+        return []
+
+    return [agent_id for agent_id, _ in _collect_agent_files(subagents_dir)]
+
+
+def get_subagent_messages(
+    session_id: str,
+    agent_id: str,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SessionMessage]:
+    """Reads a subagent's conversation messages from its JSONL transcript file.
+
+    Parses the subagent transcript, builds the conversation chain via
+    ``parentUuid`` links, and returns user/assistant messages in
+    chronological order.
+
+    Args:
+        session_id: UUID of the parent session.
+        agent_id: ID of the subagent (as returned by ``list_subagents``).
+        directory: Project directory to find the session in. If omitted,
+            searches all project directories under ``~/.claude/projects/``.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Returns
+        an empty list if the session or subagent is not found, the
+        session_id is not a valid UUID, or the transcript contains no
+        user/assistant messages.
+
+    Example:
+        Read all messages from a subagent::
+
+            messages = get_subagent_messages(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "abc123",
+                directory="/path/to/project",
+            )
+    """
+    if not _validate_uuid(session_id):
+        return []
+    if not agent_id:
+        return []
+
+    subagents_dir = _resolve_subagents_dir(session_id, directory)
+    if subagents_dir is None:
+        return []
+
+    # The agent file may be directly in subagents/ or in a nested
+    # subdirectory — scan to find it.
+    match: Path | None = None
+    for found_id, file_path in _collect_agent_files(subagents_dir):
+        if found_id == agent_id:
+            match = file_path
+            break
+    if match is None:
+        return []
+
+    try:
+        content = match.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if not content:
+        return []
+
+    entries = _parse_transcript_entries(content)
+    chain = _build_subagent_chain(entries)
+    messages = [
+        _to_session_message(e) for e in chain if e.get("type") in ("user", "assistant")
+    ]
+
+    if limit is not None and limit > 0:
+        return messages[offset : offset + limit]
+    if offset > 0:
+        return messages[offset:]
+    return messages

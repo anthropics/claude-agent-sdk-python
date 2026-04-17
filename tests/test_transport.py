@@ -435,16 +435,16 @@ class TestSubprocessCLITransport:
             options=make_options(),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
-    def test_build_command_setting_sources_omitted_when_empty(self):
-        """Test that --setting-sources is omitted when setting_sources is empty list."""
+    def test_build_command_setting_sources_empty_list_disables_all(self):
+        """Test that setting_sources=[] passes --setting-sources= to disable all sources."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(setting_sources=[]),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" not in cmd
+        assert "--setting-sources=" in cmd
 
     def test_build_command_setting_sources_included_when_provided(self):
         """Test that --setting-sources is included when setting_sources has values."""
@@ -453,9 +453,7 @@ class TestSubprocessCLITransport:
             options=make_options(setting_sources=["user", "project"]),
         )
         cmd = transport._build_command()
-        assert "--setting-sources" in cmd
-        idx = cmd.index("--setting-sources")
-        assert cmd[idx + 1] == "user,project"
+        assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_none_leaves_options_untouched(self):
         """When skills is None (default), neither allowed_tools nor setting_sources change."""
@@ -465,7 +463,7 @@ class TestSubprocessCLITransport:
         )
         cmd = transport._build_command()
         assert "--allowedTools" not in cmd
-        assert "--setting-sources" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_all_enables_skill_tool(self):
         """skills='all' enables the bare Skill tool and defaults setting_sources."""
@@ -476,8 +474,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--allowedTools" in cmd
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
-        assert "--setting-sources" in cmd
-        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+        assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_empty_list_adds_no_skill_entries(self):
         """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
@@ -487,8 +484,7 @@ class TestSubprocessCLITransport:
         )
         cmd = transport._build_command()
         assert "--allowedTools" not in cmd
-        assert "--setting-sources" in cmd
-        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+        assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_named_list_uses_skill_patterns(self):
         """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
@@ -499,8 +495,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--allowedTools" in cmd
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
-        assert "--setting-sources" in cmd
-        assert cmd[cmd.index("--setting-sources") + 1] == "user,project"
+        assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_merges_with_existing_allowed_tools(self):
         """skills augment (not replace) an existing allowed_tools list."""
@@ -524,7 +519,7 @@ class TestSubprocessCLITransport:
             ),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--setting-sources") + 1] == "local"
+        assert "--setting-sources=local" in cmd
 
     def test_build_command_skills_does_not_mutate_options(self):
         """Applying skills defaults must not mutate the caller's options object."""
@@ -622,9 +617,9 @@ class TestSubprocessCLITransport:
             assert cmd[cmd.index("--allowedTools") + 1] == want_tools
 
         if want_sources is None:
-            assert "--setting-sources" not in cmd
+            assert not any(a.startswith("--setting-sources") for a in cmd)
         else:
-            assert cmd[cmd.index("--setting-sources") + 1] == want_sources
+            assert f"--setting-sources={want_sources}" in cmd
 
         # Wire-level: what the Query layer would send on initialize.
         # 'all' and None both omit the field; only an explicit list is sent.
@@ -835,6 +830,388 @@ class TestSubprocessCLITransport:
 
                 # CLAUDE_AGENT_SDK_VERSION is still SDK-controlled
                 assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_propagated_to_subprocess(self):
+        """Active OTEL trace context is injected as TRACEPARENT/TRACESTATE."""
+
+        async def _test():
+            options = make_options()
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = (
+                    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                carrier["tracestate"] = "vendor=value"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                assert (
+                    env_passed["TRACEPARENT"]
+                    == "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                assert env_passed["TRACESTATE"] == "vendor=value"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_does_not_override_user_env(self):
+        """User-supplied TRACEPARENT in options.env wins over OTEL propagator."""
+
+        async def _test():
+            options = make_options(env={"TRACEPARENT": "custom"})
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = "00-aaaa-bbbb-01"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # explicit ClaudeAgentOptions.env must win over the propagator
+                assert env_passed["TRACEPARENT"] == "custom"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_noop_without_opentelemetry(self):
+        """connect() succeeds and sets no TRACEPARENT when opentelemetry is absent."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict("sys.modules", {"opentelemetry": None}),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                # Ensure no inherited TRACEPARENT leaks in
+                os.environ.pop("TRACEPARENT", None)
+
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()  # must not raise
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert "TRACEPARENT" not in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_overwrites_inherited_env(self):
+        """Active span's TRACEPARENT overwrites a stale value inherited from os.environ."""
+
+        async def _test():
+            options = make_options()
+
+            stale = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+            active = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                # Propagator emits traceparent only (active span has empty
+                # trace_state) — the common case.
+                carrier["traceparent"] = active
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": stale, "TRACESTATE": "vendor=stale"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # The stale ambient value from os.environ must be replaced by
+                # the active span's context.
+                assert env_passed["TRACEPARENT"] == active
+                assert env_passed["TRACEPARENT"] != stale
+                # And the stale inherited TRACESTATE must be scrubbed, not
+                # paired with the fresh TRACEPARENT.
+                assert "TRACESTATE" not in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_no_active_span_preserves_inherited_env(self):
+        """With opentelemetry installed but no active span, inherited W3C env passes through."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # inject() with no active span writes nothing to the carrier.
+            fake_propagate = MagicMock()
+            fake_propagate.inject = lambda carrier: None
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # No active span -> we must NOT scrub the launcher's context.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
+
+        anyio.run(_test)
+
+    def test_otel_baggage_only_carrier_preserves_inherited_env(self):
+        """Non-empty carrier without traceparent (e.g. baggage only) must not scrub inherited W3C env."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # Default global propagator is composite(tracecontext, baggage):
+            # with baggage in Context but no active span, inject() emits a
+            # baggage key only.
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["baggage"] = "user.id=123"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Carrier was non-empty but had no traceparent -> still no
+                # active span, so the launcher's W3C context must pass through.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
+
+        anyio.run(_test)
+
+    def test_otel_propagator_error_does_not_break_connect(self):
+        """A raising propagator must not surface as CLIConnectionError."""
+
+        async def _test():
+            options = make_options()
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = MagicMock(side_effect=RuntimeError("boom"))
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                # Ensure no inherited TRACEPARENT leaks in
+                os.environ.pop("TRACEPARENT", None)
+
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()  # must not raise CLIConnectionError
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert "TRACEPARENT" not in env_passed
 
         anyio.run(_test)
 

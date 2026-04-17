@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-agent-sdk"
-version = "0.1.58"
+version = "0.1.61"
 description = "Python SDK for Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,9 @@ dev = [
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+]
+otel = [
+    "opentelemetry-api>=1.20.0",
 ]
 
 [project.urls]
@@ -83,6 +86,12 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+[[tool.mypy.overrides]]
+# opentelemetry-api is an optional dependency (the [otel] extra); the
+# import in subprocess_cli.py is guarded by try/except ImportError.
+module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py310"

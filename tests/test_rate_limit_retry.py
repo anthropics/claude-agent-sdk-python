@@ -1,9 +1,5 @@
 """Tests for 429 rate limit retry with exponential backoff."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._errors import ProcessError, RateLimitError
 

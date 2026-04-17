@@ -97,7 +97,7 @@ class InternalClient:
             # canUseTool and permission_prompt_tool_name are mutually exclusive
             if options.permission_prompt_tool_name:
                 raise ValueError(
-                    "can_use_tool cannot be used with permission_prompt_tool_name. "
+                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
                     "Please use one or the other."
                 )
 
@@ -114,11 +114,9 @@ class InternalClient:
 
             try:
                 # Use provided transport or create subprocess transport
-                if transport is not None and not is_retry:
+                if transport is not None:
                     chosen_transport = transport
                 else:
-                    if transport is not None and is_retry:
-                        await transport.close()
                     chosen_transport = SubprocessCLITransport(
                         prompt=prompt,
                         options=configured_options,
@@ -234,11 +232,13 @@ class InternalClient:
                     await asyncio.sleep(delay)
                     continue
 
-                raise RateLimitError(
-                    str(e),
-                    retry_after=retry_after,
-                    original_error=e,
-                ) from e
+                if is_rl:
+                    raise RateLimitError(
+                        str(e),
+                        retry_after=retry_after,
+                        original_error=e,
+                    ) from e
+                raise
 
             finally:
                 if query is not None:

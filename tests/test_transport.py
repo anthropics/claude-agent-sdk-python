@@ -1262,6 +1262,33 @@ class TestSubprocessCLITransport:
         assert parsed["sandbox"]["enabled"] is True
         assert parsed["sandbox"]["excludedCommands"] == ["git", "docker"]
 
+    def test_build_command_with_sandbox_and_relative_settings_file_uses_cwd(
+        self, tmp_path
+    ):
+        """Test sandbox+settings resolves relative paths against cwd before merging."""
+        import json
+
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            json.dumps({"permissions": {"allow": ["Read"]}}), encoding="utf-8"
+        )
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                cwd=tmp_path,
+                settings="settings.json",
+                sandbox={"enabled": True},
+            ),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        merged = json.loads(cmd[settings_idx + 1])
+
+        assert merged["permissions"] == {"allow": ["Read"]}
+        assert merged["sandbox"] == {"enabled": True}
+
     def test_build_command_with_settings_file_and_no_sandbox(self):
         """Test that settings file path is passed through when no sandbox."""
         transport = SubprocessCLITransport(

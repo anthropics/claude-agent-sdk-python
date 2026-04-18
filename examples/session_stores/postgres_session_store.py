@@ -50,8 +50,8 @@ Entries are stored as ``jsonb``, which **reorders object keys** on read-back
 explicitly allowed by the :class:`~claude_agent_sdk.SessionStore` contract:
 :meth:`~claude_agent_sdk.SessionStore.load` requires *deep-equal*, not
 *byte-equal*, returns. The SDK never hashes or byte-compares stored entries,
-and ``_entries_to_jsonl`` (the resume materializer) hoists ``"type"`` first
-when re-serializing so the CLI's prefix-scan still works. If you need
+and the ``*_from_store`` read helpers hoist ``"type"`` to the first key when
+re-serializing so the SDK's lite-parse tag scan still works. If you need
 byte-stable storage, switch the column to ``json`` (preserves text as-is) or
 ``text`` and ``json.dumps`` yourself.
 

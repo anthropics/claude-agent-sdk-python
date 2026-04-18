@@ -110,7 +110,7 @@ pip install claude-agent-sdk boto3
 import anyio
 import boto3
 
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from my_project.stores import S3SessionStore  # your copy of this file
 
 store = S3SessionStore(
@@ -126,7 +126,7 @@ async def main() -> None:
         options=ClaudeAgentOptions(session_store=store),
     ):
         # Messages are mirrored to S3 automatically.
-        if message.type == "result" and message.subtype == "success":
+        if isinstance(message, ResultMessage) and message.subtype == "success":
             print(message.result)
 
 
@@ -210,7 +210,7 @@ pip install claude-agent-sdk redis
 
 ```python
 import redis.asyncio as redis
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from redis_session_store import RedisSessionStore
 
@@ -223,7 +223,7 @@ async for message in query(
     prompt="Hello!",
     options=ClaudeAgentOptions(session_store=store),
 ):
-    if message.type == "result" and message.subtype == "success":
+    if isinstance(message, ResultMessage) and message.subtype == "success":
         print(message.result)
 ```
 
@@ -311,7 +311,7 @@ pip install claude-agent-sdk asyncpg
 
 ```python
 import asyncpg
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from postgres_session_store import PostgresSessionStore
 
@@ -323,7 +323,7 @@ async for message in query(
     prompt="Hello!",
     options=ClaudeAgentOptions(session_store=store),
 ):
-    if message.type == "result" and message.subtype == "success":
+    if isinstance(message, ResultMessage) and message.subtype == "success":
         print(message.result)
 ```
 
@@ -354,9 +354,9 @@ CREATE INDEX IF NOT EXISTS claude_session_store_list_idx
 Entries are stored as `jsonb`, which **reorders object keys** on read-back
 (shorter keys first, then by byte order). This is explicitly allowed by the
 `SessionStore` contract — `load()` requires *deep-equal*, not *byte-equal*,
-returns. The SDK never byte-compares stored entries, and the resume
-materializer hoists `"type"` first when re-serializing so the CLI's
-prefix-scan still works. If you need byte-stable storage, switch the column
+returns. The SDK never byte-compares stored entries, and the `*_from_store`
+read helpers hoist `"type"` to the first key when re-serializing so the SDK's
+lite-parse tag scan still works. If you need byte-stable storage, switch the column
 to `json` (preserves text as-is) or `text`.
 
 ### Retention

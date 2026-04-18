@@ -456,10 +456,13 @@ def _is_safe_subpath(subpath: str, session_dir: Path) -> bool:
     # subpaths we ever emit are ``subagents/...``.
     if ntpath.splitdrive(subpath)[0]:
         return False
-    if ".." in re.split(r"[\\/]", subpath):
+    if any(p in (".", "..") for p in re.split(r"[\\/]", subpath)):
         return False
-    # Resolve the .jsonl target and confirm it stays under session_dir.
-    sub_file = (session_dir / (subpath + ".jsonl")).resolve()
+    # Resolve the .jsonl target — using the same expression as the writer in
+    # _materialize_subkeys so the validated path can't drift from the written
+    # one — and confirm it stays under session_dir.
+    target = session_dir / subpath
+    sub_file = target.with_name(target.name + ".jsonl").resolve()
     try:
         sub_file.relative_to(session_dir.resolve())
     except ValueError:

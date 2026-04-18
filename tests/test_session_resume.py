@@ -389,6 +389,10 @@ class TestSubkeyMaterialization:
             async def list_subkeys(self, key):  # type: ignore[override]
                 return [
                     "",
+                    ".",
+                    "./",
+                    "a/.",
+                    "subagents/.",
                     "/etc/passwd",
                     "../escape",
                     "a/../b",
@@ -412,6 +416,12 @@ class TestSubkeyMaterialization:
         session_dir = m.config_dir / "projects" / project_key / SESSION_ID
         # Only the safe subpath was written.
         assert (session_dir / "subagents" / "agent-ok.jsonl").is_file()
+        # Main transcript was not overwritten by any subkey load (regression
+        # for subpath='.' which previously resolved to project_dir/{sid}.jsonl).
+        main_jsonl = m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        assert [json.loads(line) for line in main_jsonl.read_text().splitlines()] == [
+            {"type": "user", "uuid": "main"}
+        ]
         # Nothing escaped the temp dir.
         for root, _dirs, files in [
             *[(r, d, f) for r, d, f in __import__("os").walk(m.config_dir)]

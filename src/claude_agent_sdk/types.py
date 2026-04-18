@@ -855,12 +855,27 @@ class SandboxSettings(TypedDict, total=False):
     enableWeakerNestedSandbox: bool
 
 
+# __str__ payload truncation budget — keeps tool-call / tool-result output
+# readable when the payload is a large file or code blob.
+_STR_TRUNCATE_LEN = 200
+
+
+def _truncate(obj: object, max_len: int = _STR_TRUNCATE_LEN) -> str:
+    s = str(obj)
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
 # Content block types
 @dataclass
 class TextBlock:
     """Text content block."""
 
     text: str
+
+    def __str__(self) -> str:
+        return self.text
 
 
 @dataclass
@@ -869,6 +884,9 @@ class ThinkingBlock:
 
     thinking: str
     signature: str
+
+    def __str__(self) -> str:
+        return f"[Thinking] {self.thinking}"
 
 
 @dataclass
@@ -879,6 +897,9 @@ class ToolUseBlock:
     name: str
     input: dict[str, Any]
 
+    def __str__(self) -> str:
+        return f"[Tool use: {self.name}] {_truncate(self.input)}"
+
 
 @dataclass
 class ToolResultBlock:
@@ -887,6 +908,12 @@ class ToolResultBlock:
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+
+    def __str__(self) -> str:
+        label = "Tool error" if self.is_error else "Tool result"
+        if self.content is None:
+            return f"[{label}]"
+        return f"[{label}] {_truncate(self.content)}"
 
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
@@ -912,6 +939,13 @@ class UserMessage:
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
 
+    def __str__(self) -> str:
+        if isinstance(self.content, str):
+            body = self.content
+        else:
+            body = " ".join(str(block) for block in self.content)
+        return f"User: {body}" if body else "User:"
+
 
 @dataclass
 class AssistantMessage:
@@ -927,6 +961,10 @@ class AssistantMessage:
     session_id: str | None = None
     uuid: str | None = None
 
+    def __str__(self) -> str:
+        body = " ".join(str(block) for block in self.content)
+        return f"Claude: {body}" if body else "Claude:"
+
 
 @dataclass
 class SystemMessage:
@@ -934,6 +972,9 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+    def __str__(self) -> str:
+        return f"[System: {self.subtype}]"
 
 
 class TaskUsage(TypedDict):
@@ -964,6 +1005,9 @@ class TaskStartedMessage(SystemMessage):
     tool_use_id: str | None = None
     task_type: str | None = None
 
+    def __str__(self) -> str:
+        return f"[Task started] {self.description} (task_id={self.task_id})"
+
 
 @dataclass
 class TaskProgressMessage(SystemMessage):
@@ -981,6 +1025,12 @@ class TaskProgressMessage(SystemMessage):
     session_id: str
     tool_use_id: str | None = None
     last_tool_name: str | None = None
+
+    def __str__(self) -> str:
+        return (
+            f"[Task progress] {self.description} "
+            f"(task_id={self.task_id}, tokens={self.usage['total_tokens']})"
+        )
 
 
 @dataclass
@@ -1000,6 +1050,9 @@ class TaskNotificationMessage(SystemMessage):
     session_id: str
     tool_use_id: str | None = None
     usage: TaskUsage | None = None
+
+    def __str__(self) -> str:
+        return f"[Task {self.status}] {self.summary} (task_id={self.task_id})"
 
 
 @dataclass
@@ -1022,6 +1075,15 @@ class ResultMessage:
     errors: list[str] | None = None
     uuid: str | None = None
 
+    def __str__(self) -> str:
+        cost = (
+            f", cost=${self.total_cost_usd:.4f}"
+            if self.total_cost_usd is not None
+            else ""
+        )
+        status = "error" if self.is_error else self.subtype
+        return f"[Result: {status}] duration={self.duration_ms}ms{cost}"
+
 
 @dataclass
 class StreamEvent:
@@ -1031,6 +1093,10 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+
+    def __str__(self) -> str:
+        event_type = self.event.get("type", "unknown")
+        return f"[StreamEvent: {event_type}]"
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
@@ -1078,6 +1144,14 @@ class RateLimitEvent:
     rate_limit_info: RateLimitInfo
     uuid: str
     session_id: str
+
+    def __str__(self) -> str:
+        info = self.rate_limit_info
+        window = info.rate_limit_type or "n/a"
+        util = (
+            f" @ {info.utilization * 100:.0f}%" if info.utilization is not None else ""
+        )
+        return f"[RateLimit: {info.status}] {window}{util}"
 
 
 Message = (

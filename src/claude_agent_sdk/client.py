@@ -17,6 +17,8 @@ from .types import (
     Message,
     PermissionMode,
     ResultMessage,
+    TaskNotificationMessage,
+    TaskStartedMessage,
 )
 
 
@@ -73,6 +75,14 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+
+        # Turn tracking for background-task notification hygiene.
+        # Each ResultMessage increments _current_turn.  When a TaskStartedMessage
+        # arrives, we record task_id → turn so that receive_response() can
+        # suppress TaskNotificationMessages whose task was started in a prior
+        # turn and would otherwise leak into the next turn's response stream.
+        self._current_turn: int = 0
+        self._task_turn_map: dict[str, int] = {}
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -536,10 +546,62 @@ class ClaudeSDKClient:
         Note:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
+
+        Background task notifications:
+            If a background task (spawned via the Agent tool with run_in_background=True)
+            completes after a previous turn's ResultMessage but before this call returns,
+            its TaskNotificationMessage is suppressed from this iterator.  The notification
+            arrived between turns and would otherwise appear before the first assistant
+            response, making it look like stale context from a prior conversation.
+
+            Task completions that arrive *during* the current turn (after the first
+            assistant message) are still yielded normally.  For the full unfiltered stream
+            including all task events, use receive_messages() instead.
         """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+
+        # We hold any task-lifecycle events that arrive before the first
+        # non-task message of this turn.  Once a non-task message arrives we
+        # know the CLI is processing our latest query, so deferred events are
+        # re-yielded in order.  Events for tasks started in a previous turn
+        # are discarded at that point because they are stale cross-turn noise.
+        deferred: list[Message] = []
+        turn_started = False
+
         async for message in self.receive_messages():
+            # Track task IDs so we know which turn they were spawned in.
+            if isinstance(message, TaskStartedMessage):
+                self._task_turn_map[message.task_id] = self._current_turn
+
+            if not turn_started:
+                if isinstance(message, (TaskStartedMessage, TaskNotificationMessage)):
+                    # Arrival before the first non-task message: could be
+                    # a stale notification from a previous turn.  Defer.
+                    deferred.append(message)
+                    continue
+
+                # First non-task message — we are now inside the current turn.
+                turn_started = True
+                for deferred_msg in deferred:
+                    if isinstance(deferred_msg, TaskNotificationMessage):
+                        task_turn = self._task_turn_map.get(deferred_msg.task_id)
+                        # Clean up the map entry regardless of outcome.
+                        self._task_turn_map.pop(deferred_msg.task_id, None)
+                        if task_turn is not None and task_turn < self._current_turn:
+                            # Stale: started in a previous turn, completed
+                            # between turns.  Drop it.
+                            continue
+                    yield deferred_msg
+                deferred.clear()
+
+            # Clean up map entries when a notification is yielded mid-turn.
+            if isinstance(message, TaskNotificationMessage):
+                self._task_turn_map.pop(message.task_id, None)
+
             yield message
             if isinstance(message, ResultMessage):
+                self._current_turn += 1
                 return
 
     async def disconnect(self) -> None:

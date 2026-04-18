@@ -15,6 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ClaudeSDKError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -261,7 +262,9 @@ class Query:
                     self.pending_control_results[request_id] = e
                     event.set()
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            await self._message_send.send(
+                {"type": "error", "error": str(e), "exception": e}
+            )
         finally:
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
@@ -737,7 +740,10 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
-                raise Exception(message.get("error", "Unknown error"))
+                exc = message.get("exception")
+                if isinstance(exc, Exception):
+                    raise exc
+                raise ClaudeSDKError(message.get("error", "Unknown error"))
 
             yield message
 

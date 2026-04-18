@@ -53,6 +53,13 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    # Clearing the auth env vars above is exactly what makes _copy_auth_files()
+    # fall through to the macOS Keychain branch — stub it out so tests on a
+    # logged-in macOS host don't read (or write to temp dirs) real credentials.
+    monkeypatch.setattr(
+        "claude_agent_sdk._internal.session_resume._read_keychain_credentials",
+        lambda: None,
+    )
     return home
 
 
@@ -205,6 +212,37 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.asyncio
+    async def test_credentials_from_keychain_fallback(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When no file/env credentials exist, the macOS keychain fallback
+        supplies them. Uses a local override of the fixture-level stub so the
+        production fallback path is exercised without touching a real keychain."""
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.session_resume._read_keychain_credentials",
+            lambda: json.dumps(
+                {"claudeAiOauth": {"accessToken": "kc", "refreshToken": "SECRET"}}
+            ),
+        )
+
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        creds = json.loads((m.config_dir / ".credentials.json").read_text())
+        assert creds["claudeAiOauth"]["accessToken"] == "kc"
+        assert "refreshToken" not in creds["claudeAiOauth"]
+        await m.cleanup()
+
+    @pytest.mark.asyncio
     async def test_continue_picks_most_recent(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -278,7 +316,7 @@ class TestHappyPath:
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
         """Parity with TS: when two sessions share the same mtime,
-        continue_conversation picks one deterministically (max() is stable
+        continue_conversation picks one deterministically (sorted() is stable
         on equal keys → first listed wins; repeated calls agree)."""
         store = InMemorySessionStore()
         for sid in (SESSION_ID, SESSION_ID_2):

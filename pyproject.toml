@@ -66,6 +66,7 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    "/examples",
     "/README.md",
     "/LICENSE",
 ]

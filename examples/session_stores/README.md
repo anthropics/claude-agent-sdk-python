@@ -74,6 +74,10 @@ through the relevant items below.
 - Lists are unbounded; implement TTL via `EXPIRE` in a subclass if needed.
 - Redis Cluster: keys with the same `{project_key}:{session_id}` prefix should
   hash to the same slot — wrap in `{...}` hash tags if using Cluster.
+- If you derive `project_key` or `session_id` outside the SDK, ensure they
+  cannot contain `:` (the key separator) — collisions would mix data across
+  keys. The SDK's own `project_key_for_directory()` and UUID session IDs are
+  already safe.
 
 ### Postgres
 
@@ -348,6 +352,12 @@ CREATE INDEX IF NOT EXISTS claude_session_store_list_idx
 
 `append()` is a single multi-row `INSERT ... SELECT unnest($entries::jsonb[])`;
 `load()` is `SELECT entry ... ORDER BY seq`.
+
+Note: this schema differs from the TypeScript SDK's Postgres reference adapter
+(which defaults to table `claude_session_entries`, uses `NULL` rather than
+`''` as the main-transcript subpath sentinel, and stores `created_at
+TIMESTAMPTZ` rather than epoch-ms `mtime`). Sharing one Postgres table across
+the two SDKs requires aligning on a single schema first.
 
 ### JSONB key ordering
 

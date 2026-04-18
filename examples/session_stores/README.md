@@ -190,8 +190,8 @@ SESSION_STORE_S3_SECRET_KEY=minioadmin \
 Each run uses a random key prefix and deletes everything under it on
 teardown.
 
-This mirrors the `@anthropic-ai/claude-agent-sdk-s3` package from the
-TypeScript SDK.
+This mirrors the S3 reference adapter in the TypeScript SDK's
+[`examples/session-stores/s3/`](https://github.com/anthropics/claude-agent-sdk-typescript/tree/main/examples/session-stores/s3).
 
 ---
 

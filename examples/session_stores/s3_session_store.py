@@ -1,8 +1,8 @@
 """S3-backed :class:`~claude_agent_sdk.SessionStore` adapter.
 
 This is a reference implementation — copy it into your own project and adapt
-as needed. It mirrors the ``S3SessionStore`` from
-``@anthropic-ai/claude-agent-sdk-s3`` (TypeScript).
+as needed. It mirrors the S3 reference adapter in the TypeScript SDK
+(examples/session-stores/s3/).
 
 Transcripts are stored as JSONL part files::
 

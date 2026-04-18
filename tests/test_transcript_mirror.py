@@ -79,7 +79,7 @@ class TestFilePathToSessionKey:
 
     def test_three_parts_returns_none(self) -> None:
         # <project_key>/<session_id>/<file>.jsonl is neither main (2 parts)
-        # nor subagent (>=4 parts) — matches TS reference behavior.
+        # nor subagent (>=4 parts).
         assert (
             file_path_to_session_key(_p("proj", "sess", "weird.jsonl"), PROJECTS_DIR)
             is None

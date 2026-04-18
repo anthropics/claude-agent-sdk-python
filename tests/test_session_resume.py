@@ -577,12 +577,11 @@ class TestTimeoutsAndErrors:
     async def test_non_json_serializable_entry_surfaces_clear_error(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
-        """Parity with TS: a store returning non-JSON-serializable values
-        fails materialization with a contextual error and leaves no temp dir.
+        """A store returning non-JSON-serializable values fails materialization
+        with a contextual error and leaves no temp dir.
 
-        The TS path serializes via JSON.stringify (which silently drops
-        functions); Python's json.dumps raises TypeError, which the
-        materialize wrapper does not catch — assert it surfaces and cleans
+        Python's json.dumps raises TypeError on non-serializable values; the
+        materialize wrapper does not catch it — assert it surfaces and cleans
         up.
         """
 

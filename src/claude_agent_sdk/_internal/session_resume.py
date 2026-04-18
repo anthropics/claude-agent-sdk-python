@@ -8,7 +8,7 @@ from the store, writes it to a temporary directory laid out exactly like
 ``~/.claude/``, and returns the path so the caller can point the subprocess at
 it via ``CLAUDE_CONFIG_DIR``.
 
-Port of the TypeScript SDK's ``materializeResumeSession`` (agentSdk.ts).
+Mirrors the behavior of the TypeScript SDK.
 """
 
 from __future__ import annotations
@@ -339,7 +339,7 @@ def _copy_if_present(src: Path, dst: Path) -> None:
 def _read_keychain_credentials() -> str | None:
     """Read OAuth credentials JSON from the macOS Keychain (default service name).
 
-    Best-effort — returns ``None`` on any error or non-darwin platforms.
+    Best-effort — returns ``None`` on any error or non-macOS platforms.
     """
     # platform.system() (not sys.platform) so mypy doesn't narrow the rest
     # of the function to unreachable on the typecheck host.

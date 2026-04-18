@@ -154,7 +154,7 @@ on your bucket/prefix to expire transcripts according to your compliance
 requirements.
 
 `delete()` is implemented (removes all parts for a session) but is only
-called when you invoke `delete_session()` from the SDK.
+called when you invoke `delete_session_via_store()` from the SDK.
 
 Local-disk transcripts under `CLAUDE_CONFIG_DIR` are swept independently by
 the CLI's `cleanupPeriodDays` setting.
@@ -250,7 +250,7 @@ scheduled sweep on your prefix to expire transcripts according to your
 compliance requirements.
 
 `delete()` is implemented (cascades to subpath lists and index entries) but is
-only called when you invoke `delete_session()` from the SDK.
+only called when you invoke `delete_session_via_store()` from the SDK.
 
 Local-disk transcripts under `CLAUDE_CONFIG_DIR` are swept independently by the
 CLI's `cleanupPeriodDays` setting.
@@ -367,7 +367,7 @@ table by `mtime`) to expire transcripts according to your compliance
 requirements.
 
 `delete()` is implemented (cascades to subpath rows) but is only called when
-you invoke `delete_session()` from the SDK.
+you invoke `delete_session_via_store()` from the SDK.
 
 Local-disk transcripts under `CLAUDE_CONFIG_DIR` are swept independently by the
 CLI's `cleanupPeriodDays` setting.

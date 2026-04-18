@@ -39,7 +39,7 @@ Usage::
 Retention: this adapter never deletes objects on its own. Configure an S3
 lifecycle policy on the bucket/prefix to expire transcripts according to your
 compliance requirements. :meth:`delete` is implemented but only invoked when
-you call ``delete_session()`` from the SDK.
+you call ``delete_session_via_store()`` from the SDK.
 """
 
 from __future__ import annotations

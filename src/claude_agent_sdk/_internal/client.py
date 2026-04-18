@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -66,17 +66,24 @@ class InternalClient:
         materialized = (
             await materialize_resume_session(options) if transport is None else None
         )
+        inner = self._process_query_inner(prompt, options, transport, materialized)
         try:
-            async for msg in self._process_query_inner(
-                prompt, options, transport, materialized
-            ):
+            async for msg in inner:
                 yield msg
         finally:
-            # The temp dir holds a .credentials.json copy — remove it on
-            # every exit path, including transport spawn failure before the
-            # inner try/finally is reached.
-            if materialized is not None:
-                await materialized.cleanup()
+            # ``async for`` does NOT close its iterator when the loop body
+            # raises (PEP 533 was deferred). Explicitly aclose the inner
+            # generator first so its ``finally: await query.close()`` runs —
+            # i.e. the subprocess is terminated — *before* we remove the temp
+            # CLAUDE_CONFIG_DIR it is reading/writing.
+            try:
+                await inner.aclose()
+            finally:
+                # The temp dir holds a .credentials.json copy — remove it on
+                # every exit path, including transport spawn failure before
+                # the inner try/finally is reached.
+                if materialized is not None:
+                    await materialized.cleanup()
 
     async def _process_query_inner(
         self,
@@ -84,7 +91,7 @@ class InternalClient:
         options: ClaudeAgentOptions,
         transport: Transport | None,
         materialized: Any,
-    ) -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:

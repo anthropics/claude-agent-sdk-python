@@ -437,6 +437,7 @@ class TestSubkeyMaterialization:
                     "a/../b",
                     "C:escape",
                     "C:\\abs",
+                    "subagents/agent\x00x",
                     "subagents/agent-ok",
                 ]
 
@@ -1168,6 +1169,84 @@ class TestSpawnFailureCleanup:
                 pass  # pragma: no cover
 
         assert track_resume_dirs
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
+
+    @pytest.mark.asyncio
+    async def test_query_early_break_closes_transport_before_temp_dir_removed(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """Regression: ``async for`` does not close its iterator when the loop
+        body raises (PEP 533 deferred). When a consumer breaks early, the
+        outer ``finally`` must explicitly ``aclose()`` the inner generator so
+        ``transport.close()`` (subprocess termination) runs *before* the temp
+        CLAUDE_CONFIG_DIR — which the subprocess is reading/writing — is
+        removed."""
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        order: list[str] = []
+        config_dir_at_close: dict[str, bool] = {}
+
+        mock_transport = _make_mock_transport()
+
+        async def mock_receive():
+            yield {
+                "type": "system",
+                "subtype": "init",
+                "data": {"session_id": SESSION_ID},
+            }
+            yield {"type": "system", "subtype": "noop", "data": {}}
+
+        mock_transport.read_messages = mock_receive
+
+        async def tracked_close() -> None:
+            order.append("transport.close")
+            config_dir_at_close["existed"] = track_resume_dirs[0].exists()
+
+        mock_transport.close = tracked_close
+
+        real_rmtree = shutil.rmtree
+
+        def tracked_rmtree(p: Any, **kw: Any) -> None:
+            order.append("rmtree")
+            real_rmtree(p, **kw)
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        from claude_agent_sdk._internal.client import InternalClient
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport",
+                return_value=mock_transport,
+            ),
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+            patch.object(shutil, "rmtree", tracked_rmtree),
+        ):
+            agen = InternalClient().process_query(prompt="hi", options=opts)
+            async for _ in agen:
+                break  # consumer abandons mid-stream
+            await agen.aclose()
+
+        assert track_resume_dirs, "materialize_resume_session never created a temp dir"
+        assert "transport.close" in order, f"transport never closed: {order}"
+        assert "rmtree" in order, f"temp dir never removed: {order}"
+        assert order.index("transport.close") < order.index("rmtree"), (
+            f"temp dir removed before subprocess terminated: {order}"
+        )
+        assert config_dir_at_close["existed"], (
+            "temp CLAUDE_CONFIG_DIR was already gone when transport.close() ran"
+        )
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
 

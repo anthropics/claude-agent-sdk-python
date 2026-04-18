@@ -69,7 +69,9 @@ async def materialize_resume_session(
 
     Returns ``None`` when no materialization is needed (no store, no
     resume/continue, store has no entries, or the resolved session ID is not a
-    valid UUID) — caller falls through to a fresh session.
+    valid UUID) — caller falls through to the normal (no-store) resume/spawn
+    path. For ``continue_conversation`` this means a fresh session; for an
+    explicit ``resume`` value the CLI receives it unchanged.
 
     Raises ``RuntimeError`` if a store call fails or times out.
     """
@@ -458,13 +460,18 @@ def _is_safe_subpath(subpath: str, session_dir: Path) -> bool:
         return False
     if any(p in (".", "..") for p in re.split(r"[\\/]", subpath)):
         return False
+    if "\x00" in subpath:
+        return False
     # Resolve the .jsonl target — using the same expression as the writer in
     # _materialize_subkeys so the validated path can't drift from the written
-    # one — and confirm it stays under session_dir.
+    # one — and confirm it stays under session_dir. Both ``.resolve()`` calls
+    # can raise (e.g. ValueError on embedded NUL, OSError on broken symlink
+    # chains); treat any resolution failure as unsafe so the subpath is
+    # skipped with a warning rather than aborting the whole resume.
     target = session_dir / subpath
-    sub_file = target.with_name(target.name + ".jsonl").resolve()
     try:
+        sub_file = target.with_name(target.name + ".jsonl").resolve()
         sub_file.relative_to(session_dir.resolve())
-    except ValueError:
+    except (ValueError, OSError):
         return False
     return True

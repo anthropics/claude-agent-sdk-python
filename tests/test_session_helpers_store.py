@@ -7,6 +7,7 @@ Exercises the SessionStore-backed code paths in
 
 from __future__ import annotations
 
+import asyncio
 import uuid as uuid_mod
 from typing import Any
 
@@ -225,6 +226,45 @@ class TestListSessionsFromStore:
         assert by_id[good_sid].summary == "prompt 0"
         # Degraded row: empty summary, mtime preserved.
         assert by_id[bad_sid].summary == ""
+
+    async def test_load_concurrency_is_bounded(self) -> None:
+        """list_sessions_from_store must not issue unbounded concurrent
+        store.load() calls — large listings would otherwise exhaust adapter
+        connection pools. Regression for the paginate-after-filter refactor."""
+        from claude_agent_sdk._internal import sessions as _sessions
+
+        in_flight = 0
+        peak = 0
+        gate = asyncio.Event()
+
+        class SlowStore(InMemorySessionStore):
+            async def load(self, key):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await gate.wait()
+                in_flight -= 1
+                return await super().load(key)
+
+        store = SlowStore()
+        n = _sessions._STORE_LIST_LOAD_CONCURRENCY * 3
+        for i in range(n):
+            await InMemorySessionStore.append(
+                store,
+                {"project_key": PROJECT_KEY, "session_id": str(uuid_mod.uuid4())},
+                [{"type": "user", "uuid": f"u{i}"}],
+            )
+
+        task = asyncio.create_task(list_sessions_from_store(store, directory=DIR))
+        # Let the gather schedule and saturate the semaphore.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert peak <= _sessions._STORE_LIST_LOAD_CONCURRENCY
+        assert peak > 0
+        gate.set()
+        result = await task
+        assert peak == _sessions._STORE_LIST_LOAD_CONCURRENCY
+        assert len(result) <= n
 
 
 class TestGetSessionInfoFromStore:

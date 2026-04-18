@@ -28,6 +28,11 @@ from .session_store_validation import _store_implements
 # Size of the head/tail buffer for lite metadata reads.
 LITE_READ_BUF_SIZE = 65536
 
+# Upper bound on concurrent ``store.load()`` calls issued by
+# ``list_sessions_from_store``. Keeps large project listings from exhausting
+# adapter connection pools or tripping backend rate limits.
+_STORE_LIST_LOAD_CONCURRENCY = 16
+
 # Maximum length for a single filesystem path component. Most filesystems
 # limit individual components to 255 bytes. We use 200 to leave room for
 # the hash suffix and separator.
@@ -1551,15 +1556,20 @@ async def list_sessions_from_store(
     listing = list(raw)
 
     # Derive a real summary per session by loading its entries and reusing
-    # the filesystem path's lite-parse. Loads run concurrently; adapter
-    # errors degrade that row instead of failing the whole list. Filtering
-    # (sidechain/empty drop) happens before pagination so ``limit``/``offset``
-    # index the same filtered set as the disk path.
+    # the filesystem path's lite-parse. Loads run concurrently with a fixed
+    # bound so large listings don't exhaust adapter connection pools or hit
+    # backend rate limits; adapter errors degrade that row instead of failing
+    # the whole list. Filtering (sidechain/empty drop) happens before
+    # pagination so ``limit``/``offset`` index the same filtered set as the
+    # disk path.
+    sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
+
+    async def _bounded_load(sid: str) -> str | None:
+        async with sem:
+            return await _load_store_entries_as_jsonl(session_store, sid, directory)
+
     settled = await asyncio.gather(
-        *(
-            _load_store_entries_as_jsonl(session_store, e["session_id"], directory)
-            for e in listing
-        ),
+        *(_bounded_load(e["session_id"]) for e in listing),
         return_exceptions=True,
     )
     results: list[SDKSessionInfo] = []

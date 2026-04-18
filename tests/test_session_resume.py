@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import os
 import shutil
 import tempfile
 import uuid
@@ -461,9 +462,7 @@ class TestSubkeyMaterialization:
             {"type": "user", "uuid": "main"}
         ]
         # Nothing escaped the temp dir.
-        for root, _dirs, files in [
-            *[(r, d, f) for r, d, f in __import__("os").walk(m.config_dir)]
-        ]:
+        for root, _dirs, files in os.walk(m.config_dir):
             for f in files:
                 p = Path(root) / f
                 assert str(p).startswith(str(m.config_dir))

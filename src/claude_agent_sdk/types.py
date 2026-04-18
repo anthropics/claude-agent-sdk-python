@@ -1173,8 +1173,9 @@ class SessionStore(Protocol):
     The subprocess still writes to local disk (set ``CLAUDE_CONFIG_DIR=/tmp``
     for an ephemeral local copy); the adapter receives a secondary copy.
 
-    The SDK never deletes from your store unless you call ``delete_session()``
-    with :meth:`delete` implemented. Retention is the adapter's responsibility —
+    The SDK never deletes from your store unless you call
+    ``delete_session_via_store()`` with :meth:`delete` implemented. Retention is
+    the adapter's responsibility —
     implement TTL, object-storage lifecycle policies, or scheduled cleanup
     according to your compliance requirements (e.g. ZDR/HIPAA retention
     windows). Local-disk transcripts under ``CLAUDE_CONFIG_DIR`` are swept by

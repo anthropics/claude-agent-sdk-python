@@ -86,8 +86,14 @@ class TestConformance:
             )
         )
 
-    def test_isinstance_session_store(self, store: SessionStore) -> None:
-        assert isinstance(store, SessionStore)
+    def test_store_implements_required_methods(self, store: SessionStore) -> None:
+        """SessionStore is not @runtime_checkable; probe via _store_implements()."""
+        from claude_agent_sdk._internal.session_store_validation import (
+            _store_implements,
+        )
+
+        assert _store_implements(store, "append")
+        assert _store_implements(store, "load")
 
 
 # ---------------------------------------------------------------------------

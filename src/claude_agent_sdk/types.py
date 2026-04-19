@@ -1166,6 +1166,10 @@ class SessionSummaryEntry(TypedDict, total=False):
     :func:`fold_session_summary` and return the full set from
     :meth:`SessionStore.list_session_summaries`. Every field is
     append-incremental (set-once or last-wins) so adapters never re-read.
+
+    Fields prefixed ``_`` are opaque fold state — stores MUST persist them
+    verbatim across :func:`fold_session_summary` calls but SHOULD NOT
+    interpret them.
     """
 
     session_id: Required[str]
@@ -1177,11 +1181,6 @@ class SessionSummaryEntry(TypedDict, total=False):
     cwd: str
     first_prompt: str
     """First meaningful user prompt, truncated to 200 chars."""
-    first_prompt_locked: bool
-    """Internal: ``True`` once a non-command prompt has been found."""
-    command_fallback: str
-    """Internal: first ``<command-name>`` seen, used when no real prompt
-    appears."""
     custom_title: str
     ai_title: str
     last_prompt: str
@@ -1190,6 +1189,11 @@ class SessionSummaryEntry(TypedDict, total=False):
     git_branch: str
     tag: str
     file_size: int
+    _first_prompt_locked: bool
+    """Opaque fold state: ``True`` once a non-command prompt has been found."""
+    _command_fallback: str
+    """Opaque fold state: first ``<command-name>`` seen, used when no real
+    prompt appears."""
 
 
 class SessionListSubkeysKey(TypedDict):

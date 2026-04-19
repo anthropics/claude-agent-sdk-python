@@ -71,12 +71,12 @@ def _entry_text_blocks(entry: dict[str, Any]) -> list[str]:
 def _fold_first_prompt(summary: SessionSummaryEntry, entry: dict[str, Any]) -> None:
     """Replicate ``_extract_first_prompt_from_head`` for a single parsed entry.
 
-    Mutates ``summary`` in place: sets ``first_prompt`` + ``first_prompt_locked``
-    on a real match, or stashes a ``command_fallback`` for slash-command
-    messages. Skips tool_result, isMeta, isCompactSummary, and auto-generated
-    patterns.
+    Mutates ``summary`` in place: sets ``first_prompt`` +
+    ``_first_prompt_locked`` on a real match, or stashes a
+    ``_command_fallback`` for slash-command messages. Skips tool_result,
+    isMeta, isCompactSummary, and auto-generated patterns.
     """
-    if summary.get("first_prompt_locked"):
+    if summary.get("_first_prompt_locked"):
         return
     if entry.get("type") != "user":
         return
@@ -97,15 +97,15 @@ def _fold_first_prompt(summary: SessionSummaryEntry, entry: dict[str, Any]) -> N
             continue
         cmd_match = _COMMAND_NAME_RE.search(result)
         if cmd_match:
-            if not summary.get("command_fallback"):
-                summary["command_fallback"] = cmd_match.group(1)
+            if not summary.get("_command_fallback"):
+                summary["_command_fallback"] = cmd_match.group(1)
             continue
         if _SKIP_FIRST_PROMPT_PATTERN.match(result):
             continue
         if len(result) > 200:
             result = result[:200].rstrip() + "\u2026"
         summary["first_prompt"] = result
-        summary["first_prompt_locked"] = True
+        summary["_first_prompt_locked"] = True
         return
 
 
@@ -181,8 +181,8 @@ def summary_entry_to_sdk_info(
 
     first_prompt = (
         entry.get("first_prompt")
-        if entry.get("first_prompt_locked")
-        else entry.get("command_fallback")
+        if entry.get("_first_prompt_locked")
+        else entry.get("_command_fallback")
     ) or None
     custom_title = entry.get("custom_title") or entry.get("ai_title") or None
     summary = (

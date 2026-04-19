@@ -181,7 +181,7 @@ class TestFoldSessionSummary:
             ],
         )
         assert s["first_prompt"] == "real first"
-        assert s["first_prompt_locked"] is True
+        assert s["_first_prompt_locked"] is True
 
     def test_first_prompt_command_fallback(self) -> None:
         s = fold_session_summary(
@@ -192,12 +192,12 @@ class TestFoldSessionSummary:
                 _user("<command-name>/second</command-name>"),
             ],
         )
-        assert s.get("first_prompt_locked") is not True
-        assert s["command_fallback"] == "/init"
+        assert s.get("_first_prompt_locked") is not True
+        assert s["_command_fallback"] == "/init"
         # A later real prompt locks it.
         s2 = fold_session_summary(s, KEY, [_user("now real")])
         assert s2["first_prompt"] == "now real"
-        assert s2["first_prompt_locked"] is True
+        assert s2["_first_prompt_locked"] is True
 
     def test_first_prompt_skip_pattern(self) -> None:
         s = fold_session_summary(
@@ -246,8 +246,8 @@ class TestSummaryEntryToSdkInfo:
             "session_id": "s",
             "mtime": 1,
             "first_prompt": "fp",
-            "first_prompt_locked": True,
-            "command_fallback": "/cmd",
+            "_first_prompt_locked": True,
+            "_command_fallback": "/cmd",
             "summary_hint": "sh",
             "last_prompt": "lp",
             "ai_title": "ai",
@@ -272,7 +272,7 @@ class TestSummaryEntryToSdkInfo:
         info = summary_entry_to_sdk_info(base, None)
         assert info is not None and info.summary == "fp" and info.first_prompt == "fp"
 
-        base["first_prompt_locked"] = False
+        base["_first_prompt_locked"] = False
         info = summary_entry_to_sdk_info(base, None)
         assert (
             info is not None and info.summary == "/cmd" and info.first_prompt == "/cmd"

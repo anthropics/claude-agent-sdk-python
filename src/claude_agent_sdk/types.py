@@ -1159,6 +1159,39 @@ class SessionStoreListEntry(TypedDict):
     modification time (e.g. Redis) must maintain their own index."""
 
 
+class SessionSummaryEntry(TypedDict, total=False):
+    """Incrementally-maintained session summary.
+
+    Stores update this on :meth:`SessionStore.append` via
+    :func:`fold_session_summary` and return the full set from
+    :meth:`SessionStore.list_session_summaries`. Every field is
+    append-incremental (set-once or last-wins) so adapters never re-read.
+    """
+
+    session_id: Required[str]
+    mtime: Required[int]
+    """Last-modified time in Unix epoch milliseconds (last entry timestamp)."""
+    is_sidechain: bool
+    created_at: int
+    """First entry timestamp in Unix epoch milliseconds."""
+    cwd: str
+    first_prompt: str
+    """First meaningful user prompt, truncated to 200 chars."""
+    first_prompt_locked: bool
+    """Internal: ``True`` once a non-command prompt has been found."""
+    command_fallback: str
+    """Internal: first ``<command-name>`` seen, used when no real prompt
+    appears."""
+    custom_title: str
+    ai_title: str
+    last_prompt: str
+    summary_hint: str
+    """Raw ``summary`` key from JSONL."""
+    git_branch: str
+    tag: str
+    file_size: int
+
+
 class SessionListSubkeysKey(TypedDict):
     """Key argument to :meth:`SessionStore.list_subkeys` (no ``subpath``)."""
 
@@ -1230,6 +1263,20 @@ class SessionStore(Protocol):
 
         Optional — if unimplemented, ``list_sessions()`` with a session store
         raises.
+        """
+        raise NotImplementedError
+
+    async def list_session_summaries(
+        self, project_key: str
+    ) -> list[SessionSummaryEntry]:
+        """Return incrementally-maintained summaries for all sessions in one call.
+
+        Stores should maintain these via :func:`fold_session_summary` inside
+        :meth:`append`. If not implemented, ``list_sessions_from_store()``
+        falls back to per-session :meth:`load`.
+
+        Optional — if unimplemented, ``list_sessions_from_store()`` falls back
+        to ``list_sessions()`` + per-session ``load()``.
         """
         raise NotImplementedError
 

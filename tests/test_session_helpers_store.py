@@ -210,6 +210,10 @@ class TestListSessionsFromStore:
         """One failing load() degrades that row instead of failing the list."""
 
         class FlakeyStore(InMemorySessionStore):
+            # Force the per-session load() fallback path under test.
+            async def list_session_summaries(self, project_key):
+                raise NotImplementedError
+
             async def load(self, key):
                 if key["session_id"] == bad_sid:
                     raise RuntimeError("backend down")
@@ -238,6 +242,10 @@ class TestListSessionsFromStore:
         gate = asyncio.Event()
 
         class SlowStore(InMemorySessionStore):
+            # Force the per-session load() fallback path under test.
+            async def list_session_summaries(self, project_key):
+                raise NotImplementedError
+
             async def load(self, key):
                 nonlocal in_flight, peak
                 in_flight += 1

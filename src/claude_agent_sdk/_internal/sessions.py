@@ -1554,13 +1554,31 @@ async def list_sessions_from_store(
         Consider denormalizing summary metadata into your adapter's
         ``list_sessions()`` index.
     """
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    project_key = _sanitize_path(project_path)
+
+    # Fast path: if the store maintains incremental summaries, fetch them in
+    # one call instead of N per-session load()s.
+    if _store_implements(session_store, "list_session_summaries"):
+        from .session_summary import summary_entry_to_sdk_info
+
+        try:
+            summaries = await session_store.list_session_summaries(project_key)
+        except NotImplementedError:
+            pass
+        else:
+            infos = [
+                info
+                for s in summaries
+                if (info := summary_entry_to_sdk_info(s, project_path)) is not None
+            ]
+            return _apply_sort_limit_offset(infos, limit, offset)
+
     if not _store_implements(session_store, "list_sessions"):
         raise ValueError(
             "session_store does not implement list_sessions() -- cannot list "
             "sessions. Provide a store with a list_sessions() method."
         )
-    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
-    project_key = _sanitize_path(project_path)
     raw = await session_store.list_sessions(project_key)
     # Copy — store.list_sessions() may return a reference to internal state.
     listing = list(raw)

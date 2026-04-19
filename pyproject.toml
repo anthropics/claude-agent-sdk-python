@@ -42,6 +42,16 @@ dev = [
 otel = [
     "opentelemetry-api>=1.20.0",
 ]
+examples = [
+    # Backend clients for the SessionStore reference adapters under
+    # examples/session_stores/. The corresponding tests importorskip on
+    # these so default CI is unaffected if this group isn't installed.
+    "boto3>=1.28.0",
+    "moto[s3]>=5.0.0",
+    "redis>=4.2.0",
+    "fakeredis>=2.20.0",
+    "asyncpg>=0.27.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/anthropics/claude-agent-sdk-python"
@@ -56,6 +66,7 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    "/examples",
     "/README.md",
     "/LICENSE",
 ]

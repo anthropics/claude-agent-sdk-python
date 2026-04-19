@@ -28,6 +28,10 @@ env/
 .venv
 uv.lock
 
+# Local env files (live-backend test credentials etc.)
+.env
+.env.*
+
 # IDEs
 .vscode/
 .idea/

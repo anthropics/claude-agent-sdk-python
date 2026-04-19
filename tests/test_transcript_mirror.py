@@ -474,7 +474,7 @@ class TestReceiveLoopFramePeeling:
                     new_callable=AsyncMock,
                 ),
                 patch(
-                    "claude_agent_sdk._internal.client._get_projects_dir",
+                    "claude_agent_sdk._internal.session_resume._get_projects_dir",
                     return_value=PROJECTS_DIR,
                 ),
             ):
@@ -527,7 +527,7 @@ class TestReceiveLoopFramePeeling:
                     new_callable=AsyncMock,
                 ),
                 patch(
-                    "claude_agent_sdk._internal.client._get_projects_dir",
+                    "claude_agent_sdk._internal.session_resume._get_projects_dir",
                     return_value=PROJECTS_DIR,
                 ),
             ):
@@ -570,7 +570,7 @@ class TestReceiveLoopFramePeeling:
                     new_callable=AsyncMock,
                 ),
                 patch(
-                    "claude_agent_sdk._internal.client._get_projects_dir",
+                    "claude_agent_sdk._internal.session_resume._get_projects_dir",
                     return_value=PROJECTS_DIR,
                 ),
             ):
@@ -653,7 +653,7 @@ class TestReceiveLoopFramePeeling:
                     new_callable=AsyncMock,
                 ),
                 patch(
-                    "claude_agent_sdk._internal.client._get_projects_dir",
+                    "claude_agent_sdk._internal.session_resume._get_projects_dir",
                     return_value=PROJECTS_DIR,
                 ),
             ):

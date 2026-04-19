@@ -14,10 +14,13 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
-from .session_resume import materialize_resume_session
+from .session_resume import (
+    MaterializedResume,
+    apply_materialized_options,
+    build_mirror_batcher,
+    materialize_resume_session,
+)
 from .session_store_validation import validate_session_store_options
-from .sessions import _get_projects_dir
-from .transcript_mirror_batcher import TranscriptMirrorBatcher
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
@@ -90,7 +93,7 @@ class InternalClient:
         prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeAgentOptions,
         transport: Transport | None,
-        materialized: Any,
+        materialized: MaterializedResume | None,
     ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
@@ -113,14 +116,8 @@ class InternalClient:
             configured_options = replace(options, permission_prompt_tool_name="stdio")
 
         if materialized is not None:
-            configured_options = replace(
-                configured_options,
-                env={
-                    **configured_options.env,
-                    "CLAUDE_CONFIG_DIR": str(materialized.config_dir),
-                },
-                resume=materialized.resume_session_id,
-                continue_conversation=False,
+            configured_options = apply_materialized_options(
+                configured_options, materialized
             )
 
         # Use provided transport or create subprocess transport
@@ -185,22 +182,18 @@ class InternalClient:
         )
 
         if configured_options.session_store is not None:
-            store = configured_options.session_store
 
             async def _on_mirror_error(key: Any, error: str) -> None:
                 query.report_mirror_error(key, error)
 
-            projects_dir = (
-                str(materialized.config_dir / "projects")
-                if materialized is not None
-                else str(_get_projects_dir(configured_options.env))
+            query.set_transcript_mirror_batcher(
+                build_mirror_batcher(
+                    store=configured_options.session_store,
+                    materialized=materialized,
+                    env=configured_options.env,
+                    on_error=_on_mirror_error,
+                )
             )
-            batcher = TranscriptMirrorBatcher(
-                store=store,
-                projects_dir=projects_dir,
-                on_error=_on_mirror_error,
-            )
-            query.set_transcript_mirror_batcher(batcher)
 
         try:
             # Start reading messages

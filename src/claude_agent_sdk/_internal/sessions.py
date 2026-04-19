@@ -1408,14 +1408,16 @@ def _entries_to_subagent_messages(
 # ---------------------------------------------------------------------------
 
 
-def _project_key_from_dir(directory: str | None) -> str:
-    """Compute the SessionStore ``project_key`` for a directory.
+def project_key_for_directory(directory: str | Path | None = None) -> str:
+    """Derive the :class:`SessionStore` ``project_key`` for a directory.
 
-    Defaults to the resolved current working directory. Mirrors
-    :func:`project_key_for_directory` but is defined locally to avoid a
-    circular import with ``session_store.py``.
+    Defaults to the current working directory. Uses the same realpath + NFC
+    normalization + djb2-hashed sanitization the CLI uses for project
+    directory names, so keys match between local-disk transcripts and
+    store-mirrored transcripts even on filesystems that decompose Unicode
+    (macOS HFS+).
     """
-    abs_path = _canonicalize_path(directory if directory is not None else ".")
+    abs_path = _canonicalize_path(str(directory) if directory is not None else ".")
     return _sanitize_path(abs_path)
 
 
@@ -1504,7 +1506,7 @@ async def _load_store_entries_as_jsonl(
 
     Returns ``None`` if the session has no entries.
     """
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
     entries = await store.load(key)
     if not entries:
@@ -1544,13 +1546,20 @@ async def list_sessions_from_store(
     Note:
         ``include_worktrees`` is a filesystem concept and is not honored on
         the store path — the store operates on a single ``project_key``.
+
+    .. note::
+        This performs one full ``store.load()`` per session in the page to
+        derive summaries. On remote backends with many or large sessions
+        this can be expensive (e.g., S3 egress, Postgres large-row reads).
+        Consider denormalizing summary metadata into your adapter's
+        ``list_sessions()`` index, or paginating with small ``limit``.
     """
     if not _store_implements(session_store, "list_sessions"):
         raise ValueError(
             "session_store does not implement list_sessions() -- cannot list "
             "sessions. Provide a store with a list_sessions() method."
         )
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     raw = await session_store.list_sessions(project_key)
     # Copy — store.list_sessions() may return a reference to internal state.
     listing = list(raw)
@@ -1649,7 +1658,7 @@ async def get_session_messages_from_store(
     """
     if not _validate_uuid(session_id):
         return []
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
     entries = await session_store.load(key)
     if not entries:
@@ -1690,7 +1699,7 @@ async def list_subagents_from_store(
             "session_store does not implement list_subkeys() -- cannot list "
             "subagents. Provide a store with a list_subkeys() method."
         )
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     subkeys = await session_store.list_subkeys(
         {"project_key": project_key, "session_id": session_id}
     )
@@ -1741,7 +1750,7 @@ async def get_subagent_messages_from_store(
         return []
     if not agent_id:
         return []
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
 
     subpath = f"subagents/agent-{agent_id}"
     if _store_implements(session_store, "list_subkeys"):

@@ -27,14 +27,14 @@ import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from ..types import ClaudeAgentOptions, SessionKey, SessionStore
-from .session_store import project_key_for_directory
 from .session_store_validation import _store_implements
-from .sessions import _validate_uuid
+from .sessions import _get_projects_dir, _validate_uuid, project_key_for_directory
+from .transcript_mirror_batcher import TranscriptMirrorBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,51 @@ class MaterializedResume:
     config_dir: Path
     resume_session_id: str
     cleanup: Callable[[], Awaitable[None]]
+
+
+def apply_materialized_options(
+    options: ClaudeAgentOptions, materialized: MaterializedResume
+) -> ClaudeAgentOptions:
+    """Return a copy of ``options`` repointed at a materialized temp config dir.
+
+    Sets ``CLAUDE_CONFIG_DIR`` in ``env``, ``resume`` to the materialized
+    session id, and clears ``continue_conversation`` (already resolved to a
+    concrete session id during materialization).
+    """
+    return replace(
+        options,
+        env={
+            **options.env,
+            "CLAUDE_CONFIG_DIR": str(materialized.config_dir),
+        },
+        resume=materialized.resume_session_id,
+        continue_conversation=False,
+    )
+
+
+def build_mirror_batcher(
+    store: SessionStore,
+    materialized: MaterializedResume | None,
+    env: dict[str, str] | None,
+    on_error: Callable[[SessionKey | None, str], Awaitable[None]],
+) -> TranscriptMirrorBatcher:
+    """Construct the :class:`TranscriptMirrorBatcher` for a session.
+
+    Resolves ``projects_dir`` to the materialized temp dir when present
+    (so file_path → key resolution matches what the subprocess writes),
+    otherwise to the standard projects directory under the effective
+    ``CLAUDE_CONFIG_DIR``.
+    """
+    projects_dir = (
+        str(materialized.config_dir / "projects")
+        if materialized is not None
+        else str(_get_projects_dir(env))
+    )
+    return TranscriptMirrorBatcher(
+        store=store,
+        projects_dir=projects_dir,
+        on_error=on_error,
+    )
 
 
 async def materialize_resume_session(

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
@@ -153,7 +154,7 @@ class Query:
             "subtype": "mirror_error",
             "error": error,
             "key": key,
-            "uuid": os.urandom(16).hex(),
+            "uuid": str(uuid.uuid4()),
             "session_id": key.get("session_id", "") if key else "",
         }
         try:

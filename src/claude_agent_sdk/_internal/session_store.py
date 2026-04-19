@@ -13,7 +13,13 @@ from ..types import (
     SessionStoreEntry,
     SessionStoreListEntry,
 )
-from .sessions import _canonicalize_path, _sanitize_path
+from .sessions import project_key_for_directory
+
+__all__ = [
+    "InMemorySessionStore",
+    "file_path_to_session_key",
+    "project_key_for_directory",
+]
 
 
 def _key_to_string(key: SessionKey) -> str:
@@ -116,10 +122,10 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
         # with a warning instead of letting the exception escape _drain().
         return None
     rel_path = Path(rel)
-    if rel.startswith("..") or rel_path.is_absolute():
+    parts = list(rel_path.parts)
+    if not parts or parts[0] == ".." or rel_path.is_absolute():
         return None
 
-    parts = list(rel_path.parts)
     if len(parts) < 2:
         return None
 
@@ -145,16 +151,3 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
         }
 
     return None
-
-
-def project_key_for_directory(directory: str | Path | None = None) -> str:
-    """Derive the :class:`SessionStore` ``project_key`` for a directory.
-
-    Defaults to the current working directory. Uses the same realpath + NFC
-    normalization + djb2-hashed sanitization the CLI uses for project
-    directory names, so keys match between local-disk transcripts and
-    store-mirrored transcripts even on filesystems that decompose Unicode
-    (macOS HFS+).
-    """
-    abs_path = _canonicalize_path(str(directory) if directory is not None else ".")
-    return _sanitize_path(abs_path)

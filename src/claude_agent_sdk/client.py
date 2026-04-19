@@ -4,10 +4,13 @@ import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import Transport
 from ._errors import CLIConnectionError
+
+if TYPE_CHECKING:
+    from ._internal.session_resume import MaterializedResume
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
@@ -73,7 +76,7 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
-        self._materialized: Any | None = None
+        self._materialized: MaterializedResume | None = None
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -147,8 +150,10 @@ class ClaudeSDKClient:
         actual_prompt: AsyncIterable[dict[str, Any]],
     ) -> None:
         from ._internal.query import Query
-        from ._internal.sessions import _get_projects_dir
-        from ._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
+        from ._internal.session_resume import (
+            apply_materialized_options,
+            build_mirror_batcher,
+        )
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
@@ -173,15 +178,7 @@ class ClaudeSDKClient:
             options = self.options
 
         if self._materialized is not None:
-            options = replace(
-                options,
-                env={
-                    **options.env,
-                    "CLAUDE_CONFIG_DIR": str(self._materialized.config_dir),
-                },
-                resume=self._materialized.resume_session_id,
-                continue_conversation=False,
-            )
+            options = apply_materialized_options(options, self._materialized)
 
         # Use provided custom transport or create subprocess transport
         if self._custom_transport:
@@ -240,26 +237,19 @@ class ClaudeSDKClient:
         )
 
         if self.options.session_store is not None:
-            store = self.options.session_store
             q = self._query
 
             async def _on_mirror_error(key: Any, error: str) -> None:
                 q.report_mirror_error(key, error)
 
-            # When materialized, the subprocess writes transcripts under the
-            # temp config dir — point the batcher there so file_path → key
-            # resolution matches.
-            projects_dir = (
-                str(self._materialized.config_dir / "projects")
-                if self._materialized is not None
-                else str(_get_projects_dir(self.options.env))
+            self._query.set_transcript_mirror_batcher(
+                build_mirror_batcher(
+                    store=self.options.session_store,
+                    materialized=self._materialized,
+                    env=self.options.env,
+                    on_error=_on_mirror_error,
+                )
             )
-            batcher = TranscriptMirrorBatcher(
-                store=store,
-                projects_dir=projects_dir,
-                on_error=_on_mirror_error,
-            )
-            self._query.set_transcript_mirror_batcher(batcher)
 
         # Start reading messages and initialize
         await self._query.start()

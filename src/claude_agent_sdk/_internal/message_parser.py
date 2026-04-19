@@ -185,6 +185,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             usage=data.get("usage"),
                         )
                     case "mirror_error":
+                        # SDK-synthesized via report_mirror_error — never emitted by the CLI subprocess.
                         return MirrorErrorMessage(
                             subtype=subtype,
                             data=data,

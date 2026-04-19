@@ -4,7 +4,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, Required, TypedDict
@@ -1166,7 +1166,6 @@ class SessionListSubkeysKey(TypedDict):
     session_id: str
 
 
-@runtime_checkable
 class SessionStore(Protocol):
     """Adapter for mirroring session transcripts to external storage.
 
@@ -1183,9 +1182,10 @@ class SessionStore(Protocol):
 
     Only :meth:`append` and :meth:`load` are required. The remaining methods
     are optional: implementers may omit them, and call sites probe for their
-    presence before invoking. The default implementations on this Protocol
-    raise :class:`NotImplementedError` so that ``isinstance`` checks succeed
-    while still signaling absence at call time.
+    presence at runtime before invoking (the SDK never uses ``isinstance`` for
+    this — a duck-typed adapter need not subclass ``SessionStore``). The
+    default implementations on this Protocol raise :class:`NotImplementedError`
+    so subclasses can inherit them as "absent" markers.
     """
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:

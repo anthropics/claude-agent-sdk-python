@@ -41,8 +41,8 @@ from .sessions import (
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
-    _project_key_from_dir,
     _validate_uuid,
+    project_key_for_directory,
 )
 
 # ---------------------------------------------------------------------------
@@ -793,7 +793,7 @@ async def rename_session_via_store(
     stripped = title.strip()
     if not stripped:
         raise ValueError("title must be non-empty")
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
     entry: dict[str, Any] = {
         "type": "custom-title",
@@ -836,7 +836,7 @@ async def tag_session_via_store(
         if not sanitized:
             raise ValueError("tag must be non-empty (use None to clear)")
         tag = sanitized
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
     entry: dict[str, Any] = {
         "type": "tag",
@@ -877,7 +877,7 @@ async def delete_session_via_store(
         raise ValueError(f"Invalid session_id: {session_id}")
     if not _store_implements(session_store, "delete"):
         return
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
     await session_store.delete(key)
 
@@ -921,7 +921,7 @@ async def fork_session_via_store(
         raise ValueError(f"Invalid session_id: {session_id}")
     if up_to_message_id and not _validate_uuid(up_to_message_id):
         raise ValueError(f"Invalid up_to_message_id: {up_to_message_id}")
-    project_key = _project_key_from_dir(directory)
+    project_key = project_key_for_directory(directory)
     src_key: SessionKey = {"project_key": project_key, "session_id": session_id}
     loaded = await session_store.load(src_key)
     if not loaded:

@@ -81,8 +81,18 @@ class TestInMemorySessionStore:
         # No skip_optional passed — auto-probe should detect missing overrides.
         await run_session_store_conformance(MinimalStore)
 
-    def test_isinstance_runtime_checkable(self) -> None:
-        assert isinstance(InMemorySessionStore(), SessionStore)
+    def test_store_implements_is_canonical_probe(self) -> None:
+        """SessionStore is intentionally not @runtime_checkable; capability
+        detection goes through _store_implements()."""
+        from claude_agent_sdk._internal.session_store_validation import (
+            _store_implements,
+        )
+
+        store = InMemorySessionStore()
+        assert _store_implements(store, "append")
+        assert _store_implements(store, "list_sessions")
+        with pytest.raises(TypeError):
+            isinstance(store, SessionStore)
 
     @pytest.mark.asyncio
     async def test_get_entries_helper(self) -> None:

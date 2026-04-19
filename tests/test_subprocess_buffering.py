@@ -2,13 +2,16 @@
 
 import json
 from collections.abc import AsyncIterator
+from io import StringIO
+from subprocess import PIPE
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
 import pytest
+from anyio.streams.text import TextReceiveStream
 
-from claude_agent_sdk._errors import CLIJSONDecodeError
+from claude_agent_sdk._errors import CLIJSONDecodeError, ProcessError
 from claude_agent_sdk._internal.transport.subprocess_cli import (
     _DEFAULT_MAX_BUFFER_SIZE,
     SubprocessCLITransport,
@@ -381,5 +384,91 @@ class TestSubprocessBuffering:
             assert len(messages) == 2
             assert messages[0]["type"] == "system"
             assert messages[1]["type"] == "result"
+
+        anyio.run(_test)
+
+    def test_nonzero_exit_includes_captured_stderr(self) -> None:
+        """ProcessError should surface the stderr emitted by the CLI."""
+
+        async def _test() -> None:
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+
+            mock_process = MagicMock()
+            mock_process.returncode = None
+            mock_process.wait = AsyncMock(return_value=1)
+            transport._process = mock_process
+            transport._stdout_stream = MockTextReceiveStream([])
+            transport._stderr_stream = MockTextReceiveStream(
+                ["error: invalid --model alias", "hint: run claude --help"]
+            )
+
+            with pytest.raises(ProcessError) as exc_info:
+                async for _ in transport.read_messages():
+                    pass
+
+            assert exc_info.value.exit_code == 1
+            assert exc_info.value.stderr == (
+                "error: invalid --model alias\nhint: run claude --help"
+            )
+
+        anyio.run(_test)
+
+    def test_stderr_is_forwarded_to_sink_while_buffering(self) -> None:
+        """Captured stderr should still be forwarded to the configured sink."""
+
+        async def _test() -> None:
+            sink = StringIO()
+            transport = SubprocessCLITransport(
+                prompt="test", options=make_options(debug_stderr=sink)
+            )
+            transport._stderr_stream = MockTextReceiveStream(["warning: deprecated flag"])
+
+            await transport._handle_stderr()
+
+            assert sink.getvalue() == "warning: deprecated flag\n"
+
+        anyio.run(_test)
+
+    def test_nonzero_exit_waits_for_live_stderr_reader(self) -> None:
+        """ProcessError should include stderr captured by the background reader."""
+
+        async def _test() -> None:
+            import sys
+
+            process = await anyio.open_process(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        "sys.stderr.write('error: invalid --model alias\\n'); "
+                        "sys.stderr.write('hint: run claude --help\\n'); "
+                        "sys.exit(1)"
+                    ),
+                ],
+                stdout=PIPE,
+                stderr=PIPE,
+            )
+
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            transport._process = process
+            transport._stdout_stream = TextReceiveStream(process.stdout)
+            transport._stderr_process_stream = process.stderr
+            transport._stderr_stream = TextReceiveStream(process.stderr)
+            transport._stderr_reader_finished = anyio.Event()
+            transport._stderr_task_group = anyio.create_task_group()
+            await transport._stderr_task_group.__aenter__()
+            transport._stderr_task_group.start_soon(transport._handle_stderr)
+
+            with pytest.raises(ProcessError) as exc_info:
+                async for _ in transport.read_messages():
+                    pass
+
+            assert exc_info.value.exit_code == 1
+            assert exc_info.value.stderr == (
+                "error: invalid --model alias\nhint: run claude --help"
+            )
+
+            await transport.close()
 
         anyio.run(_test)

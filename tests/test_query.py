@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -21,6 +22,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
+from claude_agent_sdk._errors import ProcessError
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -724,5 +726,38 @@ class TestControlCancelRequest:
             await q.close()
 
             assert "fast_1" not in q._inflight_requests
+
+        asyncio.run(_test())
+
+    def test_receive_messages_preserves_process_error(self):
+        """read task failures should surface the original ProcessError."""
+        import asyncio
+
+        async def _test():
+            transport = AsyncMock()
+            transport.is_ready = Mock(return_value=True)
+            transport.close = AsyncMock()
+
+            async def failing_messages():
+                raise ProcessError(
+                    "Command failed with exit code 1",
+                    exit_code=1,
+                    stderr="invalid --model alias",
+                )
+                yield  # pragma: no cover
+
+            transport.read_messages = failing_messages
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ProcessError) as exc_info:
+                async for _ in q.receive_messages():
+                    pass
+
+            await q.close()
+
+            assert exc_info.value.exit_code == 1
+            assert exc_info.value.stderr == "invalid --model alias"
 
         asyncio.run(_test())

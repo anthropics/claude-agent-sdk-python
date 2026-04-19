@@ -167,7 +167,11 @@ async def run_session_store_conformance(
     # --- Optional: list_session_summaries ----------------------------------
 
     if has_list_summaries:
-        # 14. list_session_summaries reflects incremental fold on append
+        # 14. list_session_summaries returns persisted fold output that
+        # round-trips through fold_session_summary again. Stores must NOT
+        # interpret ``data`` — only persist it verbatim.
+        from .._internal.session_summary import fold_session_summary
+
         store = await fresh()
         key: SessionKey = {"project_key": "proj", "session_id": "summ-sess"}
         await store.append(
@@ -191,8 +195,13 @@ async def run_session_store_conformance(
         summ = by_id["summ-sess"]
         # mtime must be epoch-ms; >1e12 rules out epoch-seconds.
         assert math.isfinite(summ["mtime"]) and summ["mtime"] > 1e12
-        # custom_title is last-wins across append calls.
-        assert summ.get("custom_title") == "second"
+        # data is opaque; the contract is that it round-trips into the fold.
+        assert isinstance(summ["data"], dict)
+        refolded = fold_session_summary(
+            summ, key, [_e({"timestamp": "2024-01-01T00:00:03.000Z"})]
+        )
+        assert refolded["session_id"] == "summ-sess"
+        assert refolded["mtime"] >= summ["mtime"]
         assert await store.list_session_summaries("never-appended-project") == []
         if has_delete:
             await store.delete(key)

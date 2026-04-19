@@ -68,15 +68,15 @@ def _entry_text_blocks(entry: dict[str, Any]) -> list[str]:
     return texts
 
 
-def _fold_first_prompt(summary: SessionSummaryEntry, entry: dict[str, Any]) -> None:
+def _fold_first_prompt(data: dict[str, Any], entry: dict[str, Any]) -> None:
     """Replicate ``_extract_first_prompt_from_head`` for a single parsed entry.
 
-    Mutates ``summary`` in place: sets ``first_prompt`` +
-    ``_first_prompt_locked`` on a real match, or stashes a
-    ``_command_fallback`` for slash-command messages. Skips tool_result,
-    isMeta, isCompactSummary, and auto-generated patterns.
+    Mutates ``data`` in place: sets ``first_prompt`` + ``first_prompt_locked``
+    on a real match, or stashes a ``command_fallback`` for slash-command
+    messages. Skips tool_result, isMeta, isCompactSummary, and auto-generated
+    patterns.
     """
-    if summary.get("_first_prompt_locked"):
+    if data.get("first_prompt_locked"):
         return
     if entry.get("type") != "user":
         return
@@ -97,15 +97,15 @@ def _fold_first_prompt(summary: SessionSummaryEntry, entry: dict[str, Any]) -> N
             continue
         cmd_match = _COMMAND_NAME_RE.search(result)
         if cmd_match:
-            if not summary.get("_command_fallback"):
-                summary["_command_fallback"] = cmd_match.group(1)
+            if not data.get("command_fallback"):
+                data["command_fallback"] = cmd_match.group(1)
             continue
         if _SKIP_FIRST_PROMPT_PATTERN.match(result):
             continue
         if len(result) > 200:
             result = result[:200].rstrip() + "\u2026"
-        summary["first_prompt"] = result
-        summary["_first_prompt_locked"] = True
+        data["first_prompt"] = result
+        data["first_prompt_locked"] = True
         return
 
 
@@ -121,15 +121,19 @@ def fold_session_summary(
     transcript. ``prev`` is the previous summary for the same key (or ``None``
     for the first append).
 
-    Set-once fields (``is_sidechain``, ``created_at``, ``cwd``,
-    ``first_prompt``) freeze on first sight; last-wins fields
-    (``custom_title``, ``ai_title``, ``last_prompt``, ``summary_hint``,
-    ``git_branch``, ``tag``, ``mtime``) overwrite on every appearance.
+    All derived state lives in the opaque ``data`` dict; stores persist it
+    verbatim and do not interpret it. ``mtime`` stays top-level so stores
+    can index on it.
     """
     if prev is not None:
-        summary = cast(SessionSummaryEntry, dict(prev))
+        summary: SessionSummaryEntry = {
+            "session_id": prev["session_id"],
+            "mtime": prev["mtime"],
+            "data": dict(prev["data"]),
+        }
     else:
-        summary = {"session_id": key["session_id"], "mtime": 0}
+        summary = {"session_id": key["session_id"], "mtime": 0, "data": {}}
+    data = summary["data"]
 
     for raw in entries:
         # SessionStoreEntry is a permissive TypedDict; widen to a plain dict
@@ -140,30 +144,30 @@ def fold_session_summary(
         if ms is not None and ms > summary["mtime"]:
             summary["mtime"] = ms
 
-        if "is_sidechain" not in summary:
-            summary["is_sidechain"] = entry.get("isSidechain") is True
-        if "created_at" not in summary and ms is not None:
-            summary["created_at"] = ms
+        if "is_sidechain" not in data:
+            data["is_sidechain"] = entry.get("isSidechain") is True
+        if "created_at" not in data and ms is not None:
+            data["created_at"] = ms
 
-        if "cwd" not in summary:
+        if "cwd" not in data:
             cwd = entry.get("cwd")
             if isinstance(cwd, str) and cwd:
-                summary["cwd"] = cwd
+                data["cwd"] = cwd
 
-        _fold_first_prompt(summary, entry)
+        _fold_first_prompt(data, entry)
 
         for src, dst in _LAST_WINS_FIELDS.items():
             val = entry.get(src)
             if isinstance(val, str):
-                summary[dst] = val  # type: ignore[literal-required]
+                data[dst] = val
 
         if entry.get("type") == "tag":
             tag_val = entry.get("tag")
             if isinstance(tag_val, str) and tag_val:
-                summary["tag"] = tag_val
+                data["tag"] = tag_val
             else:
                 # Empty string or absent tag clears the tag.
-                summary.pop("tag", None)
+                data.pop("tag", None)
 
     return summary
 
@@ -176,19 +180,20 @@ def summary_entry_to_sdk_info(
     Returns ``None`` for sidechain sessions or sessions with no extractable
     summary, matching ``_parse_session_info_from_lite``'s filtering.
     """
-    if entry.get("is_sidechain"):
+    data = entry["data"]
+    if data.get("is_sidechain"):
         return None
 
     first_prompt = (
-        entry.get("first_prompt")
-        if entry.get("_first_prompt_locked")
-        else entry.get("_command_fallback")
+        data.get("first_prompt")
+        if data.get("first_prompt_locked")
+        else data.get("command_fallback")
     ) or None
-    custom_title = entry.get("custom_title") or entry.get("ai_title") or None
+    custom_title = data.get("custom_title") or data.get("ai_title") or None
     summary = (
         custom_title
-        or entry.get("last_prompt")
-        or entry.get("summary_hint")
+        or data.get("last_prompt")
+        or data.get("summary_hint")
         or first_prompt
     )
     if not summary:
@@ -198,11 +203,11 @@ def summary_entry_to_sdk_info(
         session_id=entry["session_id"],
         summary=summary,
         last_modified=entry["mtime"],
-        file_size=entry.get("file_size"),
+        file_size=data.get("file_size"),
         custom_title=custom_title,
         first_prompt=first_prompt,
-        git_branch=entry.get("git_branch") or None,
-        cwd=entry.get("cwd") or project_path or None,
-        tag=entry.get("tag") or None,
-        created_at=entry.get("created_at"),
+        git_branch=data.get("git_branch") or None,
+        cwd=data.get("cwd") or project_path or None,
+        tag=data.get("tag") or None,
+        created_at=data.get("created_at"),
     )

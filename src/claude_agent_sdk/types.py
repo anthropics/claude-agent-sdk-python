@@ -1159,41 +1159,21 @@ class SessionStoreListEntry(TypedDict):
     modification time (e.g. Redis) must maintain their own index."""
 
 
-class SessionSummaryEntry(TypedDict, total=False):
+class SessionSummaryEntry(TypedDict):
     """Incrementally-maintained session summary.
 
-    Stores update this on :meth:`SessionStore.append` via
-    :func:`fold_session_summary` and return the full set from
-    :meth:`SessionStore.list_session_summaries`. Every field is
-    append-incremental (set-once or last-wins) so adapters never re-read.
-
-    Fields prefixed ``_`` are opaque fold state — stores MUST persist them
-    verbatim across :func:`fold_session_summary` calls but SHOULD NOT
-    interpret them.
+    Stores obtain this from :func:`fold_session_summary` inside
+    :meth:`SessionStore.append` and persist it verbatim; they return the
+    full set from :meth:`SessionStore.list_session_summaries`. The ``data``
+    field is opaque SDK-owned state — stores MUST NOT interpret it.
     """
 
-    session_id: Required[str]
-    mtime: Required[int]
-    """Last-modified time in Unix epoch milliseconds (last entry timestamp)."""
-    is_sidechain: bool
-    created_at: int
-    """First entry timestamp in Unix epoch milliseconds."""
-    cwd: str
-    first_prompt: str
-    """First meaningful user prompt, truncated to 200 chars."""
-    custom_title: str
-    ai_title: str
-    last_prompt: str
-    summary_hint: str
-    """Raw ``summary`` key from JSONL."""
-    git_branch: str
-    tag: str
-    file_size: int
-    _first_prompt_locked: bool
-    """Opaque fold state: ``True`` once a non-command prompt has been found."""
-    _command_fallback: str
-    """Opaque fold state: first ``<command-name>`` seen, used when no real
-    prompt appears."""
+    session_id: str
+    mtime: int
+    """Last-modified time in Unix epoch milliseconds (last entry timestamp).
+    Stores may index on this."""
+    data: dict[str, Any]
+    """Opaque SDK-owned summary state. Persist verbatim; do not interpret."""
 
 
 class SessionListSubkeysKey(TypedDict):

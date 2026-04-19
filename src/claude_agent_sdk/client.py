@@ -136,12 +136,12 @@ class ClaudeSDKClient:
         try:
             await self._connect_inner(prompt, actual_prompt)
         except BaseException:
-            # The temp dir holds a .credentials.json copy — remove it if
-            # connect fails (transport spawn, initialize, etc.) since
-            # disconnect() may never be called.
-            if self._materialized is not None:
-                await self._materialized.cleanup()
-                self._materialized = None
+            # If connect fails after the subprocess has spawned (e.g. at
+            # query.initialize()), close the subprocess/read task *before*
+            # removing the temp CLAUDE_CONFIG_DIR it points at. disconnect()
+            # already orders close() → cleanup() and is None-safe for
+            # pre-spawn failures, so reuse it here.
+            await self.disconnect()
             raise
 
     async def _connect_inner(

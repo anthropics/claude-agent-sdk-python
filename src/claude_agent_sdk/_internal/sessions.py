@@ -1548,18 +1548,19 @@ async def list_sessions_from_store(
         the store path — the store operates on a single ``project_key``.
 
     .. note::
-        This performs one full ``store.load()`` per session in the page to
-        derive summaries. On remote backends with many or large sessions
+        This performs one full ``store.load()`` per session in the listing
+        to derive summaries. On remote backends with many or large sessions
         this can be expensive (e.g., S3 egress, Postgres large-row reads).
         Consider denormalizing summary metadata into your adapter's
-        ``list_sessions()`` index, or paginating with small ``limit``.
+        ``list_sessions()`` index.
     """
     if not _store_implements(session_store, "list_sessions"):
         raise ValueError(
             "session_store does not implement list_sessions() -- cannot list "
             "sessions. Provide a store with a list_sessions() method."
         )
-    project_key = project_key_for_directory(directory)
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    project_key = _sanitize_path(project_path)
     raw = await session_store.list_sessions(project_key)
     # Copy — store.list_sessions() may return a reference to internal state.
     listing = list(raw)
@@ -1592,7 +1593,9 @@ async def list_sessions_from_store(
             continue
         if outcome is None:
             continue
-        parsed = _parse_session_info_from_lite(sid, _jsonl_to_lite(outcome, mtime))
+        parsed = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(outcome, mtime), project_path
+        )
         if parsed is None:
             # Sidechain or no extractable summary — drop, matching the
             # filesystem path.
@@ -1628,7 +1631,8 @@ async def get_session_info_from_store(
     if jsonl is None:
         return None
     lite = _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
-    return _parse_session_info_from_lite(session_id, lite)
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    return _parse_session_info_from_lite(session_id, lite, project_path)
 
 
 async def get_session_messages_from_store(

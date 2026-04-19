@@ -18,6 +18,7 @@ import pytest
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    CLIConnectionError,
     InMemorySessionStore,
     query,
 )
@@ -1080,6 +1081,55 @@ class TestSpawnFailureCleanup:
             async with ClaudeSDKClient(options=opts):
                 pass  # pragma: no cover
 
+        assert track_resume_dirs
+        for d in track_resume_dirs:
+            assert not d.exists(), f"leaked temp dir {d}"
+
+    @pytest.mark.asyncio
+    async def test_client_initialize_failure_closes_subprocess_before_cleanup(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        track_resume_dirs: list[Path],
+    ) -> None:
+        """When connect() fails *after* the subprocess spawned (at
+        query.initialize()), the subprocess/read task must be closed before
+        the temp CLAUDE_CONFIG_DIR is removed and must not leak."""
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        mock_transport = _make_mock_transport()
+        # transport.connect() succeeds → subprocess "spawned"; failure happens
+        # later at Query.initialize().
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        client = ClaudeSDKClient(options=opts)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                return_value=mock_transport,
+            ),
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+                side_effect=CLIConnectionError("control timeout"),
+            ),
+            pytest.raises(CLIConnectionError, match="control timeout"),
+        ):
+            await client.connect()
+
+        # disconnect() must have run: query/transport cleared, transport.close
+        # awaited (subprocess terminated), then temp dir removed.
+        assert client._query is None
+        assert client._transport is None
+        assert client._materialized is None
+        mock_transport.close.assert_awaited()
         assert track_resume_dirs
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"

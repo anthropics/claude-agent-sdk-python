@@ -298,6 +298,24 @@ class TestGetSessionInfoFromStore:
         assert info.custom_title == "My Title"
         assert info.summary == "My Title"
 
+    async def test_cwd_falls_back_to_directory_when_entries_lack_cwd(self) -> None:
+        """Disk-path parity: when transcript entries omit ``cwd`` (the
+        ``_seed_chain`` helper writes none), ``SDKSessionInfo.cwd`` must fall
+        back to the canonical project directory, not None."""
+        from claude_agent_sdk._internal.sessions import _canonicalize_path
+
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid)
+        canonical = _canonicalize_path(DIR)
+
+        info = await get_session_info_from_store(store, sid, directory=DIR)
+        assert info is not None
+        assert info.cwd == canonical
+
+        listed = await list_sessions_from_store(store, directory=DIR)
+        assert listed and listed[0].cwd == canonical
+
 
 class TestGetSessionMessagesFromStore:
     async def test_returns_chain_in_order(self) -> None:

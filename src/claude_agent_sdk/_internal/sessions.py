@@ -34,11 +34,14 @@ LITE_READ_BUF_SIZE = 65536
 _STORE_LIST_LOAD_CONCURRENCY = 16
 
 # Head/tail entry counts requested via ``store.load_range()`` when deriving
-# session summaries. Head needs the first user prompt + sidechain marker +
-# created_at timestamp; tail needs the latest title/tag/summary/gitBranch
-# entries. These are upper bounds — short sessions return fewer.
-_LITE_LOAD_HEAD_ENTRIES = 10
-_LITE_LOAD_TAIL_ENTRIES = 20
+# session summaries. Tail must cover the CLI's metadata re-append threshold
+# (custom-title/tag/last-prompt are re-appended every ~32 KB of transcript,
+# i.e. up to ~160 small entries between re-appends — 200 leaves margin).
+# Head must cover the preamble before the first user message (mode/progress/
+# attachment/system/snapshot entries — observed up to index 14 in real
+# transcripts). These are upper bounds — short sessions return fewer.
+_LITE_LOAD_HEAD_ENTRIES = 20
+_LITE_LOAD_TAIL_ENTRIES = 200
 
 # Maximum length for a single filesystem path component. Most filesystems
 # limit individual components to 255 bytes. We use 200 to leave room for

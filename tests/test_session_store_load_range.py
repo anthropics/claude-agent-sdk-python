@@ -286,16 +286,16 @@ class TestLargeSessionSummaryViaLoadRange:
         info = await get_session_info_from_store(store, sid, directory=DIR)
 
         assert info is not None
-        # first_prompt comes from entry[0] (within head=10 slice).
+        # first_prompt comes from entry[0] (within head slice).
         assert info.first_prompt == "prompt 0"
-        # custom_title + tag come from entries[98:100] (within tail=20 slice).
+        # custom_title + tag come from entries[98:100] (within tail slice).
         assert info.custom_title == "My Big Session"
         assert info.summary == "My Big Session"
         assert info.tag == "important"
         # created_at parsed from first entry's timestamp.
         assert info.created_at is not None
         # Only a slice was fetched, so file_size is unknown — None, not the
-        # misleading byte-count of the ~30-entry slice.
+        # misleading byte-count of a partial slice.
         assert info.file_size is None
         # Only load_range was used — full transcript never fetched.
         assert store.load_range_calls == 1
@@ -345,3 +345,86 @@ class TestLargeSessionSummaryViaLoadRange:
         # from the tail's "recent prompt".
         assert info.first_prompt is None
         assert info.file_size is None
+
+    async def test_tail_covers_32kb_reappend_window(self) -> None:
+        """Regression: the CLI re-appends ``custom-title``/``tag``/``last-prompt``
+        on a ~32 KB **byte** threshold, not an entry count, so up to ~160 small
+        entries can accumulate between re-appends. ``rename_session_via_store``
+        followed by a long turn can therefore push the title >20 entries deep
+        before the next re-append. ``_LITE_LOAD_TAIL_ENTRIES`` must be sized to
+        cover that window."""
+        from claude_agent_sdk._internal import sessions as _sessions
+
+        store = _SpyStoreWithRange()
+        sid = str(uuid_mod.uuid4())
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+
+        # 250 entries: a short head with the first user prompt, then a
+        # custom-title at index 50 (rename mid-session), then 199 small
+        # progress entries mirrored before the CLI's next 32 KB re-append.
+        entries: list[dict[str, Any]] = []
+        u0 = str(uuid_mod.uuid4())
+        entries.append(_user("first prompt", u0, None, sid, "2024-01-01T00:00:00Z"))
+        entries.extend({"type": "system", "uuid": f"s{i}"} for i in range(49))
+        entries.append({"type": "custom-title", "customTitle": "Renamed Mid-Turn"})
+        entries.extend({"type": "progress", "uuid": f"p{i}"} for i in range(199))
+        assert len(entries) == 250
+        # The title sits at the very edge of tail[-TAIL:] — would be missed
+        # with the old tail=20.
+        assert entries.index(
+            {"type": "custom-title", "customTitle": "Renamed Mid-Turn"}
+        ) == (len(entries) - _sessions._LITE_LOAD_TAIL_ENTRIES)
+
+        await store.append(key, entries)  # type: ignore[arg-type]
+
+        info = await get_session_info_from_store(store, sid, directory=DIR)
+
+        assert info is not None
+        assert info.custom_title == "Renamed Mid-Turn"
+        assert info.summary == "Renamed Mid-Turn"
+        assert info.first_prompt == "first prompt"
+        assert store.load_range_calls == 1
+        assert store.load_calls == 0
+
+    async def test_degrades_to_last_prompt_when_preamble_exceeds_head(self) -> None:
+        """When the preamble (mode/progress/attachment/system entries) is
+        longer than ``_LITE_LOAD_HEAD_ENTRIES`` and the first user message
+        falls outside the head slice, ``first_prompt`` is ``None`` but the
+        session is still listed — ``summary`` degrades to ``lastPrompt`` from
+        the tail rather than dropping the row."""
+        from claude_agent_sdk._internal import sessions as _sessions
+
+        store = _SpyStoreWithRange()
+        sid = str(uuid_mod.uuid4())
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+
+        head_n = _sessions._LITE_LOAD_HEAD_ENTRIES
+        # Preamble longer than the head slice — head=20 sees only system noise.
+        preamble: list[dict[str, Any]] = [
+            {"type": "system", "uuid": f"pre{i}"} for i in range(head_n + 10)
+        ]
+        u = str(uuid_mod.uuid4())
+        a = str(uuid_mod.uuid4())
+        body = [
+            _user("real first prompt", u, None, sid, "2024-01-01T00:01:00Z"),
+            _assistant("reply", a, u, sid, "2024-01-01T00:01:01Z"),
+        ]
+        # Filler so head and tail slices don't overlap (the user prompt at
+        # index head_n+10 must not appear in the head OR the tail).
+        tail_n = _sessions._LITE_LOAD_TAIL_ENTRIES
+        filler: list[dict[str, Any]] = [
+            {"type": "system", "uuid": f"f{i}"} for i in range(tail_n)
+        ]
+        last_prompt = [{"type": "last-prompt", "lastPrompt": "what user did last"}]
+
+        await store.append(key, preamble + body + filler + last_prompt)  # type: ignore[arg-type]
+
+        info = await get_session_info_from_store(store, sid, directory=DIR)
+
+        assert info is not None
+        # First user message at index head_n+10 — outside head[:head_n].
+        assert info.first_prompt is None
+        # Graceful degradation: summary falls through to lastPrompt, not None.
+        assert info.summary == "what user did last"
+        assert store.load_range_calls == 1
+        assert store.load_calls == 0

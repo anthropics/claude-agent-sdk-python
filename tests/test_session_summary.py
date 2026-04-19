@@ -465,6 +465,82 @@ class TestListSessionsFromStoreFastPath:
         assert len(sessions) == 1
         assert sessions[0].summary == "hi"
 
+    async def test_mixed_sessions_gap_filled(self) -> None:
+        """A store with summaries for only SOME sessions (e.g. adopted the
+        method mid-stream) must have the rest gap-filled via per-session
+        load() so old sessions aren't silently dropped."""
+        sid_with = str(uuid_mod.uuid4())
+        sid_without = str(uuid_mod.uuid4())
+
+        class PartialStore(InMemorySessionStore):
+            load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                full = await super().list_session_summaries(project_key)
+                return [s for s in full if s["session_id"] == sid_with]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = PartialStore()
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_with},
+            [_user("has sidecar", ts="2024-01-02T00:00:00Z")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_without},
+            [_user("no sidecar", ts="2024-01-01T00:00:00Z")],
+        )
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        by_id = {s.session_id: s for s in sessions}
+        assert set(by_id) == {sid_with, sid_without}
+        assert by_id[sid_with].summary == "has sidecar"
+        assert by_id[sid_without].summary == "no sidecar"
+        # Only the missing session should have been load()ed.
+        assert store.load_calls == [sid_without]
+
+    async def test_gap_fill_bounded_concurrency(self) -> None:
+        """Gap-fill reuses the bounded per-session load helper, so
+        ``_STORE_LIST_LOAD_CONCURRENCY`` applies to the missing-session set."""
+        import asyncio
+
+        from claude_agent_sdk._internal import sessions as _sessions
+
+        in_flight = 0
+        peak = 0
+        gate = asyncio.Event()
+
+        class PartialSlowStore(InMemorySessionStore):
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                return []  # everything is "missing"
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await gate.wait()
+                in_flight -= 1
+                return await super().load(key)
+
+        store = PartialSlowStore()
+        n = _sessions._STORE_LIST_LOAD_CONCURRENCY * 2
+        for i in range(n):
+            await InMemorySessionStore.append(
+                store,
+                {"project_key": PROJECT_KEY, "session_id": str(uuid_mod.uuid4())},
+                [_user(f"p{i}")],
+            )
+
+        task = asyncio.create_task(list_sessions_from_store(store, directory=DIR))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert 0 < peak <= _sessions._STORE_LIST_LOAD_CONCURRENCY
+        gate.set()
+        await task
+        assert peak == _sessions._STORE_LIST_LOAD_CONCURRENCY
+
 
 # ---------------------------------------------------------------------------
 # Parity: incremental fold == batch lite-parse

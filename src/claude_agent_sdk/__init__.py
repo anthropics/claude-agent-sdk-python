@@ -37,6 +37,7 @@ from ._internal.session_mutations import (
     tag_session_via_store,
 )
 from ._internal.session_store import InMemorySessionStore, project_key_for_directory
+from ._internal.session_summary import fold_session_summary
 from ._internal.sessions import (
     get_session_info,
     get_session_info_from_store,
@@ -109,6 +110,7 @@ from .types import (
     SessionStore,
     SessionStoreEntry,
     SessionStoreListEntry,
+    SessionSummaryEntry,
     SettingSource,
     StopHookInput,
     StreamEvent,
@@ -602,8 +604,10 @@ __all__ = [
     "SessionStore",
     "SessionStoreEntry",
     "SessionStoreListEntry",
+    "SessionSummaryEntry",
     "SessionListSubkeysKey",
     "InMemorySessionStore",
+    "fold_session_summary",
     "MirrorErrorMessage",
     "project_key_for_directory",
     # Session listing (SessionStore-backed async variants)

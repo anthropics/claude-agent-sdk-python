@@ -1,9 +1,10 @@
 """Shared conformance test suite for :class:`SessionStore` adapters.
 
 Call :func:`run_session_store_conformance` from an async test to assert the
-13 behavioral contracts every adapter must satisfy. Tests for optional
-methods (``list_sessions``, ``delete``, ``list_subkeys``) are skipped when
-named in ``skip_optional`` or when the store does not override that method.
+14 behavioral contracts every adapter must satisfy. Tests for optional
+methods (``list_sessions``, ``list_session_summaries``, ``delete``,
+``list_subkeys``) are skipped when named in ``skip_optional`` or when the
+store does not override that method.
 
 Example::
 
@@ -24,9 +25,11 @@ from typing import Any
 
 from ..types import SessionKey, SessionStore
 
-OptionalMethod = str  # "list_sessions" | "delete" | "list_subkeys"
+OptionalMethod = (
+    str  # "list_sessions" | "list_session_summaries" | "delete" | "list_subkeys"
+)
 _OPTIONAL_METHODS: frozenset[str] = frozenset(
-    {"list_sessions", "delete", "list_subkeys"}
+    {"list_sessions", "list_session_summaries", "delete", "list_subkeys"}
 )
 
 _KEY: SessionKey = {"project_key": "proj", "session_id": "sess"}
@@ -53,12 +56,12 @@ async def run_session_store_conformance(
     *,
     skip_optional: frozenset[str] = frozenset(),
 ) -> None:
-    """Assert the 13 :class:`SessionStore` behavioral contracts.
+    """Assert the 14 :class:`SessionStore` behavioral contracts.
 
     ``make_store`` is invoked once per contract to provide isolation. It may be
     sync or async. Contracts for optional methods (``list_sessions``,
-    ``delete``, ``list_subkeys``) are skipped when named in ``skip_optional``
-    or when the store does not override that method.
+    ``list_session_summaries``, ``delete``, ``list_subkeys``) are skipped when
+    named in ``skip_optional`` or when the store does not override that method.
     """
     invalid = skip_optional - _OPTIONAL_METHODS
     assert not invalid, f"unknown optional methods in skip_optional: {invalid}"
@@ -71,6 +74,7 @@ async def run_session_store_conformance(
 
     probe = await fresh()
     has_list_sessions = _has_optional(probe, "list_sessions", skip_optional)
+    has_list_summaries = _has_optional(probe, "list_session_summaries", skip_optional)
     has_delete = _has_optional(probe, "delete", skip_optional)
     has_list_subkeys = _has_optional(probe, "list_subkeys", skip_optional)
 
@@ -159,6 +163,49 @@ async def run_session_store_conformance(
         )
         sessions = await store.list_sessions("proj")
         assert [s["session_id"] for s in sessions] == ["main"]
+
+    # --- Optional: list_session_summaries ----------------------------------
+
+    if has_list_summaries:
+        # 14. list_session_summaries returns persisted fold output that
+        # round-trips through fold_session_summary again. Stores must NOT
+        # interpret ``data`` — only persist it verbatim.
+        from .._internal.session_summary import fold_session_summary
+
+        store = await fresh()
+        key: SessionKey = {"project_key": "proj", "session_id": "summ-sess"}
+        await store.append(
+            key,
+            [
+                _e({"timestamp": "2024-01-01T00:00:00.000Z", "customTitle": "first"}),
+                _e({"timestamp": "2024-01-01T00:00:01.000Z"}),
+            ],
+        )
+        await store.append(
+            key,
+            [_e({"timestamp": "2024-01-01T00:00:02.000Z", "customTitle": "second"})],
+        )
+        await store.append(
+            {"project_key": "other", "session_id": "elsewhere"},
+            [_e({"timestamp": "2024-01-01T00:00:00.000Z"})],
+        )
+        summaries = await store.list_session_summaries("proj")
+        by_id = {s["session_id"]: s for s in summaries}
+        assert set(by_id) == {"summ-sess"}
+        summ = by_id["summ-sess"]
+        # mtime must be epoch-ms; >1e12 rules out epoch-seconds.
+        assert math.isfinite(summ["mtime"]) and summ["mtime"] > 1e12
+        # data is opaque; the contract is that it round-trips into the fold.
+        assert isinstance(summ["data"], dict)
+        refolded = fold_session_summary(
+            summ, key, [_e({"timestamp": "2024-01-01T00:00:03.000Z"})]
+        )
+        assert refolded["session_id"] == "summ-sess"
+        assert refolded["mtime"] >= summ["mtime"]
+        assert await store.list_session_summaries("never-appended-project") == []
+        if has_delete:
+            await store.delete(key)
+            assert await store.list_session_summaries("proj") == []
 
     # --- Optional: delete --------------------------------------------------
 

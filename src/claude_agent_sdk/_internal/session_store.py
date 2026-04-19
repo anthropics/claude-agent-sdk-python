@@ -12,7 +12,9 @@ from ..types import (
     SessionStore,
     SessionStoreEntry,
     SessionStoreListEntry,
+    SessionSummaryEntry,
 )
+from .session_summary import fold_session_summary
 from .sessions import project_key_for_directory
 
 __all__ = [
@@ -41,11 +43,20 @@ class InMemorySessionStore(SessionStore):
     def __init__(self) -> None:
         self._store: dict[str, list[SessionStoreEntry]] = {}
         self._mtimes: dict[str, int] = {}
+        self._summaries: dict[tuple[str, str], SessionSummaryEntry] = {}
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
         self._mtimes[k] = int(time.time() * 1000)
+        # Maintain the per-session summary sidecar incrementally so
+        # list_session_summaries() never re-reads. Subagent subpaths don't
+        # contribute to the main session's summary.
+        if key.get("subpath") is None:
+            sk = (key["project_key"], key["session_id"])
+            self._summaries[sk] = fold_session_summary(
+                self._summaries.get(sk), key, entries
+            )
 
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         entries = self._store.get(_key_to_string(key))
@@ -64,6 +75,11 @@ class InMemorySessionStore(SessionStore):
                     )
         return results
 
+    async def list_session_summaries(
+        self, project_key: str
+    ) -> list[SessionSummaryEntry]:
+        return [s for (pk, _), s in self._summaries.items() if pk == project_key]
+
     async def delete(self, key: SessionKey) -> None:
         k = _key_to_string(key)
         self._store.pop(k, None)
@@ -72,6 +88,7 @@ class InMemorySessionStore(SessionStore):
         # transcripts, metadata) so they aren't orphaned. A targeted delete
         # with an explicit subpath removes only that one entry.
         if key.get("subpath") is None:
+            self._summaries.pop((key["project_key"], key["session_id"]), None)
             prefix = f"{key['project_key']}/{key['session_id']}/"
             for store_key in [sk for sk in self._store if sk.startswith(prefix)]:
                 self._store.pop(store_key, None)
@@ -103,6 +120,7 @@ class InMemorySessionStore(SessionStore):
         """Test helper — clear all stored data."""
         self._store.clear()
         self._mtimes.clear()
+        self._summaries.clear()
 
 
 def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | None:

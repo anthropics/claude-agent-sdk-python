@@ -1514,6 +1514,53 @@ async def _load_store_entries_as_jsonl(
     return _entries_to_jsonl(entries)
 
 
+async def _derive_infos_via_load(
+    session_store: SessionStore,
+    listing: list[Any],
+    directory: str | None,
+    project_path: str,
+) -> list[SDKSessionInfo]:
+    """Derive ``SDKSessionInfo`` for each ``listing`` entry via per-session
+    ``store.load()`` + lite-parse.
+
+    Loads run concurrently with a fixed bound so large listings don't exhaust
+    adapter connection pools or hit backend rate limits; adapter errors degrade
+    that row to an empty summary instead of failing the whole list. Sidechain
+    and no-summary sessions are dropped.
+    """
+    sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
+
+    async def _bounded_load(sid: str) -> str | None:
+        async with sem:
+            return await _load_store_entries_as_jsonl(session_store, sid, directory)
+
+    settled = await asyncio.gather(
+        *(_bounded_load(e["session_id"]) for e in listing),
+        return_exceptions=True,
+    )
+    results: list[SDKSessionInfo] = []
+    for entry, outcome in zip(listing, settled, strict=True):
+        sid = entry["session_id"]
+        mtime = entry["mtime"]
+        if isinstance(outcome, BaseException):
+            results.append(
+                SDKSessionInfo(session_id=sid, summary="", last_modified=mtime)
+            )
+            continue
+        if outcome is None:
+            continue
+        parsed = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(outcome, mtime), project_path
+        )
+        if parsed is None:
+            # Sidechain or no extractable summary — drop, matching the
+            # filesystem path.
+            continue
+        parsed.last_modified = mtime
+        results.append(parsed)
+    return results
+
+
 async def list_sessions_from_store(
     session_store: SessionStore,
     directory: str | None = None,
@@ -1548,60 +1595,61 @@ async def list_sessions_from_store(
         the store path — the store operates on a single ``project_key``.
 
     .. note::
-        This performs one full ``store.load()`` per session in the listing
-        to derive summaries. On remote backends with many or large sessions
-        this can be expensive (e.g., S3 egress, Postgres large-row reads).
-        Consider denormalizing summary metadata into your adapter's
-        ``list_sessions()`` index.
+        If the store implements ``list_session_summaries``, this is a single
+        store call. Otherwise falls back to one ``store.load()`` per session
+        (bounded at 16 concurrent), which on remote backends with many or
+        large sessions can be expensive (e.g., S3 egress, Postgres large-row
+        reads).
     """
-    if not _store_implements(session_store, "list_sessions"):
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    project_key = _sanitize_path(project_path)
+    has_list_sessions = _store_implements(session_store, "list_sessions")
+
+    # Fast path: if the store maintains incremental summaries, fetch them in
+    # one call instead of N per-session load()s.
+    if _store_implements(session_store, "list_session_summaries"):
+        from .session_summary import summary_entry_to_sdk_info
+
+        try:
+            summaries = await session_store.list_session_summaries(project_key)
+        except NotImplementedError:
+            pass
+        else:
+            infos = [
+                info
+                for s in summaries
+                if (info := summary_entry_to_sdk_info(s, project_path)) is not None
+            ]
+            # Gap-fill: a store may have entries for sessions appended before
+            # it adopted list_session_summaries (no sidecar yet). Enumerate
+            # via list_sessions() and derive the missing ones via the
+            # per-session load() path so they aren't silently dropped.
+            if has_list_sessions:
+                summary_ids = {s["session_id"] for s in summaries}
+                listing = list(await session_store.list_sessions(project_key))
+                missing = [e for e in listing if e["session_id"] not in summary_ids]
+                if missing:
+                    infos.extend(
+                        await _derive_infos_via_load(
+                            session_store, missing, directory, project_path
+                        )
+                    )
+            return _apply_sort_limit_offset(infos, limit, offset)
+
+    if not has_list_sessions:
         raise ValueError(
             "session_store does not implement list_sessions() -- cannot list "
             "sessions. Provide a store with a list_sessions() method."
         )
-    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
-    project_key = _sanitize_path(project_path)
-    raw = await session_store.list_sessions(project_key)
     # Copy — store.list_sessions() may return a reference to internal state.
-    listing = list(raw)
-
+    listing = list(await session_store.list_sessions(project_key))
     # Derive a real summary per session by loading its entries and reusing
-    # the filesystem path's lite-parse. Loads run concurrently with a fixed
-    # bound so large listings don't exhaust adapter connection pools or hit
-    # backend rate limits; adapter errors degrade that row instead of failing
-    # the whole list. Filtering (sidechain/empty drop) happens before
-    # pagination so ``limit``/``offset`` index the same filtered set as the
-    # disk path.
-    sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
-
-    async def _bounded_load(sid: str) -> str | None:
-        async with sem:
-            return await _load_store_entries_as_jsonl(session_store, sid, directory)
-
-    settled = await asyncio.gather(
-        *(_bounded_load(e["session_id"]) for e in listing),
-        return_exceptions=True,
+    # the filesystem path's lite-parse. Filtering (sidechain/empty drop)
+    # happens before pagination so ``limit``/``offset`` index the same
+    # filtered set as the disk path.
+    results = await _derive_infos_via_load(
+        session_store, listing, directory, project_path
     )
-    results: list[SDKSessionInfo] = []
-    for entry, outcome in zip(listing, settled, strict=True):
-        sid = entry["session_id"]
-        mtime = entry["mtime"]
-        if isinstance(outcome, BaseException):
-            results.append(
-                SDKSessionInfo(session_id=sid, summary="", last_modified=mtime)
-            )
-            continue
-        if outcome is None:
-            continue
-        parsed = _parse_session_info_from_lite(
-            sid, _jsonl_to_lite(outcome, mtime), project_path
-        )
-        if parsed is None:
-            # Sidechain or no extractable summary — drop, matching the
-            # filesystem path.
-            continue
-        parsed.last_modified = mtime
-        results.append(parsed)
     return _apply_sort_limit_offset(results, limit, offset)
 
 

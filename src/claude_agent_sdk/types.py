@@ -1159,6 +1159,23 @@ class SessionStoreListEntry(TypedDict):
     modification time (e.g. Redis) must maintain their own index."""
 
 
+class SessionSummaryEntry(TypedDict):
+    """Incrementally-maintained session summary.
+
+    Stores obtain this from :func:`fold_session_summary` inside
+    :meth:`SessionStore.append` and persist it verbatim; they return the
+    full set from :meth:`SessionStore.list_session_summaries`. The ``data``
+    field is opaque SDK-owned state — stores MUST NOT interpret it.
+    """
+
+    session_id: str
+    mtime: int
+    """Last-modified time in Unix epoch milliseconds (last entry timestamp).
+    Stores may index on this."""
+    data: dict[str, Any]
+    """Opaque SDK-owned summary state. Persist verbatim; do not interpret."""
+
+
 class SessionListSubkeysKey(TypedDict):
     """Key argument to :meth:`SessionStore.list_subkeys` (no ``subpath``)."""
 
@@ -1230,6 +1247,20 @@ class SessionStore(Protocol):
 
         Optional — if unimplemented, ``list_sessions()`` with a session store
         raises.
+        """
+        raise NotImplementedError
+
+    async def list_session_summaries(
+        self, project_key: str
+    ) -> list[SessionSummaryEntry]:
+        """Return incrementally-maintained summaries for all sessions in one call.
+
+        Stores should maintain these via :func:`fold_session_summary` inside
+        :meth:`append`. If not implemented, ``list_sessions_from_store()``
+        falls back to per-session :meth:`load`.
+
+        Optional — if unimplemented, ``list_sessions_from_store()`` falls back
+        to ``list_sessions()`` + per-session ``load()``.
         """
         raise NotImplementedError
 

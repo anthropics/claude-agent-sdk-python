@@ -553,13 +553,18 @@ class TestTagSessionViaStore:
         object keys (Postgres JSONB does this). The tag extractor must not
         depend on ``type`` being the first key in the serialized line."""
 
+        def _reorder(entries):
+            # Sort keys alphabetically — deep-equal but different order.
+            return [dict(sorted(e.items())) for e in entries]
+
         class ReorderingStore(InMemorySessionStore):
             async def load(self, key):  # type: ignore[override]
                 entries = await super().load(key)
-                if entries is None:
-                    return None
-                # Sort keys alphabetically — deep-equal but different order.
-                return [dict(sorted(e.items())) for e in entries]
+                return None if entries is None else _reorder(entries)
+
+            async def load_range(self, key, *, head=0, tail=0):  # type: ignore[override]
+                r = await super().load_range(key, head=head, tail=tail)
+                return None if r is None else (_reorder(r[0]), _reorder(r[1]))
 
         store = ReorderingStore()
         sid = str(uuid_mod.uuid4())

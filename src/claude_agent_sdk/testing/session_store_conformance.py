@@ -1,9 +1,10 @@
 """Shared conformance test suite for :class:`SessionStore` adapters.
 
 Call :func:`run_session_store_conformance` from an async test to assert the
-13 behavioral contracts every adapter must satisfy. Tests for optional
-methods (``list_sessions``, ``delete``, ``list_subkeys``) are skipped when
-named in ``skip_optional`` or when the store does not override that method.
+14 behavioral contracts every adapter must satisfy. Tests for optional
+methods (``list_sessions``, ``delete``, ``list_subkeys``, ``load_range``) are
+skipped when named in ``skip_optional`` or when the store does not override
+that method.
 
 Example::
 
@@ -53,12 +54,12 @@ async def run_session_store_conformance(
     *,
     skip_optional: frozenset[str] = frozenset(),
 ) -> None:
-    """Assert the 13 :class:`SessionStore` behavioral contracts.
+    """Assert the 14 :class:`SessionStore` behavioral contracts.
 
     ``make_store`` is invoked once per contract to provide isolation. It may be
     sync or async. Contracts for optional methods (``list_sessions``,
-    ``delete``, ``list_subkeys``) are skipped when named in ``skip_optional``
-    or when the store does not override that method.
+    ``delete``, ``list_subkeys``, ``load_range``) are skipped when named in
+    ``skip_optional`` or when the store does not override that method.
     """
     invalid = skip_optional - _OPTIONAL_METHODS
     assert not invalid, f"unknown optional methods in skip_optional: {invalid}"

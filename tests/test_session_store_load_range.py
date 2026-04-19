@@ -294,6 +294,9 @@ class TestLargeSessionSummaryViaLoadRange:
         assert info.tag == "important"
         # created_at parsed from first entry's timestamp.
         assert info.created_at is not None
+        # Only a slice was fetched, so file_size is unknown — None, not the
+        # misleading byte-count of the ~30-entry slice.
+        assert info.file_size is None
         # Only load_range was used — full transcript never fetched.
         assert store.load_range_calls == 1
         assert store.load_calls == 0
@@ -305,5 +308,40 @@ class TestLargeSessionSummaryViaLoadRange:
         assert len(sessions) == 1
         assert sessions[0].summary == "My Big Session"
         assert sessions[0].first_prompt == "prompt 0"
+        assert sessions[0].file_size is None
         assert store.load_range_calls == 1
         assert store.load_calls == 0
+
+    async def test_first_prompt_does_not_leak_from_tail(self) -> None:
+        """When the head slice contains only skippable noise (isMeta/system),
+        ``first_prompt`` must be ``None`` rather than a recent user prompt
+        pulled from the tail. Regression for head/tail being concatenated
+        before ``_jsonl_to_lite`` so the head scan saw tail entries."""
+        store = _SpyStoreWithRange()
+        sid = str(uuid_mod.uuid4())
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+
+        # head=10 will be these 10 system/meta noise entries.
+        noise: list[dict[str, Any]] = [
+            {"type": "system", "uuid": f"n{i}", "isMeta": True} for i in range(10)
+        ]
+        # Middle filler so the head/tail slices don't overlap.
+        filler: list[dict[str, Any]] = [
+            {"type": "system", "uuid": f"f{i}"} for i in range(50)
+        ]
+        # tail=20 will include this recent user prompt + a customTitle so
+        # the session has an extractable summary.
+        u = str(uuid_mod.uuid4())
+        recent = [
+            _user("recent prompt", u, None, sid, "2024-01-01T00:59:00Z"),
+            {"type": "custom-title", "customTitle": "Noise Head"},
+        ]
+        await store.append(key, noise + filler + recent)  # type: ignore[arg-type]
+
+        info = await get_session_info_from_store(store, sid, directory=DIR)
+        assert info is not None
+        assert info.summary == "Noise Head"
+        # Head contained no user prompt → first_prompt must not be sourced
+        # from the tail's "recent prompt".
+        assert info.first_prompt is None
+        assert info.file_size is None

@@ -346,7 +346,7 @@ class _LiteSessionFile:
 
     __slots__ = ("mtime", "size", "head", "tail")
 
-    def __init__(self, mtime: int, size: int, head: str, tail: str) -> None:
+    def __init__(self, mtime: int, size: int | None, head: str, tail: str) -> None:
         self.mtime = mtime
         self.size = size
         self.head = head
@@ -1506,16 +1506,18 @@ def _filter_transcript_entries(entries: list[Any]) -> list[_TranscriptEntry]:
     return result
 
 
-async def _load_store_entries_as_jsonl(
+async def _load_store_session_lite(
     store: SessionStore, session_id: str, directory: str | None
-) -> str | None:
-    """Load entries from a SessionStore and serialize to a JSONL string.
+) -> _LiteSessionFile | None:
+    """Load a session from a SessionStore as a ``_LiteSessionFile``.
 
     Only the head/tail slice needed for lite-parse summary derivation is
     fetched when the store implements :meth:`SessionStore.load_range`;
-    otherwise falls back to a full :meth:`SessionStore.load`. Either way the
-    result is fed to ``_jsonl_to_lite`` which itself slices to a 64KB
-    head/tail, so the parse path is identical.
+    otherwise falls back to a full :meth:`SessionStore.load` and slices via
+    ``_jsonl_to_lite``. Head and tail are serialized separately on the
+    ``load_range`` path so head-only scans (e.g. ``first_prompt``) never see
+    tail entries; ``size`` is ``None`` on that path since only a slice was
+    fetched.
 
     Returns ``None`` if the session has no entries.
     """
@@ -1525,12 +1527,24 @@ async def _load_store_entries_as_jsonl(
         head, tail = await store.load_range(
             key, head=_LITE_LOAD_HEAD_ENTRIES, tail=_LITE_LOAD_TAIL_ENTRIES
         ) or ([], [])
-        entries_for_lite: list[Any] | None = list(head) + list(tail)
-    else:
-        entries_for_lite = await store.load(key)
-    if not entries_for_lite:
+        if not head and not tail:
+            return None
+        head_jsonl = _entries_to_jsonl(list(head)) if head else ""
+        # Mirror the disk path's "tail = head when small" semantics so
+        # adapters that return an empty tail for short sessions still expose
+        # the head entries to tail-scanning extractors.
+        tail_jsonl = _entries_to_jsonl(list(tail)) if tail else head_jsonl
+        return _LiteSessionFile(
+            mtime=_mtime_from_jsonl_tail(tail_jsonl or head_jsonl),
+            size=None,
+            head=head_jsonl,
+            tail=tail_jsonl,
+        )
+    entries = await store.load(key)
+    if not entries:
         return None
-    return _entries_to_jsonl(entries_for_lite)
+    jsonl = _entries_to_jsonl(entries)
+    return _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
 
 
 async def list_sessions_from_store(
@@ -1595,9 +1609,9 @@ async def list_sessions_from_store(
     # disk path.
     sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
 
-    async def _bounded_load(sid: str) -> str | None:
+    async def _bounded_load(sid: str) -> _LiteSessionFile | None:
         async with sem:
-            return await _load_store_entries_as_jsonl(session_store, sid, directory)
+            return await _load_store_session_lite(session_store, sid, directory)
 
     settled = await asyncio.gather(
         *(_bounded_load(e["session_id"]) for e in listing),
@@ -1614,9 +1628,7 @@ async def list_sessions_from_store(
             continue
         if outcome is None:
             continue
-        parsed = _parse_session_info_from_lite(
-            sid, _jsonl_to_lite(outcome, mtime), project_path
-        )
+        parsed = _parse_session_info_from_lite(sid, outcome, project_path)
         if parsed is None:
             # Sidechain or no extractable summary — drop, matching the
             # filesystem path.
@@ -1648,10 +1660,9 @@ async def get_session_info_from_store(
     """
     if not _validate_uuid(session_id):
         return None
-    jsonl = await _load_store_entries_as_jsonl(session_store, session_id, directory)
-    if jsonl is None:
+    lite = await _load_store_session_lite(session_store, session_id, directory)
+    if lite is None:
         return None
-    lite = _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
     project_path = _canonicalize_path(str(directory) if directory is not None else ".")
     return _parse_session_info_from_lite(session_id, lite, project_path)
 

@@ -321,16 +321,20 @@ class TestLargeSessionSummaryViaLoadRange:
         sid = str(uuid_mod.uuid4())
         key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
 
-        # head=10 will be these 10 system/meta noise entries.
+        # head[:_LITE_LOAD_HEAD_ENTRIES=20] will be these 10 isMeta noise
+        # entries + the first 10 filler entries below — no user-type entries.
         noise: list[dict[str, Any]] = [
             {"type": "system", "uuid": f"n{i}", "isMeta": True} for i in range(10)
         ]
-        # Middle filler so the head/tail slices don't overlap.
+        # Filler so the recent user prompt below sits at index 60, beyond the
+        # head slice. (Head/tail overlap is irrelevant on the load_range path
+        # since the two slices are serialized to separate JSONL strings.)
         filler: list[dict[str, Any]] = [
             {"type": "system", "uuid": f"f{i}"} for i in range(50)
         ]
-        # tail=20 will include this recent user prompt + a customTitle so
-        # the session has an extractable summary.
+        # tail[-_LITE_LOAD_TAIL_ENTRIES=200:] (all 62 entries here) includes
+        # this recent user prompt + a customTitle so the session has an
+        # extractable summary.
         u = str(uuid_mod.uuid4())
         recent = [
             _user("recent prompt", u, None, sid, "2024-01-01T00:59:00Z"),

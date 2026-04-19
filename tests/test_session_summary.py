@@ -153,6 +153,21 @@ class TestFoldSessionSummary:
         )
         assert s["is_sidechain"] is True
 
+    def test_sidechain_latched_when_first_entry_lacks_timestamp(self) -> None:
+        """Regression: is_sidechain must latch on entry 0 even if its timestamp
+        is absent/unparseable, so entry 1 cannot overwrite it to False."""
+        s = fold_session_summary(
+            None,
+            KEY,
+            [
+                {"type": "user", "isSidechain": True},
+                {"type": "x", "timestamp": "2024-01-01T00:00:00Z"},
+            ],
+        )
+        assert s["is_sidechain"] is True
+        # created_at still picks up the first parseable timestamp.
+        assert s["created_at"] == 1704067200000
+
     def test_first_prompt_skips_meta_tool_result_and_compact(self) -> None:
         s = fold_session_summary(
             None,

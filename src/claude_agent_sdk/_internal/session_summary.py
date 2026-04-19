@@ -140,10 +140,10 @@ def fold_session_summary(
         if ms is not None and ms > summary["mtime"]:
             summary["mtime"] = ms
 
-        if "created_at" not in summary:
-            if ms is not None:
-                summary["created_at"] = ms
+        if "is_sidechain" not in summary:
             summary["is_sidechain"] = entry.get("isSidechain") is True
+        if "created_at" not in summary and ms is not None:
+            summary["created_at"] = ms
 
         if "cwd" not in summary:
             cwd = entry.get("cwd")

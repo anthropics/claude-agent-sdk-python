@@ -1548,11 +1548,11 @@ async def list_sessions_from_store(
         the store path — the store operates on a single ``project_key``.
 
     .. note::
-        This performs one full ``store.load()`` per session in the listing
-        to derive summaries. On remote backends with many or large sessions
-        this can be expensive (e.g., S3 egress, Postgres large-row reads).
-        Consider denormalizing summary metadata into your adapter's
-        ``list_sessions()`` index.
+        If the store implements ``list_session_summaries``, this is a single
+        store call. Otherwise falls back to one ``store.load()`` per session
+        (bounded at 16 concurrent), which on remote backends with many or
+        large sessions can be expensive (e.g., S3 egress, Postgres large-row
+        reads).
     """
     project_path = _canonicalize_path(str(directory) if directory is not None else ".")
     project_key = _sanitize_path(project_path)

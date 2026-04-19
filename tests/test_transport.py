@@ -270,9 +270,7 @@ class TestSubprocessCLITransport:
             ),
         ],
     )
-    def test_build_command_thinking_display_forwarded(
-        self, thinking, expected_display
-    ):
+    def test_build_command_thinking_display_forwarded(self, thinking, expected_display):
         """`display` in thinking config is forwarded as --thinking-display."""
         transport = SubprocessCLITransport(
             prompt="test",

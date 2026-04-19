@@ -28,16 +28,26 @@ from ._errors import (
 from ._internal.session_mutations import (
     ForkSessionResult,
     delete_session,
+    delete_session_via_store,
     fork_session,
+    fork_session_via_store,
     rename_session,
+    rename_session_via_store,
     tag_session,
+    tag_session_via_store,
 )
+from ._internal.session_store import InMemorySessionStore, project_key_for_directory
 from ._internal.sessions import (
     get_session_info,
+    get_session_info_from_store,
     get_session_messages,
+    get_session_messages_from_store,
     get_subagent_messages,
+    get_subagent_messages_from_store,
     list_sessions,
+    list_sessions_from_store,
     list_subagents,
+    list_subagents_from_store,
 )
 from ._internal.transport import Transport
 from ._version import __version__
@@ -67,6 +77,7 @@ from .types import (
     McpToolAnnotations,
     McpToolInfo,
     Message,
+    MirrorErrorMessage,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionMode,
@@ -92,7 +103,12 @@ from .types import (
     SdkBeta,
     SdkPluginConfig,
     SDKSessionInfo,
+    SessionKey,
+    SessionListSubkeysKey,
     SessionMessage,
+    SessionStore,
+    SessionStoreEntry,
+    SessionStoreListEntry,
     SettingSource,
     StopHookInput,
     StreamEvent,
@@ -581,12 +597,32 @@ __all__ = [
     "get_subagent_messages",
     "SDKSessionInfo",
     "SessionMessage",
+    # Session store
+    "SessionKey",
+    "SessionStore",
+    "SessionStoreEntry",
+    "SessionStoreListEntry",
+    "SessionListSubkeysKey",
+    "InMemorySessionStore",
+    "MirrorErrorMessage",
+    "project_key_for_directory",
+    # Session listing (SessionStore-backed async variants)
+    "list_sessions_from_store",
+    "get_session_info_from_store",
+    "get_session_messages_from_store",
+    "list_subagents_from_store",
+    "get_subagent_messages_from_store",
     # Session mutations
     "rename_session",
     "tag_session",
     "delete_session",
     "fork_session",
     "ForkSessionResult",
+    # Session mutations (SessionStore-backed async variants)
+    "rename_session_via_store",
+    "tag_session_via_store",
+    "delete_session_via_store",
+    "fork_session_via_store",
     # Beta support
     "SdkBeta",
     # Sandbox support

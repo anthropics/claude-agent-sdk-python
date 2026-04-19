@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
@@ -29,6 +30,9 @@ from .transport import Transport
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+
+    from ..types import SessionKey
+    from .transcript_mirror_batcher import TranscriptMirrorBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +128,39 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
+
+        # SessionStore mirroring (set via set_transcript_mirror_batcher)
+        self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
+
+    def set_transcript_mirror_batcher(self, batcher: "TranscriptMirrorBatcher") -> None:
+        """Attach a batcher that receives ``transcript_mirror`` frames.
+
+        When set, the read loop peels ``transcript_mirror`` frames off stdout
+        (they are not yielded to consumers), enqueues them on the batcher, and
+        flushes before yielding each ``result`` message.
+        """
+        self._transcript_mirror_batcher = batcher
+
+    def report_mirror_error(self, key: "SessionKey | None", error: str) -> None:
+        """Surface a :meth:`SessionStore.append` failure as a system message.
+
+        Called from the batcher's ``on_error``; the dropped batch is not
+        retried (at-most-once delivery), so this is the consumer's only signal.
+        Non-blocking — if the message buffer is full the error is logged and
+        dropped rather than back-pressuring the read loop.
+        """
+        msg: dict[str, Any] = {
+            "type": "system",
+            "subtype": "mirror_error",
+            "error": error,
+            "key": key,
+            "uuid": str(uuid.uuid4()),
+            "session_id": key.get("session_id", "") if key else "",
+        }
+        try:
+            self._message_send.send_nowait(msg)
+        except Exception as e:  # pragma: no cover - buffer-full edge case
+            logger.warning("Dropping mirror_error message (buffer full): %s", e)
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -242,8 +279,22 @@ class Query:
                             inflight.cancel()
                     continue
 
+                elif msg_type == "transcript_mirror":
+                    # SessionStore write path: peel mirror frames off stdout
+                    # and hand to the batcher; do NOT yield to consumers.
+                    if self._transcript_mirror_batcher is not None:
+                        self._transcript_mirror_batcher.enqueue(
+                            message["filePath"], message["entries"]
+                        )
+                    continue
+
                 # Track results for proper stream closure
                 if msg_type == "result":
+                    # Flush pending transcript mirror entries before yielding
+                    # result so consumers observing the result can rely on the
+                    # SessionStore being up to date for this turn.
+                    if self._transcript_mirror_batcher is not None:
+                        await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
 
                 # Regular SDK messages go to the stream
@@ -263,6 +314,11 @@ class Query:
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": str(e)})
         finally:
+            # Flush any remaining transcript mirror entries before closing so
+            # an early stdout EOF or transport error doesn't drop entries
+            # batched this turn. flush() never raises.
+            if self._transcript_mirror_batcher is not None:
+                await self._transcript_mirror_batcher.flush()
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
@@ -744,6 +800,10 @@ class Query:
     async def close(self) -> None:
         """Close the query and transport."""
         self._closed = True
+        # Final-flush mirror entries before tearing down so .return()/break
+        # don't drop the current turn when the process exits immediately.
+        if self._transcript_mirror_batcher is not None:
+            await self._transcript_mirror_batcher.close()
         for task in list(self._child_tasks):
             task.cancel()
         if self._read_task is not None and not self._read_task.done():

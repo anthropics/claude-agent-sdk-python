@@ -6,17 +6,20 @@ extracts metadata from stat + head/tail reads without full JSONL parsing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..types import SDKSessionInfo, SessionMessage
+from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
+from .session_store_validation import _store_implements
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -24,6 +27,11 @@ from ..types import SDKSessionInfo, SessionMessage
 
 # Size of the head/tail buffer for lite metadata reads.
 LITE_READ_BUF_SIZE = 65536
+
+# Upper bound on concurrent ``store.load()`` calls issued by
+# ``list_sessions_from_store``. Keeps large project listings from exhausting
+# adapter connection pools or tripping backend rate limits.
+_STORE_LIST_LOAD_CONCURRENCY = 16
 
 # Maximum length for a single filesystem path component. Most filesystems
 # limit individual components to 255 bytes. We use 200 to leave room for
@@ -115,7 +123,17 @@ def _get_claude_config_home_dir() -> Path:
     return Path(unicodedata.normalize("NFC", str(Path.home() / ".claude")))
 
 
-def _get_projects_dir() -> Path:
+def _get_projects_dir(env_override: dict[str, str] | None = None) -> Path:
+    """Returns the projects directory.
+
+    ``env_override`` is consulted before ``os.environ`` so callers that pass
+    ``CLAUDE_CONFIG_DIR`` to the subprocess via ``options.env`` resolve the
+    same directory the subprocess will write to.
+    """
+    if env_override:
+        override = env_override.get("CLAUDE_CONFIG_DIR")
+        if override:
+            return Path(unicodedata.normalize("NFC", override)) / "projects"
     return _get_claude_config_home_dir() / "projects"
 
 
@@ -679,6 +697,10 @@ def list_sessions(
     Returns:
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
 
+    See Also:
+        :func:`list_sessions_from_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         List sessions for a specific project::
 
@@ -726,6 +748,10 @@ def get_session_info(
     Returns:
         ``SDKSessionInfo`` for the session, or ``None`` if the session file
         is not found, is a sidechain session, or has no extractable summary.
+
+    See Also:
+        :func:`get_session_info_from_store` for the
+        :class:`SessionStore`-backed async variant.
 
     Example:
         Look up a session in a specific project::
@@ -1040,6 +1066,10 @@ def get_session_messages(
         an empty list if the session is not found, the session_id is not a
         valid UUID, or the transcript contains no visible messages.
 
+    See Also:
+        :func:`get_session_messages_from_store` for the
+        :class:`SessionStore`-backed async variant.
+
     Example:
         Read all messages from a session::
 
@@ -1064,6 +1094,18 @@ def get_session_messages(
         return []
 
     entries = _parse_transcript_entries(content)
+    return _entries_to_session_messages(entries, limit, offset)
+
+
+def _entries_to_session_messages(
+    entries: list[_TranscriptEntry],
+    limit: int | None,
+    offset: int,
+) -> list[SessionMessage]:
+    """Builds the conversation chain from parsed entries and applies paging.
+
+    Shared by the filesystem and SessionStore-backed paths.
+    """
     chain = _build_conversation_chain(entries)
     visible = [e for e in chain if _is_visible_message(e)]
     messages = [_to_session_message(e) for e in visible]
@@ -1248,6 +1290,10 @@ def list_subagents(
         is not found, the session_id is not a valid UUID, or the session
         has no subagents.
 
+    See Also:
+        :func:`list_subagents_from_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         List subagent IDs for a session::
 
@@ -1293,6 +1339,10 @@ def get_subagent_messages(
         session_id is not a valid UUID, or the transcript contains no
         user/assistant messages.
 
+    See Also:
+        :func:`get_subagent_messages_from_store` for the
+        :class:`SessionStore`-backed async variant.
+
     Example:
         Read all messages from a subagent::
 
@@ -1329,6 +1379,18 @@ def get_subagent_messages(
         return []
 
     entries = _parse_transcript_entries(content)
+    return _entries_to_subagent_messages(entries, limit, offset)
+
+
+def _entries_to_subagent_messages(
+    entries: list[_TranscriptEntry],
+    limit: int | None,
+    offset: int,
+) -> list[SessionMessage]:
+    """Builds the subagent chain from parsed entries and applies paging.
+
+    Shared by the filesystem and SessionStore-backed paths.
+    """
     chain = _build_subagent_chain(entries)
     messages = [
         _to_session_message(e) for e in chain if e.get("type") in ("user", "assistant")
@@ -1339,3 +1401,398 @@ def get_subagent_messages(
     if offset > 0:
         return messages[offset:]
     return messages
+
+
+# ---------------------------------------------------------------------------
+# SessionStore-backed implementations
+# ---------------------------------------------------------------------------
+
+
+def project_key_for_directory(directory: str | Path | None = None) -> str:
+    """Derive the :class:`SessionStore` ``project_key`` for a directory.
+
+    Defaults to the current working directory. Uses the same realpath + NFC
+    normalization + djb2-hashed sanitization the CLI uses for project
+    directory names, so keys match between local-disk transcripts and
+    store-mirrored transcripts even on filesystems that decompose Unicode
+    (macOS HFS+).
+    """
+    abs_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    return _sanitize_path(abs_path)
+
+
+def _entries_to_jsonl(entries: list[Any]) -> str:
+    """Serialize store entries to a JSONL string (one ``json.dumps`` per line).
+
+    The ``SessionStore.load`` contract permits adapters to reorder object keys
+    (e.g. Postgres JSONB), but ``_parse_session_info_from_lite`` scans for
+    ``{"type":"tag"`` as a line prefix. Hoist ``type`` to the front so the
+    store path matches the byte shape the disk path produces.
+    """
+
+    def _type_first(e: Any) -> Any:
+        if isinstance(e, dict) and "type" in e:
+            return {"type": e["type"], **e}
+        return e
+
+    return (
+        "\n".join(json.dumps(_type_first(e), separators=(",", ":")) for e in entries)
+        + "\n"
+    )
+
+
+def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
+    """Build the head/tail/size lite shape from an in-memory JSONL string.
+
+    Matches ``_read_session_lite``'s byte semantics so the store path exposes
+    the same slice to ``_parse_session_info_from_lite`` as the disk path
+    would for the same transcript.
+    """
+    buf = jsonl.encode("utf-8")
+    size = len(buf)
+    head = buf[:LITE_READ_BUF_SIZE].decode("utf-8", errors="replace")
+    tail = (
+        buf[max(0, size - LITE_READ_BUF_SIZE) :].decode("utf-8", errors="replace")
+        if size > LITE_READ_BUF_SIZE
+        else head
+    )
+    return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
+
+
+def _mtime_from_jsonl_tail(jsonl: str) -> int:
+    """Best-effort mtime: parse the last entry's ``timestamp`` field.
+
+    Falls back to the current wall-clock time when absent or unparseable.
+    """
+    trimmed = jsonl.rstrip()
+    last_line = trimmed[trimmed.rfind("\n") + 1 :]
+    try:
+        obj = json.loads(last_line)
+    except (json.JSONDecodeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        ts = obj.get("timestamp")
+        if isinstance(ts, str):
+            try:
+                norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+                return int(datetime.fromisoformat(norm).timestamp() * 1000)
+            except ValueError:
+                pass
+    return int(time.time() * 1000)
+
+
+def _filter_transcript_entries(entries: list[Any]) -> list[_TranscriptEntry]:
+    """Filter store-loaded entries to transcript message types with a ``uuid``.
+
+    Mirrors ``_parse_transcript_entries`` for the already-parsed object path
+    so chain-building never sees metadata-only entries (custom-title, tag,
+    agent_metadata, etc.).
+    """
+    result: list[_TranscriptEntry] = []
+    for e in entries:
+        if (
+            isinstance(e, dict)
+            and e.get("type") in _TRANSCRIPT_ENTRY_TYPES
+            and isinstance(e.get("uuid"), str)
+        ):
+            result.append(e)
+    return result
+
+
+async def _load_store_entries_as_jsonl(
+    store: SessionStore, session_id: str, directory: str | None
+) -> str | None:
+    """Load entries from a SessionStore and serialize to a JSONL string.
+
+    Returns ``None`` if the session has no entries.
+    """
+    project_key = project_key_for_directory(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entries = await store.load(key)
+    if not entries:
+        return None
+    return _entries_to_jsonl(entries)
+
+
+async def list_sessions_from_store(
+    session_store: SessionStore,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SDKSessionInfo]:
+    """List sessions from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`list_sessions`. Loads each
+    session's entries to derive a real summary via the same lite-parse used
+    by the filesystem path, so disk and store paths produce identical
+    results for the same transcript content.
+
+    Args:
+        session_store: The store to read from. Must implement
+            :meth:`SessionStore.list_sessions`.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip from the start of the sorted
+            result set.
+
+    Returns:
+        List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
+
+    Raises:
+        ValueError: If ``session_store`` does not implement
+            :meth:`SessionStore.list_sessions`.
+
+    Note:
+        ``include_worktrees`` is a filesystem concept and is not honored on
+        the store path — the store operates on a single ``project_key``.
+
+    .. note::
+        This performs one full ``store.load()`` per session in the listing
+        to derive summaries. On remote backends with many or large sessions
+        this can be expensive (e.g., S3 egress, Postgres large-row reads).
+        Consider denormalizing summary metadata into your adapter's
+        ``list_sessions()`` index.
+    """
+    if not _store_implements(session_store, "list_sessions"):
+        raise ValueError(
+            "session_store does not implement list_sessions() -- cannot list "
+            "sessions. Provide a store with a list_sessions() method."
+        )
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    project_key = _sanitize_path(project_path)
+    raw = await session_store.list_sessions(project_key)
+    # Copy — store.list_sessions() may return a reference to internal state.
+    listing = list(raw)
+
+    # Derive a real summary per session by loading its entries and reusing
+    # the filesystem path's lite-parse. Loads run concurrently with a fixed
+    # bound so large listings don't exhaust adapter connection pools or hit
+    # backend rate limits; adapter errors degrade that row instead of failing
+    # the whole list. Filtering (sidechain/empty drop) happens before
+    # pagination so ``limit``/``offset`` index the same filtered set as the
+    # disk path.
+    sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
+
+    async def _bounded_load(sid: str) -> str | None:
+        async with sem:
+            return await _load_store_entries_as_jsonl(session_store, sid, directory)
+
+    settled = await asyncio.gather(
+        *(_bounded_load(e["session_id"]) for e in listing),
+        return_exceptions=True,
+    )
+    results: list[SDKSessionInfo] = []
+    for entry, outcome in zip(listing, settled, strict=True):
+        sid = entry["session_id"]
+        mtime = entry["mtime"]
+        if isinstance(outcome, BaseException):
+            results.append(
+                SDKSessionInfo(session_id=sid, summary="", last_modified=mtime)
+            )
+            continue
+        if outcome is None:
+            continue
+        parsed = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(outcome, mtime), project_path
+        )
+        if parsed is None:
+            # Sidechain or no extractable summary — drop, matching the
+            # filesystem path.
+            continue
+        parsed.last_modified = mtime
+        results.append(parsed)
+    return _apply_sort_limit_offset(results, limit, offset)
+
+
+async def get_session_info_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
+) -> SDKSessionInfo | None:
+    """Read metadata for a single session from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`get_session_info`.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the session to look up.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Returns:
+        ``SDKSessionInfo`` for the session, or ``None`` if the session is
+        not found, the ``session_id`` is not a valid UUID, the session is
+        a sidechain session, or it has no extractable summary.
+    """
+    if not _validate_uuid(session_id):
+        return None
+    jsonl = await _load_store_entries_as_jsonl(session_store, session_id, directory)
+    if jsonl is None:
+        return None
+    lite = _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    return _parse_session_info_from_lite(session_id, lite, project_path)
+
+
+async def get_session_messages_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SessionMessage]:
+    """Read a session's conversation messages from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`get_session_messages`. Feeds
+    ``session_store.load()`` results directly into the chain builder — no
+    JSONL round-trip.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the session to read.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Empty
+        list if the session is not found or ``session_id`` is invalid.
+    """
+    if not _validate_uuid(session_id):
+        return []
+    project_key = project_key_for_directory(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entries = await session_store.load(key)
+    if not entries:
+        return []
+    return _entries_to_session_messages(
+        _filter_transcript_entries(entries), limit, offset
+    )
+
+
+async def list_subagents_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
+) -> list[str]:
+    """List subagent IDs for a session from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`list_subagents`.
+
+    Args:
+        session_store: The store to read from. Must implement
+            :meth:`SessionStore.list_subkeys`.
+        session_id: UUID of the parent session.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Returns:
+        List of subagent ID strings. Empty list if ``session_id`` is
+        invalid or the session has no subagents.
+
+    Raises:
+        ValueError: If ``session_store`` does not implement
+            :meth:`SessionStore.list_subkeys`.
+    """
+    if not _validate_uuid(session_id):
+        return []
+    if not _store_implements(session_store, "list_subkeys"):
+        raise ValueError(
+            "session_store does not implement list_subkeys() -- cannot list "
+            "subagents. Provide a store with a list_subkeys() method."
+        )
+    project_key = project_key_for_directory(directory)
+    subkeys = await session_store.list_subkeys(
+        {"project_key": project_key, "session_id": session_id}
+    )
+    seen: set[str] = set()
+    ids: list[str] = []
+    for subpath in subkeys:
+        if not subpath.startswith("subagents/"):
+            continue
+        last = subpath.rsplit("/", 1)[-1]
+        if last.startswith("agent-"):
+            agent_id = last[len("agent-") :]
+            if agent_id not in seen:
+                seen.add(agent_id)
+                ids.append(agent_id)
+    return ids
+
+
+async def get_subagent_messages_from_store(
+    session_store: SessionStore,
+    session_id: str,
+    agent_id: str,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SessionMessage]:
+    """Read a subagent's conversation messages from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`get_subagent_messages`.
+    Subagents may live at ``subagents/agent-<id>`` or nested under
+    ``subagents/workflows/<runId>/agent-<id>``. Scans subkeys when the
+    store implements :meth:`SessionStore.list_subkeys`; otherwise tries
+    the direct path.
+
+    Args:
+        session_store: The store to read from.
+        session_id: UUID of the parent session.
+        agent_id: ID of the subagent.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of messages to return.
+        offset: Number of messages to skip from the start.
+
+    Returns:
+        List of ``SessionMessage`` objects in chronological order. Empty
+        list if the session/subagent is not found.
+    """
+    if not _validate_uuid(session_id):
+        return []
+    if not agent_id:
+        return []
+    project_key = project_key_for_directory(directory)
+
+    subpath = f"subagents/agent-{agent_id}"
+    if _store_implements(session_store, "list_subkeys"):
+        subkeys = await session_store.list_subkeys(
+            {"project_key": project_key, "session_id": session_id}
+        )
+        target = f"agent-{agent_id}"
+        match = next(
+            (
+                sk
+                for sk in subkeys
+                if sk.startswith("subagents/") and sk.rsplit("/", 1)[-1] == target
+            ),
+            None,
+        )
+        if match is None:
+            return []
+        subpath = match
+
+    key: SessionKey = {
+        "project_key": project_key,
+        "session_id": session_id,
+        "subpath": subpath,
+    }
+    entries = await session_store.load(key)
+    if not entries:
+        return []
+
+    # Drop synthetic agent_metadata entries injected by the mirror hook —
+    # they describe the .meta.json sidecar, not transcript lines.
+    transcript = [
+        e
+        for e in entries
+        if not (isinstance(e, dict) and e.get("type") == "agent_metadata")
+    ]
+    if not transcript:
+        return []
+
+    return _entries_to_subagent_messages(
+        _filter_transcript_entries(transcript), limit, offset
+    )

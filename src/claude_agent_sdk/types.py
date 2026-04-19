@@ -4,15 +4,15 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if sys.version_info >= (3, 11):
-    from typing import NotRequired, TypedDict
+    from typing import NotRequired, Required, TypedDict
 else:
-    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired, so
-    # __required_keys__ would include NotRequired fields. typing_extensions
-    # backports the correct behavior.
-    from typing_extensions import NotRequired, TypedDict
+    # PEP 655: stdlib TypedDict on 3.10 doesn't process NotRequired/Required,
+    # so __required_keys__ would be wrong. typing_extensions backports the
+    # correct behavior.
+    from typing_extensions import NotRequired, Required, TypedDict
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
@@ -1003,6 +1003,23 @@ class TaskNotificationMessage(SystemMessage):
 
 
 @dataclass
+class MirrorErrorMessage(SystemMessage):
+    """System message emitted when a :meth:`SessionStore.append` call fails.
+
+    Non-fatal — the local-disk transcript is already durable, so the session
+    continues unaffected. The mirrored copy in the external store will be
+    missing the failed batch.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    field is ``"mirror_error"`` and ``data`` carries the raw payload.
+    """
+
+    key: "SessionKey | None" = None
+    error: str = ""
+
+
+@dataclass
 class ResultMessage:
     """Result message with cost and usage information."""
 
@@ -1088,6 +1105,156 @@ Message = (
     | StreamEvent
     | RateLimitEvent
 )
+
+
+# ---------------------------------------------------------------------------
+# Session Store Types
+# ---------------------------------------------------------------------------
+
+
+class SessionKey(TypedDict):
+    """Identifies a session transcript or subagent transcript in a store.
+
+    Main transcripts have no ``subpath``; subagent transcripts include a
+    ``subpath`` like ``"subagents/agent-{id}"`` that mirrors the on-disk
+    directory structure.
+    """
+
+    project_key: str
+    """Caller-defined scope. Default: sanitized cwd. Multi-tenant deployments
+    should set this to a tenant ID or project name. Paths longer than 200
+    characters are truncated and suffixed with a portable djb2 hash so the
+    same path yields the same key across runtimes."""
+
+    session_id: str
+
+    subpath: NotRequired[str]
+    """Omit for the main transcript; set for subagent files. Empty string is
+    invalid — omit the field for the main transcript. Opaque to the adapter —
+    just use it as a storage key suffix."""
+
+
+class SessionStoreEntry(TypedDict, total=False):
+    """One JSONL transcript line as observed by a :class:`SessionStore` adapter.
+
+    The concrete shape is the CLI's on-disk transcript format (a large
+    discriminated union). That union is internal, so this is a minimal
+    structural supertype — adapters should treat entries as pass-through
+    blobs; round-tripping ``json.dumps``/``json.loads`` is the only
+    required invariant.
+    """
+
+    type: Required[str]
+    uuid: str
+    timestamp: str
+    # Additional fields are opaque JSON — adapters must pass them through.
+
+
+class SessionStoreListEntry(TypedDict):
+    """Entry returned by :meth:`SessionStore.list_sessions`."""
+
+    session_id: str
+    mtime: int
+    """Last-modified time in Unix epoch milliseconds. Adapters without native
+    modification time (e.g. Redis) must maintain their own index."""
+
+
+class SessionListSubkeysKey(TypedDict):
+    """Key argument to :meth:`SessionStore.list_subkeys` (no ``subpath``)."""
+
+    project_key: str
+    session_id: str
+
+
+class SessionStore(Protocol):
+    """Adapter for mirroring session transcripts to external storage.
+
+    The subprocess still writes to local disk (set ``CLAUDE_CONFIG_DIR=/tmp``
+    for an ephemeral local copy); the adapter receives a secondary copy.
+
+    The SDK never deletes from your store unless you call
+    ``delete_session_via_store()`` with :meth:`delete` implemented. Retention is
+    the adapter's responsibility —
+    implement TTL, object-storage lifecycle policies, or scheduled cleanup
+    according to your compliance requirements (e.g. ZDR/HIPAA retention
+    windows). Local-disk transcripts under ``CLAUDE_CONFIG_DIR`` are swept by
+    the existing ``cleanupPeriodDays`` setting independently of this adapter.
+
+    Only :meth:`append` and :meth:`load` are required. The remaining methods
+    are optional: implementers may omit them, and call sites probe for their
+    presence at runtime before invoking (the SDK never uses ``isinstance`` for
+    this — a duck-typed adapter need not subclass ``SessionStore``). The
+    default implementations on this Protocol raise :class:`NotImplementedError`
+    so subclasses can inherit them as "absent" markers.
+    """
+
+    async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
+        """Mirror a batch of transcript entries.
+
+        Called AFTER the subprocess's local write succeeds — durability is
+        already guaranteed locally.
+
+        Batches arrive at ~100ms cadence during active turns. Entries are
+        JSON-safe plain objects — one per line in the local JSONL file.
+
+        Within a single process, persist entries in append-call order; across
+        concurrent processes, order is by storage commit time, not call time.
+
+        Exceptions are logged; the subprocess continues unaffected.
+        At-most-once delivery — failed batches are not retried.
+        """
+        ...
+
+    async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
+        """Load a full session for resume.
+
+        Called once, in the SDK parent, before subprocess spawn. The result is
+        materialized to a temporary JSONL file; the subprocess resumes from
+        that file using its existing resume code.
+
+        Return ``None`` for a key that was never written; adapters that cannot
+        distinguish "never written" from "emptied" (e.g. Redis ``LRANGE``) may
+        return ``None`` for both. Returned entries must be deep-equal to what
+        was appended — byte-equal serialization is NOT required (e.g. Postgres
+        ``JSONB`` may reorder object keys); the SDK never hashes or
+        byte-compares entries.
+        """
+        ...
+
+    async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
+        """List sessions for a ``project_key``. Returns IDs + modification times.
+
+        ``mtime`` is Unix epoch milliseconds; adapters without native
+        modification time (e.g. Redis) must maintain their own index. Result
+        order is unspecified — the SDK sorts by ``mtime`` descending.
+
+        Optional — if unimplemented, ``list_sessions()`` with a session store
+        raises.
+        """
+        raise NotImplementedError
+
+    async def delete(self, key: SessionKey) -> None:
+        """Delete a session.
+
+        Deleting a main-transcript key (no ``subpath``) must cascade to all
+        subkeys under that session so subagent transcripts aren't orphaned. A
+        targeted delete with an explicit ``subpath`` removes only that one
+        entry.
+
+        Optional — if unimplemented, deletion is a no-op (appropriate for
+        WORM/append-only backends like object storage).
+        """
+        raise NotImplementedError
+
+    async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]:
+        """List all subpath keys under a session (e.g. subagent transcripts).
+
+        Used during resume to discover and materialize all subagent data.
+
+        Optional — if unimplemented, resume only materializes the main
+        transcript.
+        """
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -1269,6 +1436,16 @@ class ClaudeAgentOptions:
     # When enabled, files can be rewound to their state at any user message
     # using `ClaudeSDKClient.rewind_files()`.
     enable_file_checkpointing: bool = False
+    # Mirror session transcripts to external storage and enable store-backed
+    # resume. When set, every transcript line written locally is also passed to
+    # ``session_store.append()``, and ``resume`` can materialize from the store
+    # when the local file is absent.
+    session_store: SessionStore | None = None
+    # Upper bound on ``session_store.load()`` / ``list_subkeys()`` calls during
+    # resume materialization, in milliseconds. Prevents a slow store from
+    # blocking subprocess spawn indefinitely. A value of 0 means immediate
+    # timeout; use a large value to effectively disable.
+    load_timeout_ms: int = 60_000
     # API-side task budget in tokens. When set, the model is made aware of
     # its remaining token budget so it can pace tool use and wrap up before
     # the limit.

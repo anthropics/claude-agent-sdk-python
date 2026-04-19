@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -14,6 +14,13 @@ from ..types import (
 )
 from .message_parser import parse_message
 from .query import Query
+from .session_resume import (
+    MaterializedResume,
+    apply_materialized_options,
+    build_mirror_batcher,
+    materialize_resume_session,
+)
+from .session_store_validation import validate_session_store_options
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
@@ -50,6 +57,44 @@ class InternalClient:
     ) -> AsyncIterator[Message]:
         """Process a query through transport and Query."""
 
+        # Fail fast on invalid session_store option combinations before
+        # spawning the subprocess.
+        validate_session_store_options(options)
+
+        # resume/continue + session_store: load the session from the store
+        # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
+        # Skipped when a custom transport was supplied — the materialized
+        # options never reach a pre-constructed transport, so loading the
+        # store and writing .credentials.json to a temp dir would be wasted.
+        materialized = (
+            await materialize_resume_session(options) if transport is None else None
+        )
+        inner = self._process_query_inner(prompt, options, transport, materialized)
+        try:
+            async for msg in inner:
+                yield msg
+        finally:
+            # ``async for`` does NOT close its iterator when the loop body
+            # raises (PEP 533 was deferred). Explicitly aclose the inner
+            # generator first so its ``finally: await query.close()`` runs —
+            # i.e. the subprocess is terminated — *before* we remove the temp
+            # CLAUDE_CONFIG_DIR it is reading/writing.
+            try:
+                await inner.aclose()
+            finally:
+                # The temp dir holds a .credentials.json copy — remove it on
+                # every exit path, including transport spawn failure before
+                # the inner try/finally is reached.
+                if materialized is not None:
+                    await materialized.cleanup()
+
+    async def _process_query_inner(
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]],
+        options: ClaudeAgentOptions,
+        transport: Transport | None,
+        materialized: MaterializedResume | None,
+    ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
@@ -69,6 +114,11 @@ class InternalClient:
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")
+
+        if materialized is not None:
+            configured_options = apply_materialized_options(
+                configured_options, materialized
+            )
 
         # Use provided transport or create subprocess transport
         if transport is not None:
@@ -130,6 +180,20 @@ class InternalClient:
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=configured_options.skills,
         )
+
+        if configured_options.session_store is not None:
+
+            async def _on_mirror_error(key: Any, error: str) -> None:
+                query.report_mirror_error(key, error)
+
+            query.set_transcript_mirror_batcher(
+                build_mirror_batcher(
+                    store=configured_options.session_store,
+                    materialized=materialized,
+                    env=configured_options.env,
+                    on_error=_on_mirror_error,
+                )
+            )
 
         try:
             # Start reading messages

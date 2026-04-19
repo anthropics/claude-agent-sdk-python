@@ -319,6 +319,9 @@ class SubprocessCLITransport(Transport):
         if self._options.fork_session:
             cmd.append("--fork-session")
 
+        if self._options.session_store is not None:
+            cmd.append("--session-mirror")
+
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 

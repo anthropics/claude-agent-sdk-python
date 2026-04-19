@@ -24,9 +24,9 @@ from typing import Any
 
 from ..types import SessionKey, SessionStore
 
-OptionalMethod = str  # "list_sessions" | "delete" | "list_subkeys"
+OptionalMethod = str  # "list_sessions" | "delete" | "list_subkeys" | "load_range"
 _OPTIONAL_METHODS: frozenset[str] = frozenset(
-    {"list_sessions", "delete", "list_subkeys"}
+    {"list_sessions", "delete", "list_subkeys", "load_range"}
 )
 
 _KEY: SessionKey = {"project_key": "proj", "session_id": "sess"}
@@ -73,6 +73,7 @@ async def run_session_store_conformance(
     has_list_sessions = _has_optional(probe, "list_sessions", skip_optional)
     has_delete = _has_optional(probe, "delete", skip_optional)
     has_list_subkeys = _has_optional(probe, "list_subkeys", skip_optional)
+    has_load_range = _has_optional(probe, "load_range", skip_optional)
 
     # --- Required: append + load -------------------------------------------
 
@@ -245,6 +246,26 @@ async def run_session_store_conformance(
                 {"project_key": "proj", "session_id": "never-appended"}
             )
             == []
+        )
+
+    # --- Optional: load_range ----------------------------------------------
+
+    if has_load_range:
+        # 14. load_range returns first head / last tail entries
+        store = await fresh()
+        seq = [_e({"n": i}) for i in range(6)]
+        await store.append(_KEY, seq)
+        ranged = await store.load_range(_KEY, head=2, tail=2)
+        assert ranged is not None
+        head, tail = ranged
+        assert head == seq[:2]
+        assert tail == seq[-2:]
+        # Unknown key returns None (matches load()).
+        assert (
+            await store.load_range(
+                {"project_key": "proj", "session_id": "never-written"}, head=2, tail=2
+            )
+            is None
         )
 
 

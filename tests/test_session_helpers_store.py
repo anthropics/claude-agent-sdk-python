@@ -207,13 +207,13 @@ class TestListSessionsFromStore:
         assert store.internal[1]["session_id"] == "b"
 
     async def test_adapter_load_error_degrades_row(self) -> None:
-        """One failing load() degrades that row instead of failing the list."""
+        """One failing read degrades that row instead of failing the list."""
 
         class FlakeyStore(InMemorySessionStore):
-            async def load(self, key):
+            async def load_range(self, key, *, head=0, tail=0):
                 if key["session_id"] == bad_sid:
                     raise RuntimeError("backend down")
-                return await super().load(key)
+                return await super().load_range(key, head=head, tail=tail)
 
         store = FlakeyStore()
         good_sid = str(uuid_mod.uuid4())
@@ -229,7 +229,7 @@ class TestListSessionsFromStore:
 
     async def test_load_concurrency_is_bounded(self) -> None:
         """list_sessions_from_store must not issue unbounded concurrent
-        store.load() calls — large listings would otherwise exhaust adapter
+        store reads — large listings would otherwise exhaust adapter
         connection pools. Regression for the paginate-after-filter refactor."""
         from claude_agent_sdk._internal import sessions as _sessions
 
@@ -238,13 +238,13 @@ class TestListSessionsFromStore:
         gate = asyncio.Event()
 
         class SlowStore(InMemorySessionStore):
-            async def load(self, key):
+            async def load_range(self, key, *, head=0, tail=0):
                 nonlocal in_flight, peak
                 in_flight += 1
                 peak = max(peak, in_flight)
                 await gate.wait()
                 in_flight -= 1
-                return await super().load(key)
+                return await super().load_range(key, head=head, tail=tail)
 
         store = SlowStore()
         n = _sessions._STORE_LIST_LOAD_CONCURRENCY * 3

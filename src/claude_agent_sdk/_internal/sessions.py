@@ -33,6 +33,13 @@ LITE_READ_BUF_SIZE = 65536
 # adapter connection pools or tripping backend rate limits.
 _STORE_LIST_LOAD_CONCURRENCY = 16
 
+# Head/tail entry counts requested via ``store.load_range()`` when deriving
+# session summaries. Head needs the first user prompt + sidechain marker +
+# created_at timestamp; tail needs the latest title/tag/summary/gitBranch
+# entries. These are upper bounds — short sessions return fewer.
+_LITE_LOAD_HEAD_ENTRIES = 10
+_LITE_LOAD_TAIL_ENTRIES = 20
+
 # Maximum length for a single filesystem path component. Most filesystems
 # limit individual components to 255 bytes. We use 200 to leave room for
 # the hash suffix and separator.
@@ -1504,14 +1511,26 @@ async def _load_store_entries_as_jsonl(
 ) -> str | None:
     """Load entries from a SessionStore and serialize to a JSONL string.
 
+    Only the head/tail slice needed for lite-parse summary derivation is
+    fetched when the store implements :meth:`SessionStore.load_range`;
+    otherwise falls back to a full :meth:`SessionStore.load`. Either way the
+    result is fed to ``_jsonl_to_lite`` which itself slices to a 64KB
+    head/tail, so the parse path is identical.
+
     Returns ``None`` if the session has no entries.
     """
     project_key = project_key_for_directory(directory)
     key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    entries = await store.load(key)
-    if not entries:
+    if _store_implements(store, "load_range"):
+        head, tail = await store.load_range(
+            key, head=_LITE_LOAD_HEAD_ENTRIES, tail=_LITE_LOAD_TAIL_ENTRIES
+        ) or ([], [])
+        entries_for_lite: list[Any] | None = list(head) + list(tail)
+    else:
+        entries_for_lite = await store.load(key)
+    if not entries_for_lite:
         return None
-    return _entries_to_jsonl(entries)
+    return _entries_to_jsonl(entries_for_lite)
 
 
 async def list_sessions_from_store(
@@ -1548,11 +1567,13 @@ async def list_sessions_from_store(
         the store path — the store operates on a single ``project_key``.
 
     .. note::
-        This performs one full ``store.load()`` per session in the listing
-        to derive summaries. On remote backends with many or large sessions
+        This performs one ``store.load()`` per session in the listing to
+        derive summaries. On remote backends with many or large sessions
         this can be expensive (e.g., S3 egress, Postgres large-row reads).
-        Consider denormalizing summary metadata into your adapter's
-        ``list_sessions()`` index.
+        If your adapter implements ``load_range``, this uses it instead of
+        full ``load()`` so only a small head/tail slice is fetched per
+        session. Otherwise consider denormalizing summary metadata into
+        your adapter's ``list_sessions()`` index.
     """
     if not _store_implements(session_store, "list_sessions"):
         raise ValueError(

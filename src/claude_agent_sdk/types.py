@@ -1221,6 +1221,23 @@ class SessionStore(Protocol):
         """
         ...
 
+    async def load_range(
+        self, key: SessionKey, *, head: int = 0, tail: int = 0
+    ) -> tuple[list[SessionStoreEntry], list[SessionStoreEntry]] | None:
+        """Load only the first ``head`` and last ``tail`` entries.
+
+        Optional optimization. Used by :func:`list_sessions_from_store` and
+        :func:`get_session_info_from_store` to derive summaries without
+        fetching full transcripts. Adapters that can range-read (S3 first/last
+        part-file, Postgres ``LIMIT``, Redis ``LRANGE``) should implement this
+        to avoid loading multi-MB sessions just to extract a title.
+
+        Return ``None`` for a key that was never written. The two lists may
+        overlap or be short if the session has fewer than ``head + tail``
+        entries — callers handle that.
+        """
+        raise NotImplementedError
+
     async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
         """List sessions for a ``project_key``. Returns IDs + modification times.
 

@@ -51,6 +51,17 @@ class InMemorySessionStore(SessionStore):
         entries = self._store.get(_key_to_string(key))
         return None if entries is None else list(entries)
 
+    async def load_range(
+        self, key: SessionKey, *, head: int = 0, tail: int = 0
+    ) -> tuple[list[SessionStoreEntry], list[SessionStoreEntry]] | None:
+        entries = self._store.get(_key_to_string(key))
+        if entries is None:
+            return None
+        return (
+            list(entries[:head]) if head else [],
+            list(entries[-tail:]) if tail else [],
+        )
+
     async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
         results: list[SessionStoreListEntry] = []
         prefix = project_key + "/"

@@ -1667,8 +1667,12 @@ async def list_sessions_from_store(
                     sl["info"] = by_sid.get(sl["session_id"])
 
             # Slots whose info resolved to None (sidechain / no extractable
-            # summary) are dropped — matches the fallback path's
-            # post-derivation filtering semantics.
+            # summary) are dropped AFTER pagination — both summary-derived and
+            # gap-fill slots, so the page is internally consistent. This can
+            # return fewer than ``limit`` rows; that short-page is the price of
+            # bounding load() by page size instead of total session count (the
+            # slow path below drops-then-paginates and never short-pages, but
+            # at O(N) load cost).
             return [sl["info"] for sl in page if sl["info"] is not None]
 
     if not has_list_sessions:

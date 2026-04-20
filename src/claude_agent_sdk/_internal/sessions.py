@@ -1625,31 +1625,51 @@ async def list_sessions_from_store(
         except NotImplementedError:
             pass
         else:
-            infos = [
-                info
+            # Build a unified slot list — summaries get their info up front;
+            # sessions present in list_sessions() but missing a sidecar get a
+            # placeholder slot so they sort into the page correctly.
+            slots: list[dict[str, Any]] = [
+                {
+                    "mtime": s["mtime"],
+                    "info": summary_entry_to_sdk_info(s, project_path),
+                }
                 for s in summaries
-                if (info := summary_entry_to_sdk_info(s, project_path)) is not None
             ]
-            # Gap-fill: a store may have entries for sessions appended before
-            # it adopted list_session_summaries (no sidecar yet). Enumerate
-            # via list_sessions() and derive the missing ones via the
-            # per-session load() path so they aren't silently dropped.
             if has_list_sessions:
                 summary_ids = {s["session_id"] for s in summaries}
                 listing = list(await session_store.list_sessions(project_key))
-                missing = [e for e in listing if e["session_id"] not in summary_ids]
-                if missing:
-                    infos.extend(
-                        await _derive_infos_via_load(
-                            session_store, missing, directory, project_path
-                        )
-                    )
+                slots.extend(
+                    {"mtime": e["mtime"], "session_id": e["session_id"], "info": None}
+                    for e in listing
+                    if e["session_id"] not in summary_ids
+                )
             else:
                 logger.debug(
                     "list_session_summaries without list_sessions: gap-fill "
                     "skipped; sessions lacking a sidecar will be omitted"
                 )
-            return _apply_sort_limit_offset(infos, limit, offset)
+
+            # Paginate BEFORE per-session load so gap-fill load() count is
+            # bounded by page size, not total missing — 500 sessions lacking
+            # sidecars with limit=10 issues at most 10 load()s, not 500.
+            slots.sort(key=lambda sl: sl["mtime"], reverse=True)
+            page = slots[offset:]
+            if limit is not None and limit > 0:
+                page = page[:limit]
+
+            to_fill = [sl for sl in page if sl["info"] is None and "session_id" in sl]
+            if to_fill:
+                filled = await _derive_infos_via_load(
+                    session_store, to_fill, directory, project_path
+                )
+                by_sid = {f.session_id: f for f in filled}
+                for sl in to_fill:
+                    sl["info"] = by_sid.get(sl["session_id"])
+
+            # Slots whose info resolved to None (sidechain / no extractable
+            # summary) are dropped — matches the fallback path's
+            # post-derivation filtering semantics.
+            return [sl["info"] for sl in page if sl["info"] is not None]
 
     if not has_list_sessions:
         raise ValueError(

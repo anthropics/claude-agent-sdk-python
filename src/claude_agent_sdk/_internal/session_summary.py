@@ -203,7 +203,9 @@ def summary_entry_to_sdk_info(
         session_id=entry["session_id"],
         summary=summary,
         last_modified=entry["mtime"],
-        file_size=data.get("file_size"),
+        # file_size is a JSONL byte count — meaningful only for the local-disk
+        # path (see SDKSessionInfo.file_size). Stores have no equivalent.
+        file_size=None,
         custom_title=custom_title,
         first_prompt=first_prompt,
         git_branch=data.get("git_branch") or None,

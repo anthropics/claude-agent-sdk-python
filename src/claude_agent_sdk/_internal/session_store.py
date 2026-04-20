@@ -48,15 +48,19 @@ class InMemorySessionStore(SessionStore):
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
-        self._mtimes[k] = int(time.time() * 1000)
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't
         # contribute to the main session's summary.
         if key.get("subpath") is None:
             sk = (key["project_key"], key["session_id"])
-            self._summaries[sk] = fold_session_summary(
-                self._summaries.get(sk), key, entries
-            )
+            folded = fold_session_summary(self._summaries.get(sk), key, entries)
+            self._summaries[sk] = folded
+            # Prefer the entry-timestamp clock so list_sessions() and
+            # list_session_summaries() sort on the same axis; fall back to
+            # wall-clock for synthetic entries with no timestamp.
+            self._mtimes[k] = folded["mtime"] or int(time.time() * 1000)
+        else:
+            self._mtimes[k] = int(time.time() * 1000)
 
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         entries = self._store.get(_key_to_string(key))

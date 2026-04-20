@@ -304,7 +304,6 @@ class TestSummaryEntryToSdkInfo:
                     "git_branch": "main",
                     "tag": "wip",
                     "created_at": 50,
-                    "file_size": 1234,
                 },
             },
             None,
@@ -315,7 +314,8 @@ class TestSummaryEntryToSdkInfo:
         assert info.git_branch == "main"
         assert info.tag == "wip"
         assert info.created_at == 50
-        assert info.file_size == 1234
+        # file_size is local-JSONL-only; store-backed summaries always None.
+        assert info.file_size is None
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +500,48 @@ class TestListSessionsFromStoreFastPath:
         assert by_id[sid_without].summary == "no sidecar"
         # Only the missing session should have been load()ed.
         assert store.load_calls == [sid_without]
+        # Merged result sorts on a single clock (entry timestamps).
+        assert sessions[0].session_id == sid_with
+
+    async def test_gap_fill_load_bounded_by_limit(self) -> None:
+        """Gap-fill paginates BEFORE per-session load(), so load() count is
+        bounded by page size, not total missing."""
+
+        class CountingStore(InMemorySessionStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                full = await super().list_session_summaries(project_key)
+                return [s for s in full if s["session_id"] == sid_with]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = CountingStore()
+        sid_with = str(uuid_mod.uuid4())
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_with},
+            [_user("with", ts="2024-01-10T00:00:00Z")],
+        )
+        # 5 sessions without sidecars, all older than sid_with.
+        sids_without = [str(uuid_mod.uuid4()) for _ in range(5)]
+        for i, sid in enumerate(sids_without):
+            await store.append(
+                {"project_key": PROJECT_KEY, "session_id": sid},
+                [_user(f"without {i}", ts=f"2024-01-0{i + 1}T00:00:00Z")],
+            )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=2)
+        # Page = newest 2: sid_with (sidecar) + 1 missing.
+        assert len(page) == 2
+        assert page[0].session_id == sid_with
+        # load() bounded by page size (≤2), not total missing (5).
+        assert len(store.load_calls) <= 2
+        # Specifically, only the one placeholder in the page was loaded.
+        assert len(store.load_calls) == 1
 
     async def test_gap_fill_bounded_concurrency(self) -> None:
         """Gap-fill reuses the bounded per-session load helper, so

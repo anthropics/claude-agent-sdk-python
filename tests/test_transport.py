@@ -1,5 +1,6 @@
 """Tests for Claude SDK transport layer."""
 
+import asyncio
 import os
 import uuid
 from contextlib import nullcontext
@@ -374,6 +375,57 @@ class TestSubprocessCLITransport:
                 # terminate should NOT be called.
                 mock_process.terminate.assert_not_called()
                 mock_process.wait.assert_called()
+
+        anyio.run(_test)
+
+    def test_close_from_different_task_context(self):
+        """Test close() can safely run from a different task than connect()."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.wait = AsyncMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+                assert transport._stderr_task is not None
+
+                close_error = None
+
+                async def close_in_other_task():
+                    nonlocal close_error
+                    try:
+                        await transport.close()
+                    except Exception as exc:  # pragma: no cover - regression guard
+                        close_error = exc
+
+                task = asyncio.create_task(close_in_other_task())
+                await task
+
+                assert close_error is None
+                assert transport._stderr_task is None
 
         anyio.run(_test)
 

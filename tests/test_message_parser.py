@@ -5,7 +5,10 @@ import pytest
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
+    AdvisorRedactedResultBlock,
+    AdvisorResultBlock,
     AdvisorToolResultBlock,
+    AdvisorToolResultError,
     AssistantMessage,
     RateLimitEvent,
     ResultMessage,
@@ -305,12 +308,7 @@ class TestMessageParser:
         assert message.content[0].input == {}
 
     def test_parse_assistant_message_with_advisor_tool_result(self):
-        """advisor_tool_result blocks are preserved with their raw content dict.
-
-        The content shape varies by outcome (advisor_result / advisor_redacted_result
-        / advisor_tool_result_error), so it's surfaced as a dict rather than a
-        typed union.
-        """
+        """advisor_tool_result with plaintext advisor_result content."""
         data = {
             "type": "assistant",
             "message": {
@@ -330,13 +328,11 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert len(message.content) == 1
-        assert isinstance(message.content[0], AdvisorToolResultBlock)
-        assert message.content[0].tool_use_id == "srvtoolu_01ABC"
-        assert message.content[0].content["type"] == "advisor_result"
-        assert (
-            message.content[0].content["text"]
-            == "Consider edge cases around empty input."
-        )
+        result_block = message.content[0]
+        assert isinstance(result_block, AdvisorToolResultBlock)
+        assert result_block.tool_use_id == "srvtoolu_01ABC"
+        assert isinstance(result_block.content, AdvisorResultBlock)
+        assert result_block.content.text == "Consider edge cases around empty input."
 
     def test_parse_assistant_message_with_advisor_redacted_result(self):
         """External API users get advisor output as an encrypted blob."""
@@ -358,9 +354,35 @@ class TestMessageParser:
         }
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
-        assert isinstance(message.content[0], AdvisorToolResultBlock)
-        assert message.content[0].content["type"] == "advisor_redacted_result"
-        assert message.content[0].content["encrypted_content"] == "EuYDCioIDhgC..."
+        result_block = message.content[0]
+        assert isinstance(result_block, AdvisorToolResultBlock)
+        assert isinstance(result_block.content, AdvisorRedactedResultBlock)
+        assert result_block.content.encrypted_content == "EuYDCioIDhgC..."
+
+    def test_parse_assistant_message_with_advisor_tool_result_error(self):
+        """Advisor errors surface as AdvisorToolResultError with the API's error_code."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_tool_result_error",
+                            "error_code": "max_uses_exceeded",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        result_block = message.content[0]
+        assert isinstance(result_block, AdvisorToolResultBlock)
+        assert isinstance(result_block.content, AdvisorToolResultError)
+        assert result_block.content.error_code == "max_uses_exceeded"
 
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.

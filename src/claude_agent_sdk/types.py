@@ -904,18 +904,56 @@ class ServerToolUseBlock:
 
 
 @dataclass
+class AdvisorResultBlock:
+    """Plaintext advisor output."""
+
+    text: str
+
+
+@dataclass
+class AdvisorRedactedResultBlock:
+    """Advisor output returned to external API users as an encrypted blob.
+
+    Round-trip verbatim; do not inspect or modify.
+    """
+
+    encrypted_content: str
+
+
+AdvisorToolResultErrorCode = Literal[
+    "max_uses_exceeded",
+    "prompt_too_long",
+    "too_many_requests",
+    "overloaded",
+    "unavailable",
+    "execution_time_exceeded",
+]
+
+
+@dataclass
+class AdvisorToolResultError:
+    """Error returned from a server-side advisor tool call."""
+
+    error_code: AdvisorToolResultErrorCode
+
+
+AdvisorToolResultContent = (
+    AdvisorResultBlock | AdvisorRedactedResultBlock | AdvisorToolResultError
+)
+
+
+@dataclass
 class AdvisorToolResultBlock:
     """Result block returned for a server-side advisor tool call.
 
-    `content` is the raw dict from the API. Shape depends on outcome:
-    - success: `{"type": "advisor_result", "text": "..."}`
-    - success (external users): `{"type": "advisor_redacted_result",
-      "encrypted_content": "..."}`
-    - error: `{"type": "advisor_tool_result_error", "error_code": "..."}`
+    `content` dispatches on outcome via `isinstance`:
+    - `AdvisorResultBlock` — plaintext advisor output
+    - `AdvisorRedactedResultBlock` — encrypted blob (external API users)
+    - `AdvisorToolResultError` — advisor failure
     """
 
     tool_use_id: str
-    content: dict[str, Any]
+    content: AdvisorToolResultContent
 
 
 ContentBlock = (

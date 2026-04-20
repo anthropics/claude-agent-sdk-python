@@ -54,7 +54,12 @@ from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    AdvisorRedactedResultBlock,
+    AdvisorResultBlock,
     AdvisorToolResultBlock,
+    AdvisorToolResultContent,
+    AdvisorToolResultError,
+    AdvisorToolResultErrorCode,
     AgentDefinition,
     AssistantMessage,
     BaseHookInput,
@@ -557,6 +562,11 @@ __all__ = [
     "ToolResultBlock",
     "ServerToolUseBlock",
     "AdvisorToolResultBlock",
+    "AdvisorResultBlock",
+    "AdvisorRedactedResultBlock",
+    "AdvisorToolResultError",
+    "AdvisorToolResultErrorCode",
+    "AdvisorToolResultContent",
     "ContentBlock",
     "ContextUsageCategory",
     "ContextUsageResponse",

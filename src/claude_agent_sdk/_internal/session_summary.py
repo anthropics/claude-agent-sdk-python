@@ -128,6 +128,12 @@ def fold_session_summary(
     All derived state lives in the opaque ``data`` dict; stores persist it
     verbatim and do not interpret it. ``mtime`` stays top-level so stores
     can index on it.
+
+    ``created_at`` latches the first parseable entry timestamp; the disk
+    lite-parse only inspects the first line, so for streams whose first
+    entry lacks a timestamp (does not occur in CLI-produced transcripts)
+    the fold path yields a non-``None`` ``created_at`` where lite-parse
+    yields ``None``.
     """
     if prev is not None:
         summary: SessionSummaryEntry = {

@@ -175,6 +175,25 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_custom_betas(self):
+        """Test that arbitrary beta header values flow through to the CLI."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                betas=[
+                    "context-1m-2025-08-07",
+                    "token-efficient-tools-2025-02-19",
+                ]
+            ),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index("--betas")
+        assert cmd[idx : idx + 2] == [
+            "--betas",
+            "context-1m-2025-08-07,token-efficient-tools-2025-02-19",
+        ]
+
     def test_build_command_with_dont_ask_permission_mode(self):
         """Test building CLI command with dontAsk permission mode."""
         transport = SubprocessCLITransport(

@@ -1598,11 +1598,13 @@ async def list_sessions_from_store(
         the store path — the store operates on a single ``project_key``.
 
     .. note::
-        If the store implements ``list_session_summaries``, this is a single
-        store call. Otherwise falls back to one ``store.load()`` per session
-        (bounded at 16 concurrent), which on remote backends with many or
-        large sessions can be expensive (e.g., S3 egress, Postgres large-row
-        reads).
+        If the store implements ``list_session_summaries``, this is one batch
+        summary call plus one cheap ``list_sessions()`` enumeration to
+        gap-fill sessions missing a sidecar — zero per-session ``load()``
+        calls when sidecars are complete. Otherwise falls back to one
+        ``store.load()`` per session (bounded at 16 concurrent), which on
+        remote backends with many or large sessions can be expensive (e.g.,
+        S3 egress, Postgres large-row reads).
 
         Gap-fill requires ``list_sessions``: if the store implements
         ``list_session_summaries`` but not ``list_sessions``, sessions

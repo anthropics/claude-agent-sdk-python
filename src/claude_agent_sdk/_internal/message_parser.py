@@ -52,7 +52,6 @@ def _parse_advisor_result_content(content: dict[str, Any]) -> AdvisorToolResultC
             )
 
 
-
 def parse_message(data: dict[str, Any]) -> Message | None:
     """
     Parse message from CLI output into typed Message objects.

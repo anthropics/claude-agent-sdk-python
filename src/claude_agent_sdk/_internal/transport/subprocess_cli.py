@@ -1,5 +1,6 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import asyncio
 import json
 import logging
 import os
@@ -50,7 +51,7 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
-        self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -393,10 +394,11 @@ class SubprocessCLITransport(Transport):
             # Setup stderr stream if piped
             if should_pipe_stderr and self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
-                self._stderr_task_group = anyio.create_task_group()
-                await self._stderr_task_group.__aenter__()
-                self._stderr_task_group.start_soon(self._handle_stderr)
+                # Use an asyncio task instead of a manually-entered anyio
+                # task group so close() can safely run from a different task.
+                self._stderr_task = asyncio.create_task(
+                    self._handle_stderr(), name="claude-sdk-stderr-reader"
+                )
 
             # Setup stdin for streaming (always used now)
             if self._process.stdin:
@@ -454,12 +456,13 @@ class SubprocessCLITransport(Transport):
             self._ready = False
             return
 
-        # Close stderr task group if active
-        if self._stderr_task_group:
-            with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
-                await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
+        # Close stderr reader task if active. This may run from a different
+        # task context than connect(), so avoid anyio task groups here.
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._stderr_task
+            self._stderr_task = None
 
         # Close stdin stream (acquire lock to prevent race with concurrent writes)
         async with self._write_lock:

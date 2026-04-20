@@ -121,6 +121,10 @@ def fold_session_summary(
     transcript. ``prev`` is the previous summary for the same key (or ``None``
     for the first append).
 
+    Do not call this for keys with a ``subpath`` — subagent transcripts must
+    not contribute to the main session's summary. Guard with
+    ``if key.get("subpath") is None:`` before calling.
+
     All derived state lives in the opaque ``data`` dict; stores persist it
     verbatim and do not interpret it. ``mtime`` stays top-level so stores
     can index on it.

@@ -202,6 +202,15 @@ async def run_session_store_conformance(
         )
         assert refolded["session_id"] == "summ-sess"
         assert refolded["mtime"] >= summ["mtime"]
+        # Subagent appends must NOT affect the main session's summary.
+        await store.append(
+            {**key, "subpath": "subagents/agent-1"},
+            [_e({"timestamp": "2024-01-01T00:00:09.000Z", "customTitle": "subagent"})],
+        )
+        after_sub = {
+            s["session_id"]: s for s in await store.list_session_summaries("proj")
+        }
+        assert after_sub["summ-sess"]["data"] == summ["data"]
         assert await store.list_session_summaries("never-appended-project") == []
         if has_delete:
             await store.delete(key)

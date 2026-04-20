@@ -80,6 +80,37 @@ class TestMessageTypes:
         assert msg.total_cost_usd == 0.01
         assert msg.session_id == "session-123"
 
+    def test_message_repr_is_compact(self):
+        """Message reprs should be compact and informative for logging."""
+        assistant = AssistantMessage(
+            content=[TextBlock(text="Hello, this is a fairly long message body for repr.")],
+            model="claude-opus-4-1-20250805",
+            stop_reason="end_turn",
+            uuid="abc-123",
+        )
+        user = UserMessage(content="Line one\nLine two", uuid="u-1")
+        result = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="session-123",
+            total_cost_usd=0.02,
+            uuid="r-1",
+        )
+
+        assistant_repr = repr(assistant)
+        user_repr = repr(user)
+        result_repr = repr(result)
+
+        assert "AssistantMessage(" in assistant_repr
+        assert "content_blocks=1" in assistant_repr
+        assert "UserMessage(" in user_repr
+        assert "\\n" in user_repr
+        assert "ResultMessage(" in result_repr
+        assert "total_cost_usd=0.02" in result_repr
+
 
 class TestOptions:
     """Test Options configuration."""

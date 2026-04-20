@@ -1,5 +1,6 @@
 """Tests for Claude SDK transport layer."""
 
+import asyncio
 import os
 import uuid
 from contextlib import nullcontext
@@ -174,6 +175,25 @@ class TestSubprocessCLITransport:
         assert "acceptEdits" in cmd
         assert "--max-turns" in cmd
         assert "5" in cmd
+
+    def test_build_command_with_custom_betas(self):
+        """Test that arbitrary beta header values flow through to the CLI."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                betas=[
+                    "context-1m-2025-08-07",
+                    "token-efficient-tools-2025-02-19",
+                ]
+            ),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index("--betas")
+        assert cmd[idx : idx + 2] == [
+            "--betas",
+            "context-1m-2025-08-07,token-efficient-tools-2025-02-19",
+        ]
 
     def test_build_command_with_dont_ask_permission_mode(self):
         """Test building CLI command with dontAsk permission mode."""
@@ -374,6 +394,57 @@ class TestSubprocessCLITransport:
                 # terminate should NOT be called.
                 mock_process.terminate.assert_not_called()
                 mock_process.wait.assert_called()
+
+        anyio.run(_test)
+
+    def test_close_from_different_task_context(self):
+        """Test close() can safely run from a different task than connect()."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.wait = AsyncMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+                assert transport._stderr_task is not None
+
+                close_error = None
+
+                async def close_in_other_task():
+                    nonlocal close_error
+                    try:
+                        await transport.close()
+                    except Exception as exc:  # pragma: no cover - regression guard
+                        close_error = exc
+
+                task = asyncio.create_task(close_in_other_task())
+                await task
+
+                assert close_error is None
+                assert transport._stderr_task is None
 
         anyio.run(_test)
 

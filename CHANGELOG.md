@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.64
+
+### New Features
+
+- **SessionStore adapter**: Full SessionStore support at parity with the TypeScript SDK. Includes a `SessionStore` protocol with 5 methods (`append`, `load`, `list_sessions`, `delete`, `list_subkeys`), `InMemorySessionStore` reference implementation, transcript mirroring via `--session-mirror`, session resume from store, and 9 new async store-backed helper functions (`list_sessions_from_store`, `get_session_messages_from_store`, `fork_session_via_store`, etc.). Also adds a 13-contract conformance test harness at `claude_agent_sdk.testing.run_session_store_conformance` for third-party adapter authors (#837)
+- **Reference SessionStore adapters**: Three copy-in reference `SessionStore` adapters under `examples/session_stores/` — S3 (JSONL part files, mirrors the TS S3 reference), Redis (RPUSH/LRANGE lists + zset index), and Postgres (`asyncpg` + jsonb rows). Not shipped in the wheel; users copy the file they need into their project (#842)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.116
+
 ## 0.1.63
 
 ### Internal/Other Changes

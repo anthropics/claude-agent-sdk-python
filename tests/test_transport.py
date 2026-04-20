@@ -12,6 +12,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
+_ABSENT = object()  # sentinel for "field not sent on the wire"
 
 
 def make_options(**kwargs: object) -> ClaudeAgentOptions:
@@ -453,6 +454,179 @@ class TestSubprocessCLITransport:
         )
         cmd = transport._build_command()
         assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_none_leaves_options_untouched(self):
+        """When skills is None (default), neither allowed_tools nor setting_sources change."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+    def test_build_command_skills_all_enables_skill_tool(self):
+        """skills='all' enables the bare Skill tool and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_empty_list_adds_no_skill_entries(self):
+        """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_named_list_uses_skill_patterns(self):
+        """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["pdf", "docx"]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_merges_with_existing_allowed_tools(self):
+        """skills augment (not replace) an existing allowed_tools list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Read", "Write"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Write,Skill(pdf)"
+
+    def test_build_command_skills_preserves_user_setting_sources(self):
+        """When setting_sources is explicitly provided, skills should not override it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                skills="all",
+                setting_sources=["local"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources=local" in cmd
+
+    def test_build_command_skills_does_not_mutate_options(self):
+        """Applying skills defaults must not mutate the caller's options object."""
+        options = make_options(allowed_tools=["Read"], skills=["pdf"])
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        transport._build_command()
+        assert options.allowed_tools == ["Read"]
+        assert options.setting_sources is None
+
+    def test_build_command_skills_does_not_duplicate_entries(self):
+        """Injecting Skill entries is idempotent when caller already listed them."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Skill(pdf)"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+
+    @pytest.mark.parametrize(
+        ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
+        [
+            # (1) default: no auto-config
+            (None, {}, None, None, _ABSENT),
+            # (2) old manual way still works (skills=None, user wires it)
+            (
+                None,
+                {
+                    "allowed_tools": ["Skill", "Read"],
+                    "setting_sources": ["user", "project"],
+                },
+                "Skill,Read",
+                "user,project",
+                _ABSENT,
+            ),
+            # (3) "all": bare Skill, default sources, no wire filter
+            ("all", {}, "Skill", "user,project", _ABSENT),
+            # (4) named subset
+            (
+                ["pdf", "docx"],
+                {},
+                "Skill(pdf),Skill(docx)",
+                "user,project",
+                ["pdf", "docx"],
+            ),
+            # (5) subset + explicit setting_sources (user wins)
+            (
+                ["pdf"],
+                {"setting_sources": ["project"]},
+                "Skill(pdf)",
+                "project",
+                ["pdf"],
+            ),
+            # (6) subset merges into existing allowed_tools
+            (
+                ["pdf"],
+                {"allowed_tools": ["Read", "Bash"]},
+                "Read,Bash,Skill(pdf)",
+                "user,project",
+                ["pdf"],
+            ),
+            # (7) empty list = degenerate subset (not "all")
+            ([], {}, None, "user,project", []),
+        ],
+        ids=[
+            "default-none",
+            "old-manual",
+            "all",
+            "subset",
+            "subset+explicit-sources",
+            "subset+merge-tools",
+            "empty-list",
+        ],
+    )
+    def test_skills_option_matrix(
+        self, skills, extra, want_tools, want_sources, want_init_skills
+    ):
+        """Documented behavior table for ClaudeAgentOptions.skills.
+
+        Asserts the full (input) -> (allowedTools, setting_sources,
+        initialize.skills) mapping in one place. See also
+        test_query.py::test_initialize_* for the wire-level half.
+        """
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills, **extra),
+        )
+        cmd = transport._build_command()
+
+        if want_tools is None:
+            assert "--allowedTools" not in cmd
+        else:
+            assert cmd[cmd.index("--allowedTools") + 1] == want_tools
+
+        if want_sources is None:
+            assert not any(a.startswith("--setting-sources") for a in cmd)
+        else:
+            assert f"--setting-sources={want_sources}" in cmd
+
+        # Wire-level: what the Query layer would send on initialize.
+        # 'all' and None both omit the field; only an explicit list is sent.
+        if want_init_skills is _ABSENT:
+            assert not isinstance(skills, list)
+        else:
+            assert skills == want_init_skills
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""

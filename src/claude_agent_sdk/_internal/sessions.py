@@ -1663,7 +1663,7 @@ async def list_sessions_from_store(
             if limit is not None and limit > 0:
                 page = page[:limit]
 
-            to_fill = [sl for sl in page if sl["info"] is None and "session_id" in sl]
+            to_fill = [sl for sl in page if sl["info"] is None]
             if to_fill:
                 filled = await _derive_infos_via_load(
                     session_store, to_fill, directory, project_path

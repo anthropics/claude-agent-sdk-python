@@ -543,11 +543,12 @@ class TestListSessionsFromStoreFastPath:
         # Specifically, only the one placeholder in the page was loaded.
         assert len(store.load_calls) == 1
 
-    async def test_sidechain_summary_short_pages(self) -> None:
-        """Fast-path drops sidechain/empty summaries AFTER pagination — same
-        as gap-fill placeholders — so a sidechain in the page yields a short
-        page. Locks in the paginate-then-drop trade-off (load() bounded by
-        page size; slow path is drop-then-paginate at O(N) load cost)."""
+    async def test_sidechain_summary_does_not_consume_page_slot(self) -> None:
+        """Summary-backed sidechain/empty sessions are dropped BEFORE
+        pagination (free — already determined from the sidecar) so they don't
+        consume offset/limit positions. Matches the disk and slow-path
+        filter-then-paginate semantics. Only gap-fill placeholders that
+        resolve to None after load can short-page."""
         store = InMemorySessionStore()
         sids = [str(uuid_mod.uuid4()) for _ in range(3)]
         # Newest is a sidechain; next two are real.
@@ -572,10 +573,10 @@ class TestListSessionsFromStoreFastPath:
         )
 
         page = await list_sessions_from_store(store, directory=DIR, limit=2)
-        # limit=2 picks the 2 newest slots; the sidechain one is dropped
-        # post-pagination → short page of 1.
-        assert len(page) == 1
-        assert page[0].session_id == sids[1]
+        # The sidechain summary is pre-filtered, so limit=2 returns both real
+        # sessions — full page, matching the slow path.
+        assert len(page) == 2
+        assert [s.session_id for s in page] == [sids[1], sids[2]]
 
     async def test_gap_fill_bounded_concurrency(self) -> None:
         """Gap-fill reuses the bounded per-session load helper, so

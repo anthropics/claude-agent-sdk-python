@@ -126,7 +126,7 @@ class TestListSessionsFromStore:
 
     async def test_raises_when_store_lacks_list_sessions(self) -> None:
         store = _MinimalStore()
-        with pytest.raises(ValueError, match="does not implement list_sessions"):
+        with pytest.raises(ValueError, match="list_sessions"):
             await list_sessions_from_store(store, directory=DIR)
 
     async def test_drops_sidechain_sessions(self) -> None:

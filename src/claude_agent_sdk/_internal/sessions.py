@@ -1579,7 +1579,8 @@ async def list_sessions_from_store(
 
     Args:
         session_store: The store to read from. Must implement
-            :meth:`SessionStore.list_sessions`.
+            :meth:`SessionStore.list_session_summaries` or
+            :meth:`SessionStore.list_sessions` (or both).
         directory: Project directory used to compute the ``project_key``.
             Defaults to the current working directory.
         limit: Maximum number of sessions to return.
@@ -1590,7 +1591,8 @@ async def list_sessions_from_store(
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
 
     Raises:
-        ValueError: If ``session_store`` does not implement
+        ValueError: If ``session_store`` implements neither
+            :meth:`SessionStore.list_session_summaries` nor
             :meth:`SessionStore.list_sessions`.
 
     Note:
@@ -1628,12 +1630,13 @@ async def list_sessions_from_store(
             # Build a unified slot list — summaries get their info up front;
             # sessions present in list_sessions() but missing a sidecar get a
             # placeholder slot so they sort into the page correctly.
+            # Summary-backed sidechain/empty sessions are dropped here (free —
+            # already determined) so they don't consume offset/limit positions,
+            # matching the disk and slow-path filter-then-paginate semantics.
             slots: list[dict[str, Any]] = [
-                {
-                    "mtime": s["mtime"],
-                    "info": summary_entry_to_sdk_info(s, project_path),
-                }
+                {"mtime": s["mtime"], "info": info}
                 for s in summaries
+                if (info := summary_entry_to_sdk_info(s, project_path)) is not None
             ]
             if has_list_sessions:
                 summary_ids = {s["session_id"] for s in summaries}
@@ -1666,19 +1669,18 @@ async def list_sessions_from_store(
                 for sl in to_fill:
                     sl["info"] = by_sid.get(sl["session_id"])
 
-            # Slots whose info resolved to None (sidechain / no extractable
-            # summary) are dropped AFTER pagination — both summary-derived and
-            # gap-fill slots, so the page is internally consistent. This can
-            # return fewer than ``limit`` rows; that short-page is the price of
-            # bounding load() by page size instead of total session count (the
-            # slow path below drops-then-paginates and never short-pages, but
-            # at O(N) load cost).
+            # Gap-fill placeholders that resolved to None (sidechain / no
+            # extractable summary after load) are dropped here, AFTER
+            # pagination — that case alone can short-page. Summary-backed
+            # slots were already pre-filtered above, so a store with complete
+            # sidecars never short-pages.
             return [sl["info"] for sl in page if sl["info"] is not None]
 
     if not has_list_sessions:
         raise ValueError(
-            "session_store does not implement list_sessions() -- cannot list "
-            "sessions. Provide a store with a list_sessions() method."
+            "session_store implements neither list_session_summaries() nor "
+            "list_sessions() -- cannot list sessions. Provide a store with at "
+            "least one of those methods."
         )
     # Copy — store.list_sessions() may return a reference to internal state.
     listing = list(await session_store.list_sessions(project_key))

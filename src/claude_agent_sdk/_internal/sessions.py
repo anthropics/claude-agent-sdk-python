@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -20,6 +21,8 @@ from typing import Any
 
 from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
 from .session_store_validation import _store_implements
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1600,6 +1603,11 @@ async def list_sessions_from_store(
         (bounded at 16 concurrent), which on remote backends with many or
         large sessions can be expensive (e.g., S3 egress, Postgres large-row
         reads).
+
+        Gap-fill requires ``list_sessions``: if the store implements
+        ``list_session_summaries`` but not ``list_sessions``, sessions
+        without a sidecar cannot be discovered and will be absent from the
+        result.
     """
     project_path = _canonicalize_path(str(directory) if directory is not None else ".")
     project_key = _sanitize_path(project_path)
@@ -1634,6 +1642,11 @@ async def list_sessions_from_store(
                             session_store, missing, directory, project_path
                         )
                     )
+            else:
+                logger.debug(
+                    "list_session_summaries without list_sessions: gap-fill "
+                    "skipped; sessions lacking a sidecar will be omitted"
+                )
             return _apply_sort_limit_offset(infos, limit, offset)
 
     if not has_list_sessions:

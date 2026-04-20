@@ -1261,6 +1261,13 @@ class SessionStore(Protocol):
 
         Optional — if unimplemented, ``list_sessions_from_store()`` falls back
         to ``list_sessions()`` + per-session ``load()``.
+
+        .. note::
+            Stores that maintain summaries inside ``append()`` MUST serialize
+            sidecar writes if ``append()`` calls can race for the same session
+            — e.g., wrap the read-fold-write in a transaction/CAS, or hold a
+            per-session lock. The SDK's :func:`fold_session_summary` is pure;
+            concurrency control is the store's responsibility.
         """
         raise NotImplementedError
 

@@ -1656,7 +1656,10 @@ async def list_sessions_from_store(
             # bounded by page size, not total missing — 500 sessions lacking
             # sidecars with limit=10 issues at most 10 load()s, not 500.
             slots.sort(key=lambda sl: sl["mtime"], reverse=True)
-            page = slots[offset:]
+            # Mirror _apply_sort_limit_offset's guards so negative/zero
+            # offset and non-positive limit behave identically to the slow
+            # and disk paths.
+            page = slots[offset:] if offset > 0 else slots
             if limit is not None and limit > 0:
                 page = page[:limit]
 

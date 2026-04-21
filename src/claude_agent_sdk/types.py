@@ -1274,8 +1274,11 @@ class SessionStore(Protocol):
         Within a single process, persist entries in append-call order; across
         concurrent processes, order is by storage commit time, not call time.
 
-        Exceptions are logged; the subprocess continues unaffected.
-        At-most-once delivery — failed batches are not retried.
+        Each entry carries a stable ``uuid`` field; adapters should treat it
+        as an idempotency key (upsert / ignore-duplicate). Exceptions are
+        logged and the subprocess continues unaffected — failed batches are
+        retried up to 3 times with short backoff before being dropped and
+        surfaced as a ``MirrorErrorMessage``.
         """
         ...
 

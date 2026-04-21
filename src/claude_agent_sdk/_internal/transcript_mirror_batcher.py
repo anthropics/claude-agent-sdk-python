@@ -27,6 +27,11 @@ MAX_PENDING_ENTRIES = 500
 MAX_PENDING_BYTES = 1 << 20  # 1 MiB
 SEND_TIMEOUT_SECONDS = 60.0
 
+# Bounded retry for transient adapter failures. Backoff list length must be
+# MAX_ATTEMPTS - 1 (one delay between each pair of attempts).
+MIRROR_APPEND_MAX_ATTEMPTS = 3
+MIRROR_APPEND_BACKOFF_S = (0.2, 0.8)
+
 
 @dataclass
 class _MirrorEntry:
@@ -44,9 +49,12 @@ class TranscriptMirrorBatcher:
     an eager flush fires in the background so memory stays flat during long
     turns where no ``result`` (and thus no explicit ``flush()``) arrives.
 
-    Adapter failures are reported via ``on_error`` and the failed batch is
-    dropped (at-most-once delivery). Failures never raise — the local-disk
-    transcript is already durable so the session must continue unaffected.
+    Adapter failures are retried up to ``MIRROR_APPEND_MAX_ATTEMPTS`` times
+    with short backoff; only after the final attempt fails is the batch
+    dropped and reported via ``on_error``. Failures never raise — the
+    local-disk transcript is already durable so the session must continue
+    unaffected. Adapters should dedupe by ``entry["uuid"]`` since a retried
+    batch may partially overlap a prior partial write.
     """
 
     store: SessionStore
@@ -163,12 +171,29 @@ class TranscriptMirrorBatcher:
                     self.projects_dir,
                 )
                 continue
-            try:
-                await asyncio.wait_for(
-                    self.store.append(key, entries), timeout=self.send_timeout
-                )
-            except Exception as e:
+            last_err: Exception | None = None
+            for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):
+                if attempt > 0:
+                    await asyncio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
+                try:
+                    await asyncio.wait_for(
+                        self.store.append(key, entries), timeout=self.send_timeout
+                    )
+                    break
+                except Exception as e:  # noqa: BLE001 - adapter is user code
+                    last_err = e
+                    logger.debug(
+                        "[TranscriptMirrorBatcher] append attempt %d/%d failed "
+                        "for %s: %s",
+                        attempt + 1,
+                        MIRROR_APPEND_MAX_ATTEMPTS,
+                        file_path,
+                        e,
+                    )
+            else:
                 logger.error(
-                    "[TranscriptMirrorBatcher] flush failed for %s: %s", file_path, e
+                    "[TranscriptMirrorBatcher] flush failed for %s: %s",
+                    file_path,
+                    last_err,
                 )
-                errors.append((key, str(e)))
+                errors.append((key, str(last_err)))

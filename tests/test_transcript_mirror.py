@@ -151,6 +151,12 @@ async def _noop_error(_key: SessionKey | None, _err: str) -> None:
     pass
 
 
+# Patch target for the retry backoff — the batcher does ``import asyncio`` so
+# patching this attribute swaps the global ``asyncio.sleep`` for the duration
+# of the ``with`` block.
+_BATCHER_SLEEP = "claude_agent_sdk._internal.transcript_mirror_batcher.asyncio.sleep"
+
+
 class _RecordingStore(InMemorySessionStore):
     """InMemorySessionStore that records each append call separately."""
 
@@ -260,7 +266,8 @@ class TestTranscriptMirrorBatcher:
             store=FailingStore(), projects_dir=PROJECTS_DIR, on_error=on_error
         )
         batcher.enqueue(_main_path(), [{"type": "x"}])
-        await batcher.flush()  # must not raise
+        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+            await batcher.flush()  # must not raise
 
         assert len(errors) == 1
         assert errors[0][0] == {"project_key": "proj", "session_id": "sess"}
@@ -270,7 +277,7 @@ class TestTranscriptMirrorBatcher:
     async def test_append_timeout_calls_on_error(self) -> None:
         class HangingStore(InMemorySessionStore):
             async def append(self, key, entries):
-                await asyncio.sleep(10)
+                await asyncio.Event().wait()  # never resolves
 
         errors: list[str] = []
 
@@ -284,8 +291,70 @@ class TestTranscriptMirrorBatcher:
             send_timeout=0.05,
         )
         batcher.enqueue(_main_path(), [{"type": "x"}])
-        await batcher.flush()
+        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+            await batcher.flush()
         assert len(errors) == 1
+
+    @pytest.mark.asyncio
+    async def test_append_retries_then_succeeds_no_error_reported(self) -> None:
+        """Transient outage: append raises twice then succeeds on the 3rd
+        attempt — batch is delivered, no mirror error reported."""
+        attempts: list[int] = []
+
+        class FlakyStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                attempts.append(1)
+                if len(attempts) < 3:
+                    raise RuntimeError("transient")
+                await super().append(key, entries)
+
+        errors: list[tuple[SessionKey | None, str]] = []
+
+        async def on_error(key: SessionKey | None, err: str) -> None:
+            errors.append((key, err))
+
+        store = FlakyStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        sleep_mock = AsyncMock()
+        with patch(_BATCHER_SLEEP, new=sleep_mock):
+            await batcher.flush()
+
+        assert len(attempts) == 3
+        assert errors == []
+        assert await store.load({"project_key": "proj", "session_id": "sess"}) == [
+            {"type": "x"}
+        ]
+        # Backoff schedule honoured between attempts.
+        assert [c.args[0] for c in sleep_mock.await_args_list] == [0.2, 0.8]
+
+    @pytest.mark.asyncio
+    async def test_append_retries_exhausted_reports_error_once(self) -> None:
+        """append raises on all 3 attempts → exactly one mirror error."""
+        attempts: list[int] = []
+
+        class AlwaysFailingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                attempts.append(1)
+                raise RuntimeError("boom")
+
+        errors: list[tuple[SessionKey | None, str]] = []
+
+        async def on_error(key: SessionKey | None, err: str) -> None:
+            errors.append((key, err))
+
+        batcher = TranscriptMirrorBatcher(
+            store=AlwaysFailingStore(), projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+            await batcher.flush()
+
+        assert len(attempts) == 3
+        assert len(errors) == 1
+        assert "boom" in errors[0][1]
 
     @pytest.mark.asyncio
     async def test_close_flushes_pending(self) -> None:
@@ -656,6 +725,7 @@ class TestReceiveLoopFramePeeling:
                     "claude_agent_sdk._internal.session_resume._get_projects_dir",
                     return_value=PROJECTS_DIR,
                 ),
+                patch(_BATCHER_SLEEP, new=AsyncMock()),
             ):
                 mock_cls.return_value = mock_transport
                 messages = [

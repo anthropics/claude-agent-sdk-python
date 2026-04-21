@@ -1627,29 +1627,50 @@ async def list_sessions_from_store(
         except NotImplementedError:
             pass
         else:
-            # Build a unified slot list — summaries get their info up front;
-            # sessions present in list_sessions() but missing a sidecar get a
-            # placeholder slot so they sort into the page correctly.
+            # Build a unified slot list. Fresh summaries (mtime >= the
+            # session's current mtime from list_sessions) get their info up
+            # front; sessions present in list_sessions() but missing OR with a
+            # stale sidecar (summary.mtime < known mtime) get a placeholder
+            # slot routed through the same gap-fill path so the fold is
+            # recomputed from source entries.
             # Summary-backed sidechain/empty sessions are dropped here (free —
             # already determined) so they don't consume offset/limit positions,
             # matching the disk and slow-path filter-then-paginate semantics.
-            slots: list[dict[str, Any]] = [
-                {"mtime": s["mtime"], "info": info}
-                for s in summaries
-                if (info := summary_entry_to_sdk_info(s, project_path)) is not None
-            ]
             if has_list_sessions:
-                summary_ids = {s["session_id"] for s in summaries}
                 listing = list(await session_store.list_sessions(project_key))
-                slots.extend(
-                    {"mtime": e["mtime"], "session_id": e["session_id"], "info": None}
-                    for e in listing
-                    if e["session_id"] not in summary_ids
-                )
+                known_mtimes = {e["session_id"]: e["mtime"] for e in listing}
             else:
+                listing = []
+                known_mtimes = {}
                 logger.debug(
                     "list_session_summaries without list_sessions: gap-fill "
                     "skipped; sessions lacking a sidecar will be omitted"
+                )
+
+            slots: list[dict[str, Any]] = []
+            fresh_summary_ids: set[str] = set()
+            for s in summaries:
+                sid = s["session_id"]
+                if has_list_sessions:
+                    known = known_mtimes.get(sid)
+                    if known is None:
+                        # Summary for a session list_sessions() no longer
+                        # reports — drop it.
+                        continue
+                    if s["mtime"] < known:
+                        # Stale sidecar — let gap-fill re-fold from source.
+                        continue
+                info = summary_entry_to_sdk_info(s, project_path)
+                if info is None:
+                    fresh_summary_ids.add(sid)
+                    continue
+                slots.append({"mtime": s["mtime"], "info": info})
+                fresh_summary_ids.add(sid)
+            if has_list_sessions:
+                slots.extend(
+                    {"mtime": e["mtime"], "session_id": e["session_id"], "info": None}
+                    for e in listing
+                    if e["session_id"] not in fresh_summary_ids
                 )
 
             # Paginate BEFORE per-session load so gap-fill load() count is

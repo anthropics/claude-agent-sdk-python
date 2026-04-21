@@ -578,6 +578,96 @@ class TestListSessionsFromStoreFastPath:
         assert len(page) == 2
         assert [s.session_id for s in page] == [sids[1], sids[2]]
 
+    async def test_stale_sidecar_triggers_gap_fill(self) -> None:
+        """A sidecar whose mtime lags the session's current mtime from
+        list_sessions must be treated as missing: route it through gap-fill so
+        the SDK re-folds from source entries and the result reflects fresh
+        transcript state, not the stale sidecar values."""
+        sid = str(uuid_mod.uuid4())
+        stale_mtime = 1_704_067_260_000  # 2024-01-01T00:01:00Z
+        fresh_mtime = 1_704_153_660_000  # 2024-01-02T00:01:00Z
+
+        class StaleSidecarStore(InMemorySessionStore):
+            """Reports fresh transcript state but a stale summary sidecar."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key):  # noqa: ANN001, ANN201
+                # Serve a stale summary reflecting T1 state.
+                if project_key != PROJECT_KEY:
+                    return []
+                return [
+                    {
+                        "session_id": sid,
+                        "mtime": stale_mtime,
+                        "data": {
+                            "custom_title": "old",
+                            "first_prompt": "old prompt",
+                            "first_prompt_locked": True,
+                            "created_at": stale_mtime,
+                        },
+                    }
+                ]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = StaleSidecarStore()
+        # Populate the real transcript with fresh entries so list_sessions()
+        # reports the fresh mtime and a gap-fill load() yields fresh info.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [
+                _user("fresh prompt", ts="2024-01-02T00:00:00Z"),
+                {
+                    "type": "x",
+                    "timestamp": "2024-01-02T00:01:00Z",
+                    "customTitle": "fresh",
+                },
+            ],
+        )
+        # Sanity-check the setup: list_sessions reports fresh mtime.
+        listed = await InMemorySessionStore.list_sessions(store, PROJECT_KEY)
+        assert listed[0]["mtime"] > stale_mtime
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        assert len(sessions) == 1
+        info = sessions[0]
+        assert info.session_id == sid
+        # Fresh transcript state wins — stale customTitle must NOT leak through.
+        assert info.custom_title == "fresh"
+        assert info.summary == "fresh"
+        assert info.last_modified >= fresh_mtime
+        # Stale entry was routed into gap-fill, so load() was called for it.
+        assert store.load_calls == [sid]
+
+    async def test_summary_without_listing_is_dropped(self) -> None:
+        """A summary for a session that list_sessions() no longer reports must
+        be dropped from the fast-path result."""
+        sid_real = str(uuid_mod.uuid4())
+        sid_ghost = str(uuid_mod.uuid4())
+
+        class GhostStore(InMemorySessionStore):
+            async def list_sessions(self, project_key: str):  # noqa: ANN201
+                full = await super().list_sessions(project_key)
+                return [s for s in full if s["session_id"] != sid_ghost]
+
+        store = GhostStore()
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_real},
+            [_user("real", ts="2024-01-02T00:00:00Z")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_ghost},
+            [_user("ghost", ts="2024-01-01T00:00:00Z")],
+        )
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        assert {s.session_id for s in sessions} == {sid_real}
+
     async def test_gap_fill_bounded_concurrency(self) -> None:
         """Gap-fill reuses the bounded per-session load helper, so
         ``_STORE_LIST_LOAD_CONCURRENCY`` applies to the missing-session set."""

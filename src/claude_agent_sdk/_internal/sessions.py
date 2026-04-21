@@ -1602,11 +1602,12 @@ async def list_sessions_from_store(
     .. note::
         If the store implements ``list_session_summaries``, this is one batch
         summary call plus one cheap ``list_sessions()`` enumeration to
-        gap-fill sessions missing a sidecar — zero per-session ``load()``
-        calls when sidecars are complete. Otherwise falls back to one
-        ``store.load()`` per session (bounded at 16 concurrent), which on
-        remote backends with many or large sessions can be expensive (e.g.,
-        S3 egress, Postgres large-row reads).
+        gap-fill sessions missing a sidecar or whose sidecar is stale
+        (``summary.mtime < list_sessions.mtime``) — zero per-session
+        ``load()`` calls when sidecars are complete and fresh. Otherwise
+        falls back to one ``store.load()`` per session (bounded at 16
+        concurrent), which on remote backends with many or large sessions
+        can be expensive (e.g., S3 egress, Postgres large-row reads).
 
         Gap-fill requires ``list_sessions``: if the store implements
         ``list_session_summaries`` but not ``list_sessions``, sessions
@@ -1697,7 +1698,9 @@ async def list_sessions_from_store(
             # extractable summary after load) are dropped here, AFTER
             # pagination — that case alone can short-page. Summary-backed
             # slots were already pre-filtered above, so a store with complete
-            # sidecars never short-pages.
+            # and fresh sidecars never short-pages; a present-but-stale
+            # sidecar is routed through gap-fill (same as a missing one) and
+            # can short-page if load() yields no extractable summary.
             return [sl["info"] for sl in page if sl["info"] is not None]
 
     if not has_list_sessions:

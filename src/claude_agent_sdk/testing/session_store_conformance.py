@@ -195,13 +195,27 @@ async def run_session_store_conformance(
         summ = by_id["summ-sess"]
         # mtime must be epoch-ms; >1e12 rules out epoch-seconds.
         assert math.isfinite(summ["mtime"]) and summ["mtime"] > 1e12
+        # Clock alignment: sidecar mtime is storage write time (adapter-
+        # stamped at persist), and must share a clock with
+        # list_sessions().mtime for the same session. Adapters that derive
+        # sidecar mtime from entry ISO timestamps would report a strictly
+        # older value than list_sessions()'s storage-time mtime and make
+        # every sidecar look stale to the fast-path freshness check in
+        # list_sessions_from_store(); this assertion catches that.
+        if has_list_sessions:
+            ls_by_id = {
+                e["session_id"]: e["mtime"] for e in await store.list_sessions("proj")
+            }
+            assert summ["mtime"] >= ls_by_id["summ-sess"]
         # data is opaque; the contract is that it round-trips into the fold.
         assert isinstance(summ["data"], dict)
         refolded = fold_session_summary(
             summ, key, [_e({"timestamp": "2024-01-01T00:00:03.000Z"})]
         )
         assert refolded["session_id"] == "summ-sess"
-        assert refolded["mtime"] >= summ["mtime"]
+        # The fold preserves prev["mtime"] verbatim — mtime is stamped by
+        # the adapter after persisting, not by the fold.
+        assert refolded["mtime"] == summ["mtime"]
         # Subagent appends must NOT affect the main session's summary.
         await store.append(
             {**key, "subpath": "subagents/agent-1"},

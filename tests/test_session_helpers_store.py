@@ -157,8 +157,20 @@ class TestListSessionsFromStore:
         first and ``_apply_sort_limit_offset`` paginates the filtered set, so
         ``limit=N`` returns N rows even when sidechains exist. The store path
         must do the same — paginating before filtering would return short
-        pages and let sidechains consume page slots."""
-        store = InMemorySessionStore()
+        pages and let sidechains consume page slots.
+
+        Pinned to the slow path (``list_session_summaries`` suppressed)
+        because the fast path deliberately locks in paginate-THEN-drop for
+        sidechain-shaped summary slots (see
+        ``test_sidechain_summary_short_pages``); slow-path filter-THEN-
+        paginate is what this test covers.
+        """
+
+        class SlowPathStore(InMemorySessionStore):
+            async def list_session_summaries(self, project_key):  # type: ignore[override]
+                raise NotImplementedError
+
+        store = SlowPathStore()
         valid_sids: list[str] = []
         for _ in range(5):
             sid = str(uuid_mod.uuid4())

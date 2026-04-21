@@ -1266,7 +1266,11 @@ class SessionStore(Protocol):
         """Return incrementally-maintained summaries for all sessions in one call.
 
         Stores should maintain these via :func:`fold_session_summary` inside
-        :meth:`append`.
+        :meth:`append`. Skip the fold for keys with a ``subpath`` — subagent
+        transcripts must not contribute to the main session's summary.
+
+        Like :meth:`list_sessions`, results are scoped to a single
+        ``project_key`` and exclude ``subpath`` entries.
 
         Optional — if unimplemented, ``list_sessions_from_store()`` falls back
         to ``list_sessions()`` + per-session ``load()``.

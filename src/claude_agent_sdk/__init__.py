@@ -25,6 +25,7 @@ from ._errors import (
     CLINotFoundError,
     ProcessError,
 )
+from ._internal.session_import import import_session_to_store
 from ._internal.session_mutations import (
     ForkSessionResult,
     delete_session,
@@ -616,6 +617,7 @@ __all__ = [
     "fold_session_summary",
     "MirrorErrorMessage",
     "project_key_for_directory",
+    "import_session_to_store",
     # Session listing (SessionStore-backed async variants)
     "list_sessions_from_store",
     "get_session_info_from_store",

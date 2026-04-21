@@ -126,8 +126,18 @@ def fold_session_summary(
     ``if key.get("subpath") is None:`` before calling.
 
     All derived state lives in the opaque ``data`` dict; stores persist it
-    verbatim and do not interpret it. ``mtime`` stays top-level so stores
-    can index on it.
+    verbatim and do not interpret it.
+
+    ``mtime`` is NOT touched by the fold — it is the sidecar's storage
+    write time and must be stamped by the adapter after persisting. It has
+    to share a clock with the ``mtime`` returned by
+    :meth:`SessionStore.list_sessions` for the same session (typically file
+    mtime, S3 ``LastModified``, Postgres ``updated_at``, or whatever native
+    timestamp the adapter surfaces); deriving it from entry ISO timestamps
+    would make every batched-write sidecar appear strictly older than the
+    session's current mtime, defeating the fast-path staleness check. For a
+    new session (``prev is None``) the fold returns ``mtime=0`` as a
+    placeholder; the adapter is expected to overwrite it.
 
     ``created_at`` latches the first parseable entry timestamp; the disk
     lite-parse only inspects the first line, so for streams whose first
@@ -151,8 +161,6 @@ def fold_session_summary(
         entry = cast("dict[str, Any]", raw)
 
         ms = _iso_to_epoch_ms(entry.get("timestamp"))
-        if ms is not None and ms > summary["mtime"]:
-            summary["mtime"] = ms
 
         if "is_sidechain" not in data:
             data["is_sidechain"] = entry.get("isSidechain") is True

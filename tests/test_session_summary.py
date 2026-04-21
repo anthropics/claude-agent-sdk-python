@@ -125,7 +125,12 @@ class TestFoldSessionSummary:
         assert s2["data"]["summary_hint"] == "sm"
         assert s2["data"]["git_branch"] == "dev"
 
-    def test_mtime_takes_max(self) -> None:
+    def test_mtime_not_derived_from_entries(self) -> None:
+        """The fold must not touch mtime — it is the sidecar's storage write
+        time, stamped by the adapter at persist time, on the same clock as
+        list_sessions().mtime. Deriving it from entry ISO timestamps would
+        make every batched-write sidecar appear strictly older than the
+        session's current mtime, defeating the fast-path staleness check."""
         s = fold_session_summary(
             None,
             KEY,
@@ -134,7 +139,20 @@ class TestFoldSessionSummary:
                 {"type": "x", "timestamp": "2024-01-01T00:00:01.000Z"},
             ],
         )
-        assert s["mtime"] == 1704067205000
+        # New session: fold returns mtime=0 placeholder, adapter must stamp.
+        assert s["mtime"] == 0
+
+        # Carry-over: prev mtime is preserved verbatim regardless of entry
+        # timestamps in the new batch.
+        prev: SessionSummaryEntry = {
+            "session_id": KEY["session_id"],
+            "mtime": 42,
+            "data": {},
+        }
+        s2 = fold_session_summary(
+            prev, KEY, [{"type": "x", "timestamp": "2024-01-01T00:00:10.000Z"}]
+        )
+        assert s2["mtime"] == 42
 
     def test_tag_set_and_clear(self) -> None:
         s = fold_session_summary(None, KEY, [{"type": "tag", "tag": "wip"}])
@@ -500,8 +518,10 @@ class TestListSessionsFromStoreFastPath:
         assert by_id[sid_without].summary == "no sidecar"
         # Only the missing session should have been load()ed.
         assert store.load_calls == [sid_without]
-        # Merged result sorts on a single clock (entry timestamps).
-        assert sessions[0].session_id == sid_with
+        # Merged result sorts on a single clock (storage write time). In
+        # InMemorySessionStore, that's a strictly monotonic counter, so
+        # sid_without (appended second) sorts newest.
+        assert sessions[0].session_id == sid_without
 
     async def test_gap_fill_load_bounded_by_limit(self) -> None:
         """Gap-fill paginates BEFORE per-session load(), so load() count is
@@ -522,20 +542,23 @@ class TestListSessionsFromStoreFastPath:
 
         store = CountingStore()
         sid_with = str(uuid_mod.uuid4())
-        await store.append(
-            {"project_key": PROJECT_KEY, "session_id": sid_with},
-            [_user("with", ts="2024-01-10T00:00:00Z")],
-        )
-        # 5 sessions without sidecars, all older than sid_with.
+        # 5 sessions without sidecars. InMemorySessionStore stamps storage
+        # mtime strictly monotonically per append, so these first 5 appends
+        # are all older than sid_with below.
         sids_without = [str(uuid_mod.uuid4()) for _ in range(5)]
         for i, sid in enumerate(sids_without):
             await store.append(
                 {"project_key": PROJECT_KEY, "session_id": sid},
                 [_user(f"without {i}", ts=f"2024-01-0{i + 1}T00:00:00Z")],
             )
+        # Append sid_with last so storage mtime makes it the newest session.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid_with},
+            [_user("with", ts="2024-01-10T00:00:00Z")],
+        )
 
         page = await list_sessions_from_store(store, directory=DIR, limit=2)
-        # Page = newest 2: sid_with (sidecar) + 1 missing.
+        # Page = newest 2: sid_with (sidecar) + newest 1 missing.
         assert len(page) == 2
         assert page[0].session_id == sid_with
         # load() bounded by page size (≤2), not total missing (5).
@@ -551,7 +574,17 @@ class TestListSessionsFromStoreFastPath:
         resolve to None after load can short-page."""
         store = InMemorySessionStore()
         sids = [str(uuid_mod.uuid4()) for _ in range(3)]
-        # Newest is a sidechain; next two are real.
+        # Append order determines storage mtime (InMemorySessionStore
+        # monotonic counter). We append the two real sessions first and the
+        # sidechain LAST so the sidechain is the newest-by-storage-mtime.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sids[2]},
+            [_user("real 2", ts="2024-01-01T00:00:00Z")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sids[1]},
+            [_user("real 1", ts="2024-01-02T00:00:00Z")],
+        )
         await store.append(
             {"project_key": PROJECT_KEY, "session_id": sids[0]},
             [
@@ -563,18 +596,11 @@ class TestListSessionsFromStoreFastPath:
                 }
             ],
         )
-        await store.append(
-            {"project_key": PROJECT_KEY, "session_id": sids[1]},
-            [_user("real 1", ts="2024-01-02T00:00:00Z")],
-        )
-        await store.append(
-            {"project_key": PROJECT_KEY, "session_id": sids[2]},
-            [_user("real 2", ts="2024-01-01T00:00:00Z")],
-        )
 
         page = await list_sessions_from_store(store, directory=DIR, limit=2)
         # The sidechain summary is pre-filtered, so limit=2 returns both real
-        # sessions — full page, matching the slow path.
+        # sessions — full page, matching the slow path. sids[1] was appended
+        # after sids[2] and is therefore newer by storage mtime.
         assert len(page) == 2
         assert [s.session_id for s in page] == [sids[1], sids[2]]
 
@@ -643,6 +669,83 @@ class TestListSessionsFromStoreFastPath:
         assert info.last_modified >= fresh_mtime
         # Stale entry was routed into gap-fill, so load() was called for it.
         assert store.load_calls == [sid]
+
+    async def test_fresh_sidecar_with_storage_newer_mtime_not_gap_filled(self) -> None:
+        """The sidecar's mtime is storage write time, not entry time. For
+        adapters that use native storage mtime (file mtime, S3 LastModified,
+        Postgres updated_at), every successful batched append records a
+        storage mtime strictly later than the last entry's ISO timestamp
+        (~100ms batch cadence + network latency). The staleness check must
+        NOT flag these fresh sidecars as stale — otherwise every slot routes
+        through gap-fill load() and the fast path's N->1 goal is defeated.
+        """
+        sid = str(uuid_mod.uuid4())
+        # T1: entry ISO timestamp embedded in the transcript.
+        t1 = 1_704_067_200_000  # 2024-01-01T00:00:00Z
+        # T2: storage write time for both list_sessions and sidecar —
+        # strictly later than T1 (batcher + network delay). The point of
+        # this test is that T2 > T1 does NOT by itself mark the sidecar
+        # stale: both list_sessions().mtime and sidecar.mtime come from
+        # the same storage clock (T2), so summary.mtime == known.mtime.
+        t2 = 1_704_067_200_250  # +250ms of persist latency
+
+        class StorageMtimeStore(InMemorySessionStore):
+            """Adapter that stamps both list_sessions and the sidecar with
+            storage-native mtime — strictly later than entry ISO timestamps.
+            """
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_sessions(self, project_key: str):  # noqa: ANN201
+                # Pretend storage mtime is T2 for every session.
+                full = await super().list_sessions(project_key)
+                return [{"session_id": e["session_id"], "mtime": t2} for e in full]
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                # Sidecar mtime is also T2 (same clock).
+                full = await super().list_session_summaries(project_key)
+                return [
+                    {"session_id": s["session_id"], "mtime": t2, "data": s["data"]}
+                    for s in full
+                ]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = StorageMtimeStore()
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [
+                _user("fresh prompt", ts="2024-01-01T00:00:00.000Z"),
+                {
+                    "type": "x",
+                    "timestamp": "2024-01-01T00:00:00.000Z",
+                    "customTitle": "fresh",
+                },
+            ],
+        )
+        # Entries carry ISO timestamps at T1; storage records the write at T2.
+        # Sanity-check the adapter reports T2 from both surfaces.
+        listed = await store.list_sessions(PROJECT_KEY)
+        assert listed[0]["mtime"] == t2
+        summ = await store.list_session_summaries(PROJECT_KEY)
+        assert summ[0]["mtime"] == t2
+        # Entry timestamps are at T1, strictly older than T2.
+        assert t2 > t1
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        assert len(sessions) == 1
+        info = sessions[0]
+        assert info.session_id == sid
+        assert info.summary == "fresh"
+        assert info.last_modified == t2
+        # Fast path: load() must NOT have been called — summary.mtime ==
+        # known.mtime means not stale, so the slot returns its summary-derived
+        # info directly.
+        assert store.load_calls == []
 
     async def test_summary_without_listing_is_dropped(self) -> None:
         """A summary for a session that list_sessions() no longer reports must

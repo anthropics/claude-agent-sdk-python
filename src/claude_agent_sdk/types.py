@@ -1170,8 +1170,18 @@ class SessionSummaryEntry(TypedDict):
 
     session_id: str
     mtime: int
-    """Last-modified time in Unix epoch milliseconds (last entry timestamp).
-    Stores may index on this."""
+    """Storage write time of the sidecar, in Unix epoch milliseconds. Must use
+    the same clock source as the ``mtime`` returned by
+    :meth:`SessionStore.list_sessions` for this session — typically file
+    mtime, S3 ``LastModified``, Postgres ``updated_at``, or whatever native
+    timestamp the adapter surfaces. Do NOT derive this from entry ISO
+    timestamps: adapters that write in batches with any persist latency
+    (every real backend) would report storage times strictly later than the
+    last entry's timestamp, making every sidecar appear stale and defeating
+    the fast-path staleness check in ``list_sessions_from_store``.
+    :func:`fold_session_summary` preserves whatever ``mtime`` the caller
+    passes in via ``prev`` and does not set it itself; stamp it after
+    persisting."""
     data: dict[str, Any]
     """Opaque SDK-owned summary state. Persist verbatim; do not interpret."""
 

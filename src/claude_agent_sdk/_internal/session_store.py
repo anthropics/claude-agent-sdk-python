@@ -44,23 +44,41 @@ class InMemorySessionStore(SessionStore):
         self._store: dict[str, list[SessionStoreEntry]] = {}
         self._mtimes: dict[str, int] = {}
         self._summaries: dict[tuple[str, str], SessionSummaryEntry] = {}
+        self._last_mtime = 0
+
+    def _next_mtime(self) -> int:
+        """Storage write time for this adapter, in Unix epoch ms.
+
+        Guaranteed strictly monotonically increasing across calls within the
+        process so back-to-back appends always produce distinct mtimes (real
+        storage backends — file mtime on modern filesystems, S3
+        LastModified, Postgres updated_at — get this property for free from
+        their commit ordering).
+        """
+        now_ms = int(time.time() * 1000)
+        if now_ms <= self._last_mtime:
+            now_ms = self._last_mtime + 1
+        self._last_mtime = now_ms
+        return now_ms
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
+        now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't
         # contribute to the main session's summary.
         if key.get("subpath") is None:
             sk = (key["project_key"], key["session_id"])
             folded = fold_session_summary(self._summaries.get(sk), key, entries)
+            # Stamp the sidecar with this adapter's storage write time — the
+            # SAME clock list_sessions() exposes below. SessionSummaryEntry.
+            # mtime is contractually storage write time (not entry time), so
+            # the fast-path staleness check (summary.mtime < list_sessions
+            # mtime) works correctly.
+            folded["mtime"] = now_ms
             self._summaries[sk] = folded
-            # Prefer the entry-timestamp clock so list_sessions() and
-            # list_session_summaries() sort on the same axis; fall back to
-            # wall-clock for synthetic entries with no timestamp.
-            self._mtimes[k] = folded["mtime"] or int(time.time() * 1000)
-        else:
-            self._mtimes[k] = int(time.time() * 1000)
+        self._mtimes[k] = now_ms
 
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         entries = self._store.get(_key_to_string(key))
@@ -125,6 +143,7 @@ class InMemorySessionStore(SessionStore):
         self._store.clear()
         self._mtimes.clear()
         self._summaries.clear()
+        self._last_mtime = 0
 
 
 def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | None:

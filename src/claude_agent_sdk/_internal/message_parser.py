@@ -12,6 +12,8 @@ from ..types import (
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
@@ -125,6 +127,21 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     tool_use_id=block["tool_use_id"],
                                     content=block.get("content"),
                                     is_error=block.get("is_error"),
+                                )
+                            )
+                        case "server_tool_use":
+                            content_blocks.append(
+                                ServerToolUseBlock(
+                                    id=block["id"],
+                                    name=block["name"],
+                                    input=block["input"],
+                                )
+                            )
+                        case "advisor_tool_result":
+                            content_blocks.append(
+                                ServerToolResultBlock(
+                                    tool_use_id=block["tool_use_id"],
+                                    content=block["content"],
                                 )
                             )
 

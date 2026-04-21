@@ -889,7 +889,54 @@ class ToolResultBlock:
     is_error: bool | None = None
 
 
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+ServerToolName = Literal[
+    "advisor",
+    "web_search",
+    "web_fetch",
+    "code_execution",
+    "bash_code_execution",
+    "text_editor_code_execution",
+    "tool_search_tool_regex",
+    "tool_search_tool_bm25",
+]
+
+
+@dataclass
+class ServerToolUseBlock:
+    """Server-side tool use block (e.g. advisor, web_search, web_fetch).
+
+    These are tools the API executes server-side on the model's behalf, so they
+    appear in the message stream alongside regular `tool_use` blocks but the
+    caller never needs to return a result. `name` is a discriminator — branch
+    on it to know which server tool was invoked.
+    """
+
+    id: str
+    name: ServerToolName
+    input: dict[str, Any]
+
+
+@dataclass
+class ServerToolResultBlock:
+    """Result block returned for a server-side tool call.
+
+    Mirrors `ToolResultBlock`'s shape. `content` is the raw dict from the
+    API, opaque to this layer — callers that care about a specific server
+    tool's result schema can inspect `content["type"]`.
+    """
+
+    tool_use_id: str
+    content: dict[str, Any]
+
+
+ContentBlock = (
+    TextBlock
+    | ThinkingBlock
+    | ToolUseBlock
+    | ToolResultBlock
+    | ServerToolUseBlock
+    | ServerToolResultBlock
+)
 
 
 # Message types

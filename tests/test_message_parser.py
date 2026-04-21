@@ -8,6 +8,8 @@ from claude_agent_sdk.types import (
     AssistantMessage,
     RateLimitEvent,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -273,6 +275,93 @@ class TestMessageParser:
         assert message.content[0].signature == "sig-123"
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
+
+    def test_parse_assistant_message_with_server_tool_use(self):
+        """server_tool_use blocks (e.g. advisor, web_search) are preserved.
+
+        Previously these were dropped, leaving an empty content list on
+        messages that only contained a server tool call.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_01ABC",
+                        "name": "advisor",
+                        "input": {},
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ServerToolUseBlock)
+        assert message.content[0].id == "srvtoolu_01ABC"
+        assert message.content[0].name == "advisor"
+        assert message.content[0].input == {}
+
+    def test_parse_assistant_message_with_server_tool_result(self):
+        """Server-side tool result blocks (e.g. advisor) surface with their raw content dict.
+
+        `content` is passed through as a dict since its shape is tool-specific
+        (advisor emits advisor_result / advisor_redacted_result /
+        advisor_tool_result_error; other server tools use different shapes).
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_result",
+                            "text": "Consider edge cases around empty input.",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.tool_use_id == "srvtoolu_01ABC"
+        assert result_block.content == {
+            "type": "advisor_result",
+            "text": "Consider edge cases around empty input.",
+        }
+
+    def test_parse_assistant_message_with_redacted_advisor_result(self):
+        """External API users get advisor output as an encrypted blob in the content dict."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_redacted_result",
+                            "encrypted_content": "EuYDCioIDhgC...",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.content["type"] == "advisor_redacted_result"
+        assert result_block.content["encrypted_content"] == "EuYDCioIDhgC..."
 
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.

@@ -19,7 +19,6 @@ from ..types import SessionKey, SessionStore, SessionStoreEntry
 from .sessions import (
     _resolve_session_file_path,
     _validate_uuid,
-    project_key_for_directory,
 )
 from .transcript_mirror_batcher import MAX_PENDING_BYTES, MAX_PENDING_ENTRIES
 
@@ -43,19 +42,20 @@ async def import_session_to_store(
     live-mirror gap. Adapters should treat ``entry["uuid"]`` as an idempotency
     key so re-import is duplicate-safe.
 
-    The destination key is derived from ``directory`` via
-    :func:`project_key_for_directory` — the same derivation
-    ``materialize_resume_session`` uses — so an imported session is resumable
-    via ``query(options=ClaudeAgentOptions(session_store=store, resume=session_id))``
-    from the same ``cwd``.
+    The destination ``project_key`` is the name of the on-disk project
+    directory the session file was found in — the same key
+    :func:`file_path_to_session_key` (and thus ``TranscriptMirrorBatcher``)
+    would have produced for the same file — so an imported session is
+    indistinguishable from a live-mirrored one and resumable via
+    ``query(options=ClaudeAgentOptions(session_store=store, resume=session_id))``
+    from the original ``cwd``.
 
     Args:
         session_id: UUID of the session to import.
         store: Destination :class:`SessionStore`.
         directory: Project directory path (same semantics as
             :func:`list_sessions`). When omitted, all project directories are
-            searched for the session file and the destination ``project_key``
-            is derived from the resolved cwd.
+            searched for the session file.
         include_subagents: If ``True`` (default), also import subagent
             transcripts under ``<sessionId>/subagents/**`` and their
             ``.meta.json`` sidecars.
@@ -72,9 +72,11 @@ async def import_session_to_store(
     if resolved is None:
         raise FileNotFoundError(f"Session {session_id} not found")
 
-    # Key under project_key_for_directory(directory) — matches
-    # materialize_resume_session and TranscriptMirrorBatcher key derivation.
-    project_key = project_key_for_directory(directory)
+    # Key under the on-disk project directory name — matches
+    # file_path_to_session_key() / TranscriptMirrorBatcher even when the
+    # resolver's search (directory=None) or worktree fallback found the file
+    # somewhere other than `directory`.
+    project_key = resolved.parent.name
     if batch_size <= 0:
         batch_size = MAX_PENDING_ENTRIES
 

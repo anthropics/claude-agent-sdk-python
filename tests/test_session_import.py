@@ -289,3 +289,29 @@ class TestKeyParity:
         assert expected_main is not None and expected_sub is not None
         assert store.get_entries(expected_main) == [_entry(0)]
         assert store.get_entries(expected_sub) == [_entry(1)]
+
+    @pytest.mark.asyncio
+    async def test_directory_none_keys_from_resolved_path_not_cwd(
+        self,
+        claude_dir: Path,
+        project_key: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When ``directory=None`` the resolver searches all project dirs;
+        the destination key must come from where the file was *found*, not
+        the process cwd. Regression for divergence with
+        ``file_path_to_session_key()``."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+
+        # Run the import from an unrelated cwd.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        assert project_key_for_directory(None) != project_key  # precondition
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=None)
+
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(key) == [_entry(0)]

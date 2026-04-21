@@ -1159,6 +1159,33 @@ class SessionStoreListEntry(TypedDict):
     modification time (e.g. Redis) must maintain their own index."""
 
 
+class SessionSummaryEntry(TypedDict):
+    """Incrementally-maintained session summary.
+
+    Stores obtain this from :func:`fold_session_summary` inside
+    :meth:`SessionStore.append` and persist it verbatim; they return the
+    full set from :meth:`SessionStore.list_session_summaries`. The ``data``
+    field is opaque SDK-owned state — stores MUST NOT interpret it.
+    """
+
+    session_id: str
+    mtime: int
+    """Storage write time of the sidecar, in Unix epoch milliseconds. Must use
+    the same clock source as the ``mtime`` returned by
+    :meth:`SessionStore.list_sessions` for this session — typically file
+    mtime, S3 ``LastModified``, Postgres ``updated_at``, or whatever native
+    timestamp the adapter surfaces. Do NOT derive this from entry ISO
+    timestamps: adapters that write in batches with any persist latency
+    (every real backend) would report storage times strictly later than the
+    last entry's timestamp, making every sidecar appear stale and defeating
+    the fast-path staleness check in ``list_sessions_from_store``.
+    :func:`fold_session_summary` preserves whatever ``mtime`` the caller
+    passes in via ``prev`` and does not set it itself; stamp it after
+    persisting."""
+    data: dict[str, Any]
+    """Opaque SDK-owned summary state. Persist verbatim; do not interpret."""
+
+
 class SessionListSubkeysKey(TypedDict):
     """Key argument to :meth:`SessionStore.list_subkeys` (no ``subpath``)."""
 
@@ -1230,6 +1257,30 @@ class SessionStore(Protocol):
 
         Optional — if unimplemented, ``list_sessions()`` with a session store
         raises.
+        """
+        raise NotImplementedError
+
+    async def list_session_summaries(
+        self, project_key: str
+    ) -> list[SessionSummaryEntry]:
+        """Return incrementally-maintained summaries for all sessions in one call.
+
+        Stores should maintain these via :func:`fold_session_summary` inside
+        :meth:`append`. Skip the fold for keys with a ``subpath`` — subagent
+        transcripts must not contribute to the main session's summary.
+
+        Like :meth:`list_sessions`, results are scoped to a single
+        ``project_key`` and exclude ``subpath`` entries.
+
+        Optional — if unimplemented, ``list_sessions_from_store()`` falls back
+        to ``list_sessions()`` + per-session ``load()``.
+
+        .. note::
+            Stores that maintain summaries inside ``append()`` MUST serialize
+            sidecar writes if ``append()`` calls can race for the same session
+            — e.g., wrap the read-fold-write in a transaction/CAS, or hold a
+            per-session lock. The SDK's :func:`fold_session_summary` is pure;
+            concurrency control is the store's responsibility.
         """
         raise NotImplementedError
 

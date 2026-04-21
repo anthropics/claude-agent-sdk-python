@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -20,6 +21,8 @@ from typing import Any
 
 from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
 from .session_store_validation import _store_implements
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1514,64 +1517,20 @@ async def _load_store_entries_as_jsonl(
     return _entries_to_jsonl(entries)
 
 
-async def list_sessions_from_store(
+async def _derive_infos_via_load(
     session_store: SessionStore,
-    directory: str | None = None,
-    limit: int | None = None,
-    offset: int = 0,
+    listing: list[Any],
+    directory: str | None,
+    project_path: str,
 ) -> list[SDKSessionInfo]:
-    """List sessions from a :class:`SessionStore`.
+    """Derive ``SDKSessionInfo`` for each ``listing`` entry via per-session
+    ``store.load()`` + lite-parse.
 
-    Async, store-backed counterpart to :func:`list_sessions`. Loads each
-    session's entries to derive a real summary via the same lite-parse used
-    by the filesystem path, so disk and store paths produce identical
-    results for the same transcript content.
-
-    Args:
-        session_store: The store to read from. Must implement
-            :meth:`SessionStore.list_sessions`.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
-        limit: Maximum number of sessions to return.
-        offset: Number of sessions to skip from the start of the sorted
-            result set.
-
-    Returns:
-        List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
-
-    Raises:
-        ValueError: If ``session_store`` does not implement
-            :meth:`SessionStore.list_sessions`.
-
-    Note:
-        ``include_worktrees`` is a filesystem concept and is not honored on
-        the store path — the store operates on a single ``project_key``.
-
-    .. note::
-        This performs one full ``store.load()`` per session in the listing
-        to derive summaries. On remote backends with many or large sessions
-        this can be expensive (e.g., S3 egress, Postgres large-row reads).
-        Consider denormalizing summary metadata into your adapter's
-        ``list_sessions()`` index.
+    Loads run concurrently with a fixed bound so large listings don't exhaust
+    adapter connection pools or hit backend rate limits; adapter errors degrade
+    that row to an empty summary instead of failing the whole list. Sidechain
+    and no-summary sessions are dropped.
     """
-    if not _store_implements(session_store, "list_sessions"):
-        raise ValueError(
-            "session_store does not implement list_sessions() -- cannot list "
-            "sessions. Provide a store with a list_sessions() method."
-        )
-    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
-    project_key = _sanitize_path(project_path)
-    raw = await session_store.list_sessions(project_key)
-    # Copy — store.list_sessions() may return a reference to internal state.
-    listing = list(raw)
-
-    # Derive a real summary per session by loading its entries and reusing
-    # the filesystem path's lite-parse. Loads run concurrently with a fixed
-    # bound so large listings don't exhaust adapter connection pools or hit
-    # backend rate limits; adapter errors degrade that row instead of failing
-    # the whole list. Filtering (sidechain/empty drop) happens before
-    # pagination so ``limit``/``offset`` index the same filtered set as the
-    # disk path.
     sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
 
     async def _bounded_load(sid: str) -> str | None:
@@ -1602,6 +1561,163 @@ async def list_sessions_from_store(
             continue
         parsed.last_modified = mtime
         results.append(parsed)
+    return results
+
+
+async def list_sessions_from_store(
+    session_store: SessionStore,
+    directory: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[SDKSessionInfo]:
+    """List sessions from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`list_sessions`. Loads each
+    session's entries to derive a real summary via the same lite-parse used
+    by the filesystem path, so disk and store paths produce identical
+    results for the same transcript content.
+
+    Args:
+        session_store: The store to read from. Must implement
+            :meth:`SessionStore.list_session_summaries` or
+            :meth:`SessionStore.list_sessions` (or both).
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        limit: Maximum number of sessions to return.
+        offset: Number of sessions to skip from the start of the sorted
+            result set.
+
+    Returns:
+        List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
+
+    Raises:
+        ValueError: If ``session_store`` implements neither
+            :meth:`SessionStore.list_session_summaries` nor
+            :meth:`SessionStore.list_sessions`.
+
+    Note:
+        ``include_worktrees`` is a filesystem concept and is not honored on
+        the store path — the store operates on a single ``project_key``.
+
+    .. note::
+        If the store implements ``list_session_summaries``, this is one batch
+        summary call plus one cheap ``list_sessions()`` enumeration to
+        gap-fill sessions missing a sidecar or whose sidecar is stale
+        (``summary.mtime < list_sessions.mtime``) — zero per-session
+        ``load()`` calls when sidecars are complete and fresh. Otherwise
+        falls back to one ``store.load()`` per session (bounded at 16
+        concurrent), which on remote backends with many or large sessions
+        can be expensive (e.g., S3 egress, Postgres large-row reads).
+
+        Gap-fill requires ``list_sessions``: if the store implements
+        ``list_session_summaries`` but not ``list_sessions``, sessions
+        without a sidecar cannot be discovered and will be absent from the
+        result.
+    """
+    project_path = _canonicalize_path(str(directory) if directory is not None else ".")
+    project_key = _sanitize_path(project_path)
+    has_list_sessions = _store_implements(session_store, "list_sessions")
+
+    # Fast path: if the store maintains incremental summaries, fetch them in
+    # one call instead of N per-session load()s.
+    if _store_implements(session_store, "list_session_summaries"):
+        from .session_summary import summary_entry_to_sdk_info
+
+        try:
+            summaries = await session_store.list_session_summaries(project_key)
+        except NotImplementedError:
+            pass
+        else:
+            # Build a unified slot list. Fresh summaries (mtime >= the
+            # session's current mtime from list_sessions) get their info up
+            # front; sessions present in list_sessions() but missing OR with a
+            # stale sidecar (summary.mtime < known mtime) get a placeholder
+            # slot routed through the same gap-fill path so the fold is
+            # recomputed from source entries.
+            # Summary-backed sidechain/empty sessions are dropped here (free —
+            # already determined) so they don't consume offset/limit positions,
+            # matching the disk and slow-path filter-then-paginate semantics.
+            if has_list_sessions:
+                listing = list(await session_store.list_sessions(project_key))
+                known_mtimes = {e["session_id"]: e["mtime"] for e in listing}
+            else:
+                listing = []
+                known_mtimes = {}
+                logger.debug(
+                    "list_session_summaries without list_sessions: gap-fill "
+                    "skipped; sessions lacking a sidecar will be omitted"
+                )
+
+            slots: list[dict[str, Any]] = []
+            fresh_summary_ids: set[str] = set()
+            for s in summaries:
+                sid = s["session_id"]
+                if has_list_sessions:
+                    known = known_mtimes.get(sid)
+                    if known is None:
+                        # Summary for a session list_sessions() no longer
+                        # reports — drop it.
+                        continue
+                    if s["mtime"] < known:
+                        # Stale sidecar — let gap-fill re-fold from source.
+                        continue
+                info = summary_entry_to_sdk_info(s, project_path)
+                if info is None:
+                    fresh_summary_ids.add(sid)
+                    continue
+                slots.append({"mtime": s["mtime"], "info": info})
+                fresh_summary_ids.add(sid)
+            if has_list_sessions:
+                slots.extend(
+                    {"mtime": e["mtime"], "session_id": e["session_id"], "info": None}
+                    for e in listing
+                    if e["session_id"] not in fresh_summary_ids
+                )
+
+            # Paginate BEFORE per-session load so gap-fill load() count is
+            # bounded by page size, not total missing — 500 sessions lacking
+            # sidecars with limit=10 issues at most 10 load()s, not 500.
+            slots.sort(key=lambda sl: sl["mtime"], reverse=True)
+            # Mirror _apply_sort_limit_offset's guards so negative/zero
+            # offset and non-positive limit behave identically to the slow
+            # and disk paths.
+            page = slots[offset:] if offset > 0 else slots
+            if limit is not None and limit > 0:
+                page = page[:limit]
+
+            to_fill = [sl for sl in page if sl["info"] is None]
+            if to_fill:
+                filled = await _derive_infos_via_load(
+                    session_store, to_fill, directory, project_path
+                )
+                by_sid = {f.session_id: f for f in filled}
+                for sl in to_fill:
+                    sl["info"] = by_sid.get(sl["session_id"])
+
+            # Gap-fill placeholders that resolved to None (sidechain / no
+            # extractable summary after load) are dropped here, AFTER
+            # pagination — that case alone can short-page. Summary-backed
+            # slots were already pre-filtered above, so a store with complete
+            # and fresh sidecars never short-pages; a present-but-stale
+            # sidecar is routed through gap-fill (same as a missing one) and
+            # can short-page if load() yields no extractable summary.
+            return [sl["info"] for sl in page if sl["info"] is not None]
+
+    if not has_list_sessions:
+        raise ValueError(
+            "session_store implements neither list_session_summaries() nor "
+            "list_sessions() -- cannot list sessions. Provide a store with at "
+            "least one of those methods."
+        )
+    # Copy — store.list_sessions() may return a reference to internal state.
+    listing = list(await session_store.list_sessions(project_key))
+    # Derive a real summary per session by loading its entries and reusing
+    # the filesystem path's lite-parse. Filtering (sidechain/empty drop)
+    # happens before pagination so ``limit``/``offset`` index the same
+    # filtered set as the disk path.
+    results = await _derive_infos_via_load(
+        session_store, listing, directory, project_path
+    )
     return _apply_sort_limit_offset(results, limit, offset)
 
 

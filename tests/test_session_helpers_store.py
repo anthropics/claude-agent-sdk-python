@@ -126,7 +126,7 @@ class TestListSessionsFromStore:
 
     async def test_raises_when_store_lacks_list_sessions(self) -> None:
         store = _MinimalStore()
-        with pytest.raises(ValueError, match="does not implement list_sessions"):
+        with pytest.raises(ValueError, match="list_sessions"):
             await list_sessions_from_store(store, directory=DIR)
 
     async def test_drops_sidechain_sessions(self) -> None:
@@ -157,8 +157,20 @@ class TestListSessionsFromStore:
         first and ``_apply_sort_limit_offset`` paginates the filtered set, so
         ``limit=N`` returns N rows even when sidechains exist. The store path
         must do the same — paginating before filtering would return short
-        pages and let sidechains consume page slots."""
-        store = InMemorySessionStore()
+        pages and let sidechains consume page slots.
+
+        Pinned to the slow path (``list_session_summaries`` suppressed)
+        because the fast path deliberately locks in paginate-THEN-drop for
+        sidechain-shaped summary slots (see
+        ``test_sidechain_summary_short_pages``); slow-path filter-THEN-
+        paginate is what this test covers.
+        """
+
+        class SlowPathStore(InMemorySessionStore):
+            async def list_session_summaries(self, project_key):  # type: ignore[override]
+                raise NotImplementedError
+
+        store = SlowPathStore()
         valid_sids: list[str] = []
         for _ in range(5):
             sid = str(uuid_mod.uuid4())
@@ -210,6 +222,10 @@ class TestListSessionsFromStore:
         """One failing load() degrades that row instead of failing the list."""
 
         class FlakeyStore(InMemorySessionStore):
+            # Force the per-session load() fallback path under test.
+            async def list_session_summaries(self, project_key):
+                raise NotImplementedError
+
             async def load(self, key):
                 if key["session_id"] == bad_sid:
                     raise RuntimeError("backend down")
@@ -238,6 +254,10 @@ class TestListSessionsFromStore:
         gate = asyncio.Event()
 
         class SlowStore(InMemorySessionStore):
+            # Force the per-session load() fallback path under test.
+            async def list_session_summaries(self, project_key):
+                raise NotImplementedError
+
             async def load(self, key):
                 nonlocal in_flight, peak
                 in_flight += 1

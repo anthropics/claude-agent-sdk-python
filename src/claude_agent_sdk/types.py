@@ -917,56 +917,16 @@ class ServerToolUseBlock:
 
 
 @dataclass
-class AdvisorResultBlock:
-    """Plaintext advisor output."""
+class ServerToolResultBlock:
+    """Result block returned for a server-side tool call.
 
-    text: str
-
-
-@dataclass
-class AdvisorRedactedResultBlock:
-    """Advisor output returned to external API users as an encrypted blob.
-
-    Round-trip verbatim; do not inspect or modify.
-    """
-
-    encrypted_content: str
-
-
-AdvisorToolResultErrorCode = Literal[
-    "max_uses_exceeded",
-    "prompt_too_long",
-    "too_many_requests",
-    "overloaded",
-    "unavailable",
-    "execution_time_exceeded",
-]
-
-
-@dataclass
-class AdvisorToolResultError:
-    """Error returned from a server-side advisor tool call."""
-
-    error_code: AdvisorToolResultErrorCode
-
-
-AdvisorToolResultContent = (
-    AdvisorResultBlock | AdvisorRedactedResultBlock | AdvisorToolResultError
-)
-
-
-@dataclass
-class AdvisorToolResultBlock:
-    """Result block returned for a server-side advisor tool call.
-
-    `content` dispatches on outcome via `isinstance`:
-    - `AdvisorResultBlock` — plaintext advisor output
-    - `AdvisorRedactedResultBlock` — encrypted blob (external API users)
-    - `AdvisorToolResultError` — advisor failure
+    Mirrors `ToolResultBlock`'s shape. `content` is the raw dict from the
+    API, opaque to this layer — callers that care about a specific server
+    tool's result schema can inspect `content["type"]`.
     """
 
     tool_use_id: str
-    content: AdvisorToolResultContent
+    content: dict[str, Any]
 
 
 ContentBlock = (
@@ -975,7 +935,7 @@ ContentBlock = (
     | ToolUseBlock
     | ToolResultBlock
     | ServerToolUseBlock
-    | AdvisorToolResultBlock
+    | ServerToolResultBlock
 )
 
 

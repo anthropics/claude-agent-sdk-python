@@ -5,11 +5,6 @@ from typing import Any
 
 from .._errors import MessageParseError
 from ..types import (
-    AdvisorRedactedResultBlock,
-    AdvisorResultBlock,
-    AdvisorToolResultBlock,
-    AdvisorToolResultContent,
-    AdvisorToolResultError,
     AssistantMessage,
     ContentBlock,
     Message,
@@ -17,6 +12,7 @@ from ..types import (
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
+    ServerToolResultBlock,
     ServerToolUseBlock,
     StreamEvent,
     SystemMessage,
@@ -31,25 +27,6 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_advisor_result_content(content: dict[str, Any]) -> AdvisorToolResultContent:
-    """Dispatch the `content` payload of an advisor_tool_result block by type."""
-    content_type = content.get("type")
-    match content_type:
-        case "advisor_result":
-            return AdvisorResultBlock(text=content["text"])
-        case "advisor_redacted_result":
-            return AdvisorRedactedResultBlock(
-                encrypted_content=content["encrypted_content"]
-            )
-        case "advisor_tool_result_error":
-            return AdvisorToolResultError(error_code=content["error_code"])
-        case _:
-            raise MessageParseError(
-                f"Unknown advisor_tool_result content type: {content_type}",
-                content,
-            )
 
 
 def parse_message(data: dict[str, Any]) -> Message | None:
@@ -162,11 +139,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             )
                         case "advisor_tool_result":
                             content_blocks.append(
-                                AdvisorToolResultBlock(
+                                ServerToolResultBlock(
                                     tool_use_id=block["tool_use_id"],
-                                    content=_parse_advisor_result_content(
-                                        block["content"]
-                                    ),
+                                    content=block["content"],
                                 )
                             )
 

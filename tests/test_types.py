@@ -191,6 +191,11 @@ class TestOptions:
         assert options.model == "claude-sonnet-4-5"
         assert options.permission_prompt_tool_name == "CustomTool"
 
+    def test_claude_code_options_effort_accepts_xhigh(self):
+        """Test Options accepts the xhigh effort level."""
+        options = ClaudeAgentOptions(effort="xhigh")
+        assert options.effort == "xhigh"
+
 
 class TestHookInputTypes:
     """Test hook input type definitions."""
@@ -582,6 +587,18 @@ class TestAgentDefinition:
         payload = self._serialize(agent)
 
         assert payload["effort"] == "high"
+
+    def test_effort_accepts_xhigh_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="xhigh",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "xhigh"
 
     def test_effort_accepts_integer(self):
         from claude_agent_sdk import AgentDefinition

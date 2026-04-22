@@ -324,8 +324,8 @@ class ClaudeSDKClient:
                 - 'acceptEdits': Auto-accept file edits
                 - 'plan': Plan-only mode (no tool execution)
                 - 'bypassPermissions': Allow all tools (use with caution)
-                - 'dontAsk': Allow all tools without prompting
-                - 'auto': Automatically determine permission mode
+                - 'dontAsk': Deny anything not pre-approved by allow rules
+                - 'auto': A model classifier approves or denies each tool call
 
         Example:
             ```python

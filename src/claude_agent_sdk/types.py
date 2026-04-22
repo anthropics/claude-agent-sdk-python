@@ -1467,7 +1467,7 @@ class ClaudeAgentOptions:
     max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout
     debug_stderr: Any = (
         sys.stderr
-    )  # Deprecated: File-like object for debug output. Use stderr callback instead.
+    )  # Deprecated and no longer read by the transport. Use the stderr callback.
     stderr: Callable[[str], None] | None = None  # Callback for stderr output from CLI
 
     # Tool permission callback

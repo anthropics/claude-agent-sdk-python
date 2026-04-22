@@ -18,11 +18,10 @@ async def main():
         if "[ERROR]" in message:
             print(f"Error detected: {message}")
 
-    # Create options with stderr callback and enable debug mode
-    options = ClaudeAgentOptions(
-        stderr=stderr_callback,
-        extra_args={"debug-to-stderr": None}  # Enable debug output
-    )
+    # Create options with stderr callback. The callback receives any stderr the
+    # CLI emits (warnings, errors). For verbose CLI debug logs, pass
+    # extra_args={"debug-file": "/path/to/log"} and read that file instead.
+    options = ClaudeAgentOptions(stderr=stderr_callback)
 
     # Run a query
     print("Running query with stderr capture...")

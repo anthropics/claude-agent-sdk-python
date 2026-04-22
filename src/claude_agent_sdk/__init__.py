@@ -98,6 +98,7 @@ from .types import (
     RateLimitStatus,
     RateLimitType,
     ResultMessage,
+    SandboxFilesystemConfig,
     SandboxIgnoreViolations,
     SandboxNetworkConfig,
     SandboxSettings,
@@ -638,6 +639,7 @@ __all__ = [
     # Sandbox support
     "SandboxSettings",
     "SandboxNetworkConfig",
+    "SandboxFilesystemConfig",
     "SandboxIgnoreViolations",
     # MCP Server Support
     "create_sdk_mcp_server",

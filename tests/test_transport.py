@@ -1507,6 +1507,93 @@ class TestSubprocessCLITransport:
         assert network["httpProxyPort"] == 8080
         assert network["socksProxyPort"] == 8081
 
+    def test_sandbox_filesystem_config(self):
+        """Test sandbox with filesystem configuration."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "filesystem": {
+                "allowWrite": ["/tmp/build", "~/.kube"],
+                "denyRead": ["~/.aws/credentials"],
+                "allowRead": ["/etc/hosts", "/etc/resolv.conf"],
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        fs = parsed["sandbox"]["filesystem"]
+
+        assert fs["allowWrite"] == ["/tmp/build", "~/.kube"]
+        assert fs["denyRead"] == ["~/.aws/credentials"]
+        assert fs["allowRead"] == ["/etc/hosts", "/etc/resolv.conf"]
+
+    def test_sandbox_network_domains(self):
+        """Test sandbox with domain-based network configuration."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "network": {
+                "allowedDomains": ["github.com", "*.npmjs.org"],
+                "deniedDomains": ["evil.com"],
+                "allowManagedDomainsOnly": False,
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        network = parsed["sandbox"]["network"]
+
+        assert network["allowedDomains"] == ["github.com", "*.npmjs.org"]
+        assert network["deniedDomains"] == ["evil.com"]
+        assert network["allowManagedDomainsOnly"] is False
+
+    def test_sandbox_new_settings_fields(self):
+        """Test sandbox with failIfUnavailable and enableWeakerNetworkIsolation."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "enableWeakerNetworkIsolation": True,
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        assert parsed["sandbox"]["failIfUnavailable"] is True
+        assert parsed["sandbox"]["enableWeakerNetworkIsolation"] is True
+
     def test_build_command_with_tools_array(self):
         """Test building CLI command with tools as array of tool names."""
         transport = SubprocessCLITransport(

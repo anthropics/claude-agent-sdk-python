@@ -355,6 +355,11 @@ class SubprocessCLITransport(Transport):
                 cmd.extend(["--max-thinking-tokens", str(t["budget_tokens"])])
             elif t["type"] == "disabled":
                 cmd.extend(["--thinking", "disabled"])
+
+            # Narrow off the Disabled variant first so mypy knows `t["display"]` is a str
+            # rather than widening to `object` across the union.
+            if t["type"] != "disabled" and "display" in t:
+                cmd.extend(["--thinking-display", t["display"]])
         elif self._options.max_thinking_tokens is not None:
             cmd.extend(
                 ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]

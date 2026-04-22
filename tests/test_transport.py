@@ -258,6 +258,59 @@ class TestSubprocessCLITransport:
         assert cmd[idx : idx + 2] == expected
         assert absent not in cmd
 
+    @pytest.mark.parametrize(
+        ("thinking", "expected_display"),
+        [
+            (
+                {"type": "adaptive", "display": "summarized"},
+                ["--thinking-display", "summarized"],
+            ),
+            (
+                {"type": "enabled", "budget_tokens": 20000, "display": "omitted"},
+                ["--thinking-display", "omitted"],
+            ),
+        ],
+    )
+    def test_build_command_thinking_display_forwarded(self, thinking, expected_display):
+        """`display` in thinking config is forwarded as --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking=thinking),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index(expected_display[0])
+        assert cmd[idx : idx + 2] == expected_display
+
+    def test_build_command_thinking_without_display(self):
+        """Omitting `display` leaves --thinking-display off the command."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking={"type": "adaptive"}),
+        )
+
+        cmd = transport._build_command()
+        assert "--thinking-display" not in cmd
+
+    def test_build_command_thinking_display_with_enabled_budget(self):
+        """enabled + display emits both --max-thinking-tokens and --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 20000,
+                    "display": "omitted",
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        budget_idx = cmd.index("--max-thinking-tokens")
+        assert cmd[budget_idx : budget_idx + 2] == ["--max-thinking-tokens", "20000"]
+        display_idx = cmd.index("--thinking-display")
+        assert cmd[display_idx : display_idx + 2] == ["--thinking-display", "omitted"]
+
     def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
         """thinking takes precedence over deprecated max_thinking_tokens."""
         transport = SubprocessCLITransport(

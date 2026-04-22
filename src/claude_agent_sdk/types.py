@@ -1420,13 +1420,20 @@ class SessionMessage:
     parent_tool_use_id: None = None
 
 
+# Controls whether thinking text is returned summarized or omitted. Opus 4.7+
+# defaults to "omitted" (signature-only); pass "summarized" to receive text.
+ThinkingDisplay = Literal["summarized", "omitted"]
+
+
 class ThinkingConfigAdaptive(TypedDict):
     type: Literal["adaptive"]
+    display: NotRequired[ThinkingDisplay]
 
 
 class ThinkingConfigEnabled(TypedDict):
     type: Literal["enabled"]
     budget_tokens: int
+    display: NotRequired[ThinkingDisplay]
 
 
 class ThinkingConfigDisabled(TypedDict):

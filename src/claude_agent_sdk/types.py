@@ -1279,7 +1279,8 @@ class SessionStore(Protocol):
         ``uuid`` (e.g. titles, tags, mode markers) should be appended without
         dedup. Exceptions are logged and the subprocess continues unaffected
         — failed batches are retried (3 attempts total) with short backoff
-        before being dropped and surfaced as a ``MirrorErrorMessage``.
+        before being dropped and surfaced as a ``MirrorErrorMessage``;
+        timeouts are not retried since the in-flight call may still land.
         """
         ...
 

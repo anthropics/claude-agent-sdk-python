@@ -275,8 +275,12 @@ class TestTranscriptMirrorBatcher:
 
     @pytest.mark.asyncio
     async def test_append_timeout_calls_on_error(self) -> None:
+        """Timeout → on_error fires once, append is NOT retried (1 attempt)."""
+        calls: list[int] = []
+
         class HangingStore(InMemorySessionStore):
             async def append(self, key, entries):
+                calls.append(1)
                 await asyncio.Event().wait()  # never resolves
 
         errors: list[str] = []
@@ -291,8 +295,53 @@ class TestTranscriptMirrorBatcher:
             send_timeout=0.05,
         )
         batcher.enqueue(_main_path(), [{"type": "x"}])
-        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+        sleep_mock = AsyncMock()
+        with patch(_BATCHER_SLEEP, new=sleep_mock):
             await batcher.flush()
+        assert len(calls) == 1  # not retried on timeout
+        assert len(errors) == 1
+        sleep_mock.assert_not_awaited()  # no backoff sleep
+
+    @pytest.mark.asyncio
+    async def test_append_timeout_no_concurrent_retry(self) -> None:
+        """A slow append that outlives send_timeout is attempted exactly once;
+        no retry overlaps the still-in-flight first call."""
+        in_flight = 0
+        max_in_flight = 0
+        calls = 0
+
+        class SlowStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                nonlocal in_flight, max_in_flight, calls
+                calls += 1
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+                try:
+                    # Outlives send_timeout=0.02 and shields against the
+                    # cancellation wait_for issues — models a non-cancellable
+                    # adapter (e.g. sync I/O in a thread).
+                    await asyncio.shield(asyncio.sleep(0.1))
+                finally:
+                    in_flight -= 1
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=SlowStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+            send_timeout=0.02,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        await batcher.flush()
+        # Let any (incorrectly) shielded/retried task observe overlap.
+        await asyncio.sleep(0.15)
+
+        assert calls == 1
+        assert max_in_flight == 1
         assert len(errors) == 1
 
     @pytest.mark.asyncio

@@ -50,8 +50,9 @@ class TranscriptMirrorBatcher:
     turns where no ``result`` (and thus no explicit ``flush()``) arrives.
 
     Adapter failures are retried (``MIRROR_APPEND_MAX_ATTEMPTS`` attempts
-    total) with short backoff; only after the final attempt fails is the
-    batch dropped and reported via ``on_error``. Failures never raise — the
+    total) with short backoff; timeouts are not retried since the in-flight
+    call may still land. Only after the final attempt fails is the batch
+    dropped and reported via ``on_error``. Failures never raise — the
     local-disk transcript is already durable so the session must continue
     unaffected. Adapters should dedupe by ``entry["uuid"]`` when present
     (some entry types lack a uuid) since a retried batch may partially
@@ -173,12 +174,29 @@ class TranscriptMirrorBatcher:
                 )
                 continue
             last_err: Exception | None = None
+            succeeded = False
             for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):
                 if attempt > 0:
                     await asyncio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
                 try:
                     await asyncio.wait_for(
                         self.store.append(key, entries), timeout=self.send_timeout
+                    )
+                    succeeded = True
+                    break
+                except asyncio.TimeoutError as e:
+                    # Don't retry on timeout: wait_for cancels the task but
+                    # cancellation is best-effort for adapters wrapping
+                    # non-cancellable I/O, so the in-flight call may still
+                    # land — a retry would launch a concurrent duplicate.
+                    # Also keeps worst-case lock hold at ~send_timeout rather
+                    # than ~3×send_timeout + backoff.
+                    last_err = e
+                    logger.debug(
+                        "[TranscriptMirrorBatcher] append timed out after "
+                        "%.1fs for %s — not retrying",
+                        self.send_timeout,
+                        file_path,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 - adapter is user code
@@ -191,7 +209,7 @@ class TranscriptMirrorBatcher:
                         file_path,
                         e,
                     )
-            else:
+            if not succeeded:
                 logger.error(
                     "[TranscriptMirrorBatcher] flush failed for %s: %s",
                     file_path,

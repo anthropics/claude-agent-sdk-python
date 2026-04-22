@@ -49,12 +49,13 @@ class TranscriptMirrorBatcher:
     an eager flush fires in the background so memory stays flat during long
     turns where no ``result`` (and thus no explicit ``flush()``) arrives.
 
-    Adapter failures are retried up to ``MIRROR_APPEND_MAX_ATTEMPTS`` times
-    with short backoff; only after the final attempt fails is the batch
-    dropped and reported via ``on_error``. Failures never raise — the
+    Adapter failures are retried (``MIRROR_APPEND_MAX_ATTEMPTS`` attempts
+    total) with short backoff; only after the final attempt fails is the
+    batch dropped and reported via ``on_error``. Failures never raise — the
     local-disk transcript is already durable so the session must continue
-    unaffected. Adapters should dedupe by ``entry["uuid"]`` since a retried
-    batch may partially overlap a prior partial write.
+    unaffected. Adapters should dedupe by ``entry["uuid"]`` when present
+    (some entry types lack a uuid) since a retried batch may partially
+    overlap a prior partial write.
     """
 
     store: SessionStore

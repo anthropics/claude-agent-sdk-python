@@ -1274,11 +1274,12 @@ class SessionStore(Protocol):
         Within a single process, persist entries in append-call order; across
         concurrent processes, order is by storage commit time, not call time.
 
-        Each entry carries a stable ``uuid`` field; adapters should treat it
-        as an idempotency key (upsert / ignore-duplicate). Exceptions are
-        logged and the subprocess continues unaffected — failed batches are
-        retried up to 3 times with short backoff before being dropped and
-        surfaced as a ``MirrorErrorMessage``.
+        Most entries carry a stable ``uuid`` that adapters should treat as an
+        idempotency key (upsert / ignore-duplicate). Entries without a
+        ``uuid`` (e.g. titles, tags, mode markers) should be appended without
+        dedup. Exceptions are logged and the subprocess continues unaffected
+        — failed batches are retried (3 attempts total) with short backoff
+        before being dropped and surfaced as a ``MirrorErrorMessage``.
         """
         ...
 

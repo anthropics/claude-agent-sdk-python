@@ -6,6 +6,8 @@ import os
 import platform
 import re
 import shutil
+import signal
+import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -447,6 +449,14 @@ class SubprocessCLITransport(Transport):
             # Pipe stderr only when the caller registered a callback.
             stderr_dest = PIPE if self._options.stderr is not None else None
 
+            # On POSIX systems, start the CLI in a new session so that it
+            # becomes the leader of a new process group.  This lets us send
+            # SIGTERM/SIGKILL to the whole group on shutdown, which ensures
+            # that MCP server child processes (and their descendants, e.g. a
+            # browser spawned by chrome-devtools-mcp) are also terminated
+            # instead of being left as orphans. (#291)
+            start_new_session = sys.platform != "win32"
+
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
@@ -455,6 +465,7 @@ class SubprocessCLITransport(Transport):
                 cwd=self._cwd,
                 env=process_env,
                 user=self._options.user,
+                start_new_session=start_new_session,
             )
 
             if self._process.stdout:
@@ -509,6 +520,38 @@ class SubprocessCLITransport(Transport):
         except Exception:
             pass  # Ignore other errors during stderr reading
 
+    def _terminate_process_group(self) -> None:
+        """Send SIGTERM to the process group on POSIX; terminate the process on Windows."""
+        if not self._process:
+            return
+        if sys.platform == "win32":
+            with suppress(ProcessLookupError, OSError):
+                self._process.terminate()
+            return
+        try:
+            pgid = os.getpgid(self._process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            # Process already gone or getpgid failed; fall back to direct terminate
+            with suppress(ProcessLookupError, OSError):
+                self._process.terminate()
+
+    def _kill_process_group(self) -> None:
+        """Send SIGKILL to the process group on POSIX; kill the process on Windows."""
+        if not self._process:
+            return
+        if sys.platform == "win32":
+            with suppress(ProcessLookupError, OSError):
+                self._process.kill()
+            return
+        try:
+            pgid = os.getpgid(self._process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            # Process already gone or getpgid failed; fall back to direct kill
+            with suppress(ProcessLookupError, OSError):
+                self._process.kill()
+
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         if not self._process:
@@ -544,16 +587,17 @@ class SubprocessCLITransport(Transport):
                 with anyio.fail_after(5):
                     await self._process.wait()
             except TimeoutError:
-                # Graceful shutdown timed out — force terminate
-                with suppress(ProcessLookupError):
-                    self._process.terminate()
+                # Graceful shutdown timed out — send SIGTERM to the entire
+                # process group so MCP servers and their children (e.g. a
+                # browser opened by chrome-devtools-mcp) are also terminated.
+                # On Windows, fall back to terminating the CLI process only.
+                self._terminate_process_group()
                 try:
                     with anyio.fail_after(5):
                         await self._process.wait()
                 except TimeoutError:
-                    # SIGTERM handler blocked — force kill (SIGKILL)
-                    with suppress(ProcessLookupError):
-                        self._process.kill()
+                    # SIGTERM ignored — force kill (SIGKILL) the process group
+                    self._kill_process_group()
                     with suppress(Exception):
                         await self._process.wait()
 

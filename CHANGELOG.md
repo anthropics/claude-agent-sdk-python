@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.65
+
+### New Features
+
+- **Batch session summaries**: Added `SessionStore.list_session_summaries()` optional protocol method and `fold_session_summary()` helper for O(1)-per-session list views. Stores that maintain append-time summary sidecars can now serve `list_sessions_from_store()` without loading full transcripts, reducing round-trips from N to 1 for N sessions (#847)
+- **Import local sessions to store**: Added `import_session_to_store()` for replaying a local on-disk session into any `SessionStore` adapter, enabling migration from local storage to remote stores (#858)
+- **Thinking display control**: Added `display` field to `ThinkingConfig` types, forwarded as `--thinking-display` to the CLI. This lets callers override Opus 4.7's default `"omitted"` behavior and receive summarized thinking text (#830)
+- **Server tool use and advisor result blocks**: Added `ServerToolUseBlock` and `AdvisorToolResultBlock` content block types, surfacing server-executed tool calls (e.g., `advisor`, `web_search`) and their results that were previously silently dropped (#836)
+
+### Bug Fixes
+
+- **Missing content blocks**: Fixed `server_tool_use` and `advisor_tool_result` content blocks being silently dropped by the message parser, which caused messages carrying only server-side tool calls to arrive as empty `AssistantMessage(content=[])` (#836)
+
+### Documentation
+
+- Fixed misleading `permission_mode` docstrings: `dontAsk` now correctly described as denying unapproved tools (was inverted), and `auto` clarified as using a model classifier (#863)
+
+### Internal/Other Changes
+
+- Dropped `--debug-to-stderr` detection from the transport layer in preparation for CLI flag removal; stderr piping now depends solely on whether a `stderr` callback is registered (#860)
+- Added bounded retry on session mirror append and UUID idempotency documentation (#857)
+- Updated bundled Claude CLI to version 2.1.118
+
 ## 0.1.64
 
 ### New Features

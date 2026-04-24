@@ -118,6 +118,35 @@ class TestExceptionPropagation:
 
         anyio.run(_test, backend="trio")
 
+    def test_unhandled_exception_logged_under_trio(self, caplog):
+        """A non-Cancelled exception with no .wait() must still be logged.
+
+        Parity with asyncio's "Task exception was never retrieved": child
+        tasks that are only ``.cancel()``ed (never ``.wait()``ed) would
+        otherwise drop the exception silently under trio.
+        """
+        import logging
+
+        async def _test():
+            async def coro():
+                raise ValueError("boom")
+
+            spawn_detached(coro())  # NB: no .wait()
+            await anyio.sleep(0)  # let it run
+
+        with caplog.at_level(
+            logging.WARNING, logger="claude_agent_sdk._internal._task_compat"
+        ):
+            anyio.run(_test, backend="trio")
+
+        assert any(
+            "Unhandled exception in detached trio task" in r.message
+            for r in caplog.records
+        ), f"expected warning log, got: {[r.message for r in caplog.records]}"
+        assert any(
+            r.exc_info and isinstance(r.exc_info[1], ValueError) for r in caplog.records
+        )
+
 
 class TestContextVarPropagation:
     """Spawned tasks must see the caller's contextvars on both backends.

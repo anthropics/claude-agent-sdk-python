@@ -18,11 +18,14 @@ appropriate backend primitive, returning a uniform ``TaskHandle``.
 from __future__ import annotations
 
 import contextvars
+import logging
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from typing import Any
 
 import sniffio
+
+logger = logging.getLogger(__name__)
 
 
 class TaskHandle:
@@ -101,6 +104,13 @@ class _TrioTaskHandle(TaskHandle):
             self._callbacks.append(callback)
 
     def _mark_done(self, exc: BaseException | None) -> None:
+        import trio
+
+        # Parity with asyncio's "Task exception was never retrieved":
+        # close() only .cancel()s child tasks (never .wait()s them), so a
+        # non-Cancelled exception would otherwise be silently dropped.
+        if exc is not None and not isinstance(exc, trio.Cancelled):
+            logger.warning("Unhandled exception in detached trio task", exc_info=exc)
         self._exception = exc
         self._done_event.set()
         for cb in self._callbacks:

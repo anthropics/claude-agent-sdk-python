@@ -817,14 +817,14 @@ class Query:
             self._read_task.cancel()
             await self._read_task.wait()
         self._read_task = None
-        # The read task's finally closed the send side; close the receive
-        # side here so callers get EndOfStream and anyio doesn't emit
-        # ResourceWarning: Unclosed <MemoryObject*Stream> at GC time.
-        # _message_send.close() is repeated for the case where start() was
-        # never called (so _read_messages' finally never ran). Both are
-        # sync, idempotent, and checkpoint-free.
+        # The read task's finally closed the send side; repeat here for the
+        # case where start() was never called. Do NOT close the receive
+        # side — it belongs to the consumer, and anyio's receive_nowait()
+        # checks _closed before the buffer, so closing it here would make a
+        # non-parked consumer drop buffered messages with
+        # ClosedResourceError. _message_send.close() alone yields
+        # EndOfStream after the buffer drains.
         self._message_send.close()
-        self._message_receive.close()
         await self.transport.close()
 
     # Make Query an async iterator

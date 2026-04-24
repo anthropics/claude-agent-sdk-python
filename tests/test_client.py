@@ -4,6 +4,7 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 from claude_agent_sdk.types import TextBlock
@@ -257,6 +258,9 @@ class TestQueryFunction:
         anyio.run(_test)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
+)
 class TestClaudeSDKClientTrioBackend:
     """Regression test: ClaudeSDKClient must work under trio.
 

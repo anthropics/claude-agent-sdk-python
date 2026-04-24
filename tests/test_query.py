@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -597,6 +598,9 @@ class TestQueryCrossTaskCleanup:
         anyio.run(_test)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
+)
 class TestQueryTrioBackend:
     """Regression tests for trio compatibility.
 
@@ -605,6 +609,11 @@ class TestQueryTrioBackend:
     implementation of that (``loop.create_task()``) raises ``RuntimeError``
     under trio; these tests run start/spawn_task/close on the trio backend
     to guard the sniffio-dispatch path.
+
+    The ResourceWarning filter is for ``_message_receive``: ``Query`` owns
+    the send side (and closes it), but the receive side is the consumer's
+    to close. Tests that don't iterate ``receive_messages()`` leave it
+    unclosed; trio's GC timing surfaces anyio's ``__del__`` warning.
     """
 
     def test_start_and_close_under_trio(self):
@@ -748,6 +757,67 @@ class TestQueryTrioBackend:
                 assert consumer_done.is_set()
 
         anyio.run(_test, backend="asyncio")
+
+    def _run_buffered_drain_after_close(self, backend: str) -> None:
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+
+                # Buffer 3 messages directly (bypassing the read task,
+                # which is blocked on the transport).
+                for i in range(3):
+                    q._message_send.send_nowait({"type": "user", "i": i})
+
+                consumed: list[dict] = []
+                consumer_error: list[BaseException] = []
+                got_first = anyio.Event()
+                in_user_code = anyio.Event()
+
+                async def consumer():
+                    try:
+                        async for msg in q.receive_messages():
+                            consumed.append(msg)
+                            if len(consumed) == 1:
+                                got_first.set()
+                                # Stay in user code (NOT parked in
+                                # receive()) while close() runs.
+                                await in_user_code.wait()
+                    except BaseException as e:  # noqa: BLE001
+                        consumer_error.append(e)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(consumer)
+                    await got_first.wait()
+                    # Consumer is now awaiting in_user_code (user code),
+                    # with 2 messages still buffered.
+                    await q.close()
+                    in_user_code.set()
+
+                assert consumer_error == [], (
+                    f"[{backend}] consumer raised: {consumer_error}"
+                )
+                assert len(consumed) == 3, (
+                    f"[{backend}] expected 3 messages, got {len(consumed)}: {consumed}"
+                )
+
+        anyio.run(_test, backend=backend)
+
+    def test_buffered_messages_drain_after_close_asyncio(self):
+        """Consumer in user code when close() runs must drain the buffer.
+
+        anyio's ``receive_nowait()`` checks ``_closed`` before the buffer,
+        so closing ``_message_receive`` from ``close()`` would make a
+        non-parked consumer hit ``ClosedResourceError`` and drop buffered
+        messages. ``_message_send.close()`` alone yields ``EndOfStream``
+        only after the buffer drains.
+        """
+        self._run_buffered_drain_after_close("asyncio")
+
+    def test_buffered_messages_drain_after_close_trio(self):
+        """trio parity for the buffered-drain-after-close test above."""
+        self._run_buffered_drain_after_close("trio")
 
 
 class TestControlCancelRequest:

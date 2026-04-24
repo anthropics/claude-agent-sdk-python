@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
@@ -313,14 +314,19 @@ class Query:
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
-            # batched this turn. flush() never raises.
+            # batched this turn. flush() never raises. Shielded so the await
+            # still runs when this finally is reached via cancellation.
             if self._transcript_mirror_batcher is not None:
-                await self._transcript_mirror_batcher.flush()
+                with anyio.CancelScope(shield=True):
+                    await self._transcript_mirror_batcher.flush()
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
-            # Always signal end of stream
-            await self._message_send.send({"type": "end"})
+            # Always signal end of stream. send_nowait: trio's level-triggered
+            # cancellation would re-raise Cancelled at an await checkpoint
+            # here, dropping the sentinel and leaving receive_messages() hung.
+            with suppress(anyio.WouldBlock):
+                self._message_send.send_nowait({"type": "end"})
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""

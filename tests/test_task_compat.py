@@ -119,6 +119,41 @@ class TestExceptionPropagation:
         anyio.run(_test, backend="trio")
 
 
+class TestContextVarPropagation:
+    """Spawned tasks must see the caller's contextvars on both backends.
+
+    asyncio's ``loop.create_task()`` copies the current context implicitly;
+    trio's ``spawn_system_task`` does not unless ``context=`` is passed.
+    """
+
+    @staticmethod
+    def _run(backend: str) -> str:
+        import contextvars
+
+        cv: contextvars.ContextVar[str] = contextvars.ContextVar(
+            "cv", default="DEFAULT"
+        )
+        seen: list[str] = []
+
+        async def _test():
+            cv.set("PARENT")
+
+            async def coro():
+                seen.append(cv.get())
+
+            handle = spawn_detached(coro())
+            await handle.wait()
+
+        anyio.run(_test, backend=backend)
+        return seen[0]
+
+    def test_contextvar_propagates_asyncio(self):
+        assert self._run("asyncio") == "PARENT"
+
+    def test_contextvar_propagates_trio(self):
+        assert self._run("trio") == "PARENT"
+
+
 class TestCrossTaskCancel:
     def test_cancel_from_different_task_trio(self):
         """Cancelling from a different task than the spawner must not raise.

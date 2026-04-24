@@ -17,6 +17,7 @@ appropriate backend primitive, returning a uniform ``TaskHandle``.
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from typing import Any
@@ -151,7 +152,10 @@ def spawn_detached(coro: Coroutine[Any, Any, Any]) -> TaskHandle:
             finally:
                 handle._mark_done(exc)
 
-        trio.lowlevel.spawn_system_task(_runner)
+        # Pass context= so trio system tasks inherit the caller's
+        # contextvars (asyncio's loop.create_task() does this implicitly;
+        # spawn_system_task does not).
+        trio.lowlevel.spawn_system_task(_runner, context=contextvars.copy_context())
         return handle
     # Unsupported backend: close the coroutine so we don't leak a "coroutine
     # was never awaited" RuntimeWarning on top of the RuntimeError.

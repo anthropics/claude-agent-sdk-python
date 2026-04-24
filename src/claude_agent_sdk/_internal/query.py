@@ -325,8 +325,12 @@ class Query:
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
+            # close() is the fallback for the buffer-full case where
+            # send_nowait raises WouldBlock — receivers then exit on
+            # EndOfStream after draining.
             with suppress(anyio.WouldBlock):
                 self._message_send.send_nowait({"type": "end"})
+            self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
@@ -813,6 +817,14 @@ class Query:
             self._read_task.cancel()
             await self._read_task.wait()
         self._read_task = None
+        # The read task's finally closed the send side; close the receive
+        # side here so callers get EndOfStream and anyio doesn't emit
+        # ResourceWarning: Unclosed <MemoryObject*Stream> at GC time.
+        # _message_send.close() is repeated for the case where start() was
+        # never called (so _read_messages' finally never ran). Both are
+        # sync, idempotent, and checkpoint-free.
+        self._message_send.close()
+        self._message_receive.close()
         await self.transport.close()
 
     # Make Query an async iterator

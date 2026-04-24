@@ -1,6 +1,5 @@
 """Query class for handling bidirectional control protocol."""
 
-import asyncio
 import json
 import logging
 import os
@@ -26,6 +25,7 @@ from ..types import (
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from ._task_compat import TaskHandle, spawn_detached
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -119,9 +119,9 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
-        self._read_task: asyncio.Task[None] | None = None
-        self._child_tasks: set[asyncio.Task[Any]] = set()
-        self._inflight_requests: dict[str, asyncio.Task[Any]] = {}
+        self._read_task: TaskHandle | None = None
+        self._child_tasks: set[TaskHandle] = set()
+        self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -217,13 +217,11 @@ class Query:
     async def start(self) -> None:
         """Start reading messages from transport."""
         if self._read_task is None:
-            loop = asyncio.get_running_loop()
-            self._read_task = loop.create_task(self._read_messages())
+            self._read_task = spawn_detached(self._read_messages())
 
-    def spawn_task(self, coro: Any) -> asyncio.Task[Any]:
+    def spawn_task(self, coro: Any) -> TaskHandle:
         """Spawn a child task that will be cancelled on close()."""
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(coro)
+        task = spawn_detached(coro)
         self._child_tasks.add(task)
         task.add_done_callback(self._child_tasks.discard)
         return task
@@ -234,7 +232,7 @@ class Query:
         task = self.spawn_task(self._handle_control_request(request))
         self._inflight_requests[req_id] = task
 
-        def _done(_t: asyncio.Task[Any]) -> None:
+        def _done(_t: TaskHandle) -> None:
             self._inflight_requests.pop(req_id, None)
 
         task.add_done_callback(_done)
@@ -316,14 +314,23 @@ class Query:
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
-            # batched this turn. flush() never raises.
+            # batched this turn. flush() never raises. Shielded so the await
+            # still runs when this finally is reached via cancellation.
             if self._transcript_mirror_batcher is not None:
-                await self._transcript_mirror_batcher.flush()
+                with anyio.CancelScope(shield=True):
+                    await self._transcript_mirror_batcher.flush()
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
-            # Always signal end of stream
-            await self._message_send.send({"type": "end"})
+            # Always signal end of stream. send_nowait: trio's level-triggered
+            # cancellation would re-raise Cancelled at an await checkpoint
+            # here, dropping the sentinel and leaving receive_messages() hung.
+            # close() is the fallback for the buffer-full case where
+            # send_nowait raises WouldBlock — receivers then exit on
+            # EndOfStream after draining.
+            with suppress(anyio.WouldBlock):
+                self._message_send.send_nowait({"type": "end"})
+            self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
@@ -426,7 +433,7 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
-        except asyncio.CancelledError:
+        except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
             # already abandoned this request, so don't write a response.
             raise
@@ -808,9 +815,16 @@ class Query:
             task.cancel()
         if self._read_task is not None and not self._read_task.done():
             self._read_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._read_task
+            await self._read_task.wait()
         self._read_task = None
+        # The read task's finally closed the send side; repeat here for the
+        # case where start() was never called. Do NOT close the receive
+        # side — it belongs to the consumer, and anyio's receive_nowait()
+        # checks _closed before the buffer, so closing it here would make a
+        # non-parked consumer drop buffered messages with
+        # ClosedResourceError. _message_send.close() alone yields
+        # EndOfStream after the buffer drains.
+        self._message_send.close()
         await self.transport.close()
 
     # Make Query an async iterator

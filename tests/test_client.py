@@ -4,6 +4,7 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 from claude_agent_sdk.types import TextBlock
@@ -255,3 +256,72 @@ class TestQueryFunction:
                 )
 
         anyio.run(_test)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
+)
+class TestClaudeSDKClientTrioBackend:
+    """Regression test: ClaudeSDKClient must work under trio.
+
+    ``Query.start``/``spawn_task`` must not call ``asyncio.get_running_loop()``
+    (raises ``RuntimeError: no running event loop`` under trio). This test
+    drives connect()/disconnect() end-to-end on the trio backend with a mock
+    transport that uses only anyio primitives.
+    """
+
+    def test_client_connect_under_trio(self):
+        import json
+
+        from claude_agent_sdk import ClaudeSDKClient
+
+        def _make_trio_safe_transport():
+            """Mock transport using anyio.sleep so it runs under trio."""
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            written: list[str] = []
+
+            async def mock_write(data):
+                written.append(data)
+
+            mock_transport.write = AsyncMock(side_effect=mock_write)
+
+            async def read_messages():
+                # Respond to the initialize control_request so connect()
+                # doesn't block on the 60s timeout.
+                for _ in range(200):
+                    for msg_str in written:
+                        try:
+                            msg = json.loads(msg_str.strip())
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+                        if (
+                            msg.get("type") == "control_request"
+                            and msg.get("request", {}).get("subtype") == "initialize"
+                        ):
+                            yield {
+                                "type": "control_response",
+                                "response": {
+                                    "request_id": msg.get("request_id"),
+                                    "subtype": "success",
+                                    "response": {},
+                                },
+                            }
+                            return
+                    await anyio.sleep(0.01)
+
+            mock_transport.read_messages = read_messages
+            return mock_transport
+
+        async def _test():
+            mock_transport = _make_trio_safe_transport()
+            async with ClaudeSDKClient(transport=mock_transport) as client:
+                assert client._transport is mock_transport
+                mock_transport.connect.assert_called_once()
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test, backend="trio")

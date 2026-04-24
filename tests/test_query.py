@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
+import pytest
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -595,6 +596,228 @@ class TestQueryCrossTaskCleanup:
             mock_transport.close.assert_called_once()
 
         anyio.run(_test)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
+)
+class TestQueryTrioBackend:
+    """Regression tests for trio compatibility.
+
+    ``Query`` uses detached background tasks rather than an anyio
+    ``TaskGroup`` (whose cancel scope has task affinity). The asyncio
+    implementation of that (``loop.create_task()``) raises ``RuntimeError``
+    under trio; these tests run start/spawn_task/close on the trio backend
+    to guard the sniffio-dispatch path.
+
+    The ResourceWarning filter is for ``_message_receive``: ``Query`` owns
+    the send side (and closes it), but the receive side is the consumer's
+    to close. Tests that don't iterate ``receive_messages()`` leave it
+    unclosed; trio's GC timing surfaces anyio's ``__del__`` warning.
+    """
+
+    def test_start_and_close_under_trio(self):
+        """start() + close() under trio must not raise."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+            await q.close()
+
+            assert q._read_task is None
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test, backend="trio")
+
+    def test_spawn_task_and_cancel_under_trio(self):
+        """spawn_task() under trio tracks and cancels child tasks on close()."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+
+            async def _slow():
+                await anyio.sleep(10)
+
+            handle = q.spawn_task(_slow())
+            assert handle in q._child_tasks
+
+            await q.close()
+            # close() cancels child tasks; give the system task a tick to
+            # fire its done callback that removes it from the set.
+            await anyio.sleep(0)
+            assert len(q._child_tasks) == 0
+
+        anyio.run(_test, backend="trio")
+
+    def test_close_from_different_task_under_trio(self):
+        """close() from a different task than start() must not raise (trio)."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+
+            close_error = []
+
+            async def close_in_other_task():
+                try:
+                    await q.close()
+                except Exception as e:
+                    close_error.append(e)
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(close_in_other_task)
+
+            assert close_error == [], f"close() raised: {close_error}"
+
+        anyio.run(_test, backend="trio")
+
+    @staticmethod
+    def _make_blocking_transport():
+        """Mock transport whose read_messages() blocks forever.
+
+        Needed to reproduce the level-triggered-cancellation hang: the
+        read task must still be running when close() cancels it, so the
+        finally block executes inside a cancelled scope.
+        """
+        mock_transport = AsyncMock()
+
+        async def blocking_read():
+            await anyio.Event().wait()  # never set
+            yield {}  # pragma: no cover - unreachable, makes this a generator
+
+        mock_transport.read_messages = blocking_read
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        return mock_transport
+
+    def test_receive_messages_unblocks_on_close_under_trio(self):
+        """Consumer blocked in receive_messages() must unblock on close().
+
+        trio's level-triggered cancellation re-raises Cancelled at every
+        checkpoint inside a cancelled scope; if the end sentinel is sent
+        via ``await send()`` in the read task's ``finally``, it is dropped
+        and the consumer hangs. ``send_nowait`` is checkpoint-free.
+        """
+
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+
+                consumer_done = anyio.Event()
+
+                async def consumer():
+                    async for _msg in q.receive_messages():
+                        pass
+                    consumer_done.set()
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(consumer)
+                    await anyio.sleep(0.01)  # let consumer block on receive
+                    await q.close()
+                    await consumer_done.wait()
+
+                assert consumer_done.is_set()
+
+        anyio.run(_test, backend="trio")
+
+    def test_receive_messages_unblocks_on_close_under_asyncio(self):
+        """asyncio parity for the unblock-on-close test above."""
+
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+
+                consumer_done = anyio.Event()
+
+                async def consumer():
+                    async for _msg in q.receive_messages():
+                        pass
+                    consumer_done.set()
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(consumer)
+                    await anyio.sleep(0.01)
+                    await q.close()
+                    await consumer_done.wait()
+
+                assert consumer_done.is_set()
+
+        anyio.run(_test, backend="asyncio")
+
+    def _run_buffered_drain_after_close(self, backend: str) -> None:
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+
+                # Buffer 3 messages directly (bypassing the read task,
+                # which is blocked on the transport).
+                for i in range(3):
+                    q._message_send.send_nowait({"type": "user", "i": i})
+
+                consumed: list[dict] = []
+                consumer_error: list[BaseException] = []
+                got_first = anyio.Event()
+                in_user_code = anyio.Event()
+
+                async def consumer():
+                    try:
+                        async for msg in q.receive_messages():
+                            consumed.append(msg)
+                            if len(consumed) == 1:
+                                got_first.set()
+                                # Stay in user code (NOT parked in
+                                # receive()) while close() runs.
+                                await in_user_code.wait()
+                    except BaseException as e:  # noqa: BLE001
+                        consumer_error.append(e)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(consumer)
+                    await got_first.wait()
+                    # Consumer is now awaiting in_user_code (user code),
+                    # with 2 messages still buffered.
+                    await q.close()
+                    in_user_code.set()
+
+                assert consumer_error == [], (
+                    f"[{backend}] consumer raised: {consumer_error}"
+                )
+                assert len(consumed) == 3, (
+                    f"[{backend}] expected 3 messages, got {len(consumed)}: {consumed}"
+                )
+
+        anyio.run(_test, backend=backend)
+
+    def test_buffered_messages_drain_after_close_asyncio(self):
+        """Consumer in user code when close() runs must drain the buffer.
+
+        anyio's ``receive_nowait()`` checks ``_closed`` before the buffer,
+        so closing ``_message_receive`` from ``close()`` would make a
+        non-parked consumer hit ``ClosedResourceError`` and drop buffered
+        messages. ``_message_send.close()`` alone yields ``EndOfStream``
+        only after the buffer drains.
+        """
+        self._run_buffered_drain_after_close("asyncio")
+
+    def test_buffered_messages_drain_after_close_trio(self):
+        """trio parity for the buffered-drain-after-close test above."""
+        self._run_buffered_drain_after_close("trio")
 
 
 class TestControlCancelRequest:

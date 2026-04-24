@@ -1,12 +1,10 @@
 """Query class for handling bidirectional control protocol."""
 
-import asyncio
 import json
 import logging
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
@@ -26,6 +24,7 @@ from ..types import (
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from ._task_compat import TaskHandle, spawn_detached
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -119,9 +118,9 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
-        self._read_task: asyncio.Task[None] | None = None
-        self._child_tasks: set[asyncio.Task[Any]] = set()
-        self._inflight_requests: dict[str, asyncio.Task[Any]] = {}
+        self._read_task: TaskHandle | None = None
+        self._child_tasks: set[TaskHandle] = set()
+        self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -217,13 +216,11 @@ class Query:
     async def start(self) -> None:
         """Start reading messages from transport."""
         if self._read_task is None:
-            loop = asyncio.get_running_loop()
-            self._read_task = loop.create_task(self._read_messages())
+            self._read_task = spawn_detached(self._read_messages())
 
-    def spawn_task(self, coro: Any) -> asyncio.Task[Any]:
+    def spawn_task(self, coro: Any) -> TaskHandle:
         """Spawn a child task that will be cancelled on close()."""
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(coro)
+        task = spawn_detached(coro)
         self._child_tasks.add(task)
         task.add_done_callback(self._child_tasks.discard)
         return task
@@ -234,7 +231,7 @@ class Query:
         task = self.spawn_task(self._handle_control_request(request))
         self._inflight_requests[req_id] = task
 
-        def _done(_t: asyncio.Task[Any]) -> None:
+        def _done(_t: TaskHandle) -> None:
             self._inflight_requests.pop(req_id, None)
 
         task.add_done_callback(_done)
@@ -426,7 +423,7 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
-        except asyncio.CancelledError:
+        except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
             # already abandoned this request, so don't write a response.
             raise
@@ -808,8 +805,7 @@ class Query:
             task.cancel()
         if self._read_task is not None and not self._read_task.done():
             self._read_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._read_task
+            await self._read_task.wait()
         self._read_task = None
         await self.transport.close()
 

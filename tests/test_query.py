@@ -597,6 +597,79 @@ class TestQueryCrossTaskCleanup:
         anyio.run(_test)
 
 
+class TestQueryTrioBackend:
+    """Regression tests for trio compatibility.
+
+    ``Query`` uses detached background tasks rather than an anyio
+    ``TaskGroup`` (whose cancel scope has task affinity). The asyncio
+    implementation of that (``loop.create_task()``) raises ``RuntimeError``
+    under trio; these tests run start/spawn_task/close on the trio backend
+    to guard the sniffio-dispatch path.
+    """
+
+    def test_start_and_close_under_trio(self):
+        """start() + close() under trio must not raise."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+            await q.close()
+
+            assert q._read_task is None
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test, backend="trio")
+
+    def test_spawn_task_and_cancel_under_trio(self):
+        """spawn_task() under trio tracks and cancels child tasks on close()."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+
+            async def _slow():
+                await anyio.sleep(10)
+
+            handle = q.spawn_task(_slow())
+            assert handle in q._child_tasks
+
+            await q.close()
+            # close() cancels child tasks; give the system task a tick to
+            # fire its done callback that removes it from the set.
+            await anyio.sleep(0)
+            assert len(q._child_tasks) == 0
+
+        anyio.run(_test, backend="trio")
+
+    def test_close_from_different_task_under_trio(self):
+        """close() from a different task than start() must not raise (trio)."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+
+            await q.start()
+
+            close_error = []
+
+            async def close_in_other_task():
+                try:
+                    await q.close()
+                except Exception as e:
+                    close_error.append(e)
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(close_in_other_task)
+
+            assert close_error == [], f"close() raised: {close_error}"
+
+        anyio.run(_test, backend="trio")
+
+
 class TestControlCancelRequest:
     """Tests for control_cancel_request handling (issue #739).
 

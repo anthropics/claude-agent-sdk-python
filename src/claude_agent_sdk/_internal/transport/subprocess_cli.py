@@ -323,7 +323,8 @@ class SubprocessCLITransport(Transport):
         # No --agents CLI flag needed
 
         if effective_setting_sources is not None:
-            cmd.append(f"--setting-sources={','.join(effective_setting_sources)}")
+            sources_str = ",".join(effective_setting_sources)
+            cmd.append(f"--setting-sources={sources_str}")
 
         # Add plugin directories
         if self._options.plugins:

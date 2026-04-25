@@ -26,7 +26,9 @@ PermissionMode = Literal[
 ]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
-SdkBeta = Literal["context-1m-2025-08-07"]
+# Keep known values discoverable while allowing callers to opt into newly
+# released beta headers without waiting for an SDK release.
+SdkBeta = Literal["context-1m-2025-08-07"] | str
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]

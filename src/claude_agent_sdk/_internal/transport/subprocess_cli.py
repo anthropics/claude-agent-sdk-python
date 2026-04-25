@@ -447,15 +447,18 @@ class SubprocessCLITransport(Transport):
             # Pipe stderr only when the caller registered a callback.
             stderr_dest = PIPE if self._options.stderr is not None else None
 
-            self._process = await anyio.open_process(
-                cmd,
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=stderr_dest,
-                cwd=self._cwd,
-                env=process_env,
-                user=self._options.user,
-            )
+            # user parameter is not supported on Windows
+            process_kwargs: dict[str, object] = {
+                "stdin": PIPE,
+                "stdout": PIPE,
+                "stderr": stderr_dest,
+                "cwd": self._cwd,
+                "env": process_env,
+            }
+            if platform.system() != "Windows" and self._options.user is not None:
+                process_kwargs["user"] = self._options.user
+
+            self._process = await anyio.open_process(cmd, **process_kwargs)
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)

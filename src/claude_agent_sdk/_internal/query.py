@@ -15,6 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ProcessError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -128,6 +129,10 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
+        # Preserve CLI execution error text (from result subtype=error_during_execution)
+        # so initialize/control callers receive actionable errors instead of generic
+        # process-exit placeholders.
+        self._last_execution_error: str | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -294,6 +299,13 @@ class Query:
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
+                    if (
+                        message.get("subtype") == "error_during_execution"
+                        and message.get("is_error") is True
+                    ):
+                        result_text = message.get("result")
+                        if isinstance(result_text, str) and result_text.strip():
+                            self._last_execution_error = result_text.strip()
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -304,13 +316,23 @@ class Query:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             logger.error(f"Fatal error in message reader: {e}")
+
+            # If the CLI emitted an explicit execution error result before exiting,
+            # prefer that actionable message for control waiters (e.g. initialize)
+            # over generic process-exit placeholders.
+            pending_error: Exception = e
+            if isinstance(e, ProcessError) and self._last_execution_error:
+                pending_error = Exception(self._last_execution_error)
+
             # Signal all pending control requests so they fail fast instead of timing out
             for request_id, event in list(self.pending_control_responses.items()):
                 if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = e
+                    self.pending_control_results[request_id] = pending_error
                     event.set()
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            await self._message_send.send(
+                {"type": "error", "error": str(pending_error)}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries

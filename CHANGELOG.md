@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.67
+
+### Bug Fixes
+
+- **Trio compatibility restored**: Fixed `RuntimeError: no running event loop` when using `ClaudeSDKClient` or `query()` under trio, a regression introduced in v0.1.51. Uses sniffio-based dispatch to select the correct async primitive (`asyncio.Task` vs `trio.lowlevel.spawn_system_task`) at runtime while preserving the asyncio CPU-spin and cancel-scope fixes from #746 (#870)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.120
+- Added `sniffio>=1.0.0` as an explicit runtime dependency (already a transitive dep of anyio)
+
 ## 0.1.66
 
 ### Internal/Other Changes

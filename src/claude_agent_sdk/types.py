@@ -779,6 +779,25 @@ class SdkPluginConfig(TypedDict):
 
 
 # Sandbox configuration types
+class SandboxFilesystemConfig(TypedDict, total=False):
+    """Filesystem configuration for sandbox.
+
+    Attributes:
+        allowWrite: Additional paths where sandboxed commands can write.
+        denyWrite: Paths where sandboxed commands cannot write.
+        denyRead: Paths where sandboxed commands cannot read.
+        allowRead: Re-allow reading specific paths within denyRead regions.
+        allowManagedReadPathsOnly: When True, only allowRead entries from managed
+            settings are respected. Default: False
+    """
+
+    allowWrite: list[str]
+    denyWrite: list[str]
+    denyRead: list[str]
+    allowRead: list[str]
+    allowManagedReadPathsOnly: bool
+
+
 class SandboxNetworkConfig(TypedDict, total=False):
     """Network configuration for sandbox.
 
@@ -786,6 +805,13 @@ class SandboxNetworkConfig(TypedDict, total=False):
         allowUnixSockets: Unix socket paths accessible in sandbox (e.g., SSH agents).
         allowAllUnixSockets: Allow all Unix sockets (less secure).
         allowLocalBinding: Allow binding to localhost ports (macOS only).
+        allowMachLookup: XPC/Mach service names accessible in sandbox
+            (macOS only, supports ``*`` prefix matching).
+        allowedDomains: Outbound network domains allowed in sandbox
+            (supports wildcards like ``*.example.com``).
+        deniedDomains: Blocked domains (takes precedence over allowedDomains).
+        allowManagedDomainsOnly: When True, only allowedDomains entries from managed
+            settings are respected. Default: False
         httpProxyPort: HTTP proxy port if bringing your own proxy.
         socksProxyPort: SOCKS5 proxy port if bringing your own proxy.
     """
@@ -793,6 +819,10 @@ class SandboxNetworkConfig(TypedDict, total=False):
     allowUnixSockets: list[str]
     allowAllUnixSockets: bool
     allowLocalBinding: bool
+    allowMachLookup: list[str]
+    allowedDomains: list[str]
+    deniedDomains: list[str]
+    allowManagedDomainsOnly: bool
     httpProxyPort: int
     socksProxyPort: int
 
@@ -823,14 +853,19 @@ class SandboxSettings(TypedDict, total=False):
 
     Attributes:
         enabled: Enable bash sandboxing (macOS/Linux only). Default: False
+        failIfUnavailable: Exit with error if sandbox dependencies are not available
+            when enabled. Default: False
         autoAllowBashIfSandboxed: Auto-approve bash commands when sandboxed. Default: True
         excludedCommands: Commands that should run outside the sandbox (e.g., ["git", "docker"])
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
             When False, all commands must run sandboxed (or be in excludedCommands). Default: True
         network: Network configuration for sandbox.
+        filesystem: Filesystem configuration for sandbox.
         ignoreViolations: Violations to ignore.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
+        enableWeakerNetworkIsolation: Allow system TLS service access for Go-based tools
+            with MITM proxy (macOS only). Reduces security. Default: False
 
     Example:
         ```python
@@ -840,19 +875,27 @@ class SandboxSettings(TypedDict, total=False):
             "excludedCommands": ["docker"],
             "network": {
                 "allowUnixSockets": ["/var/run/docker.sock"],
-                "allowLocalBinding": True
+                "allowLocalBinding": True,
+                "allowedDomains": ["github.com", "*.npmjs.org"]
+            },
+            "filesystem": {
+                "allowWrite": ["/tmp/build"],
+                "denyRead": ["~/.aws/credentials"]
             }
         }
         ```
     """
 
     enabled: bool
+    failIfUnavailable: bool
     autoAllowBashIfSandboxed: bool
     excludedCommands: list[str]
     allowUnsandboxedCommands: bool
     network: SandboxNetworkConfig
+    filesystem: SandboxFilesystemConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool
+    enableWeakerNetworkIsolation: bool
 
 
 # Content block types

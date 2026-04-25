@@ -1453,113 +1453,320 @@ class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
     tools: list[str] | ToolsPreset | None = None
+    """Specify the base set of available built-in tools.
+
+    - ``list[str]`` — Specific tool names (e.g. ``["Bash", "Read", "Edit"]``).
+    - ``[]`` (empty list) — Disable all built-in tools.
+    - ``{"type": "preset", "preset": "claude_code"}`` — Use all default Claude Code tools.
+
+    To restrict which tools the model may call without being prompted, use
+    ``allowed_tools`` instead.
+    """
+
     allowed_tools: list[str] = field(default_factory=list)
+    """Tool names that are auto-allowed without prompting for permission.
+
+    These tools execute automatically without asking the user for approval.
+    To restrict which tools are available at all, use ``tools``.
+    """
+
     system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    """System prompt configuration.
+
+    - ``str`` — Use a custom system prompt.
+    - ``{"type": "preset", "preset": "claude_code"}`` — Use Claude Code's default
+      system prompt.
+    - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
+      prompt with appended instructions.
+    """
+
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
+    """MCP (Model Context Protocol) server configurations.
+
+    Keys are server names, values are server configurations. May also be a path
+    to an MCP config JSON file.
+    """
+
     permission_mode: PermissionMode | None = None
+    """Permission mode for the session.
+
+    - ``"default"`` — Standard permission behavior; prompts for dangerous operations.
+    - ``"acceptEdits"`` — Auto-accept file edit operations.
+    - ``"bypassPermissions"`` — Bypass all permission checks.
+    - ``"plan"`` — Planning mode, no execution of tools.
+    - ``"dontAsk"`` — Don't prompt for permissions; deny if not pre-approved.
+    """
+
     continue_conversation: bool = False
+    """Continue the most recent conversation in the current directory instead of
+    starting a new one. Mutually exclusive with ``resume``."""
+
     resume: str | None = None
+    """Session ID to resume. Loads the conversation history from the specified session."""
+
     session_id: str | None = None
+    """Use a specific session ID for the conversation instead of an auto-generated one.
+
+    Must be a valid UUID. Cannot be used with ``continue_conversation`` or
+    ``resume`` unless ``fork_session`` is also set.
+    """
+
     max_turns: int | None = None
+    """Maximum number of conversation turns before the query stops.
+
+    A turn consists of a user message and assistant response.
+    """
+
     max_budget_usd: float | None = None
+    """Maximum budget in USD for the query.
+
+    The query will stop if this budget is exceeded, returning an
+    ``error_max_budget_usd`` result.
+    """
+
     disallowed_tools: list[str] = field(default_factory=list)
+    """Tool names that are disallowed.
+
+    These tools are removed from the model's context and cannot be used, even
+    if they would otherwise be allowed.
+    """
+
     model: str | None = None
+    """Claude model to use. Defaults to the CLI default model.
+
+    Examples: ``"claude-sonnet-4-5"``, ``"claude-opus-4-5"``.
+    """
+
     fallback_model: str | None = None
-    # Beta features - see https://docs.anthropic.com/en/api/beta-headers
+    """Fallback model to use if the primary model fails or is unavailable."""
+
     betas: list[SdkBeta] = field(default_factory=list)
+    """Enable beta features.
+
+    Currently supported:
+
+    - ``"context-1m-2025-08-07"`` — Enable 1M token context window (Sonnet 4/4.5 only).
+
+    See https://docs.anthropic.com/en/api/beta-headers.
+    """
+
     permission_prompt_tool_name: str | None = None
+    """MCP tool name to use for permission prompts.
+
+    When set, permission requests are routed through this MCP tool instead of
+    the default handler.
+    """
+
     cwd: str | Path | None = None
+    """Current working directory for the session. Defaults to the process cwd."""
+
     cli_path: str | Path | None = None
+    """Path to the Claude Code CLI executable.
+
+    Uses the bundled executable if not specified.
+    """
+
     settings: str | None = None
+    """Path to an additional settings JSON file to load.
+
+    These are loaded into the "flag settings" layer, which has the highest
+    priority among user-controlled settings. Equivalent to the ``--settings``
+    CLI flag.
+    """
+
     add_dirs: list[str | Path] = field(default_factory=list)
+    """Additional directories Claude can access beyond the current working directory.
+
+    Paths should be absolute.
+    """
+
     env: dict[str, str] = field(default_factory=dict)
-    extra_args: dict[str, str | None] = field(
-        default_factory=dict
-    )  # Pass arbitrary CLI flags
-    max_buffer_size: int | None = None  # Max bytes when buffering CLI stdout
-    debug_stderr: Any = (
-        sys.stderr
-    )  # Deprecated and no longer read by the transport. Use the stderr callback.
-    stderr: Callable[[str], None] | None = None  # Callback for stderr output from CLI
+    """Environment variables to pass to the Claude Code subprocess.
 
-    # Tool permission callback
+    SDK consumers can identify their app/library in the User-Agent header by
+    setting ``CLAUDE_AGENT_SDK_CLIENT_APP`` (e.g. ``"my-app/1.0.0"``).
+    """
+
+    extra_args: dict[str, str | None] = field(default_factory=dict)
+    """Additional CLI arguments to pass to Claude Code.
+
+    Keys are argument names (without ``--``), values are argument values. Use
+    ``None`` for boolean flags.
+    """
+
+    max_buffer_size: int | None = None
+    """Maximum bytes to buffer when reading the CLI subprocess stdout."""
+
+    debug_stderr: Any = sys.stderr
+    """Deprecated and no longer read by the transport. Use the ``stderr`` callback."""
+
+    stderr: Callable[[str], None] | None = None
+    """Callback for stderr output from the Claude Code subprocess.
+
+    Useful for debugging and logging.
+    """
+
     can_use_tool: CanUseTool | None = None
+    """Custom permission handler for controlling tool usage.
 
-    # Hook configurations
+    Called before each tool execution to determine if it should be allowed,
+    denied, or prompt the user.
+    """
+
     hooks: dict[HookEvent, list[HookMatcher]] | None = None
+    """Hook callbacks for responding to various events during execution.
+
+    Hooks can modify behavior, add context, or implement custom logic. See
+    https://docs.anthropic.com/en/docs/claude-code/hooks.
+    """
 
     user: str | None = None
+    """Optional user identifier associated with the session."""
 
-    # Partial message streaming support
     include_partial_messages: bool = False
-    # When true resumed sessions will fork to a new session ID rather than
-    # continuing the previous session.
+    """Include partial/streaming message events in the output.
+
+    When true, ``SDKPartialAssistantMessage`` events are emitted during streaming.
+    """
+
     fork_session: bool = False
-    # Agent definitions for custom agents
+    """When true, resumed sessions fork to a new session ID rather than
+    continuing the previous session. Use with ``resume``."""
+
     agents: dict[str, AgentDefinition] | None = None
-    # Setting sources to load (user, project, local)
+    """Programmatically define custom subagents invokable via the Agent tool.
+
+    Keys are agent names, values are agent definitions.
+    """
+
     setting_sources: list[SettingSource] | None = None
-    # Skills to enable for the main session. This is the one place to turn
-    # skills on; you do not need to add ``"Skill"`` to ``allowed_tools`` or
-    # set ``setting_sources`` yourself — the SDK does both when this is set.
-    # The value is also sent on the ``initialize`` control request so a
-    # supporting CLI can filter which skills are loaded into the system prompt
-    # (older CLIs ignore the field).
-    #   * ``None`` (default): no SDK auto-configuration. The CLI's own
-    #     defaults still apply, so this is **not** "skills off" — to suppress
-    #     every skill from the listing, use ``[]``.
-    #   * ``"all"``: enable every discovered skill.
-    #   * ``[name, ...]``: enable only the listed skills. Names match the
-    #     SKILL.md ``name`` / directory name, or ``plugin:skill`` for
-    #     plugin-qualified skills.
-    #
-    # .. note::
-    #     This is a **context filter**, not a sandbox. Unlisted skills are
-    #     hidden from the model's skill listing and cannot be invoked via the
-    #     Skill tool, but their files remain on disk — a session with ``Read``
-    #     or ``Bash`` can still access ``.claude/skills/**`` directly. For
-    #     hard isolation, point ``cwd`` at a directory whose
-    #     ``.claude/skills/`` contains only the desired subset, or add
-    #     permission deny rules for ``Read``/``Bash`` on skill paths. Note
-    #     that bundled skills and installed-plugin skills are discovered
-    #     regardless of ``setting_sources``; the ``skills`` allowlist is the
-    #     single mechanism that hides them from the model's listing. Do not
-    #     store secrets in skill files.
+    """Control which filesystem settings to load.
+
+    - ``"user"`` — Global user settings (``~/.claude/settings.json``).
+    - ``"project"`` — Project settings (``.claude/settings.json``).
+    - ``"local"`` — Local settings (``.claude/settings.local.json``).
+
+    When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
+    to disable filesystem settings (SDK isolation mode). Must include
+    ``"project"`` to load CLAUDE.md files.
+    """
+
     skills: list[str] | Literal["all"] | None = None
-    # Sandbox configuration for bash command isolation.
-    # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),
-    # not from these sandbox settings.
+    """Skills to enable for the main session.
+
+    This is the single place to turn skills on; you do not need to add
+    ``"Skill"`` to ``allowed_tools`` or set ``setting_sources`` yourself — the
+    SDK does both when this is set.
+
+    - ``None`` (default): no SDK auto-configuration. The CLI's own defaults
+      still apply, so this is **not** "skills off" — to suppress every skill
+      from the listing, use ``[]``.
+    - ``"all"``: enable every discovered skill.
+    - ``list[str]``: enable only the listed skills. Names match the SKILL.md
+      ``name`` / directory name, or ``plugin:skill`` for plugin-qualified skills.
+
+    This is a **context filter**, not a sandbox: unlisted skills are hidden
+    from the model's listing and rejected by the Skill tool, but their files
+    remain on disk and are reachable via Read/Bash. Do not store secrets in
+    skill files.
+    """
+
     sandbox: SandboxSettings | None = None
-    # Plugin configurations for custom plugins
+    """Sandbox settings for command execution isolation.
+
+    When enabled, commands execute in a sandboxed environment that restricts
+    filesystem and network access. Filesystem and network restrictions are
+    configured via permission rules (Read/Edit for filesystem, WebFetch for
+    network), not via these sandbox settings — sandbox settings control
+    sandbox behavior (enabled, auto-allow, etc.).
+
+    See https://docs.anthropic.com/en/docs/claude-code/settings#sandbox-settings.
+    """
+
     plugins: list[SdkPluginConfig] = field(default_factory=list)
-    # Max tokens for thinking blocks
-    # @deprecated Use `thinking` instead.
+    """Load plugins for this session.
+
+    Plugins provide custom commands, agents, skills, and hooks that extend
+    Claude Code's capabilities. Currently only local plugins are supported.
+    """
+
     max_thinking_tokens: int | None = None
-    # Controls extended thinking behavior. Takes precedence over max_thinking_tokens.
+    """Maximum tokens the model may use for its thinking/reasoning process.
+
+    .. deprecated::
+       Use ``thinking`` instead. On newer models, this is treated as on/off
+       (0 = disabled, any other value = adaptive). For explicit control, use
+       ``thinking={"type": "adaptive"}`` or
+       ``thinking={"type": "enabled", "budget_tokens": N}``.
+    """
+
     thinking: ThinkingConfig | None = None
-    # Effort level for thinking depth.
+    """Controls Claude's thinking/reasoning behavior.
+
+    - ``{"type": "adaptive"}`` — Claude decides when and how much to think
+      (Opus 4.6+). Default for models that support it.
+    - ``{"type": "enabled", "budget_tokens": N}`` — Fixed thinking token budget
+      (older models).
+    - ``{"type": "disabled"}`` — No extended thinking.
+
+    When set, takes precedence over the deprecated ``max_thinking_tokens``.
+    See https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking.
+    """
+
     effort: Literal["low", "medium", "high", "max"] | None = None
-    # Output format for structured outputs (matches Messages API structure)
-    # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
+    """Controls how much effort Claude puts into its response.
+
+    Works with adaptive thinking to guide thinking depth.
+
+    - ``"low"`` — Minimal thinking, fastest responses.
+    - ``"medium"`` — Moderate thinking.
+    - ``"high"`` — Deep reasoning (default).
+    - ``"max"`` — Maximum effort.
+
+    See https://docs.anthropic.com/en/docs/build-with-claude/effort.
+    """
+
     output_format: dict[str, Any] | None = None
-    # Enable file checkpointing to track file changes during the session.
-    # When enabled, files can be rewound to their state at any user message
-    # using `ClaudeSDKClient.rewind_files()`.
+    """Output format configuration for structured responses.
+
+    When specified, the agent returns structured data matching the schema.
+    Matches the Messages API structure, e.g.
+    ``{"type": "json_schema", "schema": {"type": "object", "properties": {...}}}``.
+    """
+
     enable_file_checkpointing: bool = False
-    # Mirror session transcripts to external storage and enable store-backed
-    # resume. When set, every transcript line written locally is also passed to
-    # ``session_store.append()``, and ``resume`` can materialize from the store
-    # when the local file is absent.
+    """Enable file checkpointing to track file changes during the session.
+
+    When enabled, files can be rewound to their state at any user message
+    using ``ClaudeSDKClient.rewind_files()``. File checkpointing creates
+    backups of files before they are modified so they can be restored later.
+    """
+
     session_store: SessionStore | None = None
-    # Upper bound on ``session_store.load()`` / ``list_subkeys()`` calls during
-    # resume materialization, in milliseconds. Prevents a slow store from
-    # blocking subprocess spawn indefinitely. A value of 0 means immediate
-    # timeout; use a large value to effectively disable.
+    """Mirror session transcripts to an external store.
+
+    When set, every transcript line written locally is also passed to
+    ``session_store.append()``, and ``resume`` can materialize from the store
+    when the local file is absent.
+    """
+
     load_timeout_ms: int = 60_000
-    # API-side task budget in tokens. When set, the model is made aware of
-    # its remaining token budget so it can pace tool use and wrap up before
-    # the limit.
+    """Timeout for each ``session_store.load()`` / ``list_subkeys()`` call during
+    resume materialization, in milliseconds.
+
+    If the adapter doesn't settle within this window the query fails with a
+    clear error instead of hanging the iterator forever. A value of 0 means
+    immediate timeout; use a large value to effectively disable.
+    """
+
     task_budget: TaskBudget | None = None
+    """API-side task budget in tokens.
+
+    When set, the model is made aware of its remaining token budget so it can
+    pace tool use and wrap up before the limit. Sent as
+    ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
+    header.
+    """
 
 
 # SDK Control Protocol

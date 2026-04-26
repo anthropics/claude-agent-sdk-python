@@ -946,6 +946,163 @@ class TestClaudeSDKClientStreaming:
 
         anyio.run(_test)
 
+    def test_generate_session_title(self):
+        """Test generate_session_title sends correct control request and returns title."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+                mock_transport_class.return_value = mock_transport
+
+                written_messages: list[str] = []
+                seen_title_request: dict = {}
+
+                async def mock_write(data):
+                    written_messages.append(data)
+
+                mock_transport.write = AsyncMock(side_effect=mock_write)
+
+                async def control_protocol_generator():
+                    last_check = 0
+                    timeout_counter = 0
+                    while timeout_counter < 200:
+                        await asyncio.sleep(0.01)
+                        timeout_counter += 1
+
+                        for msg_str in written_messages[last_check:]:
+                            try:
+                                msg = json.loads(msg_str.strip())
+                                if msg.get("type") == "control_request":
+                                    req = msg.get("request", {})
+                                    subtype = req.get("subtype")
+                                    if subtype == "initialize":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {},
+                                            },
+                                        }
+                                    elif subtype == "generate_session_title":
+                                        seen_title_request.update(req)
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {
+                                                    "title": "Python history overview",
+                                                },
+                                            },
+                                        }
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+                        last_check = len(written_messages)
+
+                mock_transport.read_messages = control_protocol_generator
+
+                async with ClaudeSDKClient() as client:
+                    result = await client.generate_session_title(
+                        "Tell me about Python and its history"
+                    )
+
+                    assert result["title"] == "Python history overview"
+                    # Verify the wire request carried description and persist=True default.
+                    assert (
+                        seen_title_request.get("description")
+                        == "Tell me about Python and its history"
+                    )
+                    assert seen_title_request.get("persist") is True
+
+        anyio.run(_test)
+
+    def test_generate_session_title_persist_false(self):
+        """Test generate_session_title forwards persist=False on the wire."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+                mock_transport_class.return_value = mock_transport
+
+                written_messages: list[str] = []
+                seen_title_request: dict = {}
+
+                async def mock_write(data):
+                    written_messages.append(data)
+
+                mock_transport.write = AsyncMock(side_effect=mock_write)
+
+                async def control_protocol_generator():
+                    last_check = 0
+                    timeout_counter = 0
+                    while timeout_counter < 200:
+                        await asyncio.sleep(0.01)
+                        timeout_counter += 1
+
+                        for msg_str in written_messages[last_check:]:
+                            try:
+                                msg = json.loads(msg_str.strip())
+                                if msg.get("type") == "control_request":
+                                    req = msg.get("request", {})
+                                    subtype = req.get("subtype")
+                                    if subtype == "initialize":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {},
+                                            },
+                                        }
+                                    elif subtype == "generate_session_title":
+                                        seen_title_request.update(req)
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {"title": "Ephemeral"},
+                                            },
+                                        }
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+                        last_check = len(written_messages)
+
+                mock_transport.read_messages = control_protocol_generator
+
+                async with ClaudeSDKClient() as client:
+                    result = await client.generate_session_title(
+                        "Quick check", persist=False
+                    )
+
+                    assert result["title"] == "Ephemeral"
+                    assert seen_title_request.get("persist") is False
+
+        anyio.run(_test)
+
+    def test_generate_session_title_not_connected(self):
+        """Test generate_session_title when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.generate_session_title("hello")
+
+        anyio.run(_test)
+
     def test_client_with_options(self):
         """Test client initialization with options."""
 

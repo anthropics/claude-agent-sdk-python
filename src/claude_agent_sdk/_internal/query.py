@@ -757,6 +757,29 @@ class Query:
             }
         )
 
+    async def generate_session_title(
+        self, description: str, persist: bool = True
+    ) -> dict[str, Any]:
+        """Ask the CLI to generate (and optionally persist) an AI session title.
+
+        When ``persist=True`` (the default) the CLI writes an ``ai-title`` entry
+        to the session JSONL, which ``get_session_info()`` then surfaces via
+        ``SDKSessionInfo.custom_title``. Without persistence the title is only
+        returned in-memory.
+
+        Args:
+            description: The user prompt (or other text) to summarize. The CLI
+                uses this as the source for the 5-7 word title.
+            persist: When True, persist the generated title to the session
+                transcript so reads via ``get_session_info`` see it.
+        """
+        request: dict[str, Any] = {
+            "subtype": "generate_session_title",
+            "description": description,
+            "persist": persist,
+        }
+        return await self._send_control_request(request)
+
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the first result (if needed) then close stdin.
 

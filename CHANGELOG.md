@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- **AI session titles for SDK-driven sessions**: Added `ClaudeSDKClient.generate_session_title(description, persist=True)` which forwards the CLI's `generate_session_title` control request and (with `persist=True`) writes an `ai-title` entry into the session JSONL. This makes `get_session_info()` return the AI-generated title for SDK-driven sessions, matching the bundled CLI's behavior. Closes #854.
+
 ## 0.1.68
 
 ### Internal/Other Changes

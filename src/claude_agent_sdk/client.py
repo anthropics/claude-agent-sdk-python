@@ -20,6 +20,7 @@ from .types import (
     Message,
     PermissionMode,
     ResultMessage,
+    SessionTitleResponse,
 )
 
 
@@ -468,6 +469,61 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.stop_task(task_id)
+
+    async def generate_session_title(
+        self, description: str, persist: bool = True
+    ) -> SessionTitleResponse:
+        """Ask the CLI to generate (and optionally persist) an AI session title.
+
+        The bundled CLI's interactive UI generates a short AI-written title for
+        every session after the first turn. SDK-driven sessions never trigger
+        this on their own, which leaves ``get_session_info()`` falling back to
+        the first user prompt. Call this method after ``query()`` to mirror the
+        CLI behavior and have ``SDKSessionInfo.custom_title`` populated.
+
+        For best latency, fire this concurrently with the assistant turn rather
+        than serially after it — title generation is an independent model call.
+
+        Args:
+            description: Text the CLI summarizes (typically the first user
+                prompt of the session).
+            persist: When True (default), the title is written to the session
+                JSONL so subsequent ``get_session_info()`` calls return it.
+                Pass False to retrieve the title without persisting it.
+
+        Returns:
+            ``SessionTitleResponse`` with the AI-generated ``title``.
+
+        Example:
+            ```python
+            import asyncio
+            from claude_agent_sdk import ClaudeSDKClient, ResultMessage, get_session_info
+
+            async with ClaudeSDKClient() as client:
+                prompt = "Tell me about Python and its history"
+                await client.query(prompt)
+
+                # Run title generation in parallel with the assistant turn.
+                title_task = asyncio.create_task(
+                    client.generate_session_title(prompt)
+                )
+
+                async for msg in client.receive_response():
+                    if isinstance(msg, ResultMessage):
+                        session_id = msg.session_id
+
+                title = (await title_task)["title"]
+
+            info = get_session_info(session_id)
+            assert info.custom_title == title
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        result: SessionTitleResponse = await self._query.generate_session_title(
+            description, persist=persist
+        )
+        return result
 
     async def get_mcp_status(self) -> McpStatusResponse:
         """Get current MCP server connection status (only works with streaming mode).

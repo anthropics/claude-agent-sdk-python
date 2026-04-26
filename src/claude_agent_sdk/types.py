@@ -737,6 +737,18 @@ class ContextUsageResponse(TypedDict):
     mcpTools: list[dict[str, Any]]
     """MCP tools with name, serverName, tokens, and isLoaded status."""
 
+
+class SessionTitleResponse(TypedDict):
+    """Response from `ClaudeSDKClient.generate_session_title()`.
+
+    The CLI returns the AI-generated title; when `persist=True` was requested
+    it has also been written to the session JSONL as an `ai-title` entry, where
+    `get_session_info()` will surface it via `SDKSessionInfo.custom_title`.
+    """
+
+    title: str
+    """The AI-generated title (typically a 5-7 word summary of the conversation)."""
+
     agents: list[dict[str, Any]]
     """Agent definitions with agentType, source, and token counts."""
 
@@ -1836,6 +1848,14 @@ class SDKControlStopTaskRequest(TypedDict):
     task_id: str
 
 
+class SDKControlGenerateSessionTitleRequest(TypedDict):
+    """Asks the CLI to generate (and optionally persist) an AI title for the session."""
+
+    subtype: Literal["generate_session_title"]
+    description: str
+    persist: NotRequired[bool]
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -1850,6 +1870,7 @@ class SDKControlRequest(TypedDict):
         | SDKControlMcpReconnectRequest
         | SDKControlMcpToggleRequest
         | SDKControlStopTaskRequest
+        | SDKControlGenerateSessionTitleRequest
     )
 
 

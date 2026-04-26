@@ -115,6 +115,7 @@ from .types import (
     SessionStoreEntry,
     SessionStoreListEntry,
     SessionSummaryEntry,
+    SessionTitleResponse,
     SettingSource,
     StopHookInput,
     StreamEvent,
@@ -565,6 +566,7 @@ __all__ = [
     "ContentBlock",
     "ContextUsageCategory",
     "ContextUsageResponse",
+    "SessionTitleResponse",
     # Tool callbacks
     "CanUseTool",
     "ToolPermissionContext",

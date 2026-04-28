@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.69
+
+### Documentation
+
+- Added docstrings to `ClaudeAgentOptions` fields for improved IDE autocompletion and inline documentation (#873)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.121
+
 ## 0.1.68
 
 ### Internal/Other Changes

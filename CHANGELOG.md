@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.1.70
-
-### Bug Fixes
-
-- Bumped minimum `mcp` dependency to `>=1.19.0`. Older versions cannot handle `CallToolResult` returns from in-process SDK MCP tool handlers (introduced in v0.1.51), causing tool results to be silently replaced with a pydantic validation error.
-
 ## 0.1.69
 
 ### Documentation

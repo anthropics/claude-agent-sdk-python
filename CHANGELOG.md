@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.70
+
+### Bug Fixes
+
+- **In-process MCP tool results silently lost with older `mcp` versions**: Bumped the `mcp` dependency floor to `>=1.19.0`. Older versions mishandled `CallToolResult` returns from SDK MCP tool handlers, causing the model to receive a validation-error blob instead of the actual tool output (#891)
+- **Trio nursery corruption on early cancellation**: Fixed `RuntimeError: Nursery stack corrupted` when breaking out of `query()` iteration inside a trio nursery with `options.stderr` set. The stderr reader now uses `spawn_detached()` instead of manually managing a task group, matching the approach already used for the read loop (#885)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.122
+
 ## 0.1.69
 
 ### Documentation

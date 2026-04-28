@@ -13,7 +13,6 @@ from subprocess import PIPE
 from typing import Any, cast
 
 import anyio
-import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
@@ -21,6 +20,7 @@ from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
 from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
+from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
-        self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_task: TaskHandle | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -463,10 +463,10 @@ class SubprocessCLITransport(Transport):
             # Setup stderr stream if piped
             if stderr_dest is PIPE and self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
-                self._stderr_task_group = anyio.create_task_group()
-                await self._stderr_task_group.__aenter__()
-                self._stderr_task_group.start_soon(self._handle_stderr)
+                # Spawn the stderr reader via spawn_detached (not a manually-
+                # entered TaskGroup) so cleanup has no trio task-affinity —
+                # same pattern as Query._read_task.
+                self._stderr_task = spawn_detached(self._handle_stderr())
 
             # Setup stdin for streaming (always used now)
             if self._process.stdin:
@@ -515,12 +515,12 @@ class SubprocessCLITransport(Transport):
             self._ready = False
             return
 
-        # Close stderr task group if active
-        if self._stderr_task_group:
+        # Cancel stderr reader if active
+        if self._stderr_task is not None and not self._stderr_task.done():
+            self._stderr_task.cancel()
             with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
-                await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
+                await self._stderr_task.wait()
+        self._stderr_task = None
 
         # Close stdin stream (acquire lock to prevent race with concurrent writes)
         async with self._write_lock:

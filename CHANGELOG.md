@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.71
+
+### New Features
+
+- **Domain allowlist fields for sandbox network config**: Added `allowedDomains`, `deniedDomains`, `allowManagedDomainsOnly`, and `allowMachLookup` fields to `SandboxNetworkConfig`, bringing parity with the TypeScript schema and enabling Python SDK users to configure network allowlists with proper type hints (#893)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.123
+
 ## 0.1.70
 
 ### Bug Fixes

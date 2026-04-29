@@ -783,16 +783,24 @@ class SandboxNetworkConfig(TypedDict, total=False):
     """Network configuration for sandbox.
 
     Attributes:
+        allowedDomains: Domain names that sandboxed processes can access.
+        deniedDomains: Domains that are always blocked, even if matched by allowedDomains.
+        allowManagedDomainsOnly: When true in managed settings, only managed-settings allowedDomains are respected.
         allowUnixSockets: Unix socket paths accessible in sandbox (e.g., SSH agents).
         allowAllUnixSockets: Allow all Unix sockets (less secure).
         allowLocalBinding: Allow binding to localhost ports (macOS only).
+        allowMachLookup: macOS only: XPC/Mach service names to allow (supports trailing wildcard).
         httpProxyPort: HTTP proxy port if bringing your own proxy.
         socksProxyPort: SOCKS5 proxy port if bringing your own proxy.
     """
 
+    allowedDomains: list[str]
+    deniedDomains: list[str]
+    allowManagedDomainsOnly: bool
     allowUnixSockets: list[str]
     allowAllUnixSockets: bool
     allowLocalBinding: bool
+    allowMachLookup: list[str]
     httpProxyPort: int
     socksProxyPort: int
 

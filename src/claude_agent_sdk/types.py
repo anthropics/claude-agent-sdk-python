@@ -964,6 +964,7 @@ class UserMessage:
 
     content: str | list[ContentBlock]
     uuid: str | None = None
+    timestamp: str | None = None
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
 
@@ -981,6 +982,7 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -1093,6 +1095,7 @@ class ResultMessage:
     permission_denials: list[Any] | None = None
     errors: list[str] | None = None
     uuid: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -1103,6 +1106,7 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+    timestamp: str | None = None
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
@@ -1150,6 +1154,7 @@ class RateLimitEvent:
     rate_limit_info: RateLimitInfo
     uuid: str
     session_id: str
+    timestamp: str | None = None
 
 
 Message = (

@@ -12,8 +12,19 @@ from claude_agent_sdk import (
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    MirrorErrorMessage,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
+    RateLimitEvent,
+    RateLimitInfo,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
+    StreamEvent,
+    SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
+    TaskUsage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -619,3 +630,248 @@ class TestAgentDefinition:
         assert "background" not in payload
         assert "effort" not in payload
         assert "permissionMode" not in payload
+
+
+class TestRepr:
+    """Tests for __repr__ methods on all 17 repr-carrying types."""
+
+    def test_text_block_repr(self) -> None:
+        """TextBlock repr includes class name and truncated text field."""
+        obj = TextBlock(text="Hello, world!")
+        r = repr(obj)
+        assert r.startswith("TextBlock(")
+        assert "Hello, world!" in r
+
+    def test_thinking_block_repr(self) -> None:
+        """ThinkingBlock repr includes class name and truncated thinking field."""
+        obj = ThinkingBlock(
+            thinking="I am reasoning step by step.", signature="sig-abc"
+        )
+        r = repr(obj)
+        assert r.startswith("ThinkingBlock(")
+        assert "I am reasoning step by step." in r
+
+    def test_tool_use_block_repr(self) -> None:
+        """ToolUseBlock repr includes id, name, and input."""
+        obj = ToolUseBlock(
+            id="toolu_abc123", name="Read", input={"file_path": "/src/main.py"}
+        )
+        r = repr(obj)
+        assert r.startswith("ToolUseBlock(")
+        assert "toolu_abc123" in r
+        assert "Read" in r
+        assert "input=" in r
+
+    def test_tool_result_block_repr(self) -> None:
+        """ToolResultBlock repr includes tool_use_id and is_error."""
+        obj = ToolResultBlock(
+            tool_use_id="toolu_abc123", content="file contents", is_error=False
+        )
+        r = repr(obj)
+        assert r.startswith("ToolResultBlock(")
+        assert "toolu_abc123" in r
+        assert "False" in r
+
+    def test_server_tool_use_block_repr(self) -> None:
+        """ServerToolUseBlock repr includes id, name, and input."""
+        obj = ServerToolUseBlock(
+            id="srv-001", name="web_search", input={"query": "python repr"}
+        )
+        r = repr(obj)
+        assert r.startswith("ServerToolUseBlock(")
+        assert "srv-001" in r
+        assert "web_search" in r
+
+    def test_server_tool_result_block_repr(self) -> None:
+        """ServerToolResultBlock repr includes tool_use_id and content."""
+        obj = ServerToolResultBlock(
+            tool_use_id="srv-001", content={"type": "text", "text": "results here"}
+        )
+        r = repr(obj)
+        assert r.startswith("ServerToolResultBlock(")
+        assert "srv-001" in r
+        assert "content=" in r
+
+    def test_user_message_repr_str_branch(self) -> None:
+        """UserMessage repr (str content) includes truncated content and uuid."""
+        obj = UserMessage(content="Hello, Claude!", uuid="uuid-001")
+        r = repr(obj)
+        assert r.startswith("UserMessage(")
+        assert "Hello, Claude!" in r
+        assert "uuid-001" in r
+
+    def test_user_message_repr_list_branch(self) -> None:
+        """UserMessage repr (list content) shows item count instead of raw content."""
+        blocks = [TextBlock(text="hi"), TextBlock(text="there")]
+        obj = UserMessage(content=blocks, uuid="uuid-002")
+        r = repr(obj)
+        assert r.startswith("UserMessage(")
+        assert "[2 items]" in r
+        assert "uuid-002" in r
+
+    def test_assistant_message_repr(self) -> None:
+        """AssistantMessage repr includes model, stop_reason, and content count."""
+        obj = AssistantMessage(
+            content=[TextBlock(text="Here is my answer.")],
+            model="claude-opus-4-5",
+            stop_reason="end_turn",
+        )
+        r = repr(obj)
+        assert r.startswith("AssistantMessage(")
+        assert "claude-opus-4-5" in r
+        assert "end_turn" in r
+        assert "[1 items]" in r
+
+    def test_system_message_repr(self) -> None:
+        """SystemMessage repr includes subtype and truncated data."""
+        obj = SystemMessage(
+            subtype="init", data={"session": "sess-1", "model": "claude"}
+        )
+        r = repr(obj)
+        assert r.startswith("SystemMessage(")
+        assert "init" in r
+        assert "data=" in r
+
+    def test_result_message_repr(self) -> None:
+        """ResultMessage repr includes subtype, is_error, duration_ms, session_id."""
+        obj = ResultMessage(
+            subtype="success",
+            duration_ms=1500,
+            duration_api_ms=1200,
+            is_error=False,
+            num_turns=3,
+            session_id="sess-xyz",
+        )
+        r = repr(obj)
+        assert r.startswith("ResultMessage(")
+        assert "success" in r
+        assert "False" in r
+        assert "1500" in r
+        assert "sess-xyz" in r
+
+    def test_task_started_message_repr(self) -> None:
+        """TaskStartedMessage repr includes subtype and session_id."""
+        obj = TaskStartedMessage(
+            subtype="task_started",
+            data={},
+            task_id="task-001",
+            description="Run linter",
+            uuid="uuid-ts",
+            session_id="sess-ts",
+        )
+        r = repr(obj)
+        assert r.startswith("TaskStartedMessage(")
+        assert "task_started" in r
+        assert "sess-ts" in r
+
+    def test_task_progress_message_repr(self) -> None:
+        """TaskProgressMessage repr includes subtype and description."""
+        usage: TaskUsage = {"total_tokens": 500, "tool_uses": 2, "duration_ms": 800}
+        obj = TaskProgressMessage(
+            subtype="task_progress",
+            data={},
+            task_id="task-001",
+            description="Running tests now",
+            usage=usage,
+            uuid="uuid-tp",
+            session_id="sess-tp",
+        )
+        r = repr(obj)
+        assert r.startswith("TaskProgressMessage(")
+        assert "task_progress" in r
+        assert "Running tests now" in r
+
+    def test_task_notification_message_repr(self) -> None:
+        """TaskNotificationMessage repr includes subtype and status."""
+        obj = TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="task-001",
+            status="completed",
+            output_file="/tmp/output.txt",
+            summary="All done",
+            uuid="uuid-tn",
+            session_id="sess-tn",
+        )
+        r = repr(obj)
+        assert r.startswith("TaskNotificationMessage(")
+        assert "task_notification" in r
+        assert "completed" in r
+
+    def test_mirror_error_message_repr(self) -> None:
+        """MirrorErrorMessage repr includes subtype and error."""
+        obj = MirrorErrorMessage(
+            subtype="mirror_error",
+            data={},
+            error="DB write timed out",
+        )
+        r = repr(obj)
+        assert r.startswith("MirrorErrorMessage(")
+        assert "mirror_error" in r
+        assert "DB write timed out" in r
+
+    def test_stream_event_repr(self) -> None:
+        """StreamEvent repr includes event_type and session_id."""
+        obj = StreamEvent(
+            uuid="uuid-se",
+            session_id="sess-se",
+            event={"type": "content_block_delta", "index": 0},
+        )
+        r = repr(obj)
+        assert r.startswith("StreamEvent(")
+        assert "content_block_delta" in r
+        assert "sess-se" in r
+
+    def test_rate_limit_info_repr(self) -> None:
+        """RateLimitInfo repr includes status and raw."""
+        obj = RateLimitInfo(status="allowed_warning", raw={"utilization": 0.85})
+        r = repr(obj)
+        assert r.startswith("RateLimitInfo(")
+        assert "allowed_warning" in r
+        assert "raw=" in r
+
+    def test_rate_limit_event_repr(self) -> None:
+        """RateLimitEvent repr embeds the RateLimitInfo repr."""
+        info = RateLimitInfo(status="rejected", raw={})
+        obj = RateLimitEvent(
+            rate_limit_info=info, uuid="uuid-rle", session_id="sess-rle"
+        )
+        r = repr(obj)
+        assert r.startswith("RateLimitEvent(")
+        assert "RateLimitInfo(" in r
+        assert "rejected" in r
+
+    def test_tool_use_block_repr_truncation(self) -> None:
+        """ToolUseBlock repr truncates large input dicts with '...'."""
+        obj = ToolUseBlock(id="x", name="fn", input={"k": "a" * 200})
+        r = repr(obj)
+        assert "ToolUseBlock" in repr(obj)
+        assert "..." in r
+
+    def test_tool_result_block_repr_truncation(self) -> None:
+        """ToolResultBlock repr truncates large content with '...'."""
+        obj = ToolResultBlock(tool_use_id="x", content=["a" * 200], is_error=False)
+        r = repr(obj)
+        assert "ToolResultBlock" in repr(obj)
+        assert "..." in r
+
+    def test_repr_none_fields(self) -> None:
+        """ToolResultBlock repr renders None fields as 'None'."""
+        obj = ToolResultBlock(tool_use_id="x", content=None, is_error=None)
+        r = repr(obj)
+        assert "ToolResultBlock" in r
+        assert "None" in r
+
+    def test_repr_empty_list(self) -> None:
+        """UserMessage repr with empty list content shows [0 items]."""
+        obj = UserMessage(content=[])
+        r = repr(obj)
+        assert "UserMessage" in r
+        assert "[0 items]" in r
+
+    def test_repr_unicode(self) -> None:
+        """TextBlock repr preserves unicode content correctly."""
+        obj = TextBlock(text="こんにちは世界")
+        r = repr(obj)
+        assert "TextBlock" in r
+        assert "こんにちは世界" in r

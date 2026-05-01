@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -58,6 +59,7 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._generated_system_prompt_file: Path | None = None
         self._write_lock: anyio.Lock = anyio.Lock()
 
     def _find_cli(self) -> str:
@@ -200,24 +202,59 @@ class SubprocessCLITransport(Transport):
 
         return allowed_tools, setting_sources
 
+    def _materialize_system_prompt_blocks(self, blocks: list[dict[str, Any]]) -> str:
+        """Persist structured system prompt blocks for CLI handoff."""
+        if self._generated_system_prompt_file is None:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="claude-agent-sdk-system-prompt-",
+                suffix=".json",
+                delete=False,
+            ) as temp_file:
+                json.dump(blocks, temp_file)
+                self._generated_system_prompt_file = Path(temp_file.name)
+
+        return str(self._generated_system_prompt_file)
+
+    def _cleanup_generated_system_prompt_file(self) -> None:
+        """Remove any temporary system prompt file created by the SDK."""
+        path = self._generated_system_prompt_file
+        self._generated_system_prompt_file = None
+        if path is not None:
+            with suppress(FileNotFoundError):
+                path.unlink()
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         if self._cli_path is None:
             raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
-        if self._options.system_prompt is None:
+        sp = self._options.system_prompt
+        if sp is None:
             cmd.extend(["--system-prompt", ""])
-        elif isinstance(self._options.system_prompt, str):
-            cmd.extend(["--system-prompt", self._options.system_prompt])
-        else:
-            sp = self._options.system_prompt
+        elif isinstance(sp, str):
+            cmd.extend(["--system-prompt", sp])
+        elif isinstance(sp, list):
+            cmd.extend(
+                [
+                    "--system-prompt-file",
+                    self._materialize_system_prompt_blocks(sp),
+                ]
+            )
+        elif isinstance(sp, dict):
             if sp.get("type") == "file":
                 cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
             elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
                     ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
                 )
+        else:
+            raise TypeError(
+                "system_prompt must be None, a string, a system prompt preset/file "
+                "mapping, or a list of Anthropic content blocks"
+            )
 
         # Handle tools option (base set of tools)
         if self._options.tools is not None:
@@ -475,6 +512,7 @@ class SubprocessCLITransport(Transport):
             self._ready = True
 
         except FileNotFoundError as e:
+            self._cleanup_generated_system_prompt_file()
             # Check if the error comes from the working directory or the CLI
             if self._cwd and not Path(self._cwd).exists():
                 error = CLIConnectionError(
@@ -486,6 +524,7 @@ class SubprocessCLITransport(Transport):
             self._exit_error = error
             raise error from e
         except Exception as e:
+            self._cleanup_generated_system_prompt_file()
             error = CLIConnectionError(f"Failed to start Claude Code: {e}")
             self._exit_error = error
             raise error from e
@@ -513,6 +552,7 @@ class SubprocessCLITransport(Transport):
         """Close the transport and clean up resources."""
         if not self._process:
             self._ready = False
+            self._cleanup_generated_system_prompt_file()
             return
 
         # Cancel stderr reader if active
@@ -562,6 +602,7 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream = None
         self._stderr_stream = None
         self._exit_error = None
+        self._cleanup_generated_system_prompt_file()
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""

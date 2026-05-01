@@ -177,6 +177,19 @@ class TestOptions:
             "path": "/path/to/prompt.md",
         }
 
+    def test_claude_code_options_with_system_prompt_blocks(self):
+        """Test Options with structured system prompt blocks."""
+        blocks = [
+            {"type": "text", "text": "Be helpful."},
+            {
+                "type": "text",
+                "text": "Use cached reference material.",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        options = ClaudeAgentOptions(system_prompt=blocks)
+        assert options.system_prompt == blocks
+
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""
         options = ClaudeAgentOptions(continue_conversation=True, resume="session-123")

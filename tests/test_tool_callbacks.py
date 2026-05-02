@@ -250,6 +250,81 @@ class TestToolPermissionCallbacks:
         assert received_context.agent_id is None
 
     @pytest.mark.asyncio
+    async def test_permission_callback_receives_blocked_path(self):
+        """Test that blocked_path is forwarded to the context when set."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-blockedpath",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Read",
+                "input": {"file_path": "/etc/passwd"},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01PATH",
+                "blocked_path": "/etc/passwd",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.blocked_path == "/etc/passwd"
+
+    @pytest.mark.asyncio
+    async def test_permission_callback_missing_blocked_path(self):
+        """Test that blocked_path defaults to None when not sent."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-nopath",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01NOPATH",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.blocked_path is None
+
+    @pytest.mark.asyncio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 

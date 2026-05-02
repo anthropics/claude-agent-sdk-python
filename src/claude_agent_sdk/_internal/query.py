@@ -354,6 +354,7 @@ class Query:
                     or [],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    blocked_path=permission_request.get("blocked_path"),
                 )
 
                 response = await self.can_use_tool(

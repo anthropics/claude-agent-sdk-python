@@ -184,6 +184,11 @@ class ToolPermissionContext:
     Multiple tool calls in the same assistant message will have different tool_use_ids."""
     agent_id: str | None = None
     """If running within the context of a sub-agent, the sub-agent's ID."""
+    blocked_path: str | None = None
+    """Filesystem path that triggered this permission request, when the tool was
+    blocked by an `additionalDirectories`/`allowedDirectories` constraint or a
+    path-scoped permission rule. None when the request is not path-scoped (e.g.
+    the tool itself is restricted regardless of inputs)."""
 
 
 # Match TypeScript's PermissionResult structure

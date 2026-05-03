@@ -192,6 +192,7 @@ class InternalClient:
                     materialized=materialized,
                     env=configured_options.env,
                     on_error=_on_mirror_error,
+                    flush_mode=configured_options.session_store_flush,
                 )
             )
 

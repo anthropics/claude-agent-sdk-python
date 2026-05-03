@@ -31,10 +31,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..types import ClaudeAgentOptions, SessionKey, SessionStore
+from ..types import ClaudeAgentOptions, SessionKey, SessionStore, SessionStoreFlushMode
 from .session_store_validation import _store_implements
 from .sessions import _get_projects_dir, _validate_uuid, project_key_for_directory
-from .transcript_mirror_batcher import TranscriptMirrorBatcher
+from .transcript_mirror_batcher import (
+    MAX_PENDING_BYTES,
+    MAX_PENDING_ENTRIES,
+    TranscriptMirrorBatcher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,7 @@ def build_mirror_batcher(
     materialized: MaterializedResume | None,
     env: dict[str, str] | None,
     on_error: Callable[[SessionKey | None, str], Awaitable[None]],
+    flush_mode: SessionStoreFlushMode = "batched",
 ) -> TranscriptMirrorBatcher:
     """Construct the :class:`TranscriptMirrorBatcher` for a session.
 
@@ -94,16 +99,23 @@ def build_mirror_batcher(
     (so file_path → key resolution matches what the subprocess writes),
     otherwise to the standard projects directory under the effective
     ``CLAUDE_CONFIG_DIR``.
+
+    ``flush_mode="eager"`` zeroes the batcher's pending thresholds so every
+    enqueued frame schedules a background flush; ``"batched"`` keeps the
+    defaults (flush on ``result`` or 500-entry / 1 MiB overflow).
     """
     projects_dir = (
         str(materialized.config_dir / "projects")
         if materialized is not None
         else str(_get_projects_dir(env))
     )
+    eager = flush_mode == "eager"
     return TranscriptMirrorBatcher(
         store=store,
         projects_dir=projects_dir,
         on_error=on_error,
+        max_pending_entries=0 if eager else MAX_PENDING_ENTRIES,
+        max_pending_bytes=0 if eager else MAX_PENDING_BYTES,
     )
 
 

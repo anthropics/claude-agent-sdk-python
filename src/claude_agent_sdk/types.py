@@ -1248,6 +1248,19 @@ class SessionListSubkeysKey(TypedDict):
     session_id: str
 
 
+SessionStoreFlushMode = Literal["batched", "eager"]
+"""Controls when transcript-mirror entries are flushed to a :class:`SessionStore`.
+
+- ``"batched"`` (default): buffer entries and flush once per turn (on the
+  ``result`` message) or when the pending buffer exceeds 500 entries / 1 MiB.
+  Keeps adapter latency off the streaming hot path.
+- ``"eager"``: trigger a background flush after every ``transcript_mirror``
+  frame so ``SessionStore.append()`` sees entries in near real time. Appends
+  are still serialized in enqueue order; a slow adapter will not stall the
+  read loop but will see frames coalesced while it is busy.
+"""
+
+
 class SessionStore(Protocol):
     """Adapter for mirroring session transcripts to external storage.
 
@@ -1756,6 +1769,16 @@ class ClaudeAgentOptions:
     When set, every transcript line written locally is also passed to
     ``session_store.append()``, and ``resume`` can materialize from the store
     when the local file is absent.
+    """
+
+    session_store_flush: SessionStoreFlushMode = "batched"
+    """When to flush mirrored transcript entries to ``session_store``.
+
+    ``"batched"`` (default) coalesces entries and flushes once per turn or when
+    the buffer exceeds 500 entries / 1 MiB. ``"eager"`` triggers a background
+    flush after every frame for near-real-time delivery (each flush still runs
+    off the read loop, so a slow adapter does not stall message streaming).
+    Ignored when ``session_store`` is ``None``.
     """
 
     load_timeout_ms: int = 60_000

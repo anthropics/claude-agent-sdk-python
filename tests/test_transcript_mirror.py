@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     query,
 )
 from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.session_resume import build_mirror_batcher
 from claude_agent_sdk._internal.session_store import file_path_to_session_key
 from claude_agent_sdk._internal.sessions import _get_projects_dir
 from claude_agent_sdk._internal.transcript_mirror_batcher import (
@@ -504,6 +505,62 @@ class TestTranscriptMirrorBatcher:
 
 
 # ---------------------------------------------------------------------------
+# build_mirror_batcher / session_store_flush
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMirrorBatcherFlushMode:
+    """``session_store_flush`` threads through ``build_mirror_batcher`` to the
+    batcher's pending thresholds: ``"batched"`` keeps the defaults,
+    ``"eager"`` zeroes them so every enqueue schedules a background flush."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "want_entries", "want_bytes"),
+        [
+            ({}, MAX_PENDING_ENTRIES, MAX_PENDING_BYTES),
+            ({"flush_mode": "batched"}, MAX_PENDING_ENTRIES, MAX_PENDING_BYTES),
+            ({"flush_mode": "eager"}, 0, 0),
+        ],
+        ids=["default", "batched", "eager"],
+    )
+    def test_flush_mode_sets_thresholds(
+        self, kwargs: dict[str, Any], want_entries: int, want_bytes: int
+    ) -> None:
+        batcher = build_mirror_batcher(
+            store=InMemorySessionStore(),
+            materialized=None,
+            env={"CLAUDE_CONFIG_DIR": str(Path(PROJECTS_DIR).parent)},
+            on_error=_noop_error,
+            **kwargs,
+        )
+        assert batcher.max_pending_entries == want_entries
+        assert batcher.max_pending_bytes == want_bytes
+
+    @pytest.mark.asyncio
+    async def test_eager_mode_flushes_per_frame(self) -> None:
+        store = _RecordingStore()
+        batcher = build_mirror_batcher(
+            store=store,
+            materialized=None,
+            env={"CLAUDE_CONFIG_DIR": str(Path(PROJECTS_DIR).parent)},
+            on_error=_noop_error,
+            flush_mode="eager",
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "n": 1}])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(store.append_calls) == 1
+        batcher.enqueue(_main_path(), [{"type": "assistant", "n": 2}])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(store.append_calls) == 2
+        assert [e["n"] for c in store.append_calls for e in c[1]] == [1, 2]
+
+    def test_options_default_is_batched(self) -> None:
+        assert ClaudeAgentOptions().session_store_flush == "batched"
+
+
+# ---------------------------------------------------------------------------
 # --session-mirror CLI flag
 # ---------------------------------------------------------------------------
 
@@ -533,11 +590,15 @@ class TestSessionMirrorFlag:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_transport(messages: list[dict[str, Any]]) -> Any:
+def _make_mock_transport(
+    messages: list[dict[str, Any]], *, yield_between: bool = False
+) -> Any:
     mock_transport = AsyncMock()
 
     async def mock_receive():
         for msg in messages:
+            if yield_between:
+                await anyio.sleep(0)
             yield msg
 
     mock_transport.read_messages = mock_receive
@@ -707,6 +768,67 @@ class TestReceiveLoopFramePeeling:
             key, entries = store.append_calls[0]
             assert key == {"project_key": "late", "session_id": "sess"}
             assert entries == [{"type": "user", "uuid": "late-u1"}]
+
+        anyio.run(_test)
+
+    def test_eager_flush_mode_appends_per_frame_before_result(self) -> None:
+        """With ``session_store_flush="eager"`` each ``transcript_mirror`` frame
+        is flushed as it arrives, so the store sees one ``append()`` per frame
+        rather than a single coalesced batch at ``result`` time."""
+
+        async def _test() -> None:
+            store = _RecordingStore()
+            frame1 = {
+                "type": "transcript_mirror",
+                "filePath": _main_path("p", "s"),
+                "entries": [{"type": "user", "uuid": "u1"}],
+            }
+            frame2 = {
+                "type": "transcript_mirror",
+                "filePath": _main_path("p", "s"),
+                "entries": [{"type": "assistant", "uuid": "a1"}],
+            }
+            # Yield to the event loop between frames so the eager background
+            # drain scheduled by enqueue() can run before the next frame
+            # arrives — models the await on real stdout I/O. Without this the
+            # mock delivers both frames synchronously and they coalesce, which
+            # is correct back-pressure behaviour but not what we're asserting.
+            mock_transport = _make_mock_transport(
+                [frame1, frame2, _ASSISTANT_MSG, _RESULT_MSG],
+                yield_between=True,
+            )
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "claude_agent_sdk._internal.session_resume._get_projects_dir",
+                    return_value=PROJECTS_DIR,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+                appends_at_assistant = None
+                async for msg in query(
+                    prompt="Hello",
+                    options=ClaudeAgentOptions(
+                        session_store=store, session_store_flush="eager"
+                    ),
+                ):
+                    if isinstance(msg, AssistantMessage):
+                        appends_at_assistant = len(store.append_calls)
+
+            # Both frames flushed individually before the assistant message
+            # was yielded (eager background flush ran while the read loop
+            # awaited the next stdout line).
+            assert appends_at_assistant == 2
+            assert len(store.append_calls) == 2
+            assert store.append_calls[0][1] == [{"type": "user", "uuid": "u1"}]
+            assert store.append_calls[1][1] == [{"type": "assistant", "uuid": "a1"}]
 
         anyio.run(_test)
 

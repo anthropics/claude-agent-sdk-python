@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -26,6 +27,28 @@ from . import Transport
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+
+
+def _terminate_group(pid: int, sig: "signal.Signals") -> None:
+    """Send ``sig`` to the process group led by ``pid``.
+
+    The CLI is spawned with ``start_new_session=True`` on POSIX, so its
+    descendants (e.g. MCP servers) share a group id equal to the CLI's
+    pid. Signalling that group reaches the whole tree in one syscall;
+    without it, descendants reparent to PID 1 on close and leak across
+    repeated query() / ClaudeSDKClient usage.
+    """
+    if os.name != "posix":
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        # Group already gone or out of our control; nothing to clean up.
+        return
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 
@@ -447,6 +470,14 @@ class SubprocessCLITransport(Transport):
             # Pipe stderr only when the caller registered a callback.
             stderr_dest = PIPE if self._options.stderr is not None else None
 
+            # Spawn the CLI in a new POSIX session so its descendants
+            # (e.g. MCP servers it starts) inherit the same process group
+            # and can be reaped together via os.killpg in close(). Without
+            # this, MCP grandchildren reparent to PID 1 on close and leak
+            # across repeated query() / ClaudeSDKClient usage.
+            spawn_kwargs: dict[str, Any] = {}
+            if os.name == "posix":
+                spawn_kwargs["start_new_session"] = True
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
@@ -455,6 +486,7 @@ class SubprocessCLITransport(Transport):
                 cwd=self._cwd,
                 env=process_env,
                 user=self._options.user,
+                **spawn_kwargs,
             )
 
             if self._process.stdout:
@@ -539,23 +571,28 @@ class SubprocessCLITransport(Transport):
         # The subprocess needs time to flush its session file after receiving
         # EOF on stdin. Without this grace period, SIGTERM can interrupt the
         # write and cause the last assistant message to be lost (see #625).
+        cli_pid = self._process.pid
         if self._process.returncode is None:
             try:
                 with anyio.fail_after(5):
                     await self._process.wait()
             except TimeoutError:
-                # Graceful shutdown timed out — force terminate
-                with suppress(ProcessLookupError):
-                    self._process.terminate()
+                # Graceful shutdown timed out — force terminate the entire
+                # process group (CLI + MCP servers + other grandchildren)
+                # so descendants don't reparent to PID 1.
+                _terminate_group(cli_pid, signal.SIGTERM)
                 try:
                     with anyio.fail_after(5):
                         await self._process.wait()
                 except TimeoutError:
-                    # SIGTERM handler blocked — force kill (SIGKILL)
-                    with suppress(ProcessLookupError):
-                        self._process.kill()
+                    # SIGTERM handler blocked — SIGKILL the whole group.
+                    _terminate_group(cli_pid, signal.SIGKILL)
                     with suppress(Exception):
                         await self._process.wait()
+
+        # Belt-and-suspenders: even on graceful CLI exit, signal the
+        # process group to ensure no descendant survives the close call.
+        _terminate_group(cli_pid, signal.SIGTERM)
 
         self._process = None
         self._stdout_stream = None

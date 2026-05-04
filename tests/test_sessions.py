@@ -1382,10 +1382,41 @@ class TestCreatedAtExtraction:
         assert sessions[0].created_at is not None
         assert sessions[0].created_at <= sessions[0].last_modified
 
+    def test_created_at_when_first_line_lacks_timestamp(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """created_at is found in a later head record when the first line is a
+        metadata-only entry (e.g. permission-mode) with no timestamp field.
+
+        Regression test for #904.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps({"type": "permission-mode", "permissionMode": "acceptEdits"}),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].created_at == 1768473000000
+
     def test_created_at_none_when_missing(
         self, claude_config_dir: Path, tmp_path: Path
     ):
-        """created_at is None when first entry lacks a timestamp field."""
+        """created_at is None when no head entry has a timestamp field."""
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
         project_dir = _make_project_dir(

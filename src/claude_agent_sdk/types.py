@@ -184,6 +184,22 @@ class ToolPermissionContext:
     Multiple tool calls in the same assistant message will have different tool_use_ids."""
     agent_id: str | None = None
     """If running within the context of a sub-agent, the sub-agent's ID."""
+    blocked_path: str | None = None
+    """The file path that triggered the permission request, if applicable.
+    For example, when a Bash command tries to access a path outside allowed directories."""
+    decision_reason: str | None = None
+    """Explains why this permission request was triggered.
+    When a PreToolUse hook returns ``permissionDecision: "ask"`` with a
+    ``permissionDecisionReason``, that reason is forwarded here."""
+    title: str | None = None
+    """Full permission prompt sentence (e.g. "Claude wants to read foo.txt").
+    Use this as the primary prompt text when present instead of reconstructing
+    from tool name + input."""
+    display_name: str | None = None
+    """Short noun phrase for the tool action (e.g. "Read file"), suitable for
+    button labels or compact UI."""
+    description: str | None = None
+    """Human-readable subtitle for the permission UI."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -1812,6 +1828,10 @@ class SDKControlPermissionRequest(TypedDict):
     # TODO: Add PermissionUpdate type here
     permission_suggestions: list[Any] | None
     blocked_path: str | None
+    decision_reason: NotRequired[str]
+    title: NotRequired[str]
+    display_name: NotRequired[str]
+    description: NotRequired[str]
     tool_use_id: str
     agent_id: NotRequired[str]
 

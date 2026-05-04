@@ -260,9 +260,6 @@ class TestQueryFunction:
         anyio.run(_test)
 
 
-@pytest.mark.filterwarnings(
-    "ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
-)
 class TestClaudeSDKClientTrioBackend:
     """Regression test: ClaudeSDKClient must work under trio.
 

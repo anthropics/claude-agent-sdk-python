@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.73
+
+### New Features
+
+- **Eager session store flushing**: Added `session_store_flush` option to `ClaudeAgentOptions` (`"batched"` or `"eager"`). When set to `"eager"`, the transcript mirror delivers frames to `SessionStore.append()` in near-real-time instead of waiting for the end-of-turn flush, enabling live-tailing UIs, cross-process resume, and crash-durability use cases (#905)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.128
+
 ## 0.1.72
 
 ### Internal/Other Changes

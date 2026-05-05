@@ -78,6 +78,16 @@ class TestSubprocessCLITransport:
         assert "--system-prompt" in cmd
         assert cmd[cmd.index("--system-prompt") + 1] == ""
 
+    def test_build_command_strict_mcp_config(self):
+        """Test that --strict-mcp-config is emitted only when enabled."""
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(strict_mcp_config=True)
+        )
+        assert "--strict-mcp-config" in transport._build_command()
+
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--strict-mcp-config" not in transport._build_command()
+
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
         from pathlib import Path

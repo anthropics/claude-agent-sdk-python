@@ -1508,6 +1508,13 @@ class ClaudeAgentOptions:
     to an MCP config JSON file.
     """
 
+    strict_mcp_config: bool = False
+    """When ``True``, only use MCP servers passed via :attr:`mcp_servers`,
+    ignoring all other MCP configurations the CLI would otherwise load (e.g.
+    project ``.mcp.json``, user/global settings, plugin-provided servers).
+    Maps to the CLI's ``--strict-mcp-config`` flag and matches the TypeScript
+    SDK's ``strictMcpConfig`` option."""
+
     permission_mode: PermissionMode | None = None
     """Permission mode for the session.
 

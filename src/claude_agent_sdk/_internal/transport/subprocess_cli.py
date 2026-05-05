@@ -316,6 +316,9 @@ class SubprocessCLITransport(Transport):
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 
+        if self._options.strict_mcp_config:
+            cmd.append("--strict-mcp-config")
+
         if self._options.fork_session:
             cmd.append("--fork-session")
 

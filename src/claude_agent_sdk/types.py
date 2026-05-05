@@ -1508,6 +1508,10 @@ class ClaudeAgentOptions:
     to an MCP config JSON file.
     """
 
+    strict_mcp_config: bool = False
+    """When ``True``, the CLI raises an error on invalid MCP server configuration
+    instead of warning to stderr. Matches the TypeScript SDK's ``strictMcpConfig``."""
+
     permission_mode: PermissionMode | None = None
     """Permission mode for the session.
 

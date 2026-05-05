@@ -354,6 +354,11 @@ class Query:
                     or [],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    blocked_path=permission_request.get("blocked_path"),
+                    decision_reason=permission_request.get("decision_reason"),
+                    title=permission_request.get("title"),
+                    display_name=permission_request.get("display_name"),
+                    description=permission_request.get("description"),
                 )
 
                 response = await self.can_use_tool(
@@ -823,9 +828,20 @@ class Query:
         # checks _closed before the buffer, so closing it here would make a
         # non-parked consumer drop buffered messages with
         # ClosedResourceError. _message_send.close() alone yields
-        # EndOfStream after the buffer drains.
+        # EndOfStream after the buffer drains; the consumer calls
+        # close_receive_stream() once it's done iterating (#859).
         self._message_send.close()
         await self.transport.close()
+
+    def close_receive_stream(self) -> None:
+        """Close the receive side of the message stream.
+
+        Call once the consumer has finished iterating ``receive_messages()``.
+        ``close()`` leaves this open so a still-draining consumer can read
+        buffered messages; the consumer is responsible for closing it to
+        avoid a ``ResourceWarning`` from anyio's ``__del__``.
+        """
+        self._message_receive.close()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

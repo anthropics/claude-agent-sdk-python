@@ -609,6 +609,7 @@ class ClaudeSDKClient:
         """Disconnect from Claude."""
         if self._query:
             await self._query.close()
+            self._query.close_receive_stream()
             self._query = None
         self._transport = None
         if self._materialized is not None:

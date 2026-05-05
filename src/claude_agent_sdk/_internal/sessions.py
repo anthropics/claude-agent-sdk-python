@@ -476,10 +476,14 @@ def _parse_session_info_from_lite(
         (_extract_last_json_string_field(tag_line, "tag") or None) if tag_line else None
     )
 
-    # created_at from first entry's ISO timestamp (epoch ms). More reliable
-    # than stat().birthtime which is unsupported on some filesystems.
+    # created_at from the first ISO timestamp found in the head (epoch ms).
+    # More reliable than stat().birthtime which is unsupported on some
+    # filesystems. Scans the whole head rather than only first_line because
+    # the first record may be a metadata-only entry (e.g. permission-mode)
+    # with no timestamp field; the first user/assistant record that follows
+    # does carry one.
     created_at: int | None = None
-    first_timestamp = _extract_json_string_field(first_line, "timestamp")
+    first_timestamp = _extract_json_string_field(head, "timestamp")
     if first_timestamp:
         try:
             # Python 3.10's fromisoformat doesn't support trailing 'Z'

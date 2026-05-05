@@ -139,11 +139,10 @@ def fold_session_summary(
     new session (``prev is None``) the fold returns ``mtime=0`` as a
     placeholder; the adapter is expected to overwrite it.
 
-    ``created_at`` latches the first parseable entry timestamp; the disk
-    lite-parse only inspects the first line, so for streams whose first
-    entry lacks a timestamp (does not occur in CLI-produced transcripts)
-    the fold path yields a non-``None`` ``created_at`` where lite-parse
-    yields ``None``.
+    ``created_at`` latches the first parseable entry timestamp. The disk
+    lite-parse scans the head buffer for the first timestamp occurrence,
+    so the two paths agree for any timestamp appearing within the head
+    window.
     """
     if prev is not None:
         summary: SessionSummaryEntry = {

@@ -49,11 +49,23 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             data,
         )
 
-    # Hook events (emitted when ``include_hook_events`` is enabled) carry a
-    # ``hook_event_name`` discriminator rather than a standard ``type`` field.
-    if "hook_event_name" in data:
+    # Hook events (emitted when ``include_hook_events`` is enabled) arrive as
+    # ``system`` messages with ``subtype`` of ``hook_started`` or
+    # ``hook_response``. Route them to ``HookEventMessage`` before the generic
+    # ``SystemMessage`` handling below.
+    if data.get("type") == "system" and data.get("subtype") in (
+        "hook_started",
+        "hook_response",
+    ):
+        hook_event_name = (
+            data.get("hook_event")
+            or data.get("hook_name")
+            or data.get("hook_event_name")
+            or ""
+        )
         return HookEventMessage(
-            hook_event_name=data["hook_event_name"],
+            subtype=data["subtype"],
+            hook_event_name=hook_event_name,
             data=data,
             session_id=data.get("session_id"),
             uuid=data.get("uuid"),

@@ -1161,7 +1161,13 @@ class HookEventMessage:
     message stream. Each event is identified by ``hook_event_name`` and the
     full raw payload is available in ``data``.
 
+    These arrive on the wire as ``{"type": "system", "subtype":
+    "hook_started" | "hook_response", "hook_event": "PreToolUse", ...}``.
+
     Attributes:
+        subtype: Lifecycle phase — ``"hook_started"`` when a hook begins
+            executing, ``"hook_response"`` when it completes (the latter
+            carries a ``response`` key in ``data``).
         hook_event_name: Name of the hook event (e.g. ``"PreToolUse"``,
             ``"PostToolUse"``, ``"Stop"``).
         data: Full raw event dict from the CLI, including any
@@ -1170,6 +1176,7 @@ class HookEventMessage:
         uuid: Unique ID of the event, if present.
     """
 
+    subtype: str
     hook_event_name: str
     data: dict[str, Any] = field(default_factory=dict)
     session_id: str | None = None

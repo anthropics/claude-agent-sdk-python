@@ -967,9 +967,12 @@ class TestMessageParser:
         assert message.result == "Task completed successfully"
 
     def test_parse_hook_event_message(self):
-        """Test parsing a hook event into HookEventMessage."""
+        """Hook started events (system/hook_started) parse into HookEventMessage."""
         data = {
-            "hook_event_name": "PreToolUse",
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_event": "PreToolUse",
+            "hook_name": "PreToolUse",
             "session_id": "sess-123",
             "uuid": "uuid-456",
             "tool_name": "Bash",
@@ -977,16 +980,37 @@ class TestMessageParser:
         }
         message = parse_message(data)
         assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
         assert message.hook_event_name == "PreToolUse"
         assert message.session_id == "sess-123"
         assert message.uuid == "uuid-456"
         assert message.data == data
 
-    def test_parse_hook_event_message_minimal(self):
-        """Hook events without session_id/uuid still parse."""
-        data = {"hook_event_name": "Stop"}
+    def test_parse_hook_event_message_response(self):
+        """Hook response events (system/hook_response) parse into HookEventMessage."""
+        data = {
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_event": "PostToolUse",
+            "hook_name": "PostToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-789",
+            "response": {"decision": "approve"},
+        }
         message = parse_message(data)
         assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_response"
+        assert message.hook_event_name == "PostToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-789"
+        assert message.data["response"] == {"decision": "approve"}
+
+    def test_parse_hook_event_message_minimal(self):
+        """Hook events without session_id/uuid/hook_event still parse."""
+        data = {"type": "system", "subtype": "hook_started", "hook_name": "Stop"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None

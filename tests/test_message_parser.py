@@ -995,7 +995,9 @@ class TestMessageParser:
             "hook_name": "PostToolUse",
             "session_id": "sess-123",
             "uuid": "uuid-789",
-            "response": {"decision": "approve"},
+            "output": "",
+            "exit_code": 0,
+            "outcome": "success",
         }
         message = parse_message(data)
         assert isinstance(message, HookEventMessage)
@@ -1003,7 +1005,16 @@ class TestMessageParser:
         assert message.hook_event_name == "PostToolUse"
         assert message.session_id == "sess-123"
         assert message.uuid == "uuid-789"
-        assert message.data["response"] == {"decision": "approve"}
+        assert message.data["output"] == ""
+        assert message.data["exit_code"] == 0
+        assert message.data["outcome"] == "success"
+
+    def test_parse_hook_event_message_isinstance_system(self):
+        """HookEventMessage is a SystemMessage subclass for backward compat."""
+        data = {"type": "system", "subtype": "hook_started", "hook_event": "PreToolUse"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert isinstance(message, SystemMessage)
 
     def test_parse_hook_event_message_minimal(self):
         """Hook events without session_id/uuid/hook_event still parse."""

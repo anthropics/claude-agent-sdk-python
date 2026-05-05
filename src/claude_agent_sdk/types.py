@@ -1153,7 +1153,7 @@ class RateLimitEvent:
 
 
 @dataclass
-class HookEventMessage:
+class HookEventMessage(SystemMessage):
     """Hook event emitted by the CLI when ``include_hook_events`` is enabled.
 
     When ``ClaudeAgentOptions.include_hook_events`` is ``True``, the CLI emits
@@ -1164,10 +1164,15 @@ class HookEventMessage:
     These arrive on the wire as ``{"type": "system", "subtype":
     "hook_started" | "hook_response", "hook_event": "PreToolUse", ...}``.
 
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype``
+    and ``data`` fields remain populated with the raw payload.
+
     Attributes:
         subtype: Lifecycle phase — ``"hook_started"`` when a hook begins
             executing, ``"hook_response"`` when it completes (the latter
-            carries a ``response`` key in ``data``).
+            carries ``output``, ``exit_code``, and ``outcome`` keys in
+            ``data``).
         hook_event_name: Name of the hook event (e.g. ``"PreToolUse"``,
             ``"PostToolUse"``, ``"Stop"``).
         data: Full raw event dict from the CLI, including any
@@ -1176,9 +1181,7 @@ class HookEventMessage:
         uuid: Unique ID of the event, if present.
     """
 
-    subtype: str
-    hook_event_name: str
-    data: dict[str, Any] = field(default_factory=dict)
+    hook_event_name: str = ""
     session_id: str | None = None
     uuid: str | None = None
 
@@ -1190,7 +1193,6 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
-    | HookEventMessage
 )
 
 

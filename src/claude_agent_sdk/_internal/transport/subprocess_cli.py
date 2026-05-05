@@ -1,11 +1,13 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import atexit
 import json
 import logging
 import os
 import platform
 import re
 import shutil
+import signal
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -27,6 +29,22 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Track live CLI subprocesses so we can terminate them when the parent Python
+# process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
+# prevents orphaned `claude` processes from leaking when callers crash or exit
+# before awaiting close().
+_ACTIVE_CHILDREN: set[Process] = set()
+
+
+def _kill_active_children() -> None:
+    for p in list(_ACTIVE_CHILDREN):
+        with suppress(Exception):
+            p.send_signal(signal.SIGTERM)  # On Windows anyio maps this to terminate()
+    _ACTIVE_CHILDREN.clear()
+
+
+atexit.register(_kill_active_children)
 
 
 class SubprocessCLITransport(Transport):
@@ -459,6 +477,7 @@ class SubprocessCLITransport(Transport):
                 env=process_env,
                 user=self._options.user,
             )
+            _ACTIVE_CHILDREN.add(self._process)
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
@@ -542,23 +561,26 @@ class SubprocessCLITransport(Transport):
         # The subprocess needs time to flush its session file after receiving
         # EOF on stdin. Without this grace period, SIGTERM can interrupt the
         # write and cause the last assistant message to be lost (see #625).
-        if self._process.returncode is None:
-            try:
-                with anyio.fail_after(5):
-                    await self._process.wait()
-            except TimeoutError:
-                # Graceful shutdown timed out — force terminate
-                with suppress(ProcessLookupError):
-                    self._process.terminate()
+        try:
+            if self._process.returncode is None:
                 try:
                     with anyio.fail_after(5):
                         await self._process.wait()
                 except TimeoutError:
-                    # SIGTERM handler blocked — force kill (SIGKILL)
+                    # Graceful shutdown timed out — force terminate
                     with suppress(ProcessLookupError):
-                        self._process.kill()
-                    with suppress(Exception):
-                        await self._process.wait()
+                        self._process.terminate()
+                    try:
+                        with anyio.fail_after(5):
+                            await self._process.wait()
+                    except TimeoutError:
+                        # SIGTERM handler blocked — force kill (SIGKILL)
+                        with suppress(ProcessLookupError):
+                            self._process.kill()
+                        with suppress(Exception):
+                            await self._process.wait()
+        finally:
+            _ACTIVE_CHILDREN.discard(self._process)
 
         self._process = None
         self._stdout_stream = None

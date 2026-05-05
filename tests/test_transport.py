@@ -2048,3 +2048,34 @@ class TestSubprocessCLITransport:
                 mock_logger.warning.assert_not_called()
 
         anyio.run(_test)
+
+
+class TestAtexitChildCleanup:
+    """Tests for the atexit handler that terminates orphaned CLI subprocesses."""
+
+    def test_kill_active_children_terminates_process(self) -> None:
+        import sys
+
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        async def _test() -> None:
+            proc = await anyio.open_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            subprocess_cli._ACTIVE_CHILDREN.add(proc)
+            try:
+                assert proc.returncode is None
+
+                subprocess_cli._kill_active_children()
+
+                assert not subprocess_cli._ACTIVE_CHILDREN
+                with anyio.fail_after(5):
+                    await proc.wait()
+                assert proc.returncode is not None
+            finally:
+                subprocess_cli._ACTIVE_CHILDREN.discard(proc)
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        anyio.run(_test)

@@ -1057,3 +1057,86 @@ class TestProcessExitAfterErrorResult:
             assert received[0]["subtype"] == "success"
 
         anyio.run(_test)
+
+    def test_process_error_after_error_then_success_result_still_raises(self):
+        """The flag tracks the *most recent* result, not a sticky latch."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "num_turns": 1,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    },
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "num_turns": 2,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    },
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            with pytest.raises(Exception, match="Command failed"):
+                async for msg in q.receive_messages():
+                    received.append(msg)
+            await q.close()
+
+            assert len(received) == 2
+
+        anyio.run(_test)
+
+    def test_pending_control_requests_fail_fast_on_suppressed_exit(self):
+        """Even when the ProcessError is suppressed for the message stream,
+        in-flight control requests must still fail fast (process is dead;
+        no control_response will ever arrive)."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "error_max_turns",
+                        "is_error": True,
+                        "num_turns": 1,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    }
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+
+            # Register a pending control request before the read loop runs.
+            event = anyio.Event()
+            q.pending_control_responses["req_1"] = event
+
+            await q.start()
+            async for _ in q.receive_messages():
+                pass
+            await q.close()
+
+            assert event.is_set()
+            assert isinstance(q.pending_control_results["req_1"], ProcessError)
+
+        anyio.run(_test)

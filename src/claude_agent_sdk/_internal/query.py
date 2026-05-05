@@ -296,8 +296,7 @@ class Query:
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
-                    if message.get("is_error"):
-                        self._got_error_result = True
+                    self._got_error_result = bool(message.get("is_error"))
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -307,6 +306,11 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
+            # Signal all pending control requests so they fail fast instead of timing out
+            for request_id, event in list(self.pending_control_responses.items()):
+                if request_id not in self.pending_control_results:
+                    self.pending_control_results[request_id] = e
+                    event.set()
             if isinstance(e, ProcessError) and self._got_error_result:
                 # CLI exits non-zero after emitting an error result
                 # (error_max_turns, error_during_execution, ...). The consumer
@@ -319,11 +323,6 @@ class Query:
                 )
             else:
                 logger.error(f"Fatal error in message reader: {e}")
-                # Signal all pending control requests so they fail fast instead of timing out
-                for request_id, event in list(self.pending_control_responses.items()):
-                    if request_id not in self.pending_control_results:
-                        self.pending_control_results[request_id] = e
-                        event.set()
                 # Put error in stream so iterators can handle it
                 await self._message_send.send({"type": "error", "error": str(e)})
         finally:

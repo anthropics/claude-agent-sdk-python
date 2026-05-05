@@ -12,6 +12,8 @@ from claude_agent_sdk import (
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    PermissionRuleValue,
+    PermissionUpdate,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
     TextBlock,
@@ -20,6 +22,47 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+
+
+class TestPermissionUpdate:
+    """Test PermissionUpdate wire-format conversion."""
+
+    def test_from_dict_to_dict_roundtrip_add_rules(self):
+        wire = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [
+                {"toolName": "Bash", "ruleContent": "npm *"},
+                {"toolName": "Read", "ruleContent": None},
+            ],
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.type == "addRules"
+        assert update.destination == "localSettings"
+        assert update.behavior == "allow"
+        assert update.rules == [
+            PermissionRuleValue(tool_name="Bash", rule_content="npm *"),
+            PermissionRuleValue(tool_name="Read", rule_content=None),
+        ]
+        assert update.to_dict() == wire
+
+    def test_from_dict_set_mode(self):
+        wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}
+        update = PermissionUpdate.from_dict(wire)
+        assert update.mode == "acceptEdits"
+        assert update.rules is None
+        assert update.to_dict() == wire
+
+    def test_from_dict_directories(self):
+        wire = {
+            "type": "addDirectories",
+            "directories": ["/tmp/a", "/tmp/b"],
+            "destination": "userSettings",
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.directories == ["/tmp/a", "/tmp/b"]
+        assert update.to_dict() == wire
 
 
 class TestMessageTypes:

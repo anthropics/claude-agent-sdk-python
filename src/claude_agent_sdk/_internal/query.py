@@ -309,8 +309,10 @@ class Query:
                 if request_id not in self.pending_control_results:
                     self.pending_control_results[request_id] = e
                     event.set()
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            # Put error in stream so iterators can handle the original exception
+            await self._message_send.send(
+                {"type": "error", "error": str(e), "exception": e}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -800,6 +802,9 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
+                original_exception = message.get("exception")
+                if isinstance(original_exception, BaseException):
+                    raise original_exception
                 raise Exception(message.get("error", "Unknown error"))
 
             yield message

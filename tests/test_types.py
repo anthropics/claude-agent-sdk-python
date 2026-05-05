@@ -599,6 +599,18 @@ class TestAgentDefinition:
 
         assert payload["effort"] == "high"
 
+    def test_effort_accepts_xhigh_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="xhigh",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "xhigh"
+
     def test_effort_accepts_integer(self):
         from claude_agent_sdk import AgentDefinition
 

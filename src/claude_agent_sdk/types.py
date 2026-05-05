@@ -95,7 +95,7 @@ class AgentDefinition:
     initialPrompt: str | None = None  # noqa: N815
     maxTurns: int | None = None  # noqa: N815
     background: bool | None = None
-    effort: Literal["low", "medium", "high", "max"] | int | None = None
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | int | None = None
     permissionMode: PermissionMode | None = None  # noqa: N815
 
 
@@ -1776,7 +1776,7 @@ class ClaudeAgentOptions:
     See https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking.
     """
 
-    effort: Literal["low", "medium", "high", "max"] | None = None
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     """Controls how much effort Claude puts into its response.
 
     Works with adaptive thinking to guide thinking depth.
@@ -1784,6 +1784,8 @@ class ClaudeAgentOptions:
     - ``"low"`` — Minimal thinking, fastest responses.
     - ``"medium"`` — Moderate thinking.
     - ``"high"`` — Deep reasoning (default).
+    - ``"xhigh"`` — Extended reasoning depth (Opus 4.7 only; falls back to
+      ``"high"`` on other models).
     - ``"max"`` — Maximum effort.
 
     See https://docs.anthropic.com/en/docs/build-with-claude/effort.

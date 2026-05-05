@@ -101,6 +101,16 @@ class TestSubprocessCLITransport:
         # Path object is converted to string, compare with str(path)
         assert transport._cli_path == str(path)
 
+    def test_build_command_with_effort_xhigh(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="xhigh"),
+        )
+
+        cmd = transport._build_command()
+        assert "--effort" in cmd
+        assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
     def test_build_command_with_system_prompt_string(self):
         """Test building CLI command with system prompt as string."""
         transport = SubprocessCLITransport(

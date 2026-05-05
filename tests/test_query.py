@@ -1102,6 +1102,46 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_process_error_after_error_result_then_new_turn_still_raises(self):
+        """A new user turn invalidates the 'expecting imminent exit' state from
+        a prior turn's error result; a crash mid-new-turn must propagate."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "num_turns": 1,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    },
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "next turn"},
+                        "session_id": "s",
+                    },
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            with pytest.raises(Exception, match="Command failed"):
+                async for msg in q.receive_messages():
+                    received.append(msg)
+            await q.close()
+
+            assert len(received) == 2
+
+        anyio.run(_test)
+
     def test_pending_control_requests_fail_fast_on_suppressed_exit(self):
         """Even when the ProcessError is suppressed for the message stream,
         in-flight control requests must still fail fast (process is dead;

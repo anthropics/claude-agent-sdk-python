@@ -297,6 +297,10 @@ class Query:
                         await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
                     self._got_error_result = bool(message.get("is_error"))
+                elif msg_type == "user":
+                    # New turn observed — a ProcessError now is a fresh crash,
+                    # not the expected exit from a prior error result.
+                    self._got_error_result = False
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)

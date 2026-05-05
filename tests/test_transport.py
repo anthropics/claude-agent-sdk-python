@@ -78,6 +78,18 @@ class TestSubprocessCLITransport:
         assert "--system-prompt" in cmd
         assert cmd[cmd.index("--system-prompt") + 1] == ""
 
+    def test_build_command_include_hook_events(self):
+        """Test that include_hook_events emits the --include-hook-events flag."""
+        transport = SubprocessCLITransport(
+            prompt="Hello", options=make_options(include_hook_events=True)
+        )
+        cmd = transport._build_command()
+        assert "--include-hook-events" in cmd
+
+        transport_off = SubprocessCLITransport(prompt="Hello", options=make_options())
+        cmd_off = transport_off._build_command()
+        assert "--include-hook-events" not in cmd_off
+
     def test_build_command_strict_mcp_config(self):
         """Test that --strict-mcp-config is emitted only when enabled."""
         transport = SubprocessCLITransport(

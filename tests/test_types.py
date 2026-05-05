@@ -365,6 +365,22 @@ class TestHookSpecificOutputTypes:
         }
         assert output["updatedMCPToolOutput"] == {"result": "modified"}
 
+    def test_post_tool_use_output_has_updated_tool_output(self):
+        """Test PostToolUseHookSpecificOutput includes updatedToolOutput field."""
+        output: PostToolUseHookSpecificOutput = {
+            "hookEventName": "PostToolUse",
+            "updatedToolOutput": {
+                "stdout": "replaced",
+                "stderr": "",
+                "interrupted": False,
+            },
+        }
+        assert output["updatedToolOutput"] == {
+            "stdout": "replaced",
+            "stderr": "",
+            "interrupted": False,
+        }
+
 
 class TestMcpServerStatusTypes:
     """Test MCP server status type definitions."""

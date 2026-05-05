@@ -381,7 +381,17 @@ class PostToolUseHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["PostToolUse"]
     additionalContext: NotRequired[str]
+    updatedToolOutput: NotRequired[Any]
+    """Replaces the tool output before it is sent to the model.
+
+    For built-in tools (Bash, Read, Edit, etc.) the value must match the tool's
+    output schema (e.g. ``{"stdout": ..., "stderr": ..., "interrupted": ...}``
+    for Bash); a mismatched shape is rejected and the original output is kept.
+    """
     updatedMCPToolOutput: NotRequired[Any]
+    """Replaces the output for MCP tools only. Prefer ``updatedToolOutput``,
+    which works for all tools.
+    """
 
 
 class PostToolUseFailureHookSpecificOutput(TypedDict):

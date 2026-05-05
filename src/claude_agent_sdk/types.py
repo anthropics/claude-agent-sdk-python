@@ -181,7 +181,11 @@ class ToolPermissionContext:
     )  # Permission suggestions from CLI
     tool_use_id: str | None = None
     """Unique identifier for this specific tool call within the assistant message.
-    Multiple tool calls in the same assistant message will have different tool_use_ids."""
+    Multiple tool calls in the same assistant message will have different tool_use_ids.
+
+    Always a non-empty string when delivered to a ``can_use_tool`` callback (the
+    wire protocol guarantees it); the ``Optional`` is only for dataclass
+    field-ordering compatibility, so callers do not need to handle ``None``."""
     agent_id: str | None = None
     """If running within the context of a sub-agent, the sub-agent's ID."""
 
@@ -1645,10 +1649,15 @@ class ClaudeAgentOptions:
     """
 
     can_use_tool: CanUseTool | None = None
-    """Custom permission handler for controlling tool usage.
+    """Custom permission handler for tool calls that would otherwise prompt the user.
 
-    Called before each tool execution to determine if it should be allowed,
-    denied, or prompt the user.
+    Invoked when the CLI's permission rules evaluate to "ask" for a tool call —
+    it is the SDK replacement for the interactive permission prompt. It is *not*
+    invoked for tool calls already permitted by ``allowed_tools``,
+    ``permission_mode`` (e.g. ``"acceptEdits"`` / ``"bypassPermissions"``), or
+    ``permissions.allow`` rules in settings, since those never reach a prompt.
+    To observe or gate *every* tool call regardless of permission rules, use a
+    ``PreToolUse`` hook via ``hooks`` instead.
     """
 
     hooks: dict[HookEvent, list[HookMatcher]] | None = None

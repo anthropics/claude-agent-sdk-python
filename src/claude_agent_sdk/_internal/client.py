@@ -227,3 +227,4 @@ class InternalClient:
 
         finally:
             await query.close()
+            query.close_receive_stream()

@@ -7,6 +7,7 @@ from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
+    DeferredToolUse,
     Message,
     MirrorErrorMessage,
     RateLimitEvent,
@@ -221,6 +222,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "result":
             try:
+                deferred = data.get("deferred_tool_use")
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -235,6 +237,13 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     structured_output=data.get("structured_output"),
                     model_usage=data.get("modelUsage"),
                     permission_denials=data.get("permission_denials"),
+                    deferred_tool_use=DeferredToolUse(
+                        id=deferred["id"],
+                        name=deferred["name"],
+                        input=deferred["input"],
+                    )
+                    if deferred
+                    else None,
                     errors=data.get("errors"),
                     uuid=data.get("uuid"),
                 )

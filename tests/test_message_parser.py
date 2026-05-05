@@ -6,6 +6,7 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    DeferredToolUse,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
@@ -914,8 +915,32 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.model_usage is None
         assert message.permission_denials is None
+        assert message.deferred_tool_use is None
         assert message.errors is None
         assert message.uuid is None
+
+    def test_parse_result_message_with_deferred_tool_use(self):
+        """ResultMessage parses deferred_tool_use into a DeferredToolUse."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1200,
+            "duration_api_ms": 900,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "deferred_tool_use": {
+                "id": "toolu_01abc",
+                "name": "Bash",
+                "input": {"command": "rm -rf /tmp/scratch"},
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert isinstance(message.deferred_tool_use, DeferredToolUse)
+        assert message.deferred_tool_use.id == "toolu_01abc"
+        assert message.deferred_tool_use.name == "Bash"
+        assert message.deferred_tool_use.input == {"command": "rm -rf /tmp/scratch"}
 
     def test_parse_result_message_with_errors(self):
         """Test that ResultMessage preserves the errors field from error results.

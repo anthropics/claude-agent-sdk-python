@@ -390,7 +390,7 @@ class PreToolUseHookSpecificOutput(TypedDict):
     """Hook-specific output for PreToolUse events."""
 
     hookEventName: Literal["PreToolUse"]
-    permissionDecision: NotRequired[Literal["allow", "deny", "ask"]]
+    permissionDecision: NotRequired[Literal["allow", "deny", "ask", "defer"]]
     permissionDecisionReason: NotRequired[str]
     updatedInput: NotRequired[dict[str, Any]]
     additionalContext: NotRequired[str]
@@ -1105,6 +1105,20 @@ class MirrorErrorMessage(SystemMessage):
 
 
 @dataclass
+class DeferredToolUse:
+    """Tool use that was deferred by a PreToolUse hook returning ``"defer"``.
+
+    When a PreToolUse hook returns ``permissionDecision: "defer"``, the run
+    stops and the result message carries the deferred tool call here so the
+    caller can inspect it and decide whether to resume.
+    """
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
 class ResultMessage:
     """Result message with cost and usage information."""
 
@@ -1121,6 +1135,7 @@ class ResultMessage:
     structured_output: Any = None
     model_usage: dict[str, Any] | None = None
     permission_denials: list[Any] | None = None
+    deferred_tool_use: DeferredToolUse | None = None
     errors: list[str] | None = None
     uuid: str | None = None
 

@@ -955,9 +955,9 @@ class TestControlCancelRequest:
 class TestProcessExitAfterErrorResult:
     """Regression tests for #913: when the CLI emits a result message with
     is_error=True (e.g. subtype=error_max_turns) and then exits non-zero,
-    the SDK should treat that as clean termination — the consumer already
-    received the structured ResultMessage and shouldn't see a redundant
-    bare Exception."""
+    the trailing ProcessError carries no information beyond "exit code 1".
+    Replace it with the structured error text the CLI already reported so
+    the exception is actionable. Mirrors the TypeScript SDK (Query.ts)."""
 
     def _make_transport_then_raise(self, messages, exc):
         mock_transport = AsyncMock()
@@ -975,20 +975,31 @@ class TestProcessExitAfterErrorResult:
         mock_transport.is_ready = Mock(return_value=True)
         return mock_transport
 
-    def test_process_error_after_error_result_is_suppressed(self):
+    def _error_result(self, subtype="error_max_turns", errors=None, **overrides):
+        msg = {
+            "type": "result",
+            "subtype": subtype,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "s",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "total_cost_usd": 0.0,
+        }
+        if errors is not None:
+            msg["errors"] = errors
+        msg.update(overrides)
+        return msg
+
+    def test_process_error_after_error_result_uses_result_error_text(self):
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[
-                    {
-                        "type": "result",
-                        "subtype": "error_max_turns",
-                        "is_error": True,
-                        "num_turns": 60,
-                        "session_id": "s",
-                        "duration_ms": 1,
-                        "duration_api_ms": 1,
-                        "total_cost_usd": 0.0,
-                    }
+                    self._error_result(
+                        subtype="error_max_turns",
+                        errors=["Reached maximum number of turns (60)"],
+                        num_turns=60,
+                    )
                 ],
                 exc=ProcessError(
                     "Command failed with exit code 1", exit_code=1, stderr=""
@@ -998,8 +1009,13 @@ class TestProcessExitAfterErrorResult:
             await q.start()
 
             received = []
-            async for msg in q.receive_messages():
-                received.append(msg)
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: "
+                r"Reached maximum number of turns \(60\)",
+            ):
+                async for msg in q.receive_messages():
+                    received.append(msg)
             await q.close()
 
             assert len(received) == 1
@@ -1007,7 +1023,57 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_without_result_still_raises(self):
+    def test_process_error_after_error_result_falls_back_to_subtype(self):
+        """When the result has no errors[] (older CLI / minimal payload), the
+        improved message falls back to the subtype so it's still actionable."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[self._error_result(subtype="error_during_execution")],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: error_during_execution",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_process_error_after_error_result_joins_multiple_errors(self):
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="error_during_execution",
+                        errors=["tool timed out", "ENOENT: missing file"],
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"tool timed out; ENOENT: missing file",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_process_error_without_result_keeps_original_message(self):
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[],
@@ -1025,7 +1091,7 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_after_success_result_still_raises(self):
+    def test_process_error_after_success_result_keeps_original_message(self):
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[
@@ -1058,22 +1124,13 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_after_error_then_success_result_still_raises(self):
-        """The flag tracks the *most recent* result, not a sticky latch."""
+    def test_process_error_after_error_then_success_result_keeps_original(self):
+        """Tracks the *most recent* result, not a sticky latch."""
 
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[
-                    {
-                        "type": "result",
-                        "subtype": "error_during_execution",
-                        "is_error": True,
-                        "num_turns": 1,
-                        "session_id": "s",
-                        "duration_ms": 1,
-                        "duration_api_ms": 1,
-                        "total_cost_usd": 0.0,
-                    },
+                    self._error_result(subtype="error_during_execution"),
                     {
                         "type": "result",
                         "subtype": "success",
@@ -1102,23 +1159,49 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_after_error_result_then_new_turn_still_raises(self):
-        """A new user turn invalidates the 'expecting imminent exit' state from
-        a prior turn's error result; a crash mid-new-turn must propagate."""
+    def test_session_state_changed_after_error_result_preserves_replacement(self):
+        """The CLI emits a post-turn `system: session_state_changed(idle)`
+        marker after the result and before exit. It must not reset the
+        tracking flag — the conversation hasn't moved on."""
 
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[
+                    self._error_result(
+                        subtype="error_max_turns",
+                        errors=["Reached maximum number of turns (10)"],
+                    ),
                     {
-                        "type": "result",
-                        "subtype": "error_during_execution",
-                        "is_error": True,
-                        "num_turns": 1,
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "idle",
                         "session_id": "s",
-                        "duration_ms": 1,
-                        "duration_api_ms": 1,
-                        "total_cost_usd": 0.0,
                     },
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception, match=r"Claude Code returned an error result"
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_new_turn_after_error_result_keeps_original_message(self):
+        """A new user turn invalidates the 'expecting imminent exit' state from
+        a prior turn's error result; a crash mid-new-turn must surface as-is."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(subtype="error_during_execution"),
                     {
                         "type": "user",
                         "message": {"role": "user", "content": "next turn"},
@@ -1142,25 +1225,13 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_pending_control_requests_fail_fast_on_suppressed_exit(self):
-        """Even when the ProcessError is suppressed for the message stream,
-        in-flight control requests must still fail fast (process is dead;
-        no control_response will ever arrive)."""
+    def test_pending_control_requests_fail_fast_on_replaced_error(self):
+        """In-flight control requests must still fail fast (process is dead;
+        no control_response will ever arrive) regardless of message replacement."""
 
         async def _test():
             transport = self._make_transport_then_raise(
-                messages=[
-                    {
-                        "type": "result",
-                        "subtype": "error_max_turns",
-                        "is_error": True,
-                        "num_turns": 1,
-                        "session_id": "s",
-                        "duration_ms": 1,
-                        "duration_api_ms": 1,
-                        "total_cost_usd": 0.0,
-                    }
-                ],
+                messages=[self._error_result(subtype="error_max_turns")],
                 exc=ProcessError(
                     "Command failed with exit code 1", exit_code=1, stderr=""
                 ),
@@ -1172,8 +1243,11 @@ class TestProcessExitAfterErrorResult:
             q.pending_control_responses["req_1"] = event
 
             await q.start()
-            async for _ in q.receive_messages():
-                pass
+            with pytest.raises(
+                Exception, match=r"Claude Code returned an error result"
+            ):
+                async for _ in q.receive_messages():
+                    pass
             await q.close()
 
             assert event.is_set()

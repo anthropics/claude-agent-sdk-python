@@ -59,6 +59,15 @@ class SystemPromptFile(TypedDict):
     path: str
 
 
+SystemPromptBlocks = list[dict[str, Any]]
+"""Anthropic-compatible list form for the Messages API ``system`` parameter.
+
+The SDK forwards these blocks as structured JSON instead of flattening them
+into a string so cache-control metadata and other per-block fields are
+preserved.
+"""
+
+
 class TaskBudget(TypedDict):
     """API-side task budget in tokens.
 
@@ -1491,14 +1500,18 @@ class ClaudeAgentOptions:
     To restrict which tools are available at all, use ``tools``.
     """
 
-    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    system_prompt: (
+        str | SystemPromptBlocks | SystemPromptPreset | SystemPromptFile | None
+    ) = None
     """System prompt configuration.
 
     - ``str`` — Use a custom system prompt.
+    - ``list[dict[str, Any]]`` — Forward structured Anthropic ``system`` content
+        blocks as-is.
     - ``{"type": "preset", "preset": "claude_code"}`` — Use Claude Code's default
-      system prompt.
+        system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
-      prompt with appended instructions.
+        prompt with appended instructions.
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)

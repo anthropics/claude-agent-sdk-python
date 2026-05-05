@@ -1,8 +1,10 @@
 """Tests for Claude SDK transport layer."""
 
+import json
 import os
 import uuid
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -149,6 +151,33 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" not in cmd
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
+
+    def test_build_command_with_system_prompt_blocks(self):
+        """Test building CLI command with structured system prompt blocks."""
+        blocks = [
+            {"type": "text", "text": "Be helpful."},
+            {
+                "type": "text",
+                "text": "Use cached reference material.",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=blocks),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
+        assert "--system-prompt-file" in cmd
+
+        system_prompt_path = Path(cmd[cmd.index("--system-prompt-file") + 1])
+        assert system_prompt_path.exists()
+        assert json.loads(system_prompt_path.read_text(encoding="utf-8")) == blocks
+
+        anyio.run(transport.close)
+        assert not system_prompt_path.exists()
 
     def test_build_command_with_options(self):
         """Test building CLI command with options."""

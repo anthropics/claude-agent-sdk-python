@@ -1152,6 +1152,30 @@ class RateLimitEvent:
     session_id: str
 
 
+@dataclass
+class HookEventMessage:
+    """Hook event emitted by the CLI when ``include_hook_events`` is enabled.
+
+    When ``ClaudeAgentOptions.include_hook_events`` is ``True``, the CLI emits
+    hook lifecycle events (PreToolUse, PostToolUse, Stop, etc.) into the
+    message stream. Each event is identified by ``hook_event_name`` and the
+    full raw payload is available in ``data``.
+
+    Attributes:
+        hook_event_name: Name of the hook event (e.g. ``"PreToolUse"``,
+            ``"PostToolUse"``, ``"Stop"``).
+        data: Full raw event dict from the CLI, including any
+            event-specific fields not modeled here.
+        session_id: Session ID the event belongs to, if present.
+        uuid: Unique ID of the event, if present.
+    """
+
+    hook_event_name: str
+    data: dict[str, Any] = field(default_factory=dict)
+    session_id: str | None = None
+    uuid: str | None = None
+
+
 Message = (
     UserMessage
     | AssistantMessage
@@ -1159,6 +1183,7 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | HookEventMessage
 )
 
 
@@ -1648,6 +1673,14 @@ class ClaudeAgentOptions:
     """Include partial/streaming message events in the output.
 
     When true, ``SDKPartialAssistantMessage`` events are emitted during streaming.
+    """
+
+    include_hook_events: bool = False
+    """Include hook lifecycle events in the message stream.
+
+    When true, the CLI emits hook events (PreToolUse, PostToolUse, Stop,
+    etc.) as ``HookEventMessage`` objects in the message stream. Matches the
+    TypeScript SDK's ``includeHookEvents``.
     """
 
     fork_session: bool = False

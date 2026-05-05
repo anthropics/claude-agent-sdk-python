@@ -7,6 +7,7 @@ from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
+    HookEventMessage,
     Message,
     MirrorErrorMessage,
     RateLimitEvent,
@@ -46,6 +47,16 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         raise MessageParseError(
             f"Invalid message data type (expected dict, got {type(data).__name__})",
             data,
+        )
+
+    # Hook events (emitted when ``include_hook_events`` is enabled) carry a
+    # ``hook_event_name`` discriminator rather than a standard ``type`` field.
+    if "hook_event_name" in data:
+        return HookEventMessage(
+            hook_event_name=data["hook_event_name"],
+            data=data,
+            session_id=data.get("session_id"),
+            uuid=data.get("uuid"),
         )
 
     message_type = data.get("type")

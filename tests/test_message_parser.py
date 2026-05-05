@@ -6,6 +6,7 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    HookEventMessage,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
@@ -964,3 +965,28 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.errors is None
         assert message.result == "Task completed successfully"
+
+    def test_parse_hook_event_message(self):
+        """Test parsing a hook event into HookEventMessage."""
+        data = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-456",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.hook_event_name == "PreToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-456"
+        assert message.data == data
+
+    def test_parse_hook_event_message_minimal(self):
+        """Hook events without session_id/uuid still parse."""
+        data = {"hook_event_name": "Stop"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.hook_event_name == "Stop"
+        assert message.session_id is None
+        assert message.uuid is None

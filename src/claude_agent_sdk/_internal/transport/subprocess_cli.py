@@ -316,6 +316,9 @@ class SubprocessCLITransport(Transport):
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 
+        if self._options.include_hook_events:
+            cmd.append("--include-hook-events")
+
         if self._options.fork_session:
             cmd.append("--fork-session")
 

@@ -22,6 +22,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
+from claude_agent_sdk._errors import ProcessError
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -949,3 +950,110 @@ class TestControlCancelRequest:
             assert "fast_1" not in q._inflight_requests
 
         asyncio.run(_test())
+
+
+class TestProcessExitAfterErrorResult:
+    """Regression tests for #913: when the CLI emits a result message with
+    is_error=True (e.g. subtype=error_max_turns) and then exits non-zero,
+    the SDK should treat that as clean termination — the consumer already
+    received the structured ResultMessage and shouldn't see a redundant
+    bare Exception."""
+
+    def _make_transport_then_raise(self, messages, exc):
+        mock_transport = AsyncMock()
+
+        async def mock_receive():
+            for msg in messages:
+                yield msg
+            raise exc
+
+        mock_transport.read_messages = mock_receive
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        return mock_transport
+
+    def test_process_error_after_error_result_is_suppressed(self):
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "error_max_turns",
+                        "is_error": True,
+                        "num_turns": 60,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    }
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            async for msg in q.receive_messages():
+                received.append(msg)
+            await q.close()
+
+            assert len(received) == 1
+            assert received[0]["subtype"] == "error_max_turns"
+
+        anyio.run(_test)
+
+    def test_process_error_without_result_still_raises(self):
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(Exception, match="Command failed"):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_process_error_after_success_result_still_raises(self):
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    }
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            with pytest.raises(Exception, match="Command failed"):
+                async for msg in q.receive_messages():
+                    received.append(msg)
+            await q.close()
+
+            assert len(received) == 1
+            assert received[0]["subtype"] == "success"
+
+        anyio.run(_test)

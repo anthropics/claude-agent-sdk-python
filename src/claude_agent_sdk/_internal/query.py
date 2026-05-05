@@ -15,6 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ProcessError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -128,6 +129,7 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
+        self._got_error_result = False
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -294,6 +296,8 @@ class Query:
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
+                    if message.get("is_error"):
+                        self._got_error_result = True
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -303,14 +307,25 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            logger.error(f"Fatal error in message reader: {e}")
-            # Signal all pending control requests so they fail fast instead of timing out
-            for request_id, event in list(self.pending_control_responses.items()):
-                if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = e
-                    event.set()
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            if isinstance(e, ProcessError) and self._got_error_result:
+                # CLI exits non-zero after emitting an error result
+                # (error_max_turns, error_during_execution, ...). The consumer
+                # already received the structured ResultMessage; don't follow
+                # it with a redundant bare Exception.
+                logger.debug(
+                    "CLI exited with code %s after error result; "
+                    "treating as clean termination",
+                    e.exit_code,
+                )
+            else:
+                logger.error(f"Fatal error in message reader: {e}")
+                # Signal all pending control requests so they fail fast instead of timing out
+                for request_id, event in list(self.pending_control_responses.items()):
+                    if request_id not in self.pending_control_results:
+                        self.pending_control_results[request_id] = e
+                        event.set()
+                # Put error in stream so iterators can handle it
+                await self._message_send.send({"type": "error", "error": str(e)})
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries

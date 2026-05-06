@@ -1158,6 +1158,10 @@ class ResultMessage:
     permission_denials: list[Any] | None = None
     deferred_tool_use: DeferredToolUse | None = None
     errors: list[str] | None = None
+    # HTTP status code (e.g. 429, 500, 529) of the failing API call when
+    # ``is_error`` is True and ``subtype`` is "success"; None otherwise.
+    # Emitted by the CLI since v2.1.110. Safe to log (no message content).
+    api_error_status: int | None = None
     uuid: str | None = None
 
 

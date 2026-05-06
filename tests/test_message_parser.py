@@ -918,6 +918,7 @@ class TestMessageParser:
         assert message.permission_denials is None
         assert message.deferred_tool_use is None
         assert message.errors is None
+        assert message.api_error_status is None
         assert message.uuid is None
 
     def test_parse_result_message_with_deferred_tool_use(self):
@@ -973,6 +974,30 @@ class TestMessageParser:
         assert message.is_error is True
         assert message.subtype == "error_during_execution"
         assert message.uuid == "err-uuid-789"
+
+    def test_parse_result_message_with_api_error_status(self):
+        """ResultMessage surfaces api_error_status for failed API calls.
+
+        The CLI (v2.1.110+) emits api_error_status: number | null on the final
+        result message — the HTTP status of the failing API call when
+        is_error=True and subtype="success". This is the only safe-to-log
+        signal for classifying API failures (e.g. 429 vs 529).
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1500,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "session_overload",
+            "api_error_status": 529,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.api_error_status == 529
+        assert message.is_error is True
+        assert message.subtype == "success"
 
     def test_parse_result_message_success_no_errors(self):
         """Test that a successful result message has no errors field."""

@@ -84,6 +84,7 @@ class AgentDefinition:
 
     description: str
     prompt: str
+    # Deprecated: passing "Skill" here is deprecated; use `skills` instead.
     tools: list[str] | None = None
     disallowedTools: list[str] | None = None  # noqa: N815
     # Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
@@ -1593,6 +1594,11 @@ class ClaudeAgentOptions:
 
     These tools execute automatically without asking the user for approval.
     To restrict which tools are available at all, use ``tools``.
+
+    .. deprecated::
+        Passing ``"Skill"`` here is deprecated. Use the :attr:`skills` option
+        instead, which configures everything needed (including allowing the
+        ``Skill`` tool).
     """
 
     system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None

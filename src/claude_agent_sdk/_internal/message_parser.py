@@ -268,6 +268,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     if deferred
                     else None,
                     errors=data.get("errors"),
+                    api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
                 )
             except KeyError as e:

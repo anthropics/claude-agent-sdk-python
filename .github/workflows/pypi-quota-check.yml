@@ -38,7 +38,7 @@ jobs:
 
       - name: Post to Slack
         if: steps.quota.outputs.alert == 'true' && github.event_name != 'pull_request'
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # 2.1.1
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1 (sha-pinned)
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -98,6 +98,58 @@ class TestToolPermissionCallbacks:
         assert '"behavior": "allow"' in response
 
     @pytest.mark.asyncio
+    async def test_permission_callback_suggestions_roundtrip(self):
+        """Suggestions arrive as PermissionUpdate instances and can be echoed back."""
+        from claude_agent_sdk.types import PermissionUpdate
+
+        seen_suggestions: list[Any] = []
+
+        async def always_allow(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            seen_suggestions.extend(context.suggestions)
+            persist = [
+                s for s in context.suggestions if s.destination == "localSettings"
+            ]
+            return PermissionResultAllow(updated_permissions=persist)
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=always_allow,
+            hooks=None,
+        )
+
+        wire_suggestion = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [{"toolName": "Bash", "ruleContent": "git status"}],
+        }
+        request = {
+            "type": "control_request",
+            "request_id": "test-roundtrip",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "input": {"command": "git status"},
+                "permission_suggestions": [wire_suggestion],
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(seen_suggestions) == 1
+        assert isinstance(seen_suggestions[0], PermissionUpdate)
+        assert seen_suggestions[0].destination == "localSettings"
+
+        assert len(transport.written_messages) == 1
+        response = json.loads(transport.written_messages[0])
+        sent = response["response"]["response"]["updatedPermissions"]
+        assert sent == [wire_suggestion]
+
+    @pytest.mark.asyncio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""
 
@@ -121,7 +173,7 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "DangerousTool",
                 "input": {"command": "rm -rf /"},
-                "permission_suggestions": ["deny"],
+                "permission_suggestions": [],
             },
         }
 

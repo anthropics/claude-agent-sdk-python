@@ -169,6 +169,27 @@ class PermissionUpdate:
 
         return result
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PermissionUpdate":
+        """Construct a PermissionUpdate from the control protocol dict format (inverse of to_dict)."""
+        rules = None
+        if data.get("rules") is not None:
+            rules = [
+                PermissionRuleValue(
+                    tool_name=r["toolName"],
+                    rule_content=r.get("ruleContent"),
+                )
+                for r in data["rules"]
+            ]
+        return cls(
+            type=data["type"],
+            rules=rules,
+            behavior=data.get("behavior"),
+            mode=data.get("mode"),
+            directories=data.get("directories"),
+            destination=data.get("destination"),
+        )
+
 
 # Tool callback types
 @dataclass

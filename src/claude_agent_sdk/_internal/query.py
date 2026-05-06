@@ -19,6 +19,7 @@ from ..types import (
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionUpdate,
     SDKControlPermissionRequest,
     SDKControlRequest,
     SDKControlResponse,
@@ -350,8 +351,12 @@ class Query:
 
                 context = ToolPermissionContext(
                     signal=None,  # TODO: Add abort signal support
-                    suggestions=permission_request.get("permission_suggestions", [])
-                    or [],
+                    suggestions=[
+                        PermissionUpdate.from_dict(s)
+                        for s in (
+                            permission_request.get("permission_suggestions") or []
+                        )
+                    ],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
                     blocked_path=permission_request.get("blocked_path"),

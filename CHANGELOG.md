@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.76
+
+### New Features
+
+- **API error status on result messages**: Added `api_error_status: int | None` to `ResultMessage`, surfacing the HTTP status code (e.g. 429, 500, 529) from failing API calls. This provides a safe-to-log field for classifying API failures when `is_error=True` (#923)
+
+### Bug Fixes
+
+- **Permission suggestions deserialization**: Fixed `ToolPermissionContext.suggestions` containing raw dicts instead of `PermissionUpdate` instances. Added `PermissionUpdate.from_dict()` so suggestions from `can_use_tool` callbacks can be inspected and echoed back in `PermissionResultAllow(updated_permissions=...)` without `AttributeError` (#920)
+
+### Internal/Other Changes
+
+- Pinned third-party GitHub Actions to immutable commit SHAs (#919)
+- Updated bundled Claude CLI to version 2.1.132
+
 ## 0.1.75
 
 ### Internal/Other Changes

@@ -526,13 +526,21 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
-                # Call the stderr callback if provided
+                # Call the stderr callback if provided. Isolate per-line so a
+                # raise in the user's callback doesn't terminate the loop and
+                # silently drop every subsequent line for the rest of the
+                # session.
                 if self._options.stderr:
-                    self._options.stderr(line_str)
+                    try:
+                        self._options.stderr(line_str)
+                    except Exception:
+                        logger.debug(
+                            "stderr callback raised; continuing", exc_info=True
+                        )
         except anyio.ClosedResourceError:
             pass  # Stream closed, exit normally
         except Exception:
-            pass  # Ignore other errors during stderr reading
+            logger.debug("stderr stream read failed", exc_info=True)
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""

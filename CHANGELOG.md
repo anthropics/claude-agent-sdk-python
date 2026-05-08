@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.77
+
+### Bug Fixes
+
+- **Actionable error messages after error results**: Replaced the generic `Command failed with exit code 1` exception raised after an error result with one carrying the result's actual error text (e.g. "Reached maximum number of turns"), matching the TypeScript SDK behavior (#918)
+
+### Documentation
+
+- Deprecated `"Skill"` in `allowed_tools` in favor of the `skills` option on `ClaudeAgentOptions`, which provides more granular control over available skills (#924)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.133
+
 ## 0.1.76
 
 ### New Features

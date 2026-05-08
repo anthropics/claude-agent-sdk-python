@@ -69,6 +69,7 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stderr_task: TaskHandle | None = None
+        self._stderr_buffer = ""
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -468,14 +469,11 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr only when the caller registered a callback.
-            stderr_dest = PIPE if self._options.stderr is not None else None
-
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
                 stdout=PIPE,
-                stderr=stderr_dest,
+                stderr=PIPE,
                 cwd=self._cwd,
                 env=process_env,
                 user=self._options.user,
@@ -485,8 +483,9 @@ class SubprocessCLITransport(Transport):
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
-            # Setup stderr stream if piped
-            if stderr_dest is PIPE and self._process.stderr:
+            # Capture stderr for ProcessError diagnostics and tee it to the
+            # caller callback when one is registered.
+            if self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
                 # Spawn the stderr reader via spawn_detached (not a manually-
                 # entered TaskGroup) so cleanup has no trio task-affinity —
@@ -526,6 +525,7 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
+                self._append_stderr(line_str)
                 # Call the stderr callback if provided
                 if self._options.stderr:
                     self._options.stderr(line_str)
@@ -533,6 +533,14 @@ class SubprocessCLITransport(Transport):
             pass  # Stream closed, exit normally
         except Exception:
             pass  # Ignore other errors during stderr reading
+
+    def _append_stderr(self, line: str) -> None:
+        """Keep a bounded tail of stderr for ProcessError."""
+        if self._stderr_buffer:
+            self._stderr_buffer += "\n"
+        self._stderr_buffer += line
+        if len(self._stderr_buffer) > self._max_buffer_size:
+            self._stderr_buffer = self._stderr_buffer[-self._max_buffer_size :]
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""
@@ -589,6 +597,7 @@ class SubprocessCLITransport(Transport):
         self._stdout_stream = None
         self._stdin_stream = None
         self._stderr_stream = None
+        self._stderr_buffer = ""
         self._exit_error = None
 
     async def write(self, data: str) -> None:
@@ -697,12 +706,18 @@ class SubprocessCLITransport(Transport):
         except Exception:
             returncode = -1
 
+        if self._stderr_task is not None and not self._stderr_task.done():
+            with suppress(Exception):
+                with anyio.fail_after(1):
+                    await self._stderr_task.wait()
+
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            stderr = self._stderr_buffer or "Check stderr output for details"
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=stderr,
             )
             raise self._exit_error
 

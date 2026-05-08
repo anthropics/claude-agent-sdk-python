@@ -65,6 +65,7 @@ from .types import (
     ContextUsageCategory,
     ContextUsageResponse,
     DeferredToolUse,
+    EffortLevel,
     HookCallback,
     HookContext,
     HookEventMessage,
@@ -601,6 +602,7 @@ __all__ = [
     # Agent support
     "AgentDefinition",
     "SettingSource",
+    "EffortLevel",
     # Plugin support
     "SdkPluginConfig",
     # Session listing

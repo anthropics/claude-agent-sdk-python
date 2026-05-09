@@ -40,6 +40,17 @@ class _MirrorEntry:
     bytes: int
 
 
+def _swallow_done_exception(task: asyncio.Task[None]) -> None:
+    # Retrieve the task's outcome so asyncio doesn't log
+    # "Task exception was never retrieved". On a cancelled task,
+    # ``Task.exception()`` itself raises CancelledError, which
+    # would surface as "Exception in callback" log noise during
+    # normal cancellation paths (event-loop teardown, Query.close()).
+    if task.cancelled():
+        return
+    task.exception()
+
+
 @dataclass
 class TranscriptMirrorBatcher:
     """Accumulates ``transcript_mirror`` frames and flushes them to a store.
@@ -88,7 +99,7 @@ class TranscriptMirrorBatcher:
             # so append ordering holds. drain() never raises, but guard anyway
             # so a future regression can't surface as an unhandled exception.
             self._flush_task = asyncio.ensure_future(self._drain())
-            self._flush_task.add_done_callback(lambda t: t.exception())
+            self._flush_task.add_done_callback(_swallow_done_exception)
 
     async def flush(self) -> None:
         """Flush all pending entries. Awaits any in-flight eager flush first."""

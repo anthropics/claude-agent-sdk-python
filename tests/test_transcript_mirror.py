@@ -503,6 +503,54 @@ class TestTranscriptMirrorBatcher:
         await flush_task
         assert order == [1, 2, 3]
 
+    @pytest.mark.asyncio
+    async def test_eager_flush_cancellation_does_not_log_callback_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cancelling an in-flight eager flush must not surface as
+        ``Exception in callback ... CancelledError`` log noise.
+
+        Regression: the previous ``add_done_callback(lambda t: t.exception())``
+        re-raised CancelledError on cancelled tasks, which asyncio's callback
+        machinery then logged at ERROR level on every shutdown with pending
+        eager flushes. The replacement ``_swallow_done_exception`` skips
+        cancelled tasks before calling ``.exception()``.
+        """
+        gate = asyncio.Event()
+
+        class HangingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                await gate.wait()  # never resolves before cancel
+
+        batcher = TranscriptMirrorBatcher(
+            store=HangingStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+            max_pending_entries=0,  # any enqueue triggers eager flush
+        )
+        with caplog.at_level("ERROR", logger="asyncio"):
+            batcher.enqueue(_main_path(), [{"type": "x"}])
+            task = batcher._flush_task
+            assert task is not None
+            await asyncio.sleep(0)  # let drain detach and block on gate
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # Drain pending callbacks so the done-callback fires within the
+            # ``with caplog.at_level`` block.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        callback_errors = [
+            r
+            for r in caplog.records
+            if r.name == "asyncio" and "Exception in callback" in r.getMessage()
+        ]
+        assert callback_errors == [], (
+            f"asyncio logged unexpected callback errors: "
+            f"{[r.getMessage() for r in callback_errors]}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # build_mirror_batcher / session_store_flush

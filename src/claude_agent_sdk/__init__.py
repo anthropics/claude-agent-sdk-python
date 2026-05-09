@@ -84,6 +84,7 @@ from .types import (
     MirrorErrorMessage,
     NotificationHookInput,
     NotificationHookSpecificOutput,
+    EffortLevel,
     PermissionMode,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
@@ -527,6 +528,7 @@ __all__ = [
     "Transport",
     "ClaudeSDKClient",
     # Types
+    "EffortLevel",
     "PermissionMode",
     "McpServerConfig",
     "McpSdkServerConfig",

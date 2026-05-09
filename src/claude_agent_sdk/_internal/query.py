@@ -3,9 +3,10 @@
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 from mcp.types import (
@@ -14,19 +15,26 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ProcessError
 from ..types import (
+    PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionUpdate,
     SDKControlPermissionRequest,
     SDKControlRequest,
     SDKControlResponse,
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from ._task_compat import TaskHandle, spawn_detached
 from .transport import Transport
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
+
+    from ..types import SessionKey
+    from .transcript_mirror_batcher import TranscriptMirrorBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,8 @@ class Query:
         sdk_mcp_servers: dict[str, "McpServer"] | None = None,
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
+        exclude_dynamic_sections: bool | None = None,
+        skills: list[str] | Literal["all"] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -85,6 +95,10 @@ class Query:
             sdk_mcp_servers: Optional SDK MCP server instances
             initialize_timeout: Timeout in seconds for the initialize request
             agents: Optional agent definitions to send via initialize
+            exclude_dynamic_sections: Optional preset-prompt flag to send via
+                initialize (see ``SystemPromptPreset``)
+            skills: Optional skill allowlist to send via initialize so the CLI
+                can filter which skills are loaded into the system prompt
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -93,6 +107,8 @@ class Query:
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
         self._agents = agents
+        self._exclude_dynamic_sections = exclude_dynamic_sections
+        self._skills = skills
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -105,16 +121,53 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
-        self._tg: anyio.abc.TaskGroup | None = None
+        self._read_task: TaskHandle | None = None
+        self._child_tasks: set[TaskHandle] = set()
+        self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
-        self._stream_close_timeout = (
-            float(os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")) / 1000.0
-        )  # Convert ms to seconds
+        # Set to the result's error text when the most recent message is a
+        # result with is_error=True. Used to replace the generic "exit code 1"
+        # ProcessError with the structured error the CLI already reported.
+        # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
+        self._last_error_result_text: str | None = None
+
+        # SessionStore mirroring (set via set_transcript_mirror_batcher)
+        self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
+
+    def set_transcript_mirror_batcher(self, batcher: "TranscriptMirrorBatcher") -> None:
+        """Attach a batcher that receives ``transcript_mirror`` frames.
+
+        When set, the read loop peels ``transcript_mirror`` frames off stdout
+        (they are not yielded to consumers), enqueues them on the batcher, and
+        flushes before yielding each ``result`` message.
+        """
+        self._transcript_mirror_batcher = batcher
+
+    def report_mirror_error(self, key: "SessionKey | None", error: str) -> None:
+        """Surface a :meth:`SessionStore.append` failure as a system message.
+
+        Called from the batcher's ``on_error``; the dropped batch is not
+        retried (at-most-once delivery), so this is the consumer's only signal.
+        Non-blocking — if the message buffer is full the error is logged and
+        dropped rather than back-pressuring the read loop.
+        """
+        msg: dict[str, Any] = {
+            "type": "system",
+            "subtype": "mirror_error",
+            "error": error,
+            "key": key,
+            "uuid": str(uuid.uuid4()),
+            "session_id": key.get("session_id", "") if key else "",
+        }
+        try:
+            self._message_send.send_nowait(msg)
+        except Exception as e:  # pragma: no cover - buffer-full edge case
+            logger.warning("Dropping mirror_error message (buffer full): %s", e)
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -153,6 +206,12 @@ class Query:
         }
         if self._agents:
             request["agents"] = self._agents
+        if self._exclude_dynamic_sections is not None:
+            request["excludeDynamicSections"] = self._exclude_dynamic_sections
+        # 'all' and omitted are equivalent at the wire level (no filter), so
+        # only send the field when it's an explicit list.
+        if isinstance(self._skills, list):
+            request["skills"] = self._skills
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(
@@ -164,10 +223,26 @@ class Query:
 
     async def start(self) -> None:
         """Start reading messages from transport."""
-        if self._tg is None:
-            self._tg = anyio.create_task_group()
-            await self._tg.__aenter__()
-            self._tg.start_soon(self._read_messages)
+        if self._read_task is None:
+            self._read_task = spawn_detached(self._read_messages())
+
+    def spawn_task(self, coro: Any) -> TaskHandle:
+        """Spawn a child task that will be cancelled on close()."""
+        task = spawn_detached(coro)
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
+        return task
+
+    def _spawn_control_request_handler(self, request: SDKControlRequest) -> None:
+        """Spawn a control request handler and track it for cancellation."""
+        req_id = request["request_id"]
+        task = self.spawn_task(self._handle_control_request(request))
+        self._inflight_requests[req_id] = task
+
+        def _done(_t: TaskHandle) -> None:
+            self._inflight_requests.pop(req_id, None)
+
+        task.add_done_callback(_done)
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
@@ -197,18 +272,51 @@ class Query:
                     # Handle incoming control requests from CLI
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
-                    if self._tg:
-                        self._tg.start_soon(self._handle_control_request, request)
+                    if not self._closed:
+                        self._spawn_control_request_handler(request)
                     continue
 
                 elif msg_type == "control_cancel_request":
-                    # Handle cancel requests
-                    # TODO: Implement cancellation support
+                    cancel_id = message.get("request_id")
+                    if cancel_id:
+                        inflight = self._inflight_requests.pop(cancel_id, None)
+                        if inflight:
+                            inflight.cancel()
+                    continue
+
+                elif msg_type == "transcript_mirror":
+                    # SessionStore write path: peel mirror frames off stdout
+                    # and hand to the batcher; do NOT yield to consumers.
+                    if self._transcript_mirror_batcher is not None:
+                        self._transcript_mirror_batcher.enqueue(
+                            message["filePath"], message["entries"]
+                        )
                     continue
 
                 # Track results for proper stream closure
                 if msg_type == "result":
+                    # Flush pending transcript mirror entries before yielding
+                    # result so consumers observing the result can rely on the
+                    # SessionStore being up to date for this turn.
+                    if self._transcript_mirror_batcher is not None:
+                        await self._transcript_mirror_batcher.flush()
                     self._first_result_event.set()
+                    if message.get("is_error"):
+                        errors = message.get("errors") or []
+                        self._last_error_result_text = "; ".join(errors) or str(
+                            message.get("subtype", "unknown error")
+                        )
+                    else:
+                        self._last_error_result_text = None
+                elif not (
+                    msg_type == "system"
+                    and message.get("subtype") == "session_state_changed"
+                ):
+                    # Anything other than the post-turn session_state_changed
+                    # marker means the conversation moved on; a ProcessError
+                    # now is a fresh crash, not the expected exit from a prior
+                    # error result. Mirrors the TypeScript SDK's reset logic.
+                    self._last_error_result_text = None
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -218,20 +326,51 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            logger.error(f"Fatal error in message reader: {e}")
             # Signal all pending control requests so they fail fast instead of timing out
             for request_id, event in list(self.pending_control_responses.items()):
                 if request_id not in self.pending_control_results:
                     self.pending_control_results[request_id] = e
                     event.set()
+            # When the CLI emits a result with is_error=True (e.g.
+            # error_max_turns, error_during_execution) it then exits non-zero
+            # on purpose, for shell-script consumers. The trailing ProcessError
+            # carries no information beyond "exit code 1" — replace it with the
+            # structured error the CLI already reported so the exception is
+            # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
+            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+                error_text = (
+                    f"Claude Code returned an error result: "
+                    f"{self._last_error_result_text}"
+                )
+                logger.debug(
+                    "Replacing ProcessError (exit code %s) with result error text",
+                    e.exit_code,
+                )
+            else:
+                error_text = str(e)
+                logger.error(f"Fatal error in message reader: {e}")
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            await self._message_send.send({"type": "error", "error": error_text})
         finally:
+            # Flush any remaining transcript mirror entries before closing so
+            # an early stdout EOF or transport error doesn't drop entries
+            # batched this turn. flush() never raises. Shielded so the await
+            # still runs when this finally is reached via cancellation.
+            if self._transcript_mirror_batcher is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._transcript_mirror_batcher.flush()
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
-            # Always signal end of stream
-            await self._message_send.send({"type": "end"})
+            # Always signal end of stream. send_nowait: trio's level-triggered
+            # cancellation would re-raise Cancelled at an await checkpoint
+            # here, dropping the sentinel and leaving receive_messages() hung.
+            # close() is the fallback for the buffer-full case where
+            # send_nowait raises WouldBlock — receivers then exit on
+            # EndOfStream after draining.
+            with suppress(anyio.WouldBlock):
+                self._message_send.send_nowait({"type": "end"})
+            self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
@@ -251,8 +390,19 @@ class Query:
 
                 context = ToolPermissionContext(
                     signal=None,  # TODO: Add abort signal support
-                    suggestions=permission_request.get("permission_suggestions", [])
-                    or [],
+                    suggestions=[
+                        PermissionUpdate.from_dict(s)
+                        for s in (
+                            permission_request.get("permission_suggestions") or []
+                        )
+                    ],
+                    tool_use_id=permission_request.get("tool_use_id"),
+                    agent_id=permission_request.get("agent_id"),
+                    blocked_path=permission_request.get("blocked_path"),
+                    decision_reason=permission_request.get("decision_reason"),
+                    title=permission_request.get("title"),
+                    display_name=permission_request.get("display_name"),
+                    description=permission_request.get("description"),
                 )
 
                 response = await self.can_use_tool(
@@ -332,6 +482,10 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
+        except anyio.get_cancelled_exc_class():
+            # Request was cancelled via control_cancel_request; the CLI has
+            # already abandoned this request, so don't write a response.
+            raise
         except Exception as e:
             # Send error response
             error_response: SDKControlResponse = {
@@ -468,6 +622,8 @@ class Query:
                             tool_data["annotations"] = tool.annotations.model_dump(
                                 exclude_none=True
                             )
+                        if tool.meta:
+                            tool_data["_meta"] = tool.meta
                         tools_data.append(tool_data)
                     return {
                         "jsonrpc": "2.0",
@@ -488,20 +644,55 @@ class Query:
                     # Convert MCP result to JSONRPC response
                     content = []
                     for item in result.root.content:  # type: ignore[union-attr]
-                        if hasattr(item, "text"):
-                            content.append({"type": "text", "text": item.text})
-                        elif hasattr(item, "data") and hasattr(item, "mimeType"):
+                        item_type = getattr(item, "type", None)
+                        if item_type == "text":
+                            content.append(
+                                {"type": "text", "text": getattr(item, "text", "")}
+                            )
+                        elif item_type == "image":
                             content.append(
                                 {
                                     "type": "image",
-                                    "data": item.data,
-                                    "mimeType": item.mimeType,
+                                    "data": getattr(item, "data", ""),
+                                    "mimeType": getattr(item, "mimeType", ""),
                                 }
+                            )
+                        elif item_type == "resource_link":
+                            parts = []
+                            name = getattr(item, "name", None)
+                            uri = getattr(item, "uri", None)
+                            desc = getattr(item, "description", None)
+                            if name:
+                                parts.append(name)
+                            if uri:
+                                parts.append(str(uri))
+                            if desc:
+                                parts.append(desc)
+                            content.append(
+                                {
+                                    "type": "text",
+                                    "text": "\n".join(parts)
+                                    if parts
+                                    else "Resource link",
+                                }
+                            )
+                        elif item_type == "resource":
+                            resource = getattr(item, "resource", None)
+                            if resource and hasattr(resource, "text"):
+                                content.append({"type": "text", "text": resource.text})
+                            else:
+                                logger.warning(
+                                    "Binary embedded resource cannot be converted to text, skipping"
+                                )
+                        else:
+                            logger.warning(
+                                "Unsupported content type %r in tool result, skipping",
+                                item_type,
                             )
 
                     response_data = {"content": content}
-                    if hasattr(result.root, "is_error") and result.root.is_error:
-                        response_data["is_error"] = True  # type: ignore[assignment]
+                    if hasattr(result.root, "isError") and result.root.isError:
+                        response_data["isError"] = True  # type: ignore[assignment]
 
                     return {
                         "jsonrpc": "2.0",
@@ -533,11 +724,15 @@ class Query:
         """Get current MCP server connection status."""
         return await self._send_control_request({"subtype": "mcp_status"})
 
+    async def get_context_usage(self) -> dict[str, Any]:
+        """Get a breakdown of current context window usage by category."""
+        return await self._send_control_request({"subtype": "get_context_usage"})
+
     async def interrupt(self) -> None:
         """Send interrupt control request."""
         await self._send_control_request({"subtype": "interrupt"})
 
-    async def set_permission_mode(self, mode: str) -> None:
+    async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode."""
         await self._send_control_request(
             {
@@ -614,9 +809,12 @@ class Query:
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the first result (if needed) then close stdin.
 
-        If SDK MCP servers, hooks, or can_use_tool require bidirectional
-        communication, keeps stdin open until the first result arrives
-        (or timeout). Otherwise closes stdin immediately.
+        If SDK MCP servers or hooks require bidirectional communication,
+        keeps stdin open until the first result arrives. The control protocol
+        requires stdin to remain open for the entire conversation, so no
+        timeout is applied. The event is guaranteed to fire: either when the
+        result message arrives, or in _read_messages' finally block if the
+        process exits early.
         """
         if self.sdk_mcp_servers or self.hooks or self.can_use_tool:
             logger.debug(
@@ -625,8 +823,7 @@ class Query:
                 f"has_hooks={bool(self.hooks)}, "
                 f"has_can_use_tool={self.can_use_tool is not None})"
             )
-            with anyio.move_on_after(self._stream_close_timeout):
-                await self._first_result_event.wait()
+            await self._first_result_event.wait()
 
         await self.transport.end_input()
 
@@ -661,12 +858,36 @@ class Query:
     async def close(self) -> None:
         """Close the query and transport."""
         self._closed = True
-        if self._tg:
-            self._tg.cancel_scope.cancel()
-            # Wait for task group to complete cancellation
-            with suppress(anyio.get_cancelled_exc_class()):
-                await self._tg.__aexit__(None, None, None)
+        # Final-flush mirror entries before tearing down so .return()/break
+        # don't drop the current turn when the process exits immediately.
+        if self._transcript_mirror_batcher is not None:
+            await self._transcript_mirror_batcher.close()
+        for task in list(self._child_tasks):
+            task.cancel()
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+            await self._read_task.wait()
+        self._read_task = None
+        # The read task's finally closed the send side; repeat here for the
+        # case where start() was never called. Do NOT close the receive
+        # side — it belongs to the consumer, and anyio's receive_nowait()
+        # checks _closed before the buffer, so closing it here would make a
+        # non-parked consumer drop buffered messages with
+        # ClosedResourceError. _message_send.close() alone yields
+        # EndOfStream after the buffer drains; the consumer calls
+        # close_receive_stream() once it's done iterating (#859).
+        self._message_send.close()
         await self.transport.close()
+
+    def close_receive_stream(self) -> None:
+        """Close the receive side of the message stream.
+
+        Call once the consumer has finished iterating ``receive_messages()``.
+        ``close()`` leaves this open so a still-draining consumer can read
+        buffered messages; the consumer is responsible for closing it to
+        avoid a ``ResourceWarning`` from anyio's ``__del__``.
+        """
+        self._message_receive.close()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

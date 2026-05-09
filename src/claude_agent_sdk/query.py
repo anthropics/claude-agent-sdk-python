@@ -55,7 +55,10 @@ async def query(
                  Set options.permission_mode to control tool execution:
                  - 'default': CLI prompts for dangerous tools
                  - 'acceptEdits': Auto-accept file edits
+                 - 'plan': Plan-only mode (no tool execution)
                  - 'bypassPermissions': Allow all tools (use with caution)
+                 - 'dontAsk': Deny anything not pre-approved by allow rules
+                 - 'auto': A model classifier approves or denies each tool call
                  Set options.cwd for working directory.
         transport: Optional transport implementation. If provided, this will be used
                   instead of the default transport selection based on options.

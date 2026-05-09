@@ -31,7 +31,7 @@ jobs:
           python -m pytest tests/ -v --cov=claude_agent_sdk --cov-report=xml
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0 (sha-pinned)
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
@@ -141,9 +141,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
-          timeout 120 python examples/streaming_mode.py all
+          timeout 300 python examples/streaming_mode.py all
           timeout 120 python examples/hooks.py PreToolUse
           timeout 120 python examples/hooks.py DecisionFields
 
@@ -151,10 +152,11 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
           $job = Start-Job { python examples/streaming_mode.py all }
-          Wait-Job $job -Timeout 120 | Out-Null
+          Wait-Job $job -Timeout 300 | Out-Null
           Stop-Job $job
           Receive-Job $job
 

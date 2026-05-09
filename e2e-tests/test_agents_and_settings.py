@@ -1,8 +1,6 @@
 """End-to-end tests for agents and setting sources with real Claude API calls."""
 
-import asyncio
 import json
-import sys
 import tempfile
 from pathlib import Path
 
@@ -154,7 +152,9 @@ async def test_filesystem_agent_loading():
     The bug in #406 causes the iterator to complete after only the
     init SystemMessage, never yielding AssistantMessage or ResultMessage.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with a filesystem agent
         project_dir = Path(tmpdir)
         agents_dir = project_dir / ".claude" / "agents"
@@ -207,16 +207,14 @@ You are a simple test agent. When asked a question, provide a brief, helpful ans
                 )
                 break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_setting_sources_default():
-    """Test that default (no setting_sources) loads no settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    """Test that default (no setting_sources) lets CLI load all settings normally."""
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with local settings
         project_dir = Path(tmpdir)
         claude_dir = project_dir / ".claude"
@@ -226,7 +224,8 @@ async def test_setting_sources_default():
         settings_file = claude_dir / "settings.local.json"
         settings_file.write_text('{"outputStyle": "local-test-style"}')
 
-        # Don't provide setting_sources - should default to no settings
+        # Don't provide setting_sources - CLI uses its default behavior
+        # which loads all settings (user, project, local)
         options = ClaudeAgentOptions(
             cwd=project_dir,
             max_turns=1,
@@ -235,28 +234,23 @@ async def test_setting_sources_default():
         async with ClaudeSDKClient(options=options) as client:
             await client.query("What is 2 + 2?")
 
-            # Check that settings were NOT loaded
+            # Check that settings WERE loaded (CLI default loads all sources)
             async for message in client.receive_response():
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     output_style = message.data.get("output_style")
-                    assert output_style != "local-test-style", (
-                        f"outputStyle should NOT be from local settings (default is no settings), got: {output_style}"
-                    )
-                    assert output_style == "default", (
-                        f"outputStyle should be 'default', got: {output_style}"
+                    assert output_style == "local-test-style", (
+                        f"outputStyle should be from local settings (CLI default loads all sources), got: {output_style}"
                     )
                     break
-
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_setting_sources_user_only():
     """Test that setting_sources=['user'] excludes project settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with a slash command
         project_dir = Path(tmpdir)
         commands_dir = project_dir / ".claude" / "commands"
@@ -291,16 +285,14 @@ This is a test command.
                     )
                     break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_setting_sources_project_included():
     """Test that setting_sources=['user', 'project'] includes project settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with local settings
         project_dir = Path(tmpdir)
         claude_dir = project_dir / ".claude"
@@ -328,10 +320,6 @@ async def test_setting_sources_project_included():
                         f"outputStyle should be from local settings, got: {output_style}"
                     )
                     break
-
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
 
 
 @pytest.mark.e2e

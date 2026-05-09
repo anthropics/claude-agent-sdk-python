@@ -6,8 +6,12 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     AssistantMessage,
+    DeferredToolUse,
+    HookEventMessage,
     RateLimitEvent,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -273,6 +277,93 @@ class TestMessageParser:
         assert message.content[0].signature == "sig-123"
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
+
+    def test_parse_assistant_message_with_server_tool_use(self):
+        """server_tool_use blocks (e.g. advisor, web_search) are preserved.
+
+        Previously these were dropped, leaving an empty content list on
+        messages that only contained a server tool call.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_01ABC",
+                        "name": "advisor",
+                        "input": {},
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ServerToolUseBlock)
+        assert message.content[0].id == "srvtoolu_01ABC"
+        assert message.content[0].name == "advisor"
+        assert message.content[0].input == {}
+
+    def test_parse_assistant_message_with_server_tool_result(self):
+        """Server-side tool result blocks (e.g. advisor) surface with their raw content dict.
+
+        `content` is passed through as a dict since its shape is tool-specific
+        (advisor emits advisor_result / advisor_redacted_result /
+        advisor_tool_result_error; other server tools use different shapes).
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_result",
+                            "text": "Consider edge cases around empty input.",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.tool_use_id == "srvtoolu_01ABC"
+        assert result_block.content == {
+            "type": "advisor_result",
+            "text": "Consider edge cases around empty input.",
+        }
+
+    def test_parse_assistant_message_with_redacted_advisor_result(self):
+        """External API users get advisor output as an encrypted blob in the content dict."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_redacted_result",
+                            "encrypted_content": "EuYDCioIDhgC...",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.content["type"] == "advisor_redacted_result"
+        assert result_block.content["encrypted_content"] == "EuYDCioIDhgC..."
 
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.
@@ -736,3 +827,251 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, AssistantMessage)
         assert message.error == "rate_limit"
+
+    def test_parse_assistant_message_with_all_fields(self):
+        """Test that AssistantMessage preserves id, stop_reason, session_id, uuid."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-sonnet-4-5-20250929",
+                "id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id == "msg_01HRq7YZE3apPqSHydvG77Ve"
+        assert message.stop_reason == "end_turn"
+        assert message.session_id == "fdf2d90a-fd9e-4736-ae35-806edd13643f"
+        assert message.uuid == "0dbd2453-1209-4fe9-bd51-4102f64e33df"
+        assert message.usage == {"input_tokens": 10, "output_tokens": 5}
+
+    def test_parse_assistant_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.message_id is None
+        assert message.stop_reason is None
+        assert message.session_id is None
+        assert message.uuid is None
+
+    def test_parse_result_message_with_model_usage(self):
+        """Test that ResultMessage preserves modelUsage, permission_denials, uuid."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 3000,
+            "duration_api_ms": 2000,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "stop_reason": "end_turn",
+            "total_cost_usd": 0.0106,
+            "usage": {"input_tokens": 3, "output_tokens": 24},
+            "result": "Hello",
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 3,
+                    "outputTokens": 24,
+                    "cacheReadInputTokens": 20012,
+                    "costUSD": 0.0106,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 64000,
+                }
+            },
+            "permission_denials": [],
+            "uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is not None
+        assert "claude-sonnet-4-5-20250929" in message.model_usage
+        assert message.model_usage["claude-sonnet-4-5-20250929"]["costUSD"] == 0.0106
+        assert message.permission_denials == []
+        assert message.uuid == "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+
+    def test_parse_result_message_optional_fields_absent(self):
+        """New optional fields default to None when absent."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.model_usage is None
+        assert message.permission_denials is None
+        assert message.deferred_tool_use is None
+        assert message.errors is None
+        assert message.api_error_status is None
+        assert message.uuid is None
+
+    def test_parse_result_message_with_deferred_tool_use(self):
+        """ResultMessage parses deferred_tool_use into a DeferredToolUse."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1200,
+            "duration_api_ms": 900,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "deferred_tool_use": {
+                "id": "toolu_01abc",
+                "name": "Bash",
+                "input": {"command": "rm -rf /tmp/scratch"},
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert isinstance(message.deferred_tool_use, DeferredToolUse)
+        assert message.deferred_tool_use.id == "toolu_01abc"
+        assert message.deferred_tool_use.name == "Bash"
+        assert message.deferred_tool_use.input == {"command": "rm -rf /tmp/scratch"}
+
+    def test_parse_result_message_with_errors(self):
+        """Test that ResultMessage preserves the errors field from error results.
+
+        The CLI emits errors: string[] on error result messages (subtypes like
+        error_during_execution, error_max_turns, etc.). Without this field,
+        SDK users cannot diagnose why a non-zero exit occurred.
+        """
+        data = {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "duration_ms": 5000,
+            "duration_api_ms": 3000,
+            "is_error": True,
+            "num_turns": 3,
+            "session_id": "session_456",
+            "errors": [
+                "Tool execution failed: permission denied",
+                "Unable to write to /etc/hosts",
+            ],
+            "uuid": "err-uuid-789",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors == [
+            "Tool execution failed: permission denied",
+            "Unable to write to /etc/hosts",
+        ]
+        assert message.is_error is True
+        assert message.subtype == "error_during_execution"
+        assert message.uuid == "err-uuid-789"
+
+    def test_parse_result_message_with_api_error_status(self):
+        """ResultMessage surfaces api_error_status for failed API calls.
+
+        The CLI (v2.1.110+) emits api_error_status: number | null on the final
+        result message — the HTTP status of the failing API call when
+        is_error=True and subtype="success". This is the only safe-to-log
+        signal for classifying API failures (e.g. 429 vs 529).
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1500,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "session_overload",
+            "api_error_status": 529,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.api_error_status == 529
+        assert message.is_error is True
+        assert message.subtype == "success"
+
+    def test_parse_result_message_success_no_errors(self):
+        """Test that a successful result message has no errors field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_789",
+            "result": "Task completed successfully",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors is None
+        assert message.result == "Task completed successfully"
+
+    def test_parse_hook_event_message(self):
+        """Hook started events (system/hook_started) parse into HookEventMessage."""
+        data = {
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_event": "PreToolUse",
+            "hook_name": "PreToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-456",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
+        assert message.hook_event_name == "PreToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-456"
+        assert message.data == data
+
+    def test_parse_hook_event_message_response(self):
+        """Hook response events (system/hook_response) parse into HookEventMessage."""
+        data = {
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_event": "PostToolUse",
+            "hook_name": "PostToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-789",
+            "output": "",
+            "exit_code": 0,
+            "outcome": "success",
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_response"
+        assert message.hook_event_name == "PostToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-789"
+        assert message.data["output"] == ""
+        assert message.data["exit_code"] == 0
+        assert message.data["outcome"] == "success"
+
+    def test_parse_hook_event_message_isinstance_system(self):
+        """HookEventMessage is a SystemMessage subclass for backward compat."""
+        data = {"type": "system", "subtype": "hook_started", "hook_event": "PreToolUse"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert isinstance(message, SystemMessage)
+
+    def test_parse_hook_event_message_minimal(self):
+        """Hook events without session_id/uuid/hook_event still parse."""
+        data = {"type": "system", "subtype": "hook_started", "hook_name": "Stop"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
+        assert message.hook_event_name == "Stop"
+        assert message.session_id is None
+        assert message.uuid is None

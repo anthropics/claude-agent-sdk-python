@@ -203,7 +203,7 @@ class TestClaudeSDKClientStreaming:
         anyio.run(_test)
 
     def test_connect_with_string_prompt(self):
-        """Test connecting with a string prompt."""
+        """Test connecting with a string prompt writes it as a user message."""
 
         async def _test():
             with patch(
@@ -215,9 +215,17 @@ class TestClaudeSDKClientStreaming:
                 client = ClaudeSDKClient()
                 await client.connect("Hello Claude")
 
-                # Verify transport was created with string prompt
-                call_kwargs = mock_transport_class.call_args.kwargs
-                assert call_kwargs["prompt"] == "Hello Claude"
+                # Verify the string prompt was written as a user message to stdin.
+                # Previously the string was stored but never sent, causing
+                # receive_messages() to hang indefinitely (#766).
+                user_messages = [
+                    json.loads(call.args[0].strip())
+                    for call in mock_transport.write.call_args_list
+                    if '"type": "user"' in call.args[0]
+                ]
+                assert len(user_messages) == 1
+                assert user_messages[0]["message"]["content"] == "Hello Claude"
+                assert user_messages[0]["session_id"] == "default"
 
         anyio.run(_test)
 
@@ -825,6 +833,116 @@ class TestClaudeSDKClientStreaming:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.get_mcp_status()
+
+        anyio.run(_test)
+
+    def test_get_context_usage(self):
+        """Test get_context_usage returns ContextUsageResponse shape."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = AsyncMock()
+                mock_transport.connect = AsyncMock()
+                mock_transport.close = AsyncMock()
+                mock_transport.end_input = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+                mock_transport_class.return_value = mock_transport
+
+                written_messages: list[str] = []
+
+                async def mock_write(data):
+                    written_messages.append(data)
+
+                mock_transport.write = AsyncMock(side_effect=mock_write)
+
+                context_usage_response = {
+                    "categories": [
+                        {"name": "System prompt", "tokens": 3200, "color": "#abc"},
+                        {"name": "Messages", "tokens": 61400, "color": "#def"},
+                    ],
+                    "totalTokens": 98200,
+                    "maxTokens": 155000,
+                    "rawMaxTokens": 200000,
+                    "percentage": 49.1,
+                    "model": "claude-sonnet-4-5",
+                    "isAutoCompactEnabled": True,
+                    "memoryFiles": [
+                        {"path": "CLAUDE.md", "type": "project", "tokens": 512}
+                    ],
+                    "mcpTools": [
+                        {
+                            "name": "search",
+                            "serverName": "ref",
+                            "tokens": 164,
+                            "isLoaded": True,
+                        }
+                    ],
+                    "agents": [{"agentType": "coder", "source": "sdk", "tokens": 299}],
+                    "gridRows": [],
+                    "apiUsage": None,
+                }
+
+                async def control_protocol_generator():
+                    last_check = 0
+                    timeout_counter = 0
+                    while timeout_counter < 200:
+                        await asyncio.sleep(0.01)
+                        timeout_counter += 1
+
+                        for msg_str in written_messages[last_check:]:
+                            try:
+                                msg = json.loads(msg_str.strip())
+                                if msg.get("type") == "control_request":
+                                    subtype = msg.get("request", {}).get("subtype")
+                                    if subtype == "initialize":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": {},
+                                            },
+                                        }
+                                    elif subtype == "get_context_usage":
+                                        yield {
+                                            "type": "control_response",
+                                            "response": {
+                                                "request_id": msg.get("request_id"),
+                                                "subtype": "success",
+                                                "response": context_usage_response,
+                                            },
+                                        }
+                            except (json.JSONDecodeError, KeyError, AttributeError):
+                                pass
+                        last_check = len(written_messages)
+
+                mock_transport.read_messages = control_protocol_generator
+
+                async with ClaudeSDKClient() as client:
+                    usage = await client.get_context_usage()
+
+                    assert usage["totalTokens"] == 98200
+                    assert usage["maxTokens"] == 155000
+                    assert usage["percentage"] == 49.1
+                    assert usage["model"] == "claude-sonnet-4-5"
+                    assert usage["isAutoCompactEnabled"] is True
+                    assert len(usage["categories"]) == 2
+                    assert usage["categories"][0]["name"] == "System prompt"
+                    assert usage["categories"][0]["tokens"] == 3200
+                    assert usage["mcpTools"][0]["serverName"] == "ref"
+                    assert usage["agents"][0]["tokens"] == 299
+
+        anyio.run(_test)
+
+    def test_get_context_usage_not_connected(self):
+        """Test get_context_usage when not connected raises error."""
+
+        async def _test():
+            client = ClaudeSDKClient()
+            with pytest.raises(CLIConnectionError, match="Not connected"):
+                await client.get_context_usage()
 
         anyio.run(_test)
 

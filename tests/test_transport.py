@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -11,6 +12,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
+_ABSENT = object()  # sentinel for "field not sent on the wire"
 
 
 def make_options(**kwargs: object) -> ClaudeAgentOptions:
@@ -24,17 +26,42 @@ class TestSubprocessCLITransport:
     """Test subprocess transport implementation."""
 
     def test_find_cli_not_found(self):
-        """Test CLI not found error."""
-        from claude_agent_sdk._errors import CLINotFoundError
+        """Test CLI not found error is raised during connect()."""
 
-        with (
-            patch("shutil.which", return_value=None),
-            patch("pathlib.Path.exists", return_value=False),
-            pytest.raises(CLINotFoundError) as exc_info,
-        ):
-            SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        async def _test():
+            from claude_agent_sdk._errors import CLINotFoundError
 
-        assert "Claude Code not found" in str(exc_info.value)
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            assert transport._cli_path is None
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value=None,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                pytest.raises(CLINotFoundError) as exc_info,
+            ):
+                await transport.connect()
+
+            assert "Claude Code not found" in str(exc_info.value)
+
+        anyio.run(_test)
+
+    def test_init_does_not_call_find_cli(self):
+        """Test that __init__ defers CLI discovery instead of blocking."""
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        assert transport._cli_path is None
+
+    def test_init_uses_provided_cli_path(self):
+        """Test that __init__ uses cli_path when provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+        )
+        assert transport._cli_path == "/usr/bin/claude"
 
     def test_build_command_basic(self):
         """Test building basic CLI command."""
@@ -51,6 +78,28 @@ class TestSubprocessCLITransport:
         assert "--system-prompt" in cmd
         assert cmd[cmd.index("--system-prompt") + 1] == ""
 
+    def test_build_command_include_hook_events(self):
+        """Test that include_hook_events emits the --include-hook-events flag."""
+        transport = SubprocessCLITransport(
+            prompt="Hello", options=make_options(include_hook_events=True)
+        )
+        cmd = transport._build_command()
+        assert "--include-hook-events" in cmd
+
+        transport_off = SubprocessCLITransport(prompt="Hello", options=make_options())
+        cmd_off = transport_off._build_command()
+        assert "--include-hook-events" not in cmd_off
+
+    def test_build_command_strict_mcp_config(self):
+        """Test that --strict-mcp-config is emitted only when enabled."""
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(strict_mcp_config=True)
+        )
+        assert "--strict-mcp-config" in transport._build_command()
+
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--strict-mcp-config" not in transport._build_command()
+
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
         from pathlib import Path
@@ -63,6 +112,16 @@ class TestSubprocessCLITransport:
 
         # Path object is converted to string, compare with str(path)
         assert transport._cli_path == str(path)
+
+    def test_build_command_with_effort_xhigh(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="xhigh"),
+        )
+
+        cmd = transport._build_command()
+        assert "--effort" in cmd
+        assert cmd[cmd.index("--effort") + 1] == "xhigh"
 
     def test_build_command_with_system_prompt_string(self):
         """Test building CLI command with system prompt as string."""
@@ -108,6 +167,21 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" in cmd
         assert "Be concise." in cmd
 
+    def test_build_command_with_system_prompt_file(self):
+        """Test building CLI command with system prompt file."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
+        assert "--system-prompt-file" in cmd
+        assert "/path/to/prompt.md" in cmd
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(
@@ -133,6 +207,17 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_with_dont_ask_permission_mode(self):
+        """Test building CLI command with dontAsk permission mode."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(permission_mode="dontAsk"),
+        )
+
+        cmd = transport._build_command()
+        assert "--permission-mode" in cmd
+        assert "dontAsk" in cmd
+
     def test_build_command_with_fallback_model(self):
         """Test building CLI command with fallback_model option."""
         transport = SubprocessCLITransport(
@@ -149,6 +234,27 @@ class TestSubprocessCLITransport:
         assert "--fallback-model" in cmd
         assert "sonnet" in cmd
 
+    def test_build_command_with_task_budget(self):
+        """Test building CLI command with task_budget option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(task_budget={"total": 100000}),
+        )
+
+        cmd = transport._build_command()
+        assert "--task-budget" in cmd
+        assert "100000" in cmd
+
+    def test_build_command_without_task_budget(self):
+        """Test that --task-budget is not included when task_budget is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--task-budget" not in cmd
+
     def test_build_command_with_max_thinking_tokens(self):
         """Test building CLI command with max_thinking_tokens option."""
         transport = SubprocessCLITransport(
@@ -159,6 +265,97 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--max-thinking-tokens" in cmd
         assert "5000" in cmd
+
+    @pytest.mark.parametrize(
+        ("thinking", "expected", "absent"),
+        [
+            ({"type": "adaptive"}, ["--thinking", "adaptive"], "--max-thinking-tokens"),
+            (
+                {"type": "enabled", "budget_tokens": 5000},
+                ["--max-thinking-tokens", "5000"],
+                "--thinking",
+            ),
+            ({"type": "disabled"}, ["--thinking", "disabled"], "--max-thinking-tokens"),
+        ],
+    )
+    def test_build_command_with_thinking(self, thinking, expected, absent):
+        """Test building CLI command with thinking option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking=thinking),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index(expected[0])
+        assert cmd[idx : idx + 2] == expected
+        assert absent not in cmd
+
+    @pytest.mark.parametrize(
+        ("thinking", "expected_display"),
+        [
+            (
+                {"type": "adaptive", "display": "summarized"},
+                ["--thinking-display", "summarized"],
+            ),
+            (
+                {"type": "enabled", "budget_tokens": 20000, "display": "omitted"},
+                ["--thinking-display", "omitted"],
+            ),
+        ],
+    )
+    def test_build_command_thinking_display_forwarded(self, thinking, expected_display):
+        """`display` in thinking config is forwarded as --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking=thinking),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index(expected_display[0])
+        assert cmd[idx : idx + 2] == expected_display
+
+    def test_build_command_thinking_without_display(self):
+        """Omitting `display` leaves --thinking-display off the command."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking={"type": "adaptive"}),
+        )
+
+        cmd = transport._build_command()
+        assert "--thinking-display" not in cmd
+
+    def test_build_command_thinking_display_with_enabled_budget(self):
+        """enabled + display emits both --max-thinking-tokens and --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 20000,
+                    "display": "omitted",
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        budget_idx = cmd.index("--max-thinking-tokens")
+        assert cmd[budget_idx : budget_idx + 2] == ["--max-thinking-tokens", "20000"]
+        display_idx = cmd.index("--thinking-display")
+        assert cmd[display_idx : display_idx + 2] == ["--thinking-display", "omitted"]
+
+    def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
+        """thinking takes precedence over deprecated max_thinking_tokens."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                thinking={"type": "adaptive"}, max_thinking_tokens=9999
+            ),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index("--thinking")
+        assert cmd[idx : idx + 2] == ["--thinking", "adaptive"]
+        assert "--max-thinking-tokens" not in cmd
 
     def test_build_command_with_add_dirs(self):
         """Test building CLI command with add_dirs option."""
@@ -194,6 +391,28 @@ class TestSubprocessCLITransport:
         assert "--continue" in cmd
         assert "--resume" in cmd
         assert "session-123" in cmd
+
+    def test_session_id(self):
+        """Test custom session ID option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(session_id="550e8400-e29b-41d4-a716-446655440000"),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" in cmd
+        idx = cmd.index("--session-id")
+        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_session_id_not_set_by_default(self):
+        """Test that --session-id is not passed when session_id is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--session-id" not in cmd
 
     def test_connect_close(self):
         """Test connect and close lifecycle."""
@@ -293,6 +512,206 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--settings" in cmd
         assert settings_json in cmd
+
+    def test_build_command_setting_sources_omitted_when_not_provided(self):
+        """Test that --setting-sources is omitted when setting_sources is not provided."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+    def test_build_command_setting_sources_empty_list_disables_all(self):
+        """Test that setting_sources=[] passes --setting-sources= to disable all sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=[]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources=" in cmd
+
+    def test_build_command_setting_sources_included_when_provided(self):
+        """Test that --setting-sources is included when setting_sources has values."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(setting_sources=["user", "project"]),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_none_leaves_options_untouched(self):
+        """When skills is None (default), neither allowed_tools nor setting_sources change."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+    def test_build_command_skills_all_enables_skill_tool(self):
+        """skills='all' enables the bare Skill tool and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_empty_list_adds_no_skill_entries(self):
+        """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_named_list_uses_skill_patterns(self):
+        """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["pdf", "docx"]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_merges_with_existing_allowed_tools(self):
+        """skills augment (not replace) an existing allowed_tools list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Read", "Write"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Write,Skill(pdf)"
+
+    def test_build_command_skills_preserves_user_setting_sources(self):
+        """When setting_sources is explicitly provided, skills should not override it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                skills="all",
+                setting_sources=["local"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources=local" in cmd
+
+    def test_build_command_skills_does_not_mutate_options(self):
+        """Applying skills defaults must not mutate the caller's options object."""
+        options = make_options(allowed_tools=["Read"], skills=["pdf"])
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        transport._build_command()
+        assert options.allowed_tools == ["Read"]
+        assert options.setting_sources is None
+
+    def test_build_command_skills_does_not_duplicate_entries(self):
+        """Injecting Skill entries is idempotent when caller already listed them."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Skill(pdf)"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+
+    @pytest.mark.parametrize(
+        ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
+        [
+            # (1) default: no auto-config
+            (None, {}, None, None, _ABSENT),
+            # (2) old manual way still works (skills=None, user wires it)
+            (
+                None,
+                {
+                    "allowed_tools": ["Skill", "Read"],
+                    "setting_sources": ["user", "project"],
+                },
+                "Skill,Read",
+                "user,project",
+                _ABSENT,
+            ),
+            # (3) "all": bare Skill, default sources, no wire filter
+            ("all", {}, "Skill", "user,project", _ABSENT),
+            # (4) named subset
+            (
+                ["pdf", "docx"],
+                {},
+                "Skill(pdf),Skill(docx)",
+                "user,project",
+                ["pdf", "docx"],
+            ),
+            # (5) subset + explicit setting_sources (user wins)
+            (
+                ["pdf"],
+                {"setting_sources": ["project"]},
+                "Skill(pdf)",
+                "project",
+                ["pdf"],
+            ),
+            # (6) subset merges into existing allowed_tools
+            (
+                ["pdf"],
+                {"allowed_tools": ["Read", "Bash"]},
+                "Read,Bash,Skill(pdf)",
+                "user,project",
+                ["pdf"],
+            ),
+            # (7) empty list = degenerate subset (not "all")
+            ([], {}, None, "user,project", []),
+        ],
+        ids=[
+            "default-none",
+            "old-manual",
+            "all",
+            "subset",
+            "subset+explicit-sources",
+            "subset+merge-tools",
+            "empty-list",
+        ],
+    )
+    def test_skills_option_matrix(
+        self, skills, extra, want_tools, want_sources, want_init_skills
+    ):
+        """Documented behavior table for ClaudeAgentOptions.skills.
+
+        Asserts the full (input) -> (allowedTools, setting_sources,
+        initialize.skills) mapping in one place. See also
+        test_query.py::test_initialize_* for the wire-level half.
+        """
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills, **extra),
+        )
+        cmd = transport._build_command()
+
+        if want_tools is None:
+            assert "--allowedTools" not in cmd
+        else:
+            assert cmd[cmd.index("--allowedTools") + 1] == want_tools
+
+        if want_sources is None:
+            assert not any(a.startswith("--setting-sources") for a in cmd)
+        else:
+            assert f"--setting-sources={want_sources}" in cmd
+
+        # Wire-level: what the Query layer would send on initialize.
+        # 'all' and None both omit the field; only an explicit list is sent.
+        if want_init_skills is _ABSENT:
+            assert not isinstance(skills, list)
+        else:
+            assert skills == want_init_skills
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""
@@ -496,6 +915,482 @@ class TestSubprocessCLITransport:
 
                 # CLAUDE_AGENT_SDK_VERSION is still SDK-controlled
                 assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_propagated_to_subprocess(self):
+        """Active OTEL trace context is injected as TRACEPARENT/TRACESTATE."""
+
+        async def _test():
+            options = make_options()
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = (
+                    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                carrier["tracestate"] = "vendor=value"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                assert (
+                    env_passed["TRACEPARENT"]
+                    == "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                )
+                assert env_passed["TRACESTATE"] == "vendor=value"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_does_not_override_user_env(self):
+        """User-supplied TRACEPARENT in options.env wins over OTEL propagator."""
+
+        async def _test():
+            options = make_options(env={"TRACEPARENT": "custom"})
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["traceparent"] = "00-aaaa-bbbb-01"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # explicit ClaudeAgentOptions.env must win over the propagator
+                assert env_passed["TRACEPARENT"] == "custom"
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_noop_without_opentelemetry(self):
+        """connect() succeeds and sets no TRACEPARENT when opentelemetry is absent."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict("sys.modules", {"opentelemetry": None}),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                # Ensure no inherited TRACEPARENT leaks in
+                os.environ.pop("TRACEPARENT", None)
+
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()  # must not raise
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert "TRACEPARENT" not in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_trace_context_overwrites_inherited_env(self):
+        """Active span's TRACEPARENT overwrites a stale value inherited from os.environ."""
+
+        async def _test():
+            options = make_options()
+
+            stale = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+            active = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+            def fake_inject(carrier: dict[str, str]) -> None:
+                # Propagator emits traceparent only (active span has empty
+                # trace_state) — the common case.
+                carrier["traceparent"] = active
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": stale, "TRACESTATE": "vendor=stale"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # The stale ambient value from os.environ must be replaced by
+                # the active span's context.
+                assert env_passed["TRACEPARENT"] == active
+                assert env_passed["TRACEPARENT"] != stale
+                # And the stale inherited TRACESTATE must be scrubbed, not
+                # paired with the fresh TRACEPARENT.
+                assert "TRACESTATE" not in env_passed
+
+        anyio.run(_test)
+
+    def test_otel_no_active_span_preserves_inherited_env(self):
+        """With opentelemetry installed but no active span, inherited W3C env passes through."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # inject() with no active span writes nothing to the carrier.
+            fake_propagate = MagicMock()
+            fake_propagate.inject = lambda carrier: None
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # No active span -> we must NOT scrub the launcher's context.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
+
+        anyio.run(_test)
+
+    def test_otel_baggage_only_carrier_preserves_inherited_env(self):
+        """Non-empty carrier without traceparent (e.g. baggage only) must not scrub inherited W3C env."""
+
+        async def _test():
+            options = make_options()
+
+            inherited_tp = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+            # Default global propagator is composite(tracecontext, baggage):
+            # with baggage in Context but no active span, inject() emits a
+            # baggage key only.
+            def fake_inject(carrier: dict[str, str]) -> None:
+                carrier["baggage"] = "user.id=123"
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = fake_inject
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TRACEPARENT": inherited_tp, "TRACESTATE": "vendor=abc"},
+                ),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Carrier was non-empty but had no traceparent -> still no
+                # active span, so the launcher's W3C context must pass through.
+                assert env_passed["TRACEPARENT"] == inherited_tp
+                assert env_passed["TRACESTATE"] == "vendor=abc"
+
+        anyio.run(_test)
+
+    def test_otel_propagator_error_does_not_break_connect(self):
+        """A raising propagator must not surface as CLIConnectionError."""
+
+        async def _test():
+            options = make_options()
+
+            fake_propagate = MagicMock()
+            fake_propagate.inject = MagicMock(side_effect=RuntimeError("boom"))
+
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "opentelemetry": MagicMock(propagate=fake_propagate),
+                        "opentelemetry.propagate": fake_propagate,
+                    },
+                ),
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                # Ensure no inherited TRACEPARENT leaks in
+                os.environ.pop("TRACEPARENT", None)
+
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()  # must not raise CLIConnectionError
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert "TRACEPARENT" not in env_passed
+
+        anyio.run(_test)
+
+    def test_claudecode_env_var_not_inherited(self):
+        """Test that CLAUDECODE env var is filtered from the subprocess environment."""
+
+        async def _test():
+            options = make_options()
+
+            with (
+                patch.dict(os.environ, {"CLAUDECODE": "1"}),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # CLAUDECODE must NOT be inherited from the parent process
+                assert "CLAUDECODE" not in env_passed
+
+                # Other env vars should still be present
+                assert "CLAUDE_CODE_ENTRYPOINT" in env_passed
+                assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    def test_claudecode_can_be_set_via_options_env(self):
+        """Test that users can explicitly set CLAUDECODE via options.env."""
+
+        async def _test():
+            options = make_options(env={"CLAUDECODE": "1"})
+
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch(
+                    "anyio.open_process", new_callable=AsyncMock
+                ) as mock_open_process,
+            ):
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    mock_process,
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+
+                # Explicit options.env should be respected
+                assert env_passed.get("CLAUDECODE") == "1"
 
         anyio.run(_test)
 
@@ -877,7 +1772,7 @@ class TestSubprocessCLITransport:
         anyio.run(_test, backend="trio")
 
     def test_close_terminates_after_grace_period_timeout(self):
-        """Test that SIGTERM is sent when process doesn't exit within grace period."""
+        """Test that SIGTERM and then SIGKILL are sent when process never exits."""
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
@@ -894,6 +1789,7 @@ class TestSubprocessCLITransport:
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_process.stderr = MagicMock()
 
@@ -916,14 +1812,66 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Patch the grace period to be short for testing
                 with patch("anyio.fail_after", side_effect=TimeoutError):
-                    # After terminate, wait should succeed
                     mock_process.wait = AsyncMock()
                     await transport.close()
 
-                # Process should have been terminated after timeout
                 mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_close_sigterm_succeeds_no_sigkill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+
+        async def _test():
+            with patch("anyio.open_process") as mock_exec:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.returncode = None
+                mock_process.terminate = MagicMock()
+                mock_process.kill = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_process.stderr = MagicMock()
+
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+
+                mock_process.wait = AsyncMock()
+
+                mock_exec.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(),
+                )
+
+                await transport.connect()
+
+                # First fail_after raises (grace period expired), second
+                # succeeds (process responds to SIGTERM)
+                call_count = 0
+
+                def mock_fail_after(timeout):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise TimeoutError
+                    return nullcontext()
+
+                with patch("anyio.fail_after", side_effect=mock_fail_after):
+                    await transport.close()
+
+                mock_process.terminate.assert_called_once()
+                mock_process.kill.assert_not_called()
 
         anyio.run(_test)
 
@@ -1049,3 +1997,107 @@ class TestSubprocessCLITransport:
         # No @filepath references should exist
         cmd_str = " ".join(cmd)
         assert "@" not in cmd_str
+
+    def test_version_warning_includes_cli_path(self):
+        """Test that the version warning includes the CLI path and uses only logger.warning."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+
+            with (
+                patch("anyio.open_process") as mock_exec,
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+                ) as mock_logger,
+                patch("builtins.print") as mock_print,
+            ):
+                # Mock version check returning an old version
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"1.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_exec.return_value = mock_version_process
+
+                await transport._check_claude_version()
+
+                # logger.warning should be called with version and CLI path
+                mock_logger.warning.assert_called_once()
+                args, _ = mock_logger.warning.call_args
+                assert args[1] == "1.0.0"
+                assert args[2] == DEFAULT_CLI_PATH
+
+                # print should NOT be called (no duplicate output)
+                mock_print.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_version_warning_not_emitted_for_current_version(self):
+        """Test that no warning is emitted when CLI version meets minimum."""
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+
+            with (
+                patch("anyio.open_process") as mock_exec,
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+                ) as mock_logger,
+            ):
+                # Mock version check returning a current version
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"99.99.99 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_exec.return_value = mock_version_process
+
+                await transport._check_claude_version()
+
+                # No warning for a current version
+                mock_logger.warning.assert_not_called()
+
+        anyio.run(_test)
+
+
+class TestAtexitChildCleanup:
+    """Tests for the atexit handler that terminates orphaned CLI subprocesses."""
+
+    def test_kill_active_children_terminates_process(self) -> None:
+        import sys
+
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        async def _test() -> None:
+            proc = await anyio.open_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            subprocess_cli._ACTIVE_CHILDREN.add(proc)
+            try:
+                assert proc.returncode is None
+
+                subprocess_cli._kill_active_children()
+
+                assert not subprocess_cli._ACTIVE_CHILDREN
+                with anyio.fail_after(5):
+                    await proc.wait()
+                assert proc.returncode is not None
+            finally:
+                subprocess_cli._ACTIVE_CHILDREN.discard(proc)
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        anyio.run(_test)

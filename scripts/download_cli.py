@@ -7,9 +7,11 @@ binary using the official install script and place it in the package directory.
 
 import os
 import platform
+import random
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -75,27 +77,36 @@ def download_cli() -> None:
                 f"& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) {version}",
             ]
     else:
-        # Use bash installer on Unix-like systems
-        if version == "latest":
-            install_cmd = ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
-        else:
-            install_cmd = [
-                "bash",
-                "-c",
-                f"curl -fsSL https://claude.ai/install.sh | bash -s {version}",
-            ]
+        # --retry-all-errors covers 429 from claude.ai when multiple matrix
+        # jobs fetch install.sh simultaneously. pipefail propagates curl's
+        # exit code through the pipe so subprocess.run's check=True catches it.
+        curl = "curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://claude.ai/install.sh"
+        target = "" if version == "latest" else f" -s {version}"
+        install_cmd = ["bash", "-c", f"set -o pipefail; {curl} | bash{target}"]
 
-    try:
-        subprocess.run(
-            install_cmd,
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Error downloading CLI: {e}", file=sys.stderr)
-        print(f"stdout: {e.stdout.decode()}", file=sys.stderr)
-        print(f"stderr: {e.stderr.decode()}", file=sys.stderr)
-        sys.exit(1)
+    # Small jitter to stagger parallel matrix builds hitting the same endpoint
+    time.sleep(random.uniform(0, 5))
+
+    last_err: subprocess.CalledProcessError | None = None
+    for attempt in range(1, 4):
+        try:
+            subprocess.run(install_cmd, check=True, capture_output=True)
+            return
+        except subprocess.CalledProcessError as e:
+            last_err = e
+            if attempt < 3:
+                delay = 2**attempt
+                print(
+                    f"Install attempt {attempt} failed (exit {e.returncode}), "
+                    f"retrying in {delay}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+
+    print(f"Error downloading CLI after 3 attempts: {last_err}", file=sys.stderr)
+    print(f"stdout: {last_err.stdout.decode()}", file=sys.stderr)
+    print(f"stderr: {last_err.stderr.decode()}", file=sys.stderr)
+    sys.exit(1)
 
 
 def copy_cli_to_bundle() -> None:

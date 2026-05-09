@@ -12,6 +12,8 @@ from claude_agent_sdk import (
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    PermissionRuleValue,
+    PermissionUpdate,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
     TextBlock,
@@ -20,6 +22,47 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+
+
+class TestPermissionUpdate:
+    """Test PermissionUpdate wire-format conversion."""
+
+    def test_from_dict_to_dict_roundtrip_add_rules(self):
+        wire = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [
+                {"toolName": "Bash", "ruleContent": "npm *"},
+                {"toolName": "Read", "ruleContent": None},
+            ],
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.type == "addRules"
+        assert update.destination == "localSettings"
+        assert update.behavior == "allow"
+        assert update.rules == [
+            PermissionRuleValue(tool_name="Bash", rule_content="npm *"),
+            PermissionRuleValue(tool_name="Read", rule_content=None),
+        ]
+        assert update.to_dict() == wire
+
+    def test_from_dict_set_mode(self):
+        wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}
+        update = PermissionUpdate.from_dict(wire)
+        assert update.mode == "acceptEdits"
+        assert update.rules is None
+        assert update.to_dict() == wire
+
+    def test_from_dict_directories(self):
+        wire = {
+            "type": "addDirectories",
+            "directories": ["/tmp/a", "/tmp/b"],
+            "destination": "userSettings",
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.directories == ["/tmp/a", "/tmp/b"]
+        assert update.to_dict() == wire
 
 
 class TestMessageTypes:
@@ -115,6 +158,12 @@ class TestOptions:
         options_accept = ClaudeAgentOptions(permission_mode="acceptEdits")
         assert options_accept.permission_mode == "acceptEdits"
 
+        options_dont_ask = ClaudeAgentOptions(permission_mode="dontAsk")
+        assert options_dont_ask.permission_mode == "dontAsk"
+
+        options_auto = ClaudeAgentOptions(permission_mode="auto")
+        assert options_auto.permission_mode == "auto"
+
     def test_claude_code_options_with_system_prompt_string(self):
         """Test Options with system prompt as string."""
         options = ClaudeAgentOptions(
@@ -142,6 +191,33 @@ class TestOptions:
             "type": "preset",
             "preset": "claude_code",
             "append": "Be concise.",
+        }
+
+    def test_claude_code_options_with_system_prompt_preset_exclude_dynamic_sections(
+        self,
+    ):
+        """Test Options with system prompt preset and exclude_dynamic_sections."""
+        options = ClaudeAgentOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "exclude_dynamic_sections": True,
+            },
+        )
+        assert options.system_prompt == {
+            "type": "preset",
+            "preset": "claude_code",
+            "exclude_dynamic_sections": True,
+        }
+
+    def test_claude_code_options_with_system_prompt_file(self):
+        """Test Options with system prompt file."""
+        options = ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/path/to/prompt.md"},
+        )
+        assert options.system_prompt == {
+            "type": "file",
+            "path": "/path/to/prompt.md",
         }
 
     def test_claude_code_options_with_session_continuation(self):
@@ -332,6 +408,22 @@ class TestHookSpecificOutputTypes:
         }
         assert output["updatedMCPToolOutput"] == {"result": "modified"}
 
+    def test_post_tool_use_output_has_updated_tool_output(self):
+        """Test PostToolUseHookSpecificOutput includes updatedToolOutput field."""
+        output: PostToolUseHookSpecificOutput = {
+            "hookEventName": "PostToolUse",
+            "updatedToolOutput": {
+                "stdout": "replaced",
+                "stderr": "",
+                "interrupted": False,
+            },
+        }
+        assert output["updatedToolOutput"] == {
+            "stdout": "replaced",
+            "stderr": "",
+            "interrupted": False,
+        }
+
 
 class TestMcpServerStatusTypes:
     """Test MCP server status type definitions."""
@@ -483,3 +575,118 @@ class TestAgentDefinition:
         assert "mcp_servers" not in payload
         assert payload["mcpServers"][0] == "slack"
         assert payload["mcpServers"][1]["local"]["command"] == "python"
+
+    def test_disallowed_tools_and_max_turns_serialize_as_camelcase(self):
+        """CLI expects ``disallowedTools`` and ``maxTurns`` (camelCase)."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            disallowedTools=["Bash", "Write"],
+            maxTurns=10,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["disallowedTools"] == ["Bash", "Write"]
+        assert "disallowed_tools" not in payload
+        assert payload["maxTurns"] == 10
+        assert "max_turns" not in payload
+
+    def test_initial_prompt_serializes_as_camelcase(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            initialPrompt="/review-pr 123",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["initialPrompt"] == "/review-pr 123"
+        assert "initial_prompt" not in payload
+
+    def test_model_accepts_full_model_id(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            model="claude-opus-4-5",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["model"] == "claude-opus-4-5"
+
+    def test_background_serializes_correctly(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            background=True,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["background"] is True
+
+    def test_effort_accepts_named_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="high",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "high"
+
+    def test_effort_accepts_xhigh_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="xhigh",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "xhigh"
+
+    def test_effort_accepts_integer(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort=32000,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == 32000
+
+    def test_permission_mode_serializes_as_camelcase(self):
+        """CLI expects ``permissionMode`` (camelCase)."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            permissionMode="bypassPermissions",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["permissionMode"] == "bypassPermissions"
+        assert "permission_mode" not in payload
+
+    def test_new_fields_omitted_when_none(self):
+        """New optional fields should not appear in payload when unset."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="p")
+        payload = self._serialize(agent)
+
+        assert "background" not in payload
+        assert "effort" not in payload
+        assert "permissionMode" not in payload

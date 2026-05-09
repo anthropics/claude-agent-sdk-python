@@ -7,10 +7,15 @@ from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
+    DeferredToolUse,
+    HookEventMessage,
     Message,
+    MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
@@ -43,6 +48,28 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         raise MessageParseError(
             f"Invalid message data type (expected dict, got {type(data).__name__})",
             data,
+        )
+
+    # Hook events (emitted when ``include_hook_events`` is enabled) arrive as
+    # ``system`` messages with ``subtype`` of ``hook_started`` or
+    # ``hook_response``. Route them to ``HookEventMessage`` before the generic
+    # ``SystemMessage`` handling below.
+    if data.get("type") == "system" and data.get("subtype") in (
+        "hook_started",
+        "hook_response",
+    ):
+        hook_event_name = (
+            data.get("hook_event")
+            or data.get("hook_name")
+            or data.get("hook_event_name")
+            or ""
+        )
+        return HookEventMessage(
+            subtype=data["subtype"],
+            hook_event_name=hook_event_name,
+            data=data,
+            session_id=data.get("session_id"),
+            uuid=data.get("uuid"),
         )
 
     message_type = data.get("type")
@@ -126,6 +153,21 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     is_error=block.get("is_error"),
                                 )
                             )
+                        case "server_tool_use":
+                            content_blocks.append(
+                                ServerToolUseBlock(
+                                    id=block["id"],
+                                    name=block["name"],
+                                    input=block["input"],
+                                )
+                            )
+                        case "advisor_tool_result":
+                            content_blocks.append(
+                                ServerToolResultBlock(
+                                    tool_use_id=block["tool_use_id"],
+                                    content=block["content"],
+                                )
+                            )
 
                 return AssistantMessage(
                     content=content_blocks,
@@ -133,6 +175,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
                     usage=data["message"].get("usage"),
+                    message_id=data["message"].get("id"),
+                    stop_reason=data["message"].get("stop_reason"),
+                    session_id=data.get("session_id"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -179,6 +225,14 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             tool_use_id=data.get("tool_use_id"),
                             usage=data.get("usage"),
                         )
+                    case "mirror_error":
+                        # SDK-synthesized via report_mirror_error — never emitted by the CLI subprocess.
+                        return MirrorErrorMessage(
+                            subtype=subtype,
+                            data=data,
+                            key=data.get("key"),
+                            error=data.get("error", ""),
+                        )
                     case _:
                         return SystemMessage(
                             subtype=subtype,
@@ -191,6 +245,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "result":
             try:
+                deferred = data.get("deferred_tool_use")
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -203,6 +258,18 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     usage=data.get("usage"),
                     result=data.get("result"),
                     structured_output=data.get("structured_output"),
+                    model_usage=data.get("modelUsage"),
+                    permission_denials=data.get("permission_denials"),
+                    deferred_tool_use=DeferredToolUse(
+                        id=deferred["id"],
+                        name=deferred["name"],
+                        input=deferred["input"],
+                    )
+                    if deferred
+                    else None,
+                    errors=data.get("errors"),
+                    api_error_status=data.get("api_error_status"),
+                    uuid=data.get("uuid"),
                 )
             except KeyError as e:
                 raise MessageParseError(

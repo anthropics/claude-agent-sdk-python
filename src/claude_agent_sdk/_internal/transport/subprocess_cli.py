@@ -1,33 +1,50 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import atexit
 import json
 import logging
 import os
 import platform
 import re
 import shutil
-import sys
+import signal
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any
+from typing import Any, cast
 
 import anyio
-import anyio.abc
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeAgentOptions
+from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
+from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Track live CLI subprocesses so we can terminate them when the parent Python
+# process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
+# prevents orphaned `claude` processes from leaking when callers crash or exit
+# before awaiting close().
+_ACTIVE_CHILDREN: set[Process] = set()
+
+
+def _kill_active_children() -> None:
+    for p in list(_ACTIVE_CHILDREN):
+        with suppress(Exception):
+            p.send_signal(signal.SIGTERM)  # On Windows anyio maps this to terminate()
+    _ACTIVE_CHILDREN.clear()
+
+
+atexit.register(_kill_active_children)
 
 
 class SubprocessCLITransport(Transport):
@@ -43,15 +60,15 @@ class SubprocessCLITransport(Transport):
         # This allows agents and other large configs to be sent via initialize request
         self._is_streaming = True
         self._options = options
-        self._cli_path = (
-            str(options.cli_path) if options.cli_path is not None else self._find_cli()
+        self._cli_path: str | None = (
+            str(options.cli_path) if options.cli_path is not None else None
         )
         self._cwd = str(options.cwd) if options.cwd else None
         self._process: Process | None = None
         self._stdout_stream: TextReceiveStream | None = None
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
-        self._stderr_task_group: anyio.abc.TaskGroup | None = None
+        self._stderr_task: TaskHandle | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -163,8 +180,48 @@ class SubprocessCLITransport(Transport):
 
         return json.dumps(settings_obj)
 
+    def _apply_skills_defaults(
+        self,
+    ) -> tuple[list[str], list[str] | None]:
+        """Compute effective allowed_tools and setting_sources for skills.
+
+        When ``options.skills`` is ``"all"``, injects the bare ``Skill`` tool;
+        when it is a list, injects ``Skill(name)`` for each entry. In either
+        case ``setting_sources`` defaults to ``["user", "project"]`` when
+        unset so the CLI discovers installed skills without the caller having
+        to wire up both options manually. ``None`` is a no-op.
+
+        Does not mutate the original options object.
+        """
+        allowed_tools: list[str] = list(self._options.allowed_tools)
+        setting_sources: list[str] | None = (
+            list(self._options.setting_sources)
+            if self._options.setting_sources is not None
+            else None
+        )
+
+        skills = self._options.skills
+        if skills is None:
+            return allowed_tools, setting_sources
+
+        if skills == "all":
+            if "Skill" not in allowed_tools:
+                allowed_tools.append("Skill")
+        else:
+            for name in skills:
+                pattern = f"Skill({name})"
+                if pattern not in allowed_tools:
+                    allowed_tools.append(pattern)
+
+        if setting_sources is None:
+            setting_sources = ["user", "project"]
+
+        return allowed_tools, setting_sources
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
@@ -172,12 +229,12 @@ class SubprocessCLITransport(Transport):
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
-            if (
-                self._options.system_prompt.get("type") == "preset"
-                and "append" in self._options.system_prompt
-            ):
+            sp = self._options.system_prompt
+            if sp.get("type") == "file":
+                cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+            elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
-                    ["--append-system-prompt", self._options.system_prompt["append"]]
+                    ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
                 )
 
         # Handle tools option (base set of tools)
@@ -192,8 +249,12 @@ class SubprocessCLITransport(Transport):
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
 
-        if self._options.allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
+        effective_allowed_tools, effective_setting_sources = (
+            self._apply_skills_defaults()
+        )
+
+        if effective_allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])
 
         if self._options.max_turns:
             cmd.extend(["--max-turns", str(self._options.max_turns)])
@@ -203,6 +264,9 @@ class SubprocessCLITransport(Transport):
 
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
+
+        if self._options.task_budget is not None:
+            cmd.extend(["--task-budget", str(self._options.task_budget["total"])])
 
         if self._options.model:
             cmd.extend(["--model", self._options.model])
@@ -226,6 +290,9 @@ class SubprocessCLITransport(Transport):
 
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
+
+        if self._options.session_id:
+            cmd.extend(["--session-id", self._options.session_id])
 
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
@@ -267,18 +334,23 @@ class SubprocessCLITransport(Transport):
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 
+        if self._options.include_hook_events:
+            cmd.append("--include-hook-events")
+
+        if self._options.strict_mcp_config:
+            cmd.append("--strict-mcp-config")
+
         if self._options.fork_session:
             cmd.append("--fork-session")
+
+        if self._options.session_store is not None:
+            cmd.append("--session-mirror")
 
         # Agents are always sent via initialize request (matching TypeScript SDK)
         # No --agents CLI flag needed
 
-        sources_value = (
-            ",".join(self._options.setting_sources)
-            if self._options.setting_sources is not None
-            else ""
-        )
-        cmd.extend(["--setting-sources", sources_value])
+        if effective_setting_sources is not None:
+            cmd.append(f"--setting-sources={','.join(effective_setting_sources)}")
 
         # Add plugin directories
         if self._options.plugins:
@@ -297,20 +369,25 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
-        # Resolve thinking config → --max-thinking-tokens
+        # Resolve thinking config -> --thinking / --max-thinking-tokens
         # `thinking` takes precedence over the deprecated `max_thinking_tokens`
-        resolved_max_thinking_tokens = self._options.max_thinking_tokens
         if self._options.thinking is not None:
             t = self._options.thinking
             if t["type"] == "adaptive":
-                if resolved_max_thinking_tokens is None:
-                    resolved_max_thinking_tokens = 32_000
+                cmd.extend(["--thinking", "adaptive"])
             elif t["type"] == "enabled":
-                resolved_max_thinking_tokens = t["budget_tokens"]
+                cmd.extend(["--max-thinking-tokens", str(t["budget_tokens"])])
             elif t["type"] == "disabled":
-                resolved_max_thinking_tokens = 0
-        if resolved_max_thinking_tokens is not None:
-            cmd.extend(["--max-thinking-tokens", str(resolved_max_thinking_tokens)])
+                cmd.extend(["--thinking", "disabled"])
+
+            # Narrow off the Disabled variant first so mypy knows `t["display"]` is a str
+            # rather than widening to `object` across the union.
+            if t["type"] != "disabled" and "display" in t:
+                cmd.extend(["--thinking-display", t["display"]])
+        elif self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
 
         if self._options.effort is not None:
             cmd.extend(["--effort", self._options.effort])
@@ -337,6 +414,9 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
+        if self._cli_path is None:
+            self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
+
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()
 
@@ -345,12 +425,41 @@ class SubprocessCLITransport(Transport):
             # Merge environment variables. CLAUDE_CODE_ENTRYPOINT defaults to
             # sdk-py regardless of inherited process env; options.env can override
             # it. CLAUDE_AGENT_SDK_VERSION is always set by the SDK.
+            # Filter out CLAUDECODE so SDK-spawned subprocesses don't think
+            # they're running inside a Claude Code parent (see #573).
+            inherited_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             process_env = {
-                **os.environ,
+                **inherited_env,
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
                 **self._options.env,
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
+
+            # Propagate active OTEL trace context to the CLI so its spans
+            # parent under the caller's distributed trace. No-op if
+            # opentelemetry-api is not installed or there's no active span.
+            try:
+                from opentelemetry import propagate
+
+                carrier: dict[str, str] = {}
+                propagate.inject(carrier)
+                if "traceparent" in carrier:
+                    # Active span present: scrub stale inherited W3C context
+                    # (CI/k8s ambient env) before writing the fresh values, so
+                    # an inherited TRACESTATE isn't paired with a new
+                    # TRACEPARENT. Explicit ClaudeAgentOptions.env always wins.
+                    # Gate on the traceparent key (not carrier truthiness) so a
+                    # baggage-only / non-W3C carrier doesn't scrub a valid
+                    # inherited TRACEPARENT.
+                    for key in ("TRACEPARENT", "TRACESTATE"):
+                        if key not in self._options.env:
+                            process_env.pop(key, None)
+                    for k, v in carrier.items():
+                        key = k.upper()
+                        if key not in self._options.env:
+                            process_env[key] = v
+            except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
+                logger.debug("OTEL trace context injection failed", exc_info=True)
 
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:
@@ -359,14 +468,8 @@ class SubprocessCLITransport(Transport):
             if self._cwd:
                 process_env["PWD"] = self._cwd
 
-            # Pipe stderr if we have a callback OR debug mode is enabled
-            should_pipe_stderr = (
-                self._options.stderr is not None
-                or "debug-to-stderr" in self._options.extra_args
-            )
-
-            # For backward compat: use debug_stderr file object if no callback and debug is on
-            stderr_dest = PIPE if should_pipe_stderr else None
+            # Pipe stderr only when the caller registered a callback.
+            stderr_dest = PIPE if self._options.stderr is not None else None
 
             self._process = await anyio.open_process(
                 cmd,
@@ -377,17 +480,18 @@ class SubprocessCLITransport(Transport):
                 env=process_env,
                 user=self._options.user,
             )
+            _ACTIVE_CHILDREN.add(self._process)
 
             if self._process.stdout:
                 self._stdout_stream = TextReceiveStream(self._process.stdout)
 
             # Setup stderr stream if piped
-            if should_pipe_stderr and self._process.stderr:
+            if stderr_dest is PIPE and self._process.stderr:
                 self._stderr_stream = TextReceiveStream(self._process.stderr)
-                # Start async task to read stderr
-                self._stderr_task_group = anyio.create_task_group()
-                await self._stderr_task_group.__aenter__()
-                self._stderr_task_group.start_soon(self._handle_stderr)
+                # Spawn the stderr reader via spawn_detached (not a manually-
+                # entered TaskGroup) so cleanup has no trio task-affinity —
+                # same pattern as Query._read_task.
+                self._stderr_task = spawn_detached(self._handle_stderr())
 
             # Setup stdin for streaming (always used now)
             if self._process.stdin:
@@ -425,15 +529,6 @@ class SubprocessCLITransport(Transport):
                 # Call the stderr callback if provided
                 if self._options.stderr:
                     self._options.stderr(line_str)
-
-                # For backward compatibility: write to debug_stderr if in debug mode
-                elif (
-                    "debug-to-stderr" in self._options.extra_args
-                    and self._options.debug_stderr
-                ):
-                    self._options.debug_stderr.write(line_str + "\n")
-                    if hasattr(self._options.debug_stderr, "flush"):
-                        self._options.debug_stderr.flush()
         except anyio.ClosedResourceError:
             pass  # Stream closed, exit normally
         except Exception:
@@ -445,12 +540,12 @@ class SubprocessCLITransport(Transport):
             self._ready = False
             return
 
-        # Close stderr task group if active
-        if self._stderr_task_group:
+        # Cancel stderr reader if active
+        if self._stderr_task is not None and not self._stderr_task.done():
+            self._stderr_task.cancel()
             with suppress(Exception):
-                self._stderr_task_group.cancel_scope.cancel()
-                await self._stderr_task_group.__aexit__(None, None, None)
-            self._stderr_task_group = None
+                await self._stderr_task.wait()
+        self._stderr_task = None
 
         # Close stdin stream (acquire lock to prevent race with concurrent writes)
         async with self._write_lock:
@@ -469,16 +564,26 @@ class SubprocessCLITransport(Transport):
         # The subprocess needs time to flush its session file after receiving
         # EOF on stdin. Without this grace period, SIGTERM can interrupt the
         # write and cause the last assistant message to be lost (see #625).
-        if self._process.returncode is None:
-            try:
-                with anyio.fail_after(5):
-                    await self._process.wait()
-            except TimeoutError:
-                # Graceful shutdown timed out — force terminate
-                with suppress(ProcessLookupError):
-                    self._process.terminate()
-                    with suppress(Exception):
+        try:
+            if self._process.returncode is None:
+                try:
+                    with anyio.fail_after(5):
                         await self._process.wait()
+                except TimeoutError:
+                    # Graceful shutdown timed out — force terminate
+                    with suppress(ProcessLookupError):
+                        self._process.terminate()
+                    try:
+                        with anyio.fail_after(5):
+                            await self._process.wait()
+                    except TimeoutError:
+                        # SIGTERM handler blocked — force kill (SIGKILL)
+                        with suppress(ProcessLookupError):
+                            self._process.kill()
+                        with suppress(Exception):
+                            await self._process.wait()
+        finally:
+            _ACTIVE_CHILDREN.discard(self._process)
 
         self._process = None
         self._stdout_stream = None
@@ -548,6 +653,15 @@ class SubprocessCLITransport(Transport):
                     if not json_line:
                         continue
 
+                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
+                    # mid-parse — they corrupt the buffer otherwise (#347).
+                    if not json_buffer and not json_line.startswith("{"):
+                        logger.debug(
+                            "Skipping non-JSON line from CLI stdout: %s",
+                            json_line[:200],
+                        )
+                        continue
+
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
@@ -594,6 +708,8 @@ class SubprocessCLITransport(Transport):
 
     async def _check_claude_version(self) -> None:
         """Check Claude Code version and warn if below minimum."""
+        if self._cli_path is None:
+            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
@@ -616,13 +732,14 @@ class SubprocessCLITransport(Transport):
                         ]
 
                         if version_parts < min_parts:
-                            warning = (
-                                f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
-                                f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
-                                "Some features may not work correctly."
+                            logger.warning(
+                                "Claude Code version %s at %s is unsupported in the Agent SDK. "
+                                "Minimum required version is %s. "
+                                "Some features may not work correctly.",
+                                version,
+                                self._cli_path,
+                                MINIMUM_CLAUDE_CODE_VERSION,
                             )
-                            logger.warning(warning)
-                            print(warning, file=sys.stderr)
         except Exception:
             pass
         finally:

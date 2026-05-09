@@ -690,3 +690,98 @@ class TestAgentDefinition:
         assert "background" not in payload
         assert "effort" not in payload
         assert "permissionMode" not in payload
+
+
+class TestPublicApiSurface:
+    """Regression tests for public API fields and types reported missing in issue #941.
+
+    Each test asserts that a specific public field or type exported by
+    claude-agent-sdk==0.1.80 is accessible and has the expected default /
+    structure. Failures here indicate a source/doc divergence.
+    """
+
+    def test_claude_agent_options_session_id_default(self):
+        """ClaudeAgentOptions.session_id exists and defaults to None."""
+        options = ClaudeAgentOptions()
+        assert "session_id" in ClaudeAgentOptions.__dataclass_fields__
+        assert options.session_id is None
+
+    def test_claude_agent_options_load_timeout_ms_default(self):
+        """ClaudeAgentOptions.load_timeout_ms exists and defaults to 60000."""
+        options = ClaudeAgentOptions()
+        assert "load_timeout_ms" in ClaudeAgentOptions.__dataclass_fields__
+        assert options.load_timeout_ms == 60_000
+
+    def test_claude_agent_options_task_budget_default(self):
+        """ClaudeAgentOptions.task_budget exists and defaults to None."""
+        options = ClaudeAgentOptions()
+        assert "task_budget" in ClaudeAgentOptions.__dataclass_fields__
+        assert options.task_budget is None
+
+    def test_claude_agent_options_skills_field_present(self):
+        """ClaudeAgentOptions.skills exists as a dataclass field."""
+        assert "skills" in ClaudeAgentOptions.__dataclass_fields__
+
+    def test_permission_mode_includes_auto(self):
+        """PermissionMode literal includes 'auto'."""
+        from typing import get_args
+
+        from claude_agent_sdk.types import PermissionMode
+
+        assert "auto" in get_args(PermissionMode)
+
+    def test_tool_permission_context_has_tool_use_id_and_agent_id(self):
+        """ToolPermissionContext has tool_use_id and agent_id fields, both default None."""
+        from claude_agent_sdk.types import ToolPermissionContext
+
+        ctx = ToolPermissionContext()
+        assert hasattr(ctx, "tool_use_id")
+        assert ctx.tool_use_id is None
+        assert hasattr(ctx, "agent_id")
+        assert ctx.agent_id is None
+
+    def test_deferred_tool_use_importable_and_has_fields(self):
+        """DeferredToolUse is importable from claude_agent_sdk and has id/name/input."""
+        from claude_agent_sdk.types import DeferredToolUse
+
+        deferred = DeferredToolUse(id="toolu_abc", name="Bash", input={"command": "ls"})
+        assert deferred.id == "toolu_abc"
+        assert deferred.name == "Bash"
+        assert deferred.input == {"command": "ls"}
+
+    def test_hook_event_message_importable_and_has_fields(self):
+        """HookEventMessage is importable from claude_agent_sdk.types and has hook_event_name."""
+        from claude_agent_sdk.types import HookEventMessage
+
+        msg = HookEventMessage(
+            subtype="hook_started",
+            data={},
+            hook_event_name="PreToolUse",
+        )
+        assert msg.hook_event_name == "PreToolUse"
+        assert msg.session_id is None
+        assert msg.uuid is None
+
+    def test_system_prompt_file_accepted_as_system_prompt(self):
+        """ClaudeAgentOptions accepts a SystemPromptFile dict as system_prompt."""
+        options = ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/tmp/prompt.md"}
+        )
+        assert options.system_prompt is not None
+        assert options.system_prompt["type"] == "file"  # type: ignore[index]
+        assert options.system_prompt["path"] == "/tmp/prompt.md"  # type: ignore[index]
+
+    def test_system_prompt_file_importable(self):
+        """SystemPromptFile is importable from claude_agent_sdk.types as a TypedDict."""
+        from claude_agent_sdk.types import SystemPromptFile
+
+        prompt: SystemPromptFile = {"type": "file", "path": "/etc/prompt.md"}
+        assert prompt["type"] == "file"
+        assert prompt["path"] == "/etc/prompt.md"
+
+    def test_task_budget_importable(self):
+        """TaskBudget is importable from claude_agent_sdk.types."""
+        from claude_agent_sdk.types import TaskBudget
+
+        budget: TaskBudget = {"total": 10_000}
+        assert budget["total"] == 10_000

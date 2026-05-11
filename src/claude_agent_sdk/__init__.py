@@ -65,6 +65,7 @@ from .types import (
     ContextUsageCategory,
     ContextUsageResponse,
     DeferredToolUse,
+    EffortLevel,
     HookCallback,
     HookContext,
     HookEventMessage,
@@ -528,6 +529,7 @@ __all__ = [
     "ClaudeSDKClient",
     # Types
     "PermissionMode",
+    "EffortLevel",
     "McpServerConfig",
     "McpSdkServerConfig",
     "McpServerStatus",

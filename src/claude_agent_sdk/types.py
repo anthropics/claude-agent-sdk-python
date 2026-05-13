@@ -31,6 +31,9 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
 
+# Effort level for adaptive thinking and response generation
+EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
+
 
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
@@ -96,7 +99,7 @@ class AgentDefinition:
     initialPrompt: str | None = None  # noqa: N815
     maxTurns: int | None = None  # noqa: N815
     background: bool | None = None
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | int | None = None
+    effort: EffortLevel | int | None = None
     permissionMode: PermissionMode | None = None  # noqa: N815
 
 
@@ -1864,7 +1867,7 @@ class ClaudeAgentOptions:
     See https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking.
     """
 
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    effort: EffortLevel | None = None
     """Controls how much effort Claude puts into its response.
 
     Works with adaptive thinking to guide thinking depth.

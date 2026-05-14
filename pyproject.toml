@@ -28,7 +28,7 @@ dependencies = [
     "anyio>=4.0.0",
     "sniffio>=1.0.0",
     "typing_extensions>=4.0.0; python_version<'3.11'",
-    "mcp>=1.19.0",
+    "mcp>=1.23.0",
 ]
 
 [project.optional-dependencies]

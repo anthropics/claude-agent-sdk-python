@@ -1762,6 +1762,12 @@ class ClaudeAgentOptions:
 
     Hooks can modify behavior, add context, or implement custom logic. See
     https://docs.anthropic.com/en/docs/claude-code/hooks.
+
+    **Dispatch order:** multiple matchers registered on the same event are
+    dispatched **concurrently** by the CLI — all ``hook_callback`` control
+    requests for a given event fire in parallel, not sequentially. Design
+    each hook to be independent; do not rely on one completing before
+    another starts.
     """
 
     user: str | None = None

@@ -1,8 +1,11 @@
 """Tests for Claude SDK type definitions."""
 
+from typing import get_args
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    EffortLevel,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
@@ -22,6 +25,11 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+
+
+def test_effort_level_is_exported():
+    """EffortLevel is part of the public package API for downstream wrappers."""
+    assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
 
 
 class TestPermissionUpdate:

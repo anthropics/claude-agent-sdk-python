@@ -4,7 +4,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, Required, TypedDict
@@ -30,6 +30,7 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
+EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class SystemPromptPreset(TypedDict):
@@ -96,7 +97,7 @@ class AgentDefinition:
     initialPrompt: str | None = None  # noqa: N815
     maxTurns: int | None = None  # noqa: N815
     background: bool | None = None
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | int | None = None
+    effort: EffortLevel | int | None = None
     permissionMode: PermissionMode | None = None  # noqa: N815
 
 
@@ -1864,7 +1865,7 @@ class ClaudeAgentOptions:
     See https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking.
     """
 
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    effort: EffortLevel | None = None
     """Controls how much effort Claude puts into its response.
 
     Works with adaptive thinking to guide thinking depth.

@@ -12,7 +12,7 @@ Two plug points:
      as MCP tools the model can call explicitly.
 
 Install:
-    pip install synap-claude-agent maximem-synap
+    pip install maximem-synap-claude-agent maximem-synap
 
 Set `SYNAP_API_KEY` in your environment. Get a free key at
 https://synap.maximem.ai.

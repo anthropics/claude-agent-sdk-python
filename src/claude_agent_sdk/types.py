@@ -1941,8 +1941,7 @@ class SDKControlPermissionRequest(TypedDict):
     subtype: Literal["can_use_tool"]
     tool_name: str
     input: dict[str, Any]
-    # TODO: Add PermissionUpdate type here
-    permission_suggestions: list[Any] | None
+    permission_suggestions: list[PermissionUpdate] | None
     blocked_path: str | None
     decision_reason: NotRequired[str]
     title: NotRequired[str]

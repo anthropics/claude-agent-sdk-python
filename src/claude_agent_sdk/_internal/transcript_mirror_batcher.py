@@ -33,6 +33,17 @@ MIRROR_APPEND_MAX_ATTEMPTS = 3
 MIRROR_APPEND_BACKOFF_S = (0.2, 0.8)
 
 
+def _swallow_done_exception(t: asyncio.Task[None]) -> None:
+    # Retrieve the task's exception (if any) so asyncio doesn't warn about an
+    # unretrieved exception on a fire-and-forget task. Skip cancelled tasks:
+    # Task.exception() raises CancelledError on those (Python 3.8+), and the
+    # raise from inside a done-callback surfaces as a noisy "Exception in
+    # callback" log on every cancellation.
+    if t.cancelled():
+        return
+    t.exception()
+
+
 @dataclass
 class _MirrorEntry:
     file_path: str
@@ -88,7 +99,7 @@ class TranscriptMirrorBatcher:
             # so append ordering holds. drain() never raises, but guard anyway
             # so a future regression can't surface as an unhandled exception.
             self._flush_task = asyncio.ensure_future(self._drain())
-            self._flush_task.add_done_callback(lambda t: t.exception())
+            self._flush_task.add_done_callback(_swallow_done_exception)
 
     async def flush(self) -> None:
         """Flush all pending entries. Awaits any in-flight eager flush first."""

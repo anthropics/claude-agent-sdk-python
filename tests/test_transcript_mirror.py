@@ -33,6 +33,7 @@ from claude_agent_sdk._internal.transcript_mirror_batcher import (
     MAX_PENDING_BYTES,
     MAX_PENDING_ENTRIES,
     TranscriptMirrorBatcher,
+    _swallow_done_exception,
 )
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
@@ -521,6 +522,52 @@ class TestTranscriptMirrorBatcher:
         gate.set()
         await flush_task
         assert order == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# _swallow_done_exception
+# ---------------------------------------------------------------------------
+
+
+class TestSwallowDoneException:
+    """Regression for issue #930: the eager-flush task's done-callback used
+    ``lambda t: t.exception()``, which raises ``CancelledError`` for cancelled
+    tasks (Python 3.8+) and surfaces as a noisy "Exception in callback" log
+    every time the SDK shuts down with pending eager flushes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_cancelled_task(self) -> None:
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        task = asyncio.ensure_future(_hang())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        # Must NOT raise — this is the whole point of the fix.
+        assert _swallow_done_exception(task) is None
+
+    @pytest.mark.asyncio
+    async def test_retrieves_exception_for_failed_task(self) -> None:
+        async def _boom() -> None:
+            raise RuntimeError("kaboom")
+
+        task = asyncio.ensure_future(_boom())
+        with pytest.raises(RuntimeError, match="kaboom"):
+            await task
+        # Retrieves the exception so asyncio doesn't warn — does not re-raise.
+        assert _swallow_done_exception(task) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_successful_task(self) -> None:
+        async def _ok() -> None:
+            return None
+
+        task = asyncio.ensure_future(_ok())
+        await task
+        assert _swallow_done_exception(task) is None
 
 
 # ---------------------------------------------------------------------------

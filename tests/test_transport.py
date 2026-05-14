@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2068,6 +2069,37 @@ class TestSubprocessCLITransport:
 
                 # No warning for a current version
                 mock_logger.warning.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_stderr_callback_raise_does_not_terminate_loop(self) -> None:
+        """Regression for issue #929: a raise from ``options.stderr`` must not
+        kill the read loop. Previously the outer ``except Exception: pass``
+        caught it, exited the ``async for``, and silently dropped every
+        subsequent stderr line for the rest of the session."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            def stderr_cb(line: str) -> None:
+                received.append(line)
+                if len(received) == 1:
+                    raise RuntimeError("simulated handler failure")
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=stderr_cb)
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "line 1"
+                yield "line 2"
+                yield "line 3"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            # All three lines must be delivered despite the first raise.
+            assert received == ["line 1", "line 2", "line 3"]
 
         anyio.run(_test)
 

@@ -473,6 +473,47 @@ class TestSubprocessCLITransport:
         assert transport._prompt == "test"
         assert transport._cli_path == "/usr/bin/claude"
 
+    def test_read_messages_includes_stderr_in_process_error(self):
+        """ProcessError should include CLI stderr even without a stderr callback."""
+
+        async def _test():
+            import sys
+
+            from claude_agent_sdk._errors import ProcessError
+
+            stderr = (
+                'API Error: 429 {"error":{"type":"rate_limit_error",'
+                '"retryAfter":2}}'
+            )
+            cmd = [
+                sys.executable,
+                "-c",
+                "import sys; sys.stderr.write(sys.argv[1]); sys.exit(1)",
+                stderr,
+            ]
+
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(stderr=None),
+            )
+
+            with (
+                patch.dict(os.environ, {"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"}),
+                patch.object(transport, "_build_command", return_value=cmd),
+            ):
+                await transport.connect()
+
+            with pytest.raises(ProcessError) as exc_info:
+                async for _ in transport.read_messages():
+                    pass
+
+            assert exc_info.value.stderr == stderr
+            assert "rate_limit_error" in str(exc_info.value)
+
+            await transport.close()
+
+        anyio.run(_test)
+
     def test_connect_with_nonexistent_cwd(self):
         """Test that connect raises CLIConnectionError when cwd doesn't exist."""
         from claude_agent_sdk._errors import CLIConnectionError

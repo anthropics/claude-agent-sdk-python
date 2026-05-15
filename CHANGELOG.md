@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.82
+
+### New Features
+
+- **`EffortLevel` type export**: Added a public `EffortLevel` type alias for Claude effort string levels (`"low"`, `"medium"`, `"high"`, `"max"`, `"xhigh"`) and exported it from the package root, making it available for downstream SDK wrappers and type annotations (#951)
+
+### Bug Fixes
+
+- **Stderr callback isolation**: Fixed an issue where a user-provided `stderr` callback that raises an exception would silently terminate the stderr reader loop, dropping all subsequent stderr lines for the rest of the session. Exceptions are now caught per-line so a failing callback does not prevent delivery of later lines (#932)
+- **CancelledError in eager-flush done callback**: Fixed noisy `Exception in callback` log messages on shutdown when pending eager-flush tasks were cancelled. The done callback now gracefully handles `CancelledError` instead of unconditionally calling `Task.exception()` (#931)
+- **Tighter `permission_suggestions` type**: Replaced `list[Any] | None` with `list[dict[str, Any]] | None` on `SDKControlPermissionRequest.permission_suggestions`, enabling proper type-checking on consumers of that field (#955)
+
+### Documentation
+
+- Clarified that `hooks` dispatch for a given event is concurrent (all matchers fire in parallel), not sequential, preventing incorrect assumptions about ordering-dependent hooks like rate limiters gating subsequent hooks (#956)
+
+### Internal/Other Changes
+
+- Bumped `mcp` dependency lower bound to `>=1.23.0` to address GHSA-9h52-p55h-vw2f (CVE-2025-66416), which disables DNS rebinding protection by default in older versions (#927)
+- Stabilized eager-flush transcript mirror tests with deterministic wait helpers instead of fixed `asyncio.sleep(0)` yields (#933)
+- Updated bundled Claude CLI to version 2.1.142
+
 ## 0.1.81
 
 ### Internal/Other Changes

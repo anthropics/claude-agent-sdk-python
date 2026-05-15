@@ -57,8 +57,8 @@ async def query(
                  - 'acceptEdits': Auto-accept file edits
                  - 'plan': Plan-only mode (no tool execution)
                  - 'bypassPermissions': Allow all tools (use with caution)
-                 - 'dontAsk': Allow all tools without prompting
-                 - 'auto': Automatically determine permission mode
+                 - 'dontAsk': Deny anything not pre-approved by allow rules
+                 - 'auto': A model classifier approves or denies each tool call
                  Set options.cwd for working directory.
         transport: Optional transport implementation. If provided, this will be used
                   instead of the default transport selection based on options.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-agent-sdk"
-version = "0.1.56"
+version = "0.2.82"
 description = "Python SDK for Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,8 +26,9 @@ classifiers = [
 keywords = ["claude", "ai", "sdk", "anthropic"]
 dependencies = [
     "anyio>=4.0.0",
+    "sniffio>=1.0.0",
     "typing_extensions>=4.0.0; python_version<'3.11'",
-    "mcp>=0.1.0",
+    "mcp>=1.23.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,19 @@ dev = [
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+]
+otel = [
+    "opentelemetry-api>=1.20.0",
+]
+examples = [
+    # Backend clients for the SessionStore reference adapters under
+    # examples/session_stores/. The corresponding tests importorskip on
+    # these so default CI is unaffected if this group isn't installed.
+    "boto3>=1.28.0",
+    "moto[s3]>=5.0.0",
+    "redis>=4.2.0",
+    "fakeredis>=2.20.0",
+    "asyncpg>=0.27.0",
 ]
 
 [project.urls]
@@ -53,6 +67,7 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    "/examples",
     "/README.md",
     "/LICENSE",
 ]
@@ -83,6 +98,12 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+[[tool.mypy.overrides]]
+# opentelemetry-api is an optional dependency (the [otel] extra); the
+# import in subprocess_cli.py is guarded by try/except ImportError.
+module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py310"

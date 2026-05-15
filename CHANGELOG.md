@@ -1,5 +1,280 @@
 # Changelog
 
+## 0.2.82
+
+### New Features
+
+- **`EffortLevel` type export**: Added a public `EffortLevel` type alias for Claude effort string levels (`"low"`, `"medium"`, `"high"`, `"max"`, `"xhigh"`) and exported it from the package root, making it available for downstream SDK wrappers and type annotations (#951)
+
+### Bug Fixes
+
+- **Stderr callback isolation**: Fixed an issue where a user-provided `stderr` callback that raises an exception would silently terminate the stderr reader loop, dropping all subsequent stderr lines for the rest of the session. Exceptions are now caught per-line so a failing callback does not prevent delivery of later lines (#932)
+- **CancelledError in eager-flush done callback**: Fixed noisy `Exception in callback` log messages on shutdown when pending eager-flush tasks were cancelled. The done callback now gracefully handles `CancelledError` instead of unconditionally calling `Task.exception()` (#931)
+- **Tighter `permission_suggestions` type**: Replaced `list[Any] | None` with `list[dict[str, Any]] | None` on `SDKControlPermissionRequest.permission_suggestions`, enabling proper type-checking on consumers of that field (#955)
+
+### Documentation
+
+- Clarified that `hooks` dispatch for a given event is concurrent (all matchers fire in parallel), not sequential, preventing incorrect assumptions about ordering-dependent hooks like rate limiters gating subsequent hooks (#956)
+
+### Internal/Other Changes
+
+- Bumped `mcp` dependency lower bound to `>=1.23.0` to address GHSA-9h52-p55h-vw2f (CVE-2025-66416), which disables DNS rebinding protection by default in older versions (#927)
+- Stabilized eager-flush transcript mirror tests with deterministic wait helpers instead of fixed `asyncio.sleep(0)` yields (#933)
+- Updated bundled Claude CLI to version 2.1.142
+
+## 0.1.81
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.139
+
+## 0.1.80
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.138
+
+## 0.1.79
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.137
+
+## 0.1.78
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.136
+
+## 0.1.77
+
+### Bug Fixes
+
+- **Actionable error messages after error results**: Replaced the generic `Command failed with exit code 1` exception raised after an error result with one carrying the result's actual error text (e.g. "Reached maximum number of turns"), matching the TypeScript SDK behavior (#918)
+
+### Documentation
+
+- Deprecated `"Skill"` in `allowed_tools` in favor of the `skills` option on `ClaudeAgentOptions`, which provides more granular control over available skills (#924)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.133
+
+## 0.1.76
+
+### New Features
+
+- **API error status on result messages**: Added `api_error_status: int | None` to `ResultMessage`, surfacing the HTTP status code (e.g. 429, 500, 529) from failing API calls. This provides a safe-to-log field for classifying API failures when `is_error=True` (#923)
+
+### Bug Fixes
+
+- **Permission suggestions deserialization**: Fixed `ToolPermissionContext.suggestions` containing raw dicts instead of `PermissionUpdate` instances. Added `PermissionUpdate.from_dict()` so suggestions from `can_use_tool` callbacks can be inspected and echoed back in `PermissionResultAllow(updated_permissions=...)` without `AttributeError` (#920)
+
+### Internal/Other Changes
+
+- Pinned third-party GitHub Actions to immutable commit SHAs (#919)
+- Updated bundled Claude CLI to version 2.1.132
+
+## 0.1.75
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.131
+
+## 0.1.74
+
+### New Features
+
+- **Hook event streaming**: Added `include_hook_events` option to `ClaudeAgentOptions`. When set, hook events (PreToolUse, PostToolUse, Stop, etc.) are emitted by the CLI and yielded from the message stream as `HookEventMessage`, matching the TypeScript SDK's `includeHookEvents` (#917)
+- **Defer hook decision**: Added support for the `"defer"` hook decision in `PreToolUseHookSpecificOutput.permissionDecision` and new `DeferredToolUse` dataclass on `ResultMessage.deferred_tool_use`, bringing parity with the TypeScript SDK's deferred tool use round trip (#865)
+- **Strict MCP config**: Added `strict_mcp_config` option to `ClaudeAgentOptions`. When `True`, the CLI only uses MCP servers passed via `mcp_servers`, ignoring project, user, and global MCP configurations for fully deterministic server sets (#915)
+- **Permission context enrichment**: Added `decision_reason`, `blocked_path`, `title`, `display_name`, and `description` fields to `ToolPermissionContext`, enabling richer permission prompts in `can_use_tool` callbacks (#909)
+- **`updatedToolOutput` for post-tool hooks**: Added `updatedToolOutput` to `PostToolUseHookSpecificOutput` for replacing any tool's output before it reaches the model, not just MCP tools (#911)
+- **`xhigh` effort level**: Added `"xhigh"` to the `effort` Literal on `ClaudeAgentOptions` and `AgentDefinition`, an Opus 4.7-specific level that falls back to `high` on other models (#914)
+- **Subprocess cleanup on parent exit**: Registered an atexit handler to terminate live CLI subprocesses when the parent process exits, preventing orphaned `claude` processes from leaking (#916)
+
+### Bug Fixes
+
+- **ResourceWarning on disconnect**: Fixed `ResourceWarning: Unclosed <MemoryObjectReceiveStream>` emitted on `ClaudeSDKClient` disconnect and `query()` cleanup by closing the receive stream at the consumer boundary (#908)
+- **Session `created_at` timestamp**: Fixed `list_sessions()` returning `created_at=None` for sessions whose first JSONL record lacks a `timestamp` field by scanning the full head buffer instead of only the first line (#907)
+
+### Documentation
+
+- Clarified that `can_use_tool` fires only on `"ask"` permission decisions, not on `"allow"` or `"deny"` (#912)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.129
+
+## 0.1.73
+
+### New Features
+
+- **Eager session store flushing**: Added `session_store_flush` option to `ClaudeAgentOptions` (`"batched"` or `"eager"`). When set to `"eager"`, the transcript mirror delivers frames to `SessionStore.append()` in near-real-time instead of waiting for the end-of-turn flush, enabling live-tailing UIs, cross-process resume, and crash-durability use cases (#905)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.128
+
+## 0.1.72
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.126
+
+## 0.1.71
+
+### New Features
+
+- **Domain allowlist fields for sandbox network config**: Added `allowedDomains`, `deniedDomains`, `allowManagedDomainsOnly`, and `allowMachLookup` fields to `SandboxNetworkConfig`, bringing parity with the TypeScript schema and enabling Python SDK users to configure network allowlists with proper type hints (#893)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.123
+
+## 0.1.70
+
+### Bug Fixes
+
+- **In-process MCP tool results silently lost with older `mcp` versions**: Bumped the `mcp` dependency floor to `>=1.19.0`. Older versions mishandled `CallToolResult` returns from SDK MCP tool handlers, causing the model to receive a validation-error blob instead of the actual tool output (#891)
+- **Trio nursery corruption on early cancellation**: Fixed `RuntimeError: Nursery stack corrupted` when breaking out of `query()` iteration inside a trio nursery with `options.stderr` set. The stderr reader now uses `spawn_detached()` instead of manually managing a task group, matching the approach already used for the read loop (#885)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.122
+
+## 0.1.69
+
+### Documentation
+
+- Added docstrings to `ClaudeAgentOptions` fields for improved IDE autocompletion and inline documentation (#873)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.121
+
+## 0.1.68
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.119
+
+## 0.1.67
+
+### Bug Fixes
+
+- **Trio compatibility restored**: Fixed `RuntimeError: no running event loop` when using `ClaudeSDKClient` or `query()` under trio, a regression introduced in v0.1.51. Uses sniffio-based dispatch to select the correct async primitive (`asyncio.Task` vs `trio.lowlevel.spawn_system_task`) at runtime while preserving the asyncio CPU-spin and cancel-scope fixes from #746 (#870)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.120
+- Added `sniffio>=1.0.0` as an explicit runtime dependency (already a transitive dep of anyio)
+
+## 0.1.66
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.119
+
+## 0.1.65
+
+### New Features
+
+- **Batch session summaries**: Added `SessionStore.list_session_summaries()` optional protocol method and `fold_session_summary()` helper for O(1)-per-session list views. Stores that maintain append-time summary sidecars can now serve `list_sessions_from_store()` without loading full transcripts, reducing round-trips from N to 1 for N sessions (#847)
+- **Import local sessions to store**: Added `import_session_to_store()` for replaying a local on-disk session into any `SessionStore` adapter, enabling migration from local storage to remote stores (#858)
+- **Thinking display control**: Added `display` field to `ThinkingConfig` types, forwarded as `--thinking-display` to the CLI. This lets callers override Opus 4.7's default `"omitted"` behavior and receive summarized thinking text (#830)
+- **Server tool use and advisor result blocks**: Added `ServerToolUseBlock` and `AdvisorToolResultBlock` content block types, surfacing server-executed tool calls (e.g., `advisor`, `web_search`) and their results that were previously silently dropped (#836)
+
+### Bug Fixes
+
+- **Missing content blocks**: Fixed `server_tool_use` and `advisor_tool_result` content blocks being silently dropped by the message parser, which caused messages carrying only server-side tool calls to arrive as empty `AssistantMessage(content=[])` (#836)
+
+### Documentation
+
+- Fixed misleading `permission_mode` docstrings: `dontAsk` now correctly described as denying unapproved tools (was inverted), and `auto` clarified as using a model classifier (#863)
+
+### Internal/Other Changes
+
+- Dropped `--debug-to-stderr` detection from the transport layer in preparation for CLI flag removal; stderr piping now depends solely on whether a `stderr` callback is registered (#860)
+- Added bounded retry on session mirror append and UUID idempotency documentation (#857)
+- Updated bundled Claude CLI to version 2.1.118
+
+## 0.1.64
+
+### New Features
+
+- **SessionStore adapter**: Full SessionStore support at parity with the TypeScript SDK. Includes a `SessionStore` protocol with 5 methods (`append`, `load`, `list_sessions`, `delete`, `list_subkeys`), `InMemorySessionStore` reference implementation, transcript mirroring via `--session-mirror`, session resume from store, and 9 new async store-backed helper functions (`list_sessions_from_store`, `get_session_messages_from_store`, `fork_session_via_store`, etc.). Also adds a 13-contract conformance test harness at `claude_agent_sdk.testing.run_session_store_conformance` for third-party adapter authors (#837)
+- **Reference SessionStore adapters**: Three copy-in reference `SessionStore` adapters under `examples/session_stores/` — S3 (JSONL part files, mirrors the TS S3 reference), Redis (RPUSH/LRANGE lists + zset index), and Postgres (`asyncpg` + jsonb rows). Not shipped in the wheel; users copy the file they need into their project (#842)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.116
+
+## 0.1.63
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.114
+
+## 0.1.62
+
+### New Features
+
+- **Top-level `skills` option**: Added `skills` parameter to `ClaudeAgentOptions` for enabling skills on the main session without manually configuring `allowed_tools` and `setting_sources`. Supports `"all"` for every discovered skill, a list of named skills, or `[]` to suppress all skills (#804)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.113
+
+## 0.1.61
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.112
+
+## 0.1.60
+
+### New Features
+
+- **Subagent transcript helpers**: Added `list_subagents()` and `get_subagent_messages()` session helpers for reading subagent transcripts, enabling inspection of subagent message chains spawned during a session (#825)
+- **Distributed tracing**: Propagate W3C trace context (`TRACEPARENT`/`TRACESTATE`) to the CLI subprocess when an OpenTelemetry span is active, connecting SDK and CLI traces end-to-end. Install with `pip install claude-agent-sdk[otel]` for optional OpenTelemetry support (#821)
+- **Cascading session deletion**: `delete_session()` now removes the sibling subagent transcript directory alongside the session file, matching TypeScript SDK behavior (#805)
+
+### Bug Fixes
+
+- **Empty setting sources**: Fixed `setting_sources=[]` being silently dropped (treated as falsy), which caused the CLI to load default settings instead of disabling all filesystem settings. An empty list now correctly passes `--setting-sources=` to disable all sources (#822)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.111
+
+## 0.1.59
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.105
+
+## 0.1.58
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.97
+
+## 0.1.57
+
+### New Features
+
+- **Cross-user prompt caching**: Added `exclude_dynamic_sections` option to `SystemPromptPreset`, enabling cross-user prompt cache hits by moving per-user dynamic sections (working directory, memory, git status) out of the system prompt (#797)
+- **Auto permission mode**: Added `"auto"` to the `PermissionMode` type, bringing parity with the TypeScript SDK and CLI v2.1.90+ (#785)
+
+### Bug Fixes
+
+- **Thinking configuration**: Fixed `thinking={"type": "adaptive"}` incorrectly mapping to `--max-thinking-tokens 32000` instead of `--thinking adaptive`. The `disabled` type similarly now uses `--thinking disabled` instead of `--max-thinking-tokens 0`, matching the TypeScript SDK behavior (#796)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.96
+
 ## 0.1.56
 
 ### Internal/Other Changes

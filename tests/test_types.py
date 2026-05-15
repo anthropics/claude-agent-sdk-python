@@ -1,8 +1,11 @@
 """Tests for Claude SDK type definitions."""
 
+from typing import get_args
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    EffortLevel,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
@@ -14,6 +17,8 @@ from claude_agent_sdk import (
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    PermissionRuleValue,
+    PermissionUpdate,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
     TextBlock,
@@ -22,6 +27,52 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
     UserMessage,
 )
+
+
+def test_effort_level_is_exported():
+    """EffortLevel is part of the public package API for downstream wrappers."""
+    assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
+
+
+class TestPermissionUpdate:
+    """Test PermissionUpdate wire-format conversion."""
+
+    def test_from_dict_to_dict_roundtrip_add_rules(self):
+        wire = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [
+                {"toolName": "Bash", "ruleContent": "npm *"},
+                {"toolName": "Read", "ruleContent": None},
+            ],
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.type == "addRules"
+        assert update.destination == "localSettings"
+        assert update.behavior == "allow"
+        assert update.rules == [
+            PermissionRuleValue(tool_name="Bash", rule_content="npm *"),
+            PermissionRuleValue(tool_name="Read", rule_content=None),
+        ]
+        assert update.to_dict() == wire
+
+    def test_from_dict_set_mode(self):
+        wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}
+        update = PermissionUpdate.from_dict(wire)
+        assert update.mode == "acceptEdits"
+        assert update.rules is None
+        assert update.to_dict() == wire
+
+    def test_from_dict_directories(self):
+        wire = {
+            "type": "addDirectories",
+            "directories": ["/tmp/a", "/tmp/b"],
+            "destination": "userSettings",
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.directories == ["/tmp/a", "/tmp/b"]
+        assert update.to_dict() == wire
 
 
 class TestMessageTypes:
@@ -404,6 +455,22 @@ class TestHookSpecificOutputTypes:
         assert output["hookEventName"] == "PostCompact"
         assert output["additionalContext"] == "Compaction complete, summary logged"
 
+    def test_post_tool_use_output_has_updated_tool_output(self):
+        """Test PostToolUseHookSpecificOutput includes updatedToolOutput field."""
+        output: PostToolUseHookSpecificOutput = {
+            "hookEventName": "PostToolUse",
+            "updatedToolOutput": {
+                "stdout": "replaced",
+                "stderr": "",
+                "interrupted": False,
+            },
+        }
+        assert output["updatedToolOutput"] == {
+            "stdout": "replaced",
+            "stderr": "",
+            "interrupted": False,
+        }
+
 
 class TestMcpServerStatusTypes:
     """Test MCP server status type definitions."""
@@ -621,6 +688,18 @@ class TestAgentDefinition:
         payload = self._serialize(agent)
 
         assert payload["effort"] == "high"
+
+    def test_effort_accepts_xhigh_level(self):
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            effort="xhigh",
+        )
+        payload = self._serialize(agent)
+
+        assert payload["effort"] == "xhigh"
 
     def test_effort_accepts_integer(self):
         from claude_agent_sdk import AgentDefinition

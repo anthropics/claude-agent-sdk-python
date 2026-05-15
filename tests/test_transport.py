@@ -4,6 +4,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -182,6 +183,70 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" not in cmd
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
+
+    def test_prepare_command_spills_long_system_prompt_on_windows(self):
+        """Long inline system prompts use a temp file on Windows."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="x" * 40000),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            return_value="Windows",
+        ):
+            cmd = transport._prepare_command_for_spawn(transport._build_command())
+
+        assert "--system-prompt" not in cmd
+        assert "--system-prompt-file" in cmd
+        prompt_path = Path(cmd[cmd.index("--system-prompt-file") + 1])
+        assert prompt_path.read_text(encoding="utf-8") == "x" * 40000
+
+        anyio.run(transport.close)
+        assert not prompt_path.exists()
+
+    def test_prepare_command_spills_long_append_prompt_on_windows(self):
+        """Long appended system prompts use a temp file on Windows."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                system_prompt={
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "x" * 40000,
+                },
+            ),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            return_value="Windows",
+        ):
+            cmd = transport._prepare_command_for_spawn(transport._build_command())
+
+        assert "--append-system-prompt" not in cmd
+        assert "--append-system-prompt-file" in cmd
+        prompt_path = Path(cmd[cmd.index("--append-system-prompt-file") + 1])
+        assert prompt_path.read_text(encoding="utf-8") == "x" * 40000
+
+        anyio.run(transport.close)
+        assert not prompt_path.exists()
+
+    def test_prepare_command_keeps_long_system_prompt_on_non_windows(self):
+        """Non-Windows platforms keep inline system prompts."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="x" * 40000),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            return_value="Linux",
+        ):
+            cmd = transport._prepare_command_for_spawn(transport._build_command())
+
+        assert "--system-prompt" in cmd
+        assert "--system-prompt-file" not in cmd
 
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
@@ -460,6 +525,39 @@ class TestSubprocessCLITransport:
                 # terminate should NOT be called.
                 mock_process.terminate.assert_not_called()
                 mock_process.wait.assert_called()
+
+        anyio.run(_test)
+
+    def test_connect_winerror_206_reports_command_too_long(self, tmp_path):
+        """Windows command-line overflow is not reported as missing CLI."""
+
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError, CLINotFoundError
+
+            cli_path = tmp_path / "claude.exe"
+            cli_path.write_text("", encoding="utf-8")
+            error = FileNotFoundError("The filename or extension is too long")
+            error.winerror = 206
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"},
+                ),
+                patch("anyio.open_process", side_effect=error),
+                pytest.raises(CLIConnectionError) as exc_info,
+            ):
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=make_options(
+                        cli_path=str(cli_path),
+                        system_prompt="x" * 40000,
+                    ),
+                )
+                await transport.connect()
+
+            assert not isinstance(exc_info.value, CLINotFoundError)
+            assert "command line exceeded the Windows limit" in str(exc_info.value)
 
         anyio.run(_test)
 

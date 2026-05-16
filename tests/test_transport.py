@@ -101,6 +101,31 @@ class TestSubprocessCLITransport:
         transport = SubprocessCLITransport(prompt="test", options=make_options())
         assert "--strict-mcp-config" not in transport._build_command()
 
+    def test_build_command_allowed_tools_none(self):
+        """Regression: passing ``allowed_tools=None`` must not crash.
+
+        The type annotation declares ``list[str]`` with a default factory of
+        ``list``, but Python's runtime does not enforce TypedDict / dataclass
+        type hints — callers (notably wrapper libraries like
+        ``claude-code-telegram``) sometimes set the attribute to ``None`` after
+        construction to express "no restriction". Previously
+        ``_apply_skills_defaults`` called ``list(options.allowed_tools)``
+        unconditionally and raised ``TypeError: 'NoneType' object is not
+        iterable`` before the CLI even started, surfacing as
+        ``"Unexpected error in Claude SDK"`` for the end user.
+
+        The defensive fix is ``list(... or [])`` — equivalent to an empty
+        allowlist, which the CLI treats as "no ``--allowedTools`` flag".
+        """
+        options = make_options()
+        # Simulate downstream code that assigns None after construction.
+        options.allowed_tools = None  # type: ignore[assignment]
+        transport = SubprocessCLITransport(prompt="test", options=options)
+
+        # Must not raise.
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
         from pathlib import Path

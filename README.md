@@ -188,7 +188,7 @@ options = ClaudeAgentOptions(
 
 A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).
 
-For more examples, see examples/hooks.py.
+For more examples, see [examples/hooks.py](examples/hooks.py).
 
 #### Example
 

@@ -289,13 +289,35 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
-If you're contributing to this project, run the initial setup script to install git hooks:
+If you're contributing to this project, install the development dependencies from an editable checkout:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Then run the same checks locally that the pre-push hook and CI use:
+
+```bash
+# Lint and format
+python -m ruff check src/ tests/ --fix
+python -m ruff format src/ tests/
+
+# Typecheck source files
+python -m mypy src/
+
+# Run tests
+python -m pytest tests/
+```
+
+You can also run the initial setup script to install git hooks:
 
 ```bash
 ./scripts/initial-setup.sh
 ```
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
+PR titles should use Conventional Commits, such as `fix: handle missing session id` or `docs: clarify development setup`.
 
 ### Building Wheels Locally
 

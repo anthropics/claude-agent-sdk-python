@@ -79,13 +79,14 @@ class SubprocessCLITransport(Transport):
         self._write_lock: anyio.Lock = anyio.Lock()
 
     def _find_cli(self) -> str:
-        """Find Claude Code CLI binary."""
-        # First, check for bundled CLI
-        bundled_cli = self._find_bundled_cli()
-        if bundled_cli:
-            return bundled_cli
+        """Find Claude Code CLI binary.
 
-        # Fall back to system-wide search
+        Searches in priority order:
+        1. System-wide PATH (allows users to override bundled binary)
+        2. Common installation locations
+        3. Bundled CLI (fallback)
+        """
+        # First, check for system-wide CLI (PATH and common locations)
         if cli := shutil.which("claude"):
             return cli
 
@@ -101,6 +102,11 @@ class SubprocessCLITransport(Transport):
         for path in locations:
             if path.exists() and path.is_file():
                 return str(path)
+
+        # Fall back to bundled CLI if no system-wide installation found
+        bundled_cli = self._find_bundled_cli()
+        if bundled_cli:
+            return bundled_cli
 
         raise CLINotFoundError(
             "Claude Code not found. Install with:\n"

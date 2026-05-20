@@ -289,13 +289,46 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
-If you're contributing to this project, run the initial setup script to install git hooks:
+### Setting up a development environment
+
+Install the SDK in editable mode along with the dev dependencies (`pytest`, `pytest-asyncio`, `pytest-cov`, `mypy`, `ruff`):
+
+```bash
+pip install -e ".[dev]"
+```
+
+Then install the pre-push git hook so lint checks run before each push (matching CI):
 
 ```bash
 ./scripts/initial-setup.sh
 ```
 
-This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+To skip the hook for a single push, use `git push --no-verify`.
+
+### Running checks locally
+
+The pre-push hook wraps the same commands you can run directly:
+
+```bash
+# Lint and auto-fix
+python -m ruff check src/ tests/ --fix
+
+# Format
+python -m ruff format src/ tests/
+
+# Type-check
+python -m mypy src/
+
+# Tests (all)
+python -m pytest tests/
+
+# Tests (single file)
+python -m pytest tests/test_client.py
+```
+
+### Pull request conventions
+
+PR titles follow [Conventional Commits](https://www.conventionalcommits.org/), e.g. `fix(transport): handle CancelledError`, `docs: update changelog`, `feat(hooks): add SubagentStartHookInput`. Recent merged PRs are good references for tone and scope.
 
 ### Building Wheels Locally
 

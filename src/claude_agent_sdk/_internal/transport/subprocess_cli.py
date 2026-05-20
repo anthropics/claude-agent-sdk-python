@@ -241,10 +241,16 @@ class SubprocessCLITransport(Transport):
         if self._options.tools is not None:
             tools = self._options.tools
             if isinstance(tools, list):
-                if len(tools) == 0:
+                # When skills are enabled, ensure "Skill" is in the tools list
+                # so the skill tool is available for the agent to invoke
+                tools_list = list(tools)  # Copy to avoid mutating the original
+                if self._options.skills is not None and "Skill" not in tools_list:
+                    tools_list.append("Skill")
+
+                if len(tools_list) == 0:
                     cmd.extend(["--tools", ""])
                 else:
-                    cmd.extend(["--tools", ",".join(tools)])
+                    cmd.extend(["--tools", ",".join(tools_list)])
             else:
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])

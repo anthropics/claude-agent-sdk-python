@@ -627,6 +627,57 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
 
+    def test_build_command_skills_all_with_explicit_tools_adds_skill(self):
+        """When skills='all' is set with explicit tools list, 'Skill' is added to tools."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["WebSearch", "WebFetch", "Read"],
+                skills="all",
+            ),
+        )
+        cmd = transport._build_command()
+        # Skill should be added to the tools list
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "WebSearch,WebFetch,Read,Skill"
+        # Skill should also be in allowed_tools
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+
+    def test_build_command_skills_list_with_explicit_tools_adds_skill(self):
+        """When skills list is set with explicit tools list, 'Skill' is added to tools."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["WebSearch", "WebFetch", "Read"],
+                skills=["pdf", "docx"],
+            ),
+        )
+        cmd = transport._build_command()
+        # Skill should be added to the tools list
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "WebSearch,WebFetch,Read,Skill"
+        # Skill patterns should be in allowed_tools
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+
+    def test_build_command_skills_with_explicit_tools_already_has_skill(self):
+        """When skills='all' is set and 'Skill' already in tools list, it's not duplicated."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["WebSearch", "Skill", "Read"],
+                skills="all",
+            ),
+        )
+        cmd = transport._build_command()
+        # Skill should not be duplicated
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "WebSearch,Skill,Read"
+
     @pytest.mark.parametrize(
         ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
         [

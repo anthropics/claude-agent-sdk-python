@@ -54,3 +54,27 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class RateLimitError(ClaudeSDKError):
+    """Raised when an API rate limit is hit and the SDK will retry."""
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: float | None = None,
+        resets_at: int | None = None,
+        rate_limit_type: str | None = None,
+    ):
+        """Initialize rate limit error.
+
+        Args:
+            message: Human-readable error message
+            retry_after: Seconds to wait before retrying (from Retry-After header)
+            resets_at: Unix timestamp when the rate limit resets
+            rate_limit_type: Type of rate limit (e.g., "five_hour", "seven_day")
+        """
+        self.retry_after = retry_after
+        self.resets_at = resets_at
+        self.rate_limit_type = rate_limit_type
+        super().__init__(message)

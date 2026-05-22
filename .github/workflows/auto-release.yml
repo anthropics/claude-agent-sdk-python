@@ -47,6 +47,8 @@ jobs:
     needs: check-trigger
     permissions:
       contents: write
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
     uses: ./.github/workflows/build-and-publish.yml
     with:
       version: ${{ needs.check-trigger.outputs.version }}

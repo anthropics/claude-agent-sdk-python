@@ -754,6 +754,43 @@ class TestMessageParser:
             parse_message(data)
         assert exc_info.value.data == data
 
+    def test_parse_rate_limit_event_with_non_dict_info(self):
+        """Malformed rate_limit_info (non-dict) raises MessageParseError, not TypeError.
+
+        A buggy or older CLI may emit ``rate_limit_info`` as a non-dict (e.g.
+        ``None`` or a string). Such payloads must surface as
+        :class:`MessageParseError` like every other malformed-message case;
+        a raw ``TypeError`` would crash the parser loop and lose the rest
+        of the stream.
+        """
+        for info_value in (None, "oops", 42):
+            data = {
+                "type": "rate_limit_event",
+                "rate_limit_info": info_value,
+                "uuid": "abc",
+                "session_id": "sess",
+            }
+            with pytest.raises(MessageParseError) as exc_info:
+                parse_message(data)
+            assert "rate_limit_event message" in str(exc_info.value)
+            assert exc_info.value.data == data
+
+    def test_parse_user_message_with_non_dict_message(self):
+        """Malformed user message field (non-dict) raises MessageParseError."""
+        data = {"type": "user", "message": None}
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert "user message" in str(exc_info.value)
+        assert exc_info.value.data == data
+
+    def test_parse_assistant_message_with_non_dict_message(self):
+        """Malformed assistant message field (non-dict) raises MessageParseError."""
+        data = {"type": "assistant", "message": None}
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert "assistant message" in str(exc_info.value)
+        assert exc_info.value.data == data
+
     def test_parse_assistant_message_without_error(self):
         """Test that assistant message without error has error=None."""
         data = {

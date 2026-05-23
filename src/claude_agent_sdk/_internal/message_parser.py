@@ -122,6 +122,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in user message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in user message: {e}", data
+                ) from e
 
         case "assistant":
             try:
@@ -184,6 +188,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in assistant message: {e}", data
+                ) from e
 
         case "system":
             try:
@@ -242,6 +250,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in system message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in system message: {e}", data
+                ) from e
 
         case "result":
             try:
@@ -275,6 +287,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in result message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in result message: {e}", data
+                ) from e
 
         case "stream_event":
             try:
@@ -287,6 +303,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in stream_event message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in stream_event message: {e}", data
                 ) from e
 
         case "rate_limit_event":
@@ -309,6 +329,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Malformed field in rate_limit_event message: {e}", data
                 ) from e
 
         case _:

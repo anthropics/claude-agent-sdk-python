@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.87
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.150
+- Switched CI workflows from static API key to Workload Identity Federation for Claude authentication, using short-lived tokens instead of long-lived secrets (#984)
+
 ## 0.2.86
 
 ### Internal/Other Changes

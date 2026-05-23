@@ -182,14 +182,23 @@ class SubprocessCLITransport(Transport):
 
     def _apply_skills_defaults(
         self,
-    ) -> tuple[list[str], list[str] | None]:
-        """Compute effective allowed_tools and setting_sources for skills.
+    ) -> tuple[list[str], list[str] | None, list[str] | None]:
+        """Compute effective allowed_tools, setting_sources, and tools for skills.
 
         When ``options.skills`` is ``"all"``, injects the bare ``Skill`` tool;
         when it is a list, injects ``Skill(name)`` for each entry. In either
         case ``setting_sources`` defaults to ``["user", "project"]`` when
         unset so the CLI discovers installed skills without the caller having
         to wire up both options manually. ``None`` is a no-op.
+
+        When the caller provides an explicit ``tools`` list (the base set of
+        tools the CLI is allowed to load), the bare ``Skill`` tool is also
+        appended to that list when missing. Without this, ``skills="all"``
+        would add ``Skill`` to ``allowed_tools`` but ``Skill`` would still be
+        absent from the base tool set, so the model could not invoke it
+        (issue #977). When ``tools`` is ``None`` or a preset object, no
+        injection into ``tools`` is needed because the default tool set
+        already includes ``Skill``.
 
         Does not mutate the original options object.
         """
@@ -199,24 +208,38 @@ class SubprocessCLITransport(Transport):
             if self._options.setting_sources is not None
             else None
         )
+        # Only mirror an explicit list-form ``tools`` option here. Preset
+        # objects and ``None`` are returned as ``None`` so ``_build_command``
+        # uses its existing path for them.
+        tools: list[str] | None = (
+            list(self._options.tools)
+            if isinstance(self._options.tools, list)
+            else None
+        )
 
         skills = self._options.skills
         if skills is None:
-            return allowed_tools, setting_sources
+            return allowed_tools, setting_sources, tools
 
         if skills == "all":
             if "Skill" not in allowed_tools:
                 allowed_tools.append("Skill")
+            if tools is not None and "Skill" not in tools:
+                tools.append("Skill")
         else:
             for name in skills:
                 pattern = f"Skill({name})"
                 if pattern not in allowed_tools:
                     allowed_tools.append(pattern)
+            # The CLI's --tools flag matches the bare tool name; allowed_tools
+            # supplies the per-skill filtering. Ensure Skill is loadable.
+            if tools is not None and "Skill" not in tools:
+                tools.append("Skill")
 
         if setting_sources is None:
             setting_sources = ["user", "project"]
 
-        return allowed_tools, setting_sources
+        return allowed_tools, setting_sources, tools
 
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
@@ -237,21 +260,21 @@ class SubprocessCLITransport(Transport):
                     ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
                 )
 
+        effective_allowed_tools, effective_setting_sources, effective_tools = (
+            self._apply_skills_defaults()
+        )
+
         # Handle tools option (base set of tools)
         if self._options.tools is not None:
-            tools = self._options.tools
-            if isinstance(tools, list):
-                if len(tools) == 0:
+            if effective_tools is not None:
+                # List-form tools, possibly with Skill injected by skills option.
+                if len(effective_tools) == 0:
                     cmd.extend(["--tools", ""])
                 else:
-                    cmd.extend(["--tools", ",".join(tools)])
+                    cmd.extend(["--tools", ",".join(effective_tools)])
             else:
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
-
-        effective_allowed_tools, effective_setting_sources = (
-            self._apply_skills_defaults()
-        )
 
         if effective_allowed_tools:
             cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])

@@ -627,6 +627,67 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
 
+    def test_build_command_skills_all_injects_skill_into_explicit_tools(self):
+        """Regression for #977: skills='all' alongside an explicit tools list must
+        add Skill to --tools so the model can actually invoke it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["WebSearch", "WebFetch", "Read"],
+                skills="all",
+            ),
+        )
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch,Read,Skill"
+        # And Skill is in allowedTools too.
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+
+    def test_build_command_skills_list_injects_skill_into_explicit_tools(self):
+        """Named skills list must also add the bare Skill tool to --tools so the
+        per-name patterns in allowedTools can take effect."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["Read"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--tools") + 1] == "Read,Skill"
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+
+    def test_build_command_skills_tools_injection_is_idempotent(self):
+        """If the caller already put Skill in tools, do not duplicate it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                tools=["Read", "Skill"],
+                skills="all",
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--tools") + 1] == "Read,Skill"
+
+    def test_build_command_skills_none_does_not_inject_into_tools(self):
+        """Without skills set, an explicit tools list must be passed through unchanged."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=["Read"]),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--tools") + 1] == "Read"
+
+    def test_build_command_skills_tools_injection_does_not_mutate_options(self):
+        """Tools injection must not leak back into the caller's options object."""
+        options = make_options(
+            tools=["Read"],
+            skills="all",
+        )
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        transport._build_command()
+        assert options.tools == ["Read"]
+
     @pytest.mark.parametrize(
         ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
         [

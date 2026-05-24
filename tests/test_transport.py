@@ -639,7 +639,8 @@ class TestSubprocessCLITransport:
         )
         cmd = transport._build_command()
         assert "--tools" in cmd
-        assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch,Read,Skill"
+        tools_arg = cmd[cmd.index("--tools") + 1].split(",")
+        assert tools_arg == ["WebSearch", "WebFetch", "Read", "Skill"]
         # And Skill is in allowedTools too.
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
 
@@ -654,7 +655,8 @@ class TestSubprocessCLITransport:
             ),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--tools") + 1] == "Read,Skill"
+        tools_arg = cmd[cmd.index("--tools") + 1].split(",")
+        assert tools_arg == ["Read", "Skill"]
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
 
     def test_build_command_skills_tools_injection_is_idempotent(self):
@@ -667,7 +669,8 @@ class TestSubprocessCLITransport:
             ),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--tools") + 1] == "Read,Skill"
+        tools_arg = cmd[cmd.index("--tools") + 1].split(",")
+        assert tools_arg == ["Read", "Skill"]
 
     def test_build_command_skills_none_does_not_inject_into_tools(self):
         """Without skills set, an explicit tools list must be passed through unchanged."""
@@ -676,7 +679,8 @@ class TestSubprocessCLITransport:
             options=make_options(tools=["Read"]),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--tools") + 1] == "Read"
+        tools_arg = cmd[cmd.index("--tools") + 1].split(",")
+        assert tools_arg == ["Read"]
 
     def test_build_command_skills_tools_injection_does_not_mutate_options(self):
         """Tools injection must not leak back into the caller's options object."""

@@ -212,9 +212,7 @@ class SubprocessCLITransport(Transport):
         # objects and ``None`` are returned as ``None`` so ``_build_command``
         # uses its existing path for them.
         tools: list[str] | None = (
-            list(self._options.tools)
-            if isinstance(self._options.tools, list)
-            else None
+            list(self._options.tools) if isinstance(self._options.tools, list) else None
         )
 
         skills = self._options.skills
@@ -224,17 +222,18 @@ class SubprocessCLITransport(Transport):
         if skills == "all":
             if "Skill" not in allowed_tools:
                 allowed_tools.append("Skill")
-            if tools is not None and "Skill" not in tools:
-                tools.append("Skill")
         else:
             for name in skills:
                 pattern = f"Skill({name})"
                 if pattern not in allowed_tools:
                     allowed_tools.append(pattern)
-            # The CLI's --tools flag matches the bare tool name; allowed_tools
-            # supplies the per-skill filtering. Ensure Skill is loadable.
-            if tools is not None and "Skill" not in tools:
-                tools.append("Skill")
+
+        # Both branches enable skills, so the bare ``Skill`` tool must be
+        # loadable when the caller supplied an explicit ``tools`` list. The
+        # CLI's --tools flag matches bare tool names; ``allowed_tools``
+        # supplies any per-skill filtering.
+        if tools is not None and "Skill" not in tools:
+            tools.append("Skill")
 
         if setting_sources is None:
             setting_sources = ["user", "project"]

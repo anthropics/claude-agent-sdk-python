@@ -11,13 +11,15 @@ hot path during model streaming.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+import anyio
+
 from ..types import SessionKey, SessionStore, SessionStoreEntry
+from ._task_compat import TaskHandle, spawn_detached
 from .session_store import file_path_to_session_key
 
 logger = logging.getLogger(__name__)
@@ -31,17 +33,6 @@ SEND_TIMEOUT_SECONDS = 60.0
 # MAX_ATTEMPTS - 1 (one delay between each pair of attempts).
 MIRROR_APPEND_MAX_ATTEMPTS = 3
 MIRROR_APPEND_BACKOFF_S = (0.2, 0.8)
-
-
-def _swallow_done_exception(t: asyncio.Task[None]) -> None:
-    # Retrieve the task's exception (if any) so asyncio doesn't warn about an
-    # unretrieved exception on a fire-and-forget task. Skip cancelled tasks:
-    # Task.exception() raises CancelledError on those (Python 3.8+), and the
-    # raise from inside a done-callback surfaces as a noisy "Exception in
-    # callback" log on every cancellation.
-    if t.cancelled():
-        return
-    t.exception()
 
 
 @dataclass
@@ -80,8 +71,8 @@ class TranscriptMirrorBatcher:
     _pending: list[_MirrorEntry] = field(default_factory=list)
     _pending_entries: int = 0
     _pending_bytes: int = 0
-    _flush_task: asyncio.Task[None] | None = None
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _flush_task: TaskHandle | None = None
+    _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
     def enqueue(self, file_path: str, entries: list[SessionStoreEntry]) -> None:
         """Buffer a frame; schedule an eager flush if thresholds are exceeded."""
@@ -95,27 +86,27 @@ class TranscriptMirrorBatcher:
             self._pending_entries > self.max_pending_entries
             or self._pending_bytes > self.max_pending_bytes
         ):
-            # Fire-and-forget; the lock serializes against any in-flight flush
-            # so append ordering holds. drain() never raises, but guard anyway
-            # so a future regression can't surface as an unhandled exception.
-            self._flush_task = asyncio.ensure_future(self._drain())
-            self._flush_task.add_done_callback(_swallow_done_exception)
+            # Fire-and-forget on the current backend via the SDK's sniffio-
+            # dispatched spawner; the lock in _drain() serializes against any
+            # in-flight flush so append ordering holds. _drain() is contracted
+            # never to raise; spawn_detached logs if that contract is ever
+            # violated (parity with asyncio's unretrieved-exception warning).
+            self._flush_task = spawn_detached(self._drain())
 
     async def flush(self) -> None:
-        """Flush all pending entries. Awaits any in-flight eager flush first."""
-        task = asyncio.ensure_future(self._drain())
-        self._flush_task = task
-        await task
-        # Compare-and-null: enqueue() may have started a newer drain while we
-        # were awaiting; don't clobber it or the next drain() would miss the
-        # serialization wait and could overlap.
-        if self._flush_task is task:
-            self._flush_task = None
+        """Flush all pending entries, serialized after any in-flight eager flush."""
+        await self._drain()
 
     async def close(self) -> None:
-        """Final flush before teardown. Never raises."""
+        """Final flush before teardown. Never raises.
+
+        Shielded so the final batch still reaches the store when ``close()``
+        runs under a cancelled scope (client disconnect / Ctrl+C at
+        ``__aexit__``).
+        """
         try:
-            await self.flush()
+            with anyio.CancelScope(shield=True):
+                await self.flush()
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(f"[TranscriptMirrorBatcher] close flush failed: {e}")
 
@@ -188,20 +179,19 @@ class TranscriptMirrorBatcher:
             succeeded = False
             for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):
                 if attempt > 0:
-                    await asyncio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
+                    await anyio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
                 try:
-                    await asyncio.wait_for(
-                        self.store.append(key, entries), timeout=self.send_timeout
-                    )
+                    with anyio.fail_after(self.send_timeout):
+                        await self.store.append(key, entries)
                     succeeded = True
                     break
-                except asyncio.TimeoutError as e:
-                    # Don't retry on timeout: wait_for cancels the task but
-                    # cancellation is best-effort for adapters wrapping
-                    # non-cancellable I/O, so the in-flight call may still
-                    # land — a retry would launch a concurrent duplicate.
-                    # Also keeps worst-case lock hold at ~send_timeout rather
-                    # than ~3×send_timeout + backoff.
+                except TimeoutError as e:
+                    # Don't retry on timeout: the cancel scope cancels the
+                    # task but cancellation is best-effort for adapters
+                    # wrapping non-cancellable I/O, so the in-flight call may
+                    # still land — a retry would launch a concurrent
+                    # duplicate. Also keeps worst-case lock hold at
+                    # ~send_timeout rather than ~3×send_timeout + backoff.
                     last_err = e
                     logger.debug(
                         "[TranscriptMirrorBatcher] append timed out after "

@@ -21,7 +21,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
+from ...types import ClaudeAgentOptions, JsonSchemaFile, SystemPromptFile, SystemPromptPreset
 from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
 
@@ -392,16 +392,29 @@ class SubprocessCLITransport(Transport):
         if self._options.effort is not None:
             cmd.extend(["--effort", self._options.effort])
 
-        # Extract schema from output_format structure if provided
-        # Expected: {"type": "json_schema", "schema": {...}}
-        if (
-            self._options.output_format is not None
-            and isinstance(self._options.output_format, dict)
-            and self._options.output_format.get("type") == "json_schema"
+        # Extract schema from output_format structure if provided.
+        # Two variants are supported:
+        #   {"type": "json_schema",      "schema": {...}}  → --json-schema <inline-json>
+        #   {"type": "json_schema_file", "path": "/f.json"} → --json-schema-file <path>
+        #
+        # The file variant keeps the full schema off the command line, which
+        # avoids 6–7 KB of JSON appearing in `ps auxww` output and audit logs
+        # for every agent spawn.  It mirrors the --system-prompt-file precedent
+        # and requires a CLI version that supports --json-schema-file.
+        if self._options.output_format is not None and isinstance(
+            self._options.output_format, dict
         ):
-            schema = self._options.output_format.get("schema")
-            if schema is not None:
-                cmd.extend(["--json-schema", json.dumps(schema)])
+            _fmt_type = self._options.output_format.get("type")
+            if _fmt_type == "json_schema":
+                schema = self._options.output_format.get("schema")
+                if schema is not None:
+                    cmd.extend(["--json-schema", json.dumps(schema)])
+            elif _fmt_type == "json_schema_file":
+                schema_path = cast(JsonSchemaFile, self._options.output_format).get(
+                    "path"
+                )
+                if schema_path is not None:
+                    cmd.extend(["--json-schema-file", schema_path])
 
         # Always use streaming mode with stdin (matching TypeScript SDK)
         # This allows agents and other large configs to be sent via initialize request

@@ -60,6 +60,22 @@ class SystemPromptFile(TypedDict):
     path: str
 
 
+class JsonSchemaFile(TypedDict):
+    """JSON schema file configuration for structured output.
+
+    Pass this as ``output_format`` to supply the JSON Schema via a file path
+    instead of inlining it in the command-line argument.  The CLI reads the
+    schema from disk rather than receiving it as a large argv string, which
+    keeps process listings and audit logs clean.
+
+    This mirrors the :class:`SystemPromptFile` pattern for system prompts.
+    Requires a Claude Code CLI version that supports ``--json-schema-file``.
+    """
+
+    type: Literal["json_schema_file"]
+    path: str
+
+
 class TaskBudget(TypedDict):
     """API-side task budget in tokens.
 
@@ -1891,7 +1907,9 @@ class ClaudeAgentOptions:
 
     When specified, the agent returns structured data matching the schema.
     Matches the Messages API structure, e.g.
-    ``{"type": "json_schema", "schema": {"type": "object", "properties": {...}}}``.
+    ``{"type": "json_schema", "schema": {"type": "object", "properties": {...}}}``
+    or ``{"type": "json_schema_file", "path": "/path/to/schema.json"}`` to supply
+    the schema from a file (avoids large argv strings in process listings).
     """
 
     enable_file_checkpointing: bool = False

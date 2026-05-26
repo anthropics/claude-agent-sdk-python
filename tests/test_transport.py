@@ -183,6 +183,71 @@ class TestSubprocessCLITransport:
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
 
+    def test_build_command_with_json_schema_inline(self):
+        """Existing --json-schema inline path still works (backward compat)."""
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                output_format={"type": "json_schema", "schema": schema},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--json-schema" in cmd
+        assert "--json-schema-file" not in cmd
+        # The serialised schema appears as the next element after the flag
+        idx = cmd.index("--json-schema")
+        import json
+        assert json.loads(cmd[idx + 1]) == schema
+
+    def test_build_command_with_json_schema_file(self):
+        """New --json-schema-file path emits the flag with the supplied path."""
+        schema_path = "/tmp/nexus_output_format.json"
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                output_format={"type": "json_schema_file", "path": schema_path},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--json-schema" not in cmd, "--json-schema (inline) must NOT appear"
+        assert "--json-schema-file" in cmd
+        idx = cmd.index("--json-schema-file")
+        assert cmd[idx + 1] == schema_path
+
+    def test_build_command_json_schema_file_no_inline_bloat(self):
+        """Confirm that json_schema_file keeps the raw schema JSON out of argv."""
+        # Build a large-ish schema (simulates a real Nexus writer-output schema)
+        big_schema = {
+            "type": "object",
+            "properties": {f"field_{i}": {"type": "string"} for i in range(50)},
+        }
+        import json, tempfile, os, pathlib
+        # Write schema to a real temp file so the test is end-to-end
+        tmp = pathlib.Path(tempfile.mktemp(suffix=".json"))
+        tmp.write_text(json.dumps(big_schema))
+        try:
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(
+                    output_format={"type": "json_schema_file", "path": str(tmp)},
+                ),
+            )
+            cmd = transport._build_command()
+            cmd_str = " ".join(cmd)
+            # The raw schema blob must not appear in argv
+            assert '"field_0"' not in cmd_str, "schema leaked into argv"
+            assert "--json-schema-file" in cmd_str
+            # Path in argv points to a readable file with the schema
+            idx = cmd.index("--json-schema-file")
+            on_disk = json.loads(pathlib.Path(cmd[idx + 1]).read_text())
+            assert on_disk == big_schema
+        finally:
+            if tmp.exists():
+                tmp.rename(str(tmp) + ".done")  # no rm; use mv per Nexus hygiene
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(

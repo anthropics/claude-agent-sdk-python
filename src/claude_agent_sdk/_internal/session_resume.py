@@ -13,7 +13,6 @@ Mirrors the behavior of the TypeScript SDK.
 
 from __future__ import annotations
 
-import asyncio
 import errno
 import getpass
 import json
@@ -30,6 +29,8 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+import anyio
 
 from ..types import ClaudeAgentOptions, SessionKey, SessionStore, SessionStoreFlushMode
 from .session_store_validation import _store_implements
@@ -176,9 +177,9 @@ async def materialize_resume_session(
         # Any failure after mkdtemp leaves tmp_base (which may already
         # contain a .credentials.json copy) on disk with no path for the
         # caller to clean it up. Remove it before rethrowing. BaseException
-        # so asyncio.CancelledError (BaseException since 3.8) also triggers
-        # cleanup — callers can't compensate because the assignment raises
-        # before completing.
+        # so the backend's cancellation exception (a BaseException on both
+        # asyncio and trio) also triggers cleanup — callers can't compensate
+        # because the assignment raises before completing.
         await _rmtree_with_retry(tmp_base)
         raise
 
@@ -234,8 +235,8 @@ async def _rmtree_with_retry(
             ):
                 break
         try:
-            await asyncio.sleep(delay)
-        except asyncio.CancelledError:
+            await anyio.sleep(delay)
+        except anyio.get_cancelled_exc_class():
             # Best-effort final sweep before propagating cancellation so a
             # cancelled connect() doesn't leak the temp dir.
             shutil.rmtree(path, ignore_errors=True)
@@ -293,8 +294,9 @@ async def _resolve_continue_candidate(
 async def _with_timeout(coro: Awaitable[Any], timeout_s: float, what: str) -> Any:
     """Await ``coro`` with a timeout, re-raising as ``RuntimeError`` with context."""
     try:
-        return await asyncio.wait_for(coro, timeout=timeout_s)
-    except asyncio.TimeoutError as e:
+        with anyio.fail_after(timeout_s):
+            return await coro
+    except TimeoutError as e:
         raise RuntimeError(
             f"{what} timed out after {int(timeout_s * 1000)}ms during resume "
             f"materialization"

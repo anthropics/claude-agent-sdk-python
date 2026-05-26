@@ -6,7 +6,6 @@ extracts metadata from stat + head/tail reads without full JSONL parsing.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -18,6 +17,8 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import anyio
 
 from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
 from .session_store_validation import _store_implements
@@ -1535,16 +1536,22 @@ async def _derive_infos_via_load(
     that row to an empty summary instead of failing the whole list. Sidechain
     and no-summary sessions are dropped.
     """
-    sem = asyncio.Semaphore(_STORE_LIST_LOAD_CONCURRENCY)
+    limiter = anyio.CapacityLimiter(_STORE_LIST_LOAD_CONCURRENCY)
+    settled: list[str | None | Exception] = [None] * len(listing)
 
-    async def _bounded_load(sid: str) -> str | None:
-        async with sem:
-            return await _load_store_entries_as_jsonl(session_store, sid, directory)
+    async def _bounded_load(i: int, sid: str) -> None:
+        async with limiter:
+            try:
+                settled[i] = await _load_store_entries_as_jsonl(
+                    session_store, sid, directory
+                )
+            except Exception as e:  # noqa: BLE001 - adapter is user code
+                settled[i] = e
 
-    settled = await asyncio.gather(
-        *(_bounded_load(e["session_id"]) for e in listing),
-        return_exceptions=True,
-    )
+    async with anyio.create_task_group() as tg:
+        for i, e in enumerate(listing):
+            tg.start_soon(_bounded_load, i, e["session_id"])
+
     results: list[SDKSessionInfo] = []
     for entry, outcome in zip(listing, settled, strict=True):
         sid = entry["session_id"]

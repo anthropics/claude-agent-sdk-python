@@ -33,7 +33,6 @@ from claude_agent_sdk._internal.transcript_mirror_batcher import (
     MAX_PENDING_BYTES,
     MAX_PENDING_ENTRIES,
     TranscriptMirrorBatcher,
-    _swallow_done_exception,
 )
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
@@ -172,10 +171,10 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 1.0) ->
         await asyncio.sleep(0)
 
 
-# Patch target for the retry backoff — the batcher does ``import asyncio`` so
-# patching this attribute swaps the global ``asyncio.sleep`` for the duration
+# Patch target for the retry backoff — the batcher does ``import anyio`` so
+# patching this attribute swaps the global ``anyio.sleep`` for the duration
 # of the ``with`` block.
-_BATCHER_SLEEP = "claude_agent_sdk._internal.transcript_mirror_batcher.asyncio.sleep"
+_BATCHER_SLEEP = "claude_agent_sdk._internal.transcript_mirror_batcher.anyio.sleep"
 
 
 class _RecordingStore(InMemorySessionStore):
@@ -493,7 +492,8 @@ class TestTranscriptMirrorBatcher:
         assert first is not None and second is not None and first is not second
 
         gate.set()
-        await asyncio.gather(first, second)
+        await first.wait()
+        await second.wait()
         assert appended == [1, 2]  # no dup, no interleave
 
     @pytest.mark.asyncio
@@ -522,52 +522,6 @@ class TestTranscriptMirrorBatcher:
         gate.set()
         await flush_task
         assert order == [1, 2, 3]
-
-
-# ---------------------------------------------------------------------------
-# _swallow_done_exception
-# ---------------------------------------------------------------------------
-
-
-class TestSwallowDoneException:
-    """Regression for issue #930: the eager-flush task's done-callback used
-    ``lambda t: t.exception()``, which raises ``CancelledError`` for cancelled
-    tasks (Python 3.8+) and surfaces as a noisy "Exception in callback" log
-    every time the SDK shuts down with pending eager flushes.
-    """
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_cancelled_task(self) -> None:
-        async def _hang() -> None:
-            await asyncio.sleep(3600)
-
-        task = asyncio.ensure_future(_hang())
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert task.cancelled()
-        # Must NOT raise — this is the whole point of the fix.
-        assert _swallow_done_exception(task) is None
-
-    @pytest.mark.asyncio
-    async def test_retrieves_exception_for_failed_task(self) -> None:
-        async def _boom() -> None:
-            raise RuntimeError("kaboom")
-
-        task = asyncio.ensure_future(_boom())
-        with pytest.raises(RuntimeError, match="kaboom"):
-            await task
-        # Retrieves the exception so asyncio doesn't warn — does not re-raise.
-        assert _swallow_done_exception(task) is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_successful_task(self) -> None:
-        async def _ok() -> None:
-            return None
-
-        task = asyncio.ensure_future(_ok())
-        await task
-        assert _swallow_done_exception(task) is None
 
 
 # ---------------------------------------------------------------------------

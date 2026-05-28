@@ -289,6 +289,9 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup, including dev-dependency install, lint, typecheck, and test commands.
+
+
 If you're contributing to this project, run the initial setup script to install git hooks:
 
 ```bash

@@ -20,6 +20,7 @@ from claude_agent_sdk import (
     UserMessage,
     query,
 )
+from claude_agent_sdk.types import TaskNotificationMessage, TaskStartedMessage
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 
@@ -1310,5 +1311,214 @@ class TestClaudeSDKClientEdgeCases:
                         for msg in messages
                     )
                     assert isinstance(messages[-1], ResultMessage)
+
+        anyio.run(_test)
+
+
+# ---------------------------------------------------------------------------
+# Task notification hygiene tests (issue #788)
+# ---------------------------------------------------------------------------
+
+def _make_assistant_msg(text: str = "4") -> dict:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "model": "claude-sonnet-4-5",
+        },
+    }
+
+
+def _make_result_msg() -> dict:
+    return {
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 100,
+        "duration_api_ms": 80,
+        "is_error": False,
+        "num_turns": 1,
+        "session_id": "test",
+        "total_cost_usd": 0.001,
+    }
+
+
+def _make_task_started(task_id: str = "task-1") -> dict:
+    return {
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": task_id,
+        "description": "background work",
+        "uuid": f"uuid-{task_id}",
+        "session_id": "test",
+    }
+
+
+def _make_task_notification(task_id: str = "task-1") -> dict:
+    return {
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": task_id,
+        "status": "completed",
+        "output_file": "/tmp/out.md",
+        "summary": "done",
+        "uuid": f"notif-{task_id}",
+        "session_id": "test",
+    }
+
+
+class TestReceiveResponseTaskNotificationHygiene:
+    """receive_response() must not leak between-turn task notifications (issue #788)."""
+
+    def _make_transport_with_messages(self, messages: list[dict]):
+        """Build a mock transport that yields the given messages after init."""
+        mock_transport = AsyncMock()
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        written_messages: list[str] = []
+
+        async def mock_write(data):
+            written_messages.append(data)
+
+        mock_transport.write = AsyncMock(side_effect=mock_write)
+
+        async def msg_gen():
+            # Respond to initialize request first
+            await asyncio.sleep(0.01)
+            for msg_str in written_messages:
+                try:
+                    msg = json.loads(msg_str.strip())
+                    if (
+                        msg.get("type") == "control_request"
+                        and msg.get("request", {}).get("subtype") == "initialize"
+                    ):
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg.get("request_id"),
+                                "subtype": "success",
+                                "commands": [],
+                            },
+                        }
+                        break
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            for m in messages:
+                yield m
+
+        mock_transport.read_messages = msg_gen
+        return mock_transport
+
+    def test_stale_notification_before_turn2_is_suppressed(self):
+        """TaskNotificationMessage buffered before Turn 2 starts is NOT yielded."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_cls:
+                # Stream: Turn 1 (task starts + result), then stale notification,
+                # then Turn 2 (assistant + result).
+                msgs = [
+                    _make_task_started("t1"),
+                    _make_assistant_msg("Spawning"),
+                    _make_result_msg(),              # End Turn 1
+                    _make_task_notification("t1"),   # Stale: between turns
+                    _make_assistant_msg("4"),
+                    _make_result_msg(),              # End Turn 2
+                ]
+                mock_cls.return_value = self._make_transport_with_messages(msgs)
+
+                async with ClaudeSDKClient() as client:
+                    # Consume Turn 1
+                    turn1 = [m async for m in client.receive_response()]
+                    assert any(isinstance(m, TaskStartedMessage) for m in turn1)
+                    assert isinstance(turn1[-1], ResultMessage)
+
+                    # Turn 2: stale notification must not appear
+                    turn2 = [m async for m in client.receive_response()]
+                    assert not any(
+                        isinstance(m, TaskNotificationMessage) for m in turn2
+                    ), "Stale TaskNotificationMessage leaked into Turn 2"
+                    assert any(isinstance(m, AssistantMessage) for m in turn2)
+                    assert isinstance(turn2[-1], ResultMessage)
+
+        anyio.run(_test)
+
+    def test_notification_arriving_mid_turn_is_yielded(self):
+        """TaskNotificationMessage that arrives after the first AssistantMessage IS yielded."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_cls:
+                # Stream: Turn 1 starts, notification arrives after first assistant msg.
+                msgs = [
+                    _make_task_started("t2"),
+                    _make_assistant_msg("thinking..."),
+                    _make_task_notification("t2"),  # Arrives mid-turn — should show
+                    _make_assistant_msg("done"),
+                    _make_result_msg(),
+                ]
+                mock_cls.return_value = self._make_transport_with_messages(msgs)
+
+                async with ClaudeSDKClient() as client:
+                    turn1 = [m async for m in client.receive_response()]
+
+                notifications = [m for m in turn1 if isinstance(m, TaskNotificationMessage)]
+                assert len(notifications) == 1, (
+                    "TaskNotificationMessage that arrived mid-turn should be yielded"
+                )
+
+        anyio.run(_test)
+
+    def test_turn_counter_increments_and_cleans_map(self):
+        """_current_turn increments per result; _task_turn_map is cleaned up."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_cls:
+                msgs = [
+                    _make_task_started("t3"),
+                    _make_task_notification("t3"),  # Completes in Turn 1
+                    _make_assistant_msg("hi"),
+                    _make_result_msg(),
+                ]
+                mock_cls.return_value = self._make_transport_with_messages(msgs)
+
+                async with ClaudeSDKClient() as client:
+                    assert client._current_turn == 0
+                    _ = [m async for m in client.receive_response()]
+                    assert client._current_turn == 1
+                    # Map entry cleaned up after notification was processed
+                    assert "t3" not in client._task_turn_map
+
+        anyio.run(_test)
+
+    def test_unknown_task_id_notification_is_yielded(self):
+        """Notification for an unknown task_id (no TaskStartedMessage seen) is yielded."""
+
+        async def _test():
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_cls:
+                # No task_started, just a notification — must not crash or suppress.
+                msgs = [
+                    _make_task_notification("unknown-task"),
+                    _make_assistant_msg("hi"),
+                    _make_result_msg(),
+                ]
+                mock_cls.return_value = self._make_transport_with_messages(msgs)
+
+                async with ClaudeSDKClient() as client:
+                    turn1 = [m async for m in client.receive_response()]
+
+                notifications = [m for m in turn1 if isinstance(m, TaskNotificationMessage)]
+                assert len(notifications) == 1, (
+                    "Notification for unknown task_id should be yielded as current-turn"
+                )
 
         anyio.run(_test)

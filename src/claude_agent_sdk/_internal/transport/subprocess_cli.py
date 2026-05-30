@@ -21,6 +21,7 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
+from ..sessions import list_sessions
 from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
 from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
@@ -125,6 +126,33 @@ class SubprocessCLITransport(Transport):
             return str(bundled_path)
 
         return None
+
+    def _get_resume_session_id(self) -> str | None:
+        """Resolve the session to resume when continuation is requested.
+
+        Explicit ``resume`` and ``session_id`` options take precedence. When
+        ``continue_conversation`` is enabled on a fresh process, fall back to
+        the most recent session for the current cwd so the CLI can resume the
+        prior conversation instead of starting a new one.
+        """
+        if self._options.resume:
+            return self._options.resume
+
+        if self._options.session_id or not self._options.continue_conversation:
+            return None
+
+        if not self._cwd:
+            return None
+
+        try:
+            sessions = list_sessions(directory=self._cwd, limit=1)
+        except OSError:
+            return None
+
+        if not sessions:
+            return None
+
+        return sessions[0].session_id
 
     def _build_settings_value(self) -> str | None:
         """Build settings value, merging sandbox settings if provided.
@@ -285,11 +313,13 @@ class SubprocessCLITransport(Transport):
         if self._options.permission_mode:
             cmd.extend(["--permission-mode", self._options.permission_mode])
 
+        resume_session_id = self._get_resume_session_id()
+
         if self._options.continue_conversation:
             cmd.append("--continue")
 
-        if self._options.resume:
-            cmd.extend(["--resume", self._options.resume])
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
 
         if self._options.session_id:
             cmd.extend(["--session-id", self._options.session_id])

@@ -1075,3 +1075,29 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    def test_parse_hook_progress_message(self):
+        """Hook progress events (system/hook_progress) parse into HookEventMessage.
+
+        The TypeScript SDK emits hook_progress for intermediate progress
+        updates during long-running hook execution.
+        """
+        data = {
+            "type": "system",
+            "subtype": "hook_progress",
+            "hook_event": "PreToolUse",
+            "hook_name": "PreToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-progress",
+            "progress_pct": 50,
+            "message": "Processing...",
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_progress"
+        assert message.hook_event_name == "PreToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-progress"
+        assert message.data["progress_pct"] == 50
+        assert message.data["message"] == "Processing..."
+        assert isinstance(message, SystemMessage)

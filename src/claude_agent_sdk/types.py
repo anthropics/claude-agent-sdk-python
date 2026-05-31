@@ -882,6 +882,32 @@ class SandboxSettings(TypedDict, total=False):
     - Filesystem write restrictions: Use Edit allow/deny rules
     - Network restrictions: Use WebFetch allow/deny rules
 
+    **Known issue -- ``/etc/hosts`` missing inside Docker containers:**
+
+    When running inside a Docker container with ``sandbox.enabled=True`` and
+    ``enableWeakerNestedSandbox=True``, the ``bubblewrap`` (``bwrap``) sandbox may
+    not expose the host's ``/etc/hosts`` file to sandboxed processes. This breaks
+    resolution of ``localhost`` inside the sandbox, which in turn breaks any tool
+    that connects through a proxy at ``http://localhost:<port>`` -- for example,
+    ``botocore`` credential fetching in AWS Bedrock AgentCore runtimes where
+    outbound traffic is routed through ``localhost:3128``.
+
+    **Workaround:** Disable the sandbox when running in Docker environments that
+    depend on ``/etc/hosts`` for local name resolution::
+
+        sandbox_settings: SandboxSettings = {"enabled": False}
+
+    Alternatively, use ``excludedCommands`` to exempt the affected commands from
+    sandboxing::
+
+        sandbox_settings: SandboxSettings = {
+            "enabled": True,
+            "excludedCommands": ["python", "aws", "curl"],
+        }
+
+    The permanent fix requires a CLI update to explicitly bind-mount ``/etc/hosts``
+    inside the bwrap sandbox. See https://github.com/anthropics/claude-agent-sdk-python/issues/861.
+
     Attributes:
         enabled: Enable bash sandboxing (macOS/Linux only). Default: False
         autoAllowBashIfSandboxed: Auto-approve bash commands when sandboxed. Default: True
@@ -892,6 +918,12 @@ class SandboxSettings(TypedDict, total=False):
         ignoreViolations: Violations to ignore.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
+        bwrapExtraBinds: Additional ``--ro-bind`` source paths for the Linux
+            bubblewrap sandbox. Each path is bound into the sandbox at the same
+            location (e.g., ``["/etc/hosts", "/etc/resolv.conf"]``). This is useful
+            when running inside containers where the sandbox's default root bind
+            mount does not propagate certain files managed by the container runtime.
+            Requires CLI support (CLI 2.2+); silently ignored by older CLI versions.
 
     Example:
         ```python
@@ -902,7 +934,9 @@ class SandboxSettings(TypedDict, total=False):
             "network": {
                 "allowUnixSockets": ["/var/run/docker.sock"],
                 "allowLocalBinding": True
-            }
+            },
+            # Ensure /etc/hosts is available inside the sandbox (CLI 2.2+)
+            "bwrapExtraBinds": ["/etc/hosts", "/etc/resolv.conf"],
         }
         ```
     """
@@ -914,6 +948,7 @@ class SandboxSettings(TypedDict, total=False):
     network: SandboxNetworkConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool
+    bwrapExtraBinds: list[str]
 
 
 # Content block types

@@ -174,9 +174,7 @@ class MongoDBSessionStore(SessionStore):
             ("summaries_collection", summaries_collection),
         ):
             if not _IDENT_RE.match(name):
-                raise ValueError(
-                    f"{label} {name!r} must match [A-Za-z_][A-Za-z0-9_.]*"
-                )
+                raise ValueError(f"{label} {name!r} must match [A-Za-z_][A-Za-z0-9_.]*")
 
         self._db: AsyncDatabase[dict[str, Any]] = (
             client[db_name] if db_name is not None else client.get_default_database()
@@ -305,9 +303,7 @@ class MongoDBSessionStore(SessionStore):
             ]
         )
         rows = await cursor.to_list(length=None)
-        return [
-            {"session_id": str(r["_id"]), "mtime": int(r["mtime"])} for r in rows
-        ]
+        return [{"session_id": str(r["_id"]), "mtime": int(r["mtime"])} for r in rows]
 
     async def list_session_summaries(
         self, project_key: str

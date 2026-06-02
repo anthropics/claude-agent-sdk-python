@@ -118,9 +118,7 @@ async def store(client: AsyncMongoClient, db_name: str) -> SessionStore:
 
 class TestConformance:
     @pytest.mark.asyncio
-    async def test_conformance(
-        self, client: AsyncMongoClient, db_name: str
-    ) -> None:
+    async def test_conformance(self, client: AsyncMongoClient, db_name: str) -> None:
         # The harness calls make_store() once per contract for isolation.
         # Give each call its own collection pair so contracts don't see each
         # other's documents; cleanup happens via the db_name teardown.
@@ -148,9 +146,7 @@ class TestConformance:
         assert _store_implements(store, "append")
         assert _store_implements(store, "load")
 
-    def test_rejects_unsafe_collection_name(
-        self, client: AsyncMongoClient
-    ) -> None:
+    def test_rejects_unsafe_collection_name(self, client: AsyncMongoClient) -> None:
         with pytest.raises(ValueError, match="must match"):
             MongoDBSessionStore(
                 client=client,
@@ -201,9 +197,7 @@ class TestAdapterSpecific:
         )
         await s.create_schema()
         await s.append({"project_key": "p", "session_id": "s"}, [{"type": "a"}])
-        assert await s.load({"project_key": "p", "session_id": "s"}) == [
-            {"type": "a"}
-        ]
+        assert await s.load({"project_key": "p", "session_id": "s"}) == [{"type": "a"}]
 
     @pytest.mark.asyncio
     async def test_subpath_delete_preserves_summary(
@@ -220,9 +214,7 @@ class TestAdapterSpecific:
         await s.create_schema()
         key = {"project_key": "p", "session_id": "s"}
         await s.append(key, [{"type": "user", "customTitle": "title"}])
-        await s.append(
-            {**key, "subpath": "subagents/agent-1"}, [{"type": "user"}]
-        )
+        await s.append({**key, "subpath": "subagents/agent-1"}, [{"type": "user"}])
         # Sidecar exists after the main append.
         before = await s.list_session_summaries("p")
         assert len(before) == 1
@@ -265,16 +257,16 @@ class TestAdapterSpecific:
         for trial in range(30):
             key = {"project_key": "p", "session_id": f"trial-{trial}"}
 
-            async def with_title() -> None:
+            # Default-arg binds `key` at definition time so the closures
+            # don't capture the mutating loop variable (ruff B023).
+            async def with_title(k: dict[str, str] = key) -> None:
                 await s.append(
-                    key,
+                    k,
                     [{"type": "user", "uuid": "t", "customTitle": "TITLE"}],
                 )
 
-            async def with_branch() -> None:
-                await s.append(
-                    key, [{"type": "user", "uuid": "b", "gitBranch": "main"}]
-                )
+            async def with_branch(k: dict[str, str] = key) -> None:
+                await s.append(k, [{"type": "user", "uuid": "b", "gitBranch": "main"}])
 
             await asyncio.gather(with_title(), with_branch())
 
@@ -288,12 +280,10 @@ class TestAdapterSpecific:
             # With the lock, both fields must be present after any
             # interleaving. A missing field => fold raced => regression.
             assert data.get("custom_title") == "TITLE", (
-                f"trial {trial}: custom_title clobbered "
-                f"(lock removed?) — data={data}"
+                f"trial {trial}: custom_title clobbered (lock removed?) — data={data}"
             )
             assert data.get("git_branch") == "main", (
-                f"trial {trial}: git_branch clobbered "
-                f"(lock removed?) — data={data}"
+                f"trial {trial}: git_branch clobbered (lock removed?) — data={data}"
             )
 
 

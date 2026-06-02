@@ -164,6 +164,140 @@ class TestConformance:
 
 
 # ---------------------------------------------------------------------------
+# Adapter-specific invariants the conformance suite cannot probe.
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterSpecific:
+    @pytest.mark.asyncio
+    async def test_create_schema_is_idempotent(
+        self, client: AsyncMongoClient, db_name: str
+    ) -> None:
+        """Calling create_schema() twice must not raise (matches Postgres)."""
+        s = MongoDBSessionStore(
+            client=client,
+            db_name=db_name,
+            entries_collection="schema_idem_entries",
+            summaries_collection="schema_idem_summaries",
+        )
+        await s.create_schema()
+        await s.create_schema()
+        await s.append({"project_key": "p", "session_id": "s"}, [{"type": "a"}])
+        loaded = await s.load({"project_key": "p", "session_id": "s"})
+        assert loaded == [{"type": "a"}]
+
+    @pytest.mark.asyncio
+    async def test_options_kwarg_path(
+        self, client: AsyncMongoClient, db_name: str
+    ) -> None:
+        """The dataclass options= path must be equivalent to positional args."""
+        s = MongoDBSessionStore(
+            options=MongoDBSessionStoreOptions(
+                client=client,
+                db_name=db_name,
+                entries_collection="opts_entries",
+                summaries_collection="opts_summaries",
+            )
+        )
+        await s.create_schema()
+        await s.append({"project_key": "p", "session_id": "s"}, [{"type": "a"}])
+        assert await s.load({"project_key": "p", "session_id": "s"}) == [
+            {"type": "a"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_subpath_delete_preserves_summary(
+        self, client: AsyncMongoClient, db_name: str
+    ) -> None:
+        """Targeted subpath delete must NOT touch the main session's summary
+        sidecar. Only main delete (no subpath) cascades to the summary."""
+        s = MongoDBSessionStore(
+            client=client,
+            db_name=db_name,
+            entries_collection="sub_del_entries",
+            summaries_collection="sub_del_summaries",
+        )
+        await s.create_schema()
+        key = {"project_key": "p", "session_id": "s"}
+        await s.append(key, [{"type": "user", "customTitle": "title"}])
+        await s.append(
+            {**key, "subpath": "subagents/agent-1"}, [{"type": "user"}]
+        )
+        # Sidecar exists after the main append.
+        before = await s.list_session_summaries("p")
+        assert len(before) == 1
+        # Subpath delete should leave main entries AND the sidecar intact.
+        await s.delete({**key, "subpath": "subagents/agent-1"})
+        after = await s.list_session_summaries("p")
+        assert len(after) == 1
+        assert after[0]["data"] == before[0]["data"]
+        # And then a main delete actually drops the sidecar.
+        await s.delete(key)
+        assert await s.list_session_summaries("p") == []
+
+    @pytest.mark.asyncio
+    async def test_concurrent_appends_serialize_summary_fold(
+        self, client: AsyncMongoClient, db_name: str
+    ) -> None:
+        """The per-session asyncio.Lock must serialize the read-fold-write so
+        each fold sees the previous fold's output as ``prev``.
+
+        Without the lock, two appends carrying *different* fields (one
+        setting ``customTitle``, the other setting ``gitBranch``) can each
+        read ``prev=None``, fold against an empty summary, and write a
+        doc that omits the other's field. The last writer wins entirely
+        and one field is clobbered. With the lock, the second fold sees
+        the first's output and merges into it, so both fields survive.
+
+        Repeating across many trials makes a missing lock almost certain
+        to produce at least one clobbered run.
+        """
+        import asyncio
+
+        s = MongoDBSessionStore(
+            client=client,
+            db_name=db_name,
+            entries_collection="conc_entries",
+            summaries_collection="conc_summaries",
+        )
+        await s.create_schema()
+
+        for trial in range(30):
+            key = {"project_key": "p", "session_id": f"trial-{trial}"}
+
+            async def with_title() -> None:
+                await s.append(
+                    key,
+                    [{"type": "user", "uuid": "t", "customTitle": "TITLE"}],
+                )
+
+            async def with_branch() -> None:
+                await s.append(
+                    key, [{"type": "user", "uuid": "b", "gitBranch": "main"}]
+                )
+
+            await asyncio.gather(with_title(), with_branch())
+
+            summaries = [
+                s2
+                for s2 in await s.list_session_summaries("p")
+                if s2["session_id"] == f"trial-{trial}"
+            ]
+            assert len(summaries) == 1
+            data = summaries[0]["data"]
+            # With the lock, both fields must be present after any
+            # interleaving. A missing field => fold raced => regression.
+            assert data.get("custom_title") == "TITLE", (
+                f"trial {trial}: custom_title clobbered "
+                f"(lock removed?) — data={data}"
+            )
+            assert data.get("git_branch") == "main", (
+                f"trial {trial}: git_branch clobbered "
+                f"(lock removed?) — data={data}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Full round-trip: TranscriptMirrorBatcher → MongoDB → materialize_resume_session
 # ---------------------------------------------------------------------------
 

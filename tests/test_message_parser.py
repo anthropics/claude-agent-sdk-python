@@ -5,6 +5,7 @@ import pytest
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
+    TERMINAL_TASK_STATUSES,
     AssistantMessage,
     DeferredToolUse,
     HookEventMessage,
@@ -16,6 +17,7 @@ from claude_agent_sdk.types import (
     TaskNotificationMessage,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -533,6 +535,133 @@ class TestMessageParser:
         assert message.usage is None
         assert message.tool_use_id is None
 
+    def test_parse_task_updated_message_terminal(self):
+        """task_updated with a terminal patch.status yields a TaskUpdatedMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+            "uuid": "uuid-4",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "task-abc"
+        assert message.patch == {"status": "completed", "end_time": 1780405729183}
+        assert message.status == "completed"
+        assert message.uuid == "uuid-4"
+        assert message.session_id == "session-1"
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_minimal(self):
+        """task_updated with only task_id and patch (no uuid/session_id) still parses.
+
+        Mirrors the observed CLI shape where terminal completion arrives as a
+        bare task_updated patch — parsing must never raise on a lifecycle event.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "b1m21w89v",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "b1m21w89v"
+        assert message.status == "completed"
+        assert message.uuid is None
+        assert message.session_id is None
+
+    def test_parse_task_updated_message_running_not_terminal(self):
+        """A non-terminal (running) task_updated parses; status is not terminal."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": "running"},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == "running"
+        assert message.status not in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_no_patch(self):
+        """task_updated with no patch parses with an empty patch and status None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    def test_parse_task_updated_message_patch_without_status(self):
+        """A patch lacking 'status' is preserved verbatim; status is None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {"end_time": 1780405729183}
+        assert message.status is None
+
+    @pytest.mark.parametrize("patch", ["completed", ["completed"], 42, None])
+    def test_parse_task_updated_message_non_dict_patch(self, patch):
+        """A non-dict (or missing) patch never raises; patch falls back to {}."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": patch,
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    @pytest.mark.parametrize("status", ["completed", "failed", "stopped", "cancelled"])
+    def test_parse_task_updated_message_terminal_statuses(self, status):
+        """Every terminal patch.status is surfaced and recognized as terminal."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": status},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == status
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_task_updated_backward_compat_isinstance(self):
+        """Backward-compat: TaskUpdatedMessage is still a SystemMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t1",
+            "patch": {"status": "failed"},
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert isinstance(message, SystemMessage)
+        # Base class fields still populated for legacy code paths.
+        assert message.subtype == "task_updated"
+        assert message.data == data
+        # match-case against SystemMessage still works.
+        matched = False
+        match message:
+            case SystemMessage():
+                matched = True
+        assert matched
+
     def test_task_message_backward_compat_isinstance(self):
         """Backward-compat: typed task messages are still SystemMessage instances."""
         started_data = {
@@ -603,6 +732,7 @@ class TestMessageParser:
         assert not isinstance(message, TaskStartedMessage)
         assert not isinstance(message, TaskProgressMessage)
         assert not isinstance(message, TaskNotificationMessage)
+        assert not isinstance(message, TaskUpdatedMessage)
         assert message.subtype == "some_future_subtype"
         assert message.data == data
 

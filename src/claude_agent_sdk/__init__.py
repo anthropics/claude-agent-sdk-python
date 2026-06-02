@@ -56,6 +56,7 @@ from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    TERMINAL_TASK_STATUSES,
     AgentDefinition,
     AssistantMessage,
     BaseHookInput,
@@ -131,6 +132,8 @@ from .types import (
     TaskNotificationStatus,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
+    TaskUpdatedStatus,
     TaskUsage,
     TextBlock,
     ThinkingBlock,
@@ -544,8 +547,11 @@ __all__ = [
     "SystemMessage",
     "TaskStartedMessage",
     "TaskProgressMessage",
+    "TaskUpdatedMessage",
     "TaskNotificationMessage",
     "TaskNotificationStatus",
+    "TaskUpdatedStatus",
+    "TERMINAL_TASK_STATUSES",
     "TaskUsage",
     "ResultMessage",
     "DeferredToolUse",

@@ -1056,6 +1056,20 @@ class TaskUsage(TypedDict):
 TaskNotificationStatus = Literal["completed", "failed", "stopped"]
 
 
+# Possible status values reported inside a ``task_updated`` patch. "running"
+# means the task is still in progress; the remaining values are terminal.
+TaskUpdatedStatus = Literal["running", "completed", "failed", "stopped", "cancelled"]
+
+
+# Task statuses that mean the task has finished and should be cleared from any
+# "active task" tracking. Terminal task state can arrive through either a
+# ``TaskNotificationMessage`` or a ``TaskUpdatedMessage``, so consumers should
+# treat the ``status`` field of both the same way.
+TERMINAL_TASK_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "stopped", "cancelled"}
+)
+
+
 @dataclass
 class TaskStartedMessage(SystemMessage):
     """System message emitted when a task starts.
@@ -1095,6 +1109,12 @@ class TaskProgressMessage(SystemMessage):
 class TaskNotificationMessage(SystemMessage):
     """System message emitted when a task completes, fails, or is stopped.
 
+    Note: not every terminal task emits this message. Background tasks may
+    instead report completion via a :class:`TaskUpdatedMessage` whose
+    ``patch.status`` is terminal (see ``TERMINAL_TASK_STATUSES``). Consumers
+    tracking active task IDs should clear them on a terminal status from
+    *either* message — see :class:`TaskUpdatedMessage` for the full contract.
+
     Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
     ``case SystemMessage()`` checks continue to match. The base ``subtype``
     and ``data`` fields remain populated with the raw payload.
@@ -1108,6 +1128,36 @@ class TaskNotificationMessage(SystemMessage):
     session_id: str
     tool_use_id: str | None = None
     usage: TaskUsage | None = None
+
+
+@dataclass
+class TaskUpdatedMessage(SystemMessage):
+    """System message emitted when a background task's state changes.
+
+    The CLI emits ``system``/``task_updated`` events as a task moves through its
+    lifecycle. ``patch`` carries the changed fields (e.g. ``status``,
+    ``end_time``); when ``patch.status`` is terminal (see
+    ``TERMINAL_TASK_STATUSES``) the task has finished — even when no separate
+    ``TaskNotificationMessage`` is emitted for it.
+
+    Lifecycle contract: every task that emits a ``TaskStartedMessage`` also
+    emits a typed terminal event for the same ``task_id`` — either a
+    ``TaskNotificationMessage`` (``status`` in completed/failed/stopped) or a
+    ``TaskUpdatedMessage`` whose ``status`` is terminal. Consumers that track
+    active task IDs should clear them when they see a terminal status from
+    *either* message, regardless of whether completion happened via automatic
+    notification, ``TaskOutput``, or another background-task path.
+
+    Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
+    ``case SystemMessage()`` checks continue to match. The base ``subtype`` and
+    ``data`` fields remain populated with the raw payload.
+    """
+
+    task_id: str
+    patch: dict[str, Any]
+    status: TaskUpdatedStatus | None = None
+    session_id: str | None = None
+    uuid: str | None = None
 
 
 @dataclass

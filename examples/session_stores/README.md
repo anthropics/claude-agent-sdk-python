@@ -490,6 +490,25 @@ mtime DESC)` covering `list_sessions()`, and `(_id.project_key, mtime DESC)`
 on the summaries collection. `append()` is a single `insert_many` plus an
 atomic summary upsert; `load()` is `find().sort("_id", 1)`.
 
+### Why a summary sidecar?
+
+Unlike the S3, Redis, and Postgres reference adapters in this directory,
+this adapter implements the optional `list_session_summaries` method.
+`list_sessions_from_store()` takes a fast path when a store offers it —
+**one** batch read for all summaries plus a cheap `list_sessions()` to
+gap-fill stale or missing entries — instead of falling back to **N**
+per-session `load()` calls (bounded at 16 concurrent) to recompute the
+summary on the fly. For projects with many sessions or remote-backend
+latency, that's the difference between one round trip and dozens.
+
+The summary itself is computed by the SDK's
+`fold_session_summary` (read inside `append()` and written back as one
+opaque `data` blob); the adapter never interprets the contents. Note
+that `fold_session_summary` lives under the SDK's `_internal` package —
+treat it as a public surface for adapters specifically (the
+`SessionStore` protocol references it) but keep the import in one
+place so a future relocation is a single-line fix.
+
 ### Concurrency
 
 Per the `SessionStore.list_session_summaries` contract, sidecar updates

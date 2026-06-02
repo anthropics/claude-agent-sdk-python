@@ -93,6 +93,10 @@ from claude_agent_sdk import (
     SessionStoreListEntry,
     SessionSummaryEntry,
 )
+
+# fold_session_summary lives under _internal but is treated as a public
+# surface for SessionStore adapters (the protocol's docstrings reference it).
+# Keep the import in one place so a future relocation is a single-line fix.
 from claude_agent_sdk._internal.session_summary import fold_session_summary
 
 if TYPE_CHECKING:

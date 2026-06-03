@@ -30,18 +30,18 @@ _KEY: SessionKey = {"project_key": "proj", "session_id": "sess"}
 
 
 class TestInMemorySessionStore:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance(self) -> None:
         await run_session_store_conformance(InMemorySessionStore)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance_with_async_factory(self) -> None:
         async def make() -> SessionStore:
             return InMemorySessionStore()
 
         await run_session_store_conformance(make)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_skip_optional_suppresses_contracts(self) -> None:
         """A store implementing only required methods passes when optionals are skipped."""
 
@@ -62,7 +62,7 @@ class TestInMemorySessionStore:
             skip_optional=frozenset({"list_sessions", "delete", "list_subkeys"}),
         )
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_auto_skips_unimplemented_optionals(self) -> None:
         """Optional contracts auto-skip when the store doesn't override them."""
 
@@ -94,7 +94,7 @@ class TestInMemorySessionStore:
         with pytest.raises(TypeError):
             isinstance(store, SessionStore)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_entries_helper(self) -> None:
         store = InMemorySessionStore()
         assert store.get_entries(_KEY) == []
@@ -104,7 +104,7 @@ class TestInMemorySessionStore:
         store.get_entries(_KEY).append({"n": 999})
         assert store.get_entries(_KEY) == [{"n": 1}, {"n": 2}]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_size_helper_counts_main_transcripts_only(self) -> None:
         store = InMemorySessionStore()
         assert store.size == 0
@@ -115,7 +115,7 @@ class TestInMemorySessionStore:
         )
         assert store.size == 2
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_clear_helper(self) -> None:
         store = InMemorySessionStore()
         await store.append(_KEY, [{"n": 1}])
@@ -125,7 +125,7 @@ class TestInMemorySessionStore:
         assert await store.load(_KEY) is None
         assert await store.list_sessions("proj") == []
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_returns_copy(self) -> None:
         store = InMemorySessionStore()
         await store.append(_KEY, [{"n": 1}])

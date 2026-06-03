@@ -57,7 +57,7 @@ def _write_jsonl(path: Path, entries: list[SessionStoreEntry]) -> None:
 
 
 class TestMainTranscript:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_imports_main_transcript(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -70,7 +70,7 @@ class TestMainTranscript:
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == entries
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_batching_calls_append_per_chunk(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -93,7 +93,7 @@ class TestMainTranscript:
         assert spy.await_args_list[2].args == (key, entries[4:5])
         assert store.get_entries(key) == entries
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_skips_blank_lines(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -109,7 +109,7 @@ class TestMainTranscript:
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == [_entry(0), _entry(1)]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_nonpositive_batch_size_uses_default(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -135,7 +135,7 @@ class TestMainTranscript:
 
 
 class TestSubagents:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_imports_subagent_transcripts_with_subpath(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -158,7 +158,7 @@ class TestSubagents:
             {"project_key": project_key, "session_id": SESSION_ID}
         ) == ["subagents/agent-abc"]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_imports_nested_subagent_transcripts(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -176,7 +176,7 @@ class TestSubagents:
         }
         assert store.get_entries(sub_key) == [_entry(20)]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_imports_meta_json_sidecar_as_agent_metadata(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -204,7 +204,7 @@ class TestSubagents:
             "worktreePath": "/tmp/wt",
         }
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_include_subagents_false_skips_subagents(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -225,7 +225,7 @@ class TestSubagents:
             == []
         )
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_subagents_dir_is_noop(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -245,12 +245,12 @@ class TestSubagents:
 
 
 class TestValidation:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_invalid_uuid_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid session_id"):
             await import_session_to_store("../../etc/passwd", InMemorySessionStore())
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_session_not_found_raises(self, claude_dir: Path, cwd: Path) -> None:
         with pytest.raises(FileNotFoundError, match="not found"):
             await import_session_to_store(
@@ -264,7 +264,7 @@ class TestValidation:
 
 
 class TestKeyParity:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_subpath_matches_file_path_to_session_key(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:
@@ -290,7 +290,7 @@ class TestKeyParity:
         assert store.get_entries(expected_main) == [_entry(0)]
         assert store.get_entries(expected_sub) == [_entry(1)]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_directory_none_keys_from_resolved_path_not_cwd(
         self,
         claude_dir: Path,

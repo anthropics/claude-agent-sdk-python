@@ -557,11 +557,10 @@ class TestQueryCrossTaskCleanup:
     gracefully.
     """
 
-    def test_close_from_different_task_does_not_raise(self):
+    @pytest.mark.anyio
+    async def test_close_from_different_task_does_not_raise(self):
         """close() called from a different task than start() must not raise."""
-        import asyncio
-
-        async def _test():
+        if True:
             mock_transport = _make_mock_transport(messages=[])
             q = Query(transport=mock_transport, is_streaming_mode=True)
 
@@ -576,12 +575,10 @@ class TestQueryCrossTaskCleanup:
                 except Exception as e:
                     close_error = e
 
-            task = asyncio.create_task(close_in_other_task())
-            await task
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(close_in_other_task)
 
             assert close_error is None, f"close() raised: {close_error}"
-
-        asyncio.run(_test())
 
     def test_close_from_same_task_still_works(self):
         """close() from the same task as start() should still work normally."""
@@ -829,23 +826,22 @@ class TestControlCancelRequest:
     does not write a response for a request the CLI has already abandoned.
     """
 
-    def test_cancel_request_cancels_inflight_hook(self):
+    @pytest.mark.anyio
+    async def test_cancel_request_cancels_inflight_hook(self):
         """A control_cancel_request should cancel the matching hook task."""
-        import asyncio
-
-        hook_started = asyncio.Event()
-        hook_cancelled = asyncio.Event()
+        hook_started = anyio.Event()
+        hook_cancelled = anyio.Event()
 
         async def slow_hook(input_data, tool_use_id, context):
             hook_started.set()
             try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
+                await anyio.sleep(10)
+            except anyio.get_cancelled_exc_class():
                 hook_cancelled.set()
                 raise
             return {}
 
-        async def _test():
+        if True:
             mock_transport = AsyncMock()
             emitted: list[dict] = []
 
@@ -877,7 +873,8 @@ class TestControlCancelRequest:
             q.hook_callbacks["hook_0"] = slow_hook
 
             await q.start()
-            await asyncio.wait_for(hook_cancelled.wait(), timeout=5)
+            with anyio.fail_after(5):
+                await hook_cancelled.wait()
             await q.close()
 
             assert hook_cancelled.is_set()
@@ -887,13 +884,10 @@ class TestControlCancelRequest:
                 f"Cancelled request should not write a response, got: {responses}"
             )
 
-        asyncio.run(_test())
-
-    def test_cancel_request_for_unknown_id_is_noop(self):
+    @pytest.mark.anyio
+    async def test_cancel_request_for_unknown_id_is_noop(self):
         """A control_cancel_request for an unknown request_id should not raise."""
-        import asyncio
-
-        async def _test():
+        if True:
             mock_transport = _make_mock_transport(
                 messages=[
                     {
@@ -913,17 +907,15 @@ class TestControlCancelRequest:
 
             assert any(m.get("type") == "result" for m in messages)
 
-        asyncio.run(_test())
-
-    def test_completed_request_is_removed_from_inflight(self):
+    @pytest.mark.anyio
+    async def test_completed_request_is_removed_from_inflight(self):
         """Once a control_request handler completes, it should be removed from
         _inflight_requests so a late cancel is a no-op."""
-        import asyncio
 
         async def fast_hook(input_data, tool_use_id, context):
             return {}
 
-        async def _test():
+        if True:
             mock_transport = _make_mock_transport(
                 messages=_ASSISTANT_AND_RESULT,
                 control_requests=[
@@ -944,12 +936,10 @@ class TestControlCancelRequest:
             async for msg in q.receive_messages():
                 if msg.get("type") == "result":
                     break
-            await asyncio.sleep(0)
+            await anyio.sleep(0)
             await q.close()
 
             assert "fast_1" not in q._inflight_requests
-
-        asyncio.run(_test())
 
 
 class TestProcessExitAfterErrorResult:

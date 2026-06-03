@@ -1,10 +1,10 @@
 """Tests for ClaudeSDKClient streaming functionality and query() with async iterables."""
 
-import asyncio
 import json
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
@@ -49,7 +49,7 @@ def create_mock_transport(with_init_response=True):
         # Wait for initialization request if needed
         if with_init_response:
             # Wait a bit for the write to happen
-            await asyncio.sleep(0.01)
+            await anyio.sleep(0.01)
 
             # Check if initialization was requested
             for msg_str in written_messages:
@@ -77,7 +77,7 @@ def create_mock_transport(with_init_response=True):
             last_check = len(written_messages)
             timeout_counter = 0
             while timeout_counter < 100:  # Avoid infinite loop
-                await asyncio.sleep(0.01)
+                await anyio.sleep(0.01)
                 timeout_counter += 1
 
                 # Check for new messages
@@ -132,7 +132,7 @@ def _create_mock_transport_with_control_responses():
         last_check = 0
         timeout_counter = 0
         while timeout_counter < 200:  # Avoid infinite loop
-            await asyncio.sleep(0.01)
+            await anyio.sleep(0.01)
             timeout_counter += 1
 
             for msg_str in written_messages[last_check:]:
@@ -158,10 +158,11 @@ def _create_mock_transport_with_control_responses():
 class TestClaudeSDKClientStreaming:
     """Test ClaudeSDKClient streaming functionality."""
 
-    def test_auto_connect_with_context_manager(self):
+    @pytest.mark.anyio
+    async def test_auto_connect_with_context_manager(self):
         """Test automatic connection when using context manager."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -176,12 +177,11 @@ class TestClaudeSDKClientStreaming:
                 # Verify disconnect was called on exit
                 mock_transport.close.assert_called_once()
 
-        anyio.run(_test)
-
-    def test_manual_connect_disconnect(self):
+    @pytest.mark.anyio
+    async def test_manual_connect_disconnect(self):
         """Test manual connect and disconnect."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -200,12 +200,11 @@ class TestClaudeSDKClientStreaming:
                 mock_transport.close.assert_called_once()
                 assert client._transport is None
 
-        anyio.run(_test)
-
-    def test_connect_with_string_prompt(self):
+    @pytest.mark.anyio
+    async def test_connect_with_string_prompt(self):
         """Test connecting with a string prompt writes it as a user message."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -227,12 +226,11 @@ class TestClaudeSDKClientStreaming:
                 assert user_messages[0]["message"]["content"] == "Hello Claude"
                 assert user_messages[0]["session_id"] == "default"
 
-        anyio.run(_test)
-
-    def test_connect_with_async_iterable(self):
+    @pytest.mark.anyio
+    async def test_connect_with_async_iterable(self):
         """Test connecting with an async iterable."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -255,12 +253,11 @@ class TestClaudeSDKClientStreaming:
                 # Should be the same async iterator
                 assert call_kwargs["prompt"] is stream
 
-        anyio.run(_test)
-
-    def test_query(self):
+    @pytest.mark.anyio
+    async def test_query(self):
         """Test sending a query."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -289,12 +286,11 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert user_msg_found, "User message not found in write calls"
 
-        anyio.run(_test)
-
-    def test_send_message_with_session_id(self):
+    @pytest.mark.anyio
+    async def test_send_message_with_session_id(self):
         """Test sending a message with custom session ID."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -318,22 +314,20 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert session_found, "User message with custom session not found"
 
-        anyio.run(_test)
-
-    def test_send_message_not_connected(self):
+    @pytest.mark.anyio
+    async def test_send_message_not_connected(self):
         """Test sending message when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.query("Test")
 
-        anyio.run(_test)
-
-    def test_receive_messages(self):
+    @pytest.mark.anyio
+    async def test_receive_messages(self):
         """Test receiving messages."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -343,7 +337,7 @@ class TestClaudeSDKClientStreaming:
                 # Mock the message stream with control protocol support
                 async def mock_receive():
                     # First handle initialization
-                    await asyncio.sleep(0.01)
+                    await anyio.sleep(0.01)
                     written = mock_transport.write.call_args_list
                     for call in written:
                         data = call[0][0]
@@ -397,12 +391,11 @@ class TestClaudeSDKClientStreaming:
                     assert isinstance(messages[1], UserMessage)
                     assert messages[1].content == "Hi there"
 
-        anyio.run(_test)
-
-    def test_receive_response(self):
+    @pytest.mark.anyio
+    async def test_receive_response(self):
         """Test receive_response stops at ResultMessage."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -412,7 +405,7 @@ class TestClaudeSDKClientStreaming:
                 # Mock the message stream with control protocol support
                 async def mock_receive():
                     # First handle initialization
-                    await asyncio.sleep(0.01)
+                    await anyio.sleep(0.01)
                     written = mock_transport.write.call_args_list
                     for call in written:
                         data = call[0][0]
@@ -479,12 +472,11 @@ class TestClaudeSDKClientStreaming:
                     assert isinstance(messages[0], AssistantMessage)
                     assert isinstance(messages[1], ResultMessage)
 
-        anyio.run(_test)
-
-    def test_interrupt(self):
+    @pytest.mark.anyio
+    async def test_interrupt(self):
         """Test interrupt functionality."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -511,22 +503,20 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert interrupt_found, "Interrupt control request not found"
 
-        anyio.run(_test)
-
-    def test_interrupt_not_connected(self):
+    @pytest.mark.anyio
+    async def test_interrupt_not_connected(self):
         """Test interrupt when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.interrupt()
 
-        anyio.run(_test)
-
-    def test_reconnect_mcp_server(self):
+    @pytest.mark.anyio
+    async def test_reconnect_mcp_server(self):
         """Test reconnect_mcp_server sends correct control request."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -555,22 +545,20 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert request_found, "mcp_reconnect control request not found"
 
-        anyio.run(_test)
-
-    def test_reconnect_mcp_server_not_connected(self):
+    @pytest.mark.anyio
+    async def test_reconnect_mcp_server_not_connected(self):
         """Test reconnect_mcp_server when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.reconnect_mcp_server("my-server")
 
-        anyio.run(_test)
-
-    def test_toggle_mcp_server(self):
+    @pytest.mark.anyio
+    async def test_toggle_mcp_server(self):
         """Test toggle_mcp_server sends correct control request."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -600,12 +588,11 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert request_found, "mcp_toggle control request not found"
 
-        anyio.run(_test)
-
-    def test_toggle_mcp_server_enabled_true(self):
+    @pytest.mark.anyio
+    async def test_toggle_mcp_server_enabled_true(self):
         """Test toggle_mcp_server with enabled=True."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -633,22 +620,20 @@ class TestClaudeSDKClientStreaming:
                             pass
                     assert request_found, "mcp_toggle control request not found"
 
-        anyio.run(_test)
-
-    def test_toggle_mcp_server_not_connected(self):
+    @pytest.mark.anyio
+    async def test_toggle_mcp_server_not_connected(self):
         """Test toggle_mcp_server when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.toggle_mcp_server("my-server", True)
 
-        anyio.run(_test)
-
-    def test_stop_task(self):
+    @pytest.mark.anyio
+    async def test_stop_task(self):
         """Test stop_task sends correct control request with task_id."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -678,22 +663,20 @@ class TestClaudeSDKClientStreaming:
                         "stop_task control request with task_id not found"
                     )
 
-        anyio.run(_test)
-
-    def test_stop_task_not_connected(self):
+    @pytest.mark.anyio
+    async def test_stop_task_not_connected(self):
         """Test stop_task when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.stop_task("task-abc123")
 
-        anyio.run(_test)
-
-    def test_get_mcp_status(self):
+    @pytest.mark.anyio
+    async def test_get_mcp_status(self):
         """Test get_mcp_status returns McpStatusResponse shape."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -756,7 +739,7 @@ class TestClaudeSDKClientStreaming:
                     last_check = 0
                     timeout_counter = 0
                     while timeout_counter < 200:
-                        await asyncio.sleep(0.01)
+                        await anyio.sleep(0.01)
                         timeout_counter += 1
 
                         for msg_str in written_messages[last_check:]:
@@ -824,22 +807,20 @@ class TestClaudeSDKClientStreaming:
                     assert proxy["config"]["type"] == "claudeai-proxy"
                     assert proxy["config"]["id"] == "proxy-123"
 
-        anyio.run(_test)
-
-    def test_get_mcp_status_not_connected(self):
+    @pytest.mark.anyio
+    async def test_get_mcp_status_not_connected(self):
         """Test get_mcp_status when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.get_mcp_status()
 
-        anyio.run(_test)
-
-    def test_get_context_usage(self):
+    @pytest.mark.anyio
+    async def test_get_context_usage(self):
         """Test get_context_usage returns ContextUsageResponse shape."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -888,7 +869,7 @@ class TestClaudeSDKClientStreaming:
                     last_check = 0
                     timeout_counter = 0
                     while timeout_counter < 200:
-                        await asyncio.sleep(0.01)
+                        await anyio.sleep(0.01)
                         timeout_counter += 1
 
                         for msg_str in written_messages[last_check:]:
@@ -934,22 +915,20 @@ class TestClaudeSDKClientStreaming:
                     assert usage["mcpTools"][0]["serverName"] == "ref"
                     assert usage["agents"][0]["tokens"] == 299
 
-        anyio.run(_test)
-
-    def test_get_context_usage_not_connected(self):
+    @pytest.mark.anyio
+    async def test_get_context_usage_not_connected(self):
         """Test get_context_usage when not connected raises error."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 await client.get_context_usage()
 
-        anyio.run(_test)
-
-    def test_client_with_options(self):
+    @pytest.mark.anyio
+    async def test_client_with_options(self):
         """Test client initialization with options."""
 
-        async def _test():
+        if True:
             options = ClaudeAgentOptions(
                 cwd="/custom/path",
                 allowed_tools=["Read", "Write"],
@@ -969,12 +948,11 @@ class TestClaudeSDKClientStreaming:
                 call_kwargs = mock_transport_class.call_args.kwargs
                 assert call_kwargs["options"] is options
 
-        anyio.run(_test)
-
-    def test_concurrent_send_receive(self):
+    @pytest.mark.anyio
+    async def test_concurrent_send_receive(self):
         """Test concurrent sending and receiving messages."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -984,7 +962,7 @@ class TestClaudeSDKClientStreaming:
                 # Mock receive to wait then yield messages with control protocol support
                 async def mock_receive():
                     # First handle initialization
-                    await asyncio.sleep(0.01)
+                    await anyio.sleep(0.01)
                     written = mock_transport.write.call_args_list
                     for call in written:
                         if call:
@@ -1010,7 +988,7 @@ class TestClaudeSDKClientStreaming:
                                 pass
 
                     # Then yield the actual messages
-                    await asyncio.sleep(0.1)
+                    await anyio.sleep(0.1)
                     yield {
                         "type": "assistant",
                         "message": {
@@ -1019,7 +997,7 @@ class TestClaudeSDKClientStreaming:
                             "model": "claude-opus-4-1-20250805",
                         },
                     }
-                    await asyncio.sleep(0.1)
+                    await anyio.sleep(0.1)
                     yield {
                         "type": "result",
                         "subtype": "success",
@@ -1034,30 +1012,29 @@ class TestClaudeSDKClientStreaming:
                 mock_transport.read_messages = mock_receive
 
                 async with ClaudeSDKClient() as client:
-                    # Helper to get next message
-                    async def get_next_message():
-                        return await client.receive_response().__anext__()
+                    received: list[Any] = []
 
-                    # Start receiving in background
-                    receive_task = asyncio.create_task(get_next_message())
+                    async def receive_one() -> None:
+                        received.append(await client.receive_response().__anext__())
 
-                    # Send message while receiving
-                    await client.query("Question 1")
+                    async with anyio.create_task_group() as tg:
+                        # Start receiving in background, then send while it waits.
+                        tg.start_soon(receive_one)
+                        await client.query("Question 1")
 
-                    # Wait for first message
-                    first_msg = await receive_task
-                    assert isinstance(first_msg, AssistantMessage)
-
-        anyio.run(_test)
+                    assert len(received) == 1
+                    assert isinstance(received[0], AssistantMessage)
 
 
 class TestQueryWithAsyncIterable:
     """Test query() function with async iterable inputs."""
 
-    def test_query_with_async_iterable(self):
+    @pytest.mark.anyio
+    async def test_query_with_async_iterable(self):
         """Test query with async iterable of messages."""
 
-        async def _test():
+        if True:
+
             async def message_stream():
                 yield {"type": "user", "message": {"role": "user", "content": "First"}}
                 yield {"type": "user", "message": {"role": "user", "content": "Second"}}
@@ -1152,38 +1129,35 @@ print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_ap
                 # Clean up
                 Path(test_script).unlink()
 
-        anyio.run(_test)
-
 
 class TestClaudeSDKClientEdgeCases:
     """Test edge cases and error scenarios."""
 
-    def test_receive_messages_not_connected(self):
+    @pytest.mark.anyio
+    async def test_receive_messages_not_connected(self):
         """Test receiving messages when not connected."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 async for _ in client.receive_messages():
                     pass
 
-        anyio.run(_test)
-
-    def test_receive_response_not_connected(self):
+    @pytest.mark.anyio
+    async def test_receive_response_not_connected(self):
         """Test receive_response when not connected."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             with pytest.raises(CLIConnectionError, match="Not connected"):
                 async for _ in client.receive_response():
                     pass
 
-        anyio.run(_test)
-
-    def test_double_connect(self):
+    @pytest.mark.anyio
+    async def test_double_connect(self):
         """Test connecting twice."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -1201,22 +1175,20 @@ class TestClaudeSDKClientEdgeCases:
                 # Should have been called twice
                 assert mock_transport_class.call_count == 2
 
-        anyio.run(_test)
-
-    def test_disconnect_without_connect(self):
+    @pytest.mark.anyio
+    async def test_disconnect_without_connect(self):
         """Test disconnecting without connecting first."""
 
-        async def _test():
+        if True:
             client = ClaudeSDKClient()
             # Should not raise error
             await client.disconnect()
 
-        anyio.run(_test)
-
-    def test_context_manager_with_exception(self):
+    @pytest.mark.anyio
+    async def test_context_manager_with_exception(self):
         """Test context manager cleans up on exception."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -1230,12 +1202,11 @@ class TestClaudeSDKClientEdgeCases:
                 # Disconnect should still be called
                 mock_transport.close.assert_called_once()
 
-        anyio.run(_test)
-
-    def test_receive_response_list_comprehension(self):
+    @pytest.mark.anyio
+    async def test_receive_response_list_comprehension(self):
         """Test collecting messages with list comprehension as shown in examples."""
 
-        async def _test():
+        if True:
             with patch(
                 "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
             ) as mock_transport_class:
@@ -1245,7 +1216,7 @@ class TestClaudeSDKClientEdgeCases:
                 # Mock the message stream with control protocol support
                 async def mock_receive():
                     # First handle initialization
-                    await asyncio.sleep(0.01)
+                    await anyio.sleep(0.01)
                     written = mock_transport.write.call_args_list
                     for call in written:
                         if call:
@@ -1310,5 +1281,3 @@ class TestClaudeSDKClientEdgeCases:
                         for msg in messages
                     )
                     assert isinstance(messages[-1], ResultMessage)
-
-        anyio.run(_test)

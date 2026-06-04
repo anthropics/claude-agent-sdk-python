@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import errno
 import json
 import os
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import anyio
 import pytest
 
 from claude_agent_sdk import (
@@ -71,17 +71,17 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestNoMaterialization:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_store(self, cwd: Path) -> None:
         opts = ClaudeAgentOptions(cwd=cwd, resume=SESSION_ID)
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_resume_or_continue(self, cwd: Path) -> None:
         opts = ClaudeAgentOptions(cwd=cwd, session_store=InMemorySessionStore())
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_non_uuid_session_id(self, cwd: Path) -> None:
         store = InMemorySessionStore()
         opts = ClaudeAgentOptions(
@@ -89,21 +89,21 @@ class TestNoMaterialization:
         )
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_returns_none(self, cwd: Path) -> None:
         opts = ClaudeAgentOptions(
             cwd=cwd, session_store=InMemorySessionStore(), resume=SESSION_ID
         )
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_returns_empty(self, cwd: Path, project_key: str) -> None:
         store = InMemorySessionStore()
         await store.append({"project_key": project_key, "session_id": SESSION_ID}, [])
         opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_continue_with_empty_list_sessions(self, cwd: Path) -> None:
         opts = ClaudeAgentOptions(
             cwd=cwd,
@@ -119,7 +119,7 @@ class TestNoMaterialization:
 
 
 class TestHappyPath:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_resume_writes_jsonl_and_cleanup_removes_dir(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -152,7 +152,7 @@ class TestHappyPath:
         await m.cleanup()
         assert not m.config_dir.exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_credentials_redacted(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -185,7 +185,7 @@ class TestHappyPath:
 
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_credentials_from_caller_config_dir_env(
         self, cwd: Path, project_key: str, tmp_path: Path
     ) -> None:
@@ -213,7 +213,7 @@ class TestHappyPath:
         assert creds["claudeAiOauth"]["accessToken"] == "fromenv"
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_credentials_from_keychain_fallback(
         self,
         cwd: Path,
@@ -244,7 +244,7 @@ class TestHappyPath:
         assert "refreshToken" not in creds["claudeAiOauth"]
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_continue_picks_most_recent(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -269,7 +269,7 @@ class TestHappyPath:
         assert m.resume_session_id == SESSION_ID_2
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_continue_skips_sidechain_sessions(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -298,7 +298,7 @@ class TestHappyPath:
         assert m.resume_session_id == SESSION_ID
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_continue_returns_none_when_only_sidechains(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -313,7 +313,7 @@ class TestHappyPath:
         )
         assert await materialize_resume_session(opts) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_continue_tie_break_is_deterministic(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -342,7 +342,7 @@ class TestHappyPath:
         assert second.resume_session_id == first_id
         await second.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_write_jsonl_round_trip(self, tmp_path: Path) -> None:
         """Parity with TS writeEntriesToJsonlFile: streamed output is
         byte-identical to map+join and round-trips back to the input."""
@@ -378,7 +378,7 @@ class TestHappyPath:
 
 
 class TestSubkeyMaterialization:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_subagent_jsonl_and_meta_json(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -421,7 +421,7 @@ class TestSubkeyMaterialization:
 
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_traversal_guards(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -470,7 +470,7 @@ class TestSubkeyMaterialization:
                 assert str(p).startswith(str(m.config_dir))
         await m.cleanup()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_store_without_list_subkeys_skips_subagents(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -500,14 +500,14 @@ class TestSubkeyMaterialization:
 
 
 class TestTimeoutsAndErrors:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_timeout_raises(self, cwd: Path) -> None:
         class SlowStore(SessionStore):
             async def append(self, key, entries):  # type: ignore[override]
                 pass
 
             async def load(self, key):  # type: ignore[override]
-                await asyncio.sleep(3600)
+                await anyio.sleep(3600)
                 return None
 
         opts = ClaudeAgentOptions(
@@ -516,7 +516,7 @@ class TestTimeoutsAndErrors:
         with pytest.raises(RuntimeError, match="timed out"):
             await materialize_resume_session(opts)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_list_sessions_timeout_on_continue_path(self, cwd: Path) -> None:
         """Parity with TS: load_timeout_ms applies to list_sessions() during
         continue_conversation, not just load()."""
@@ -529,7 +529,7 @@ class TestTimeoutsAndErrors:
                 return None
 
             async def list_sessions(self, project_key):  # type: ignore[override]
-                await asyncio.sleep(3600)
+                await anyio.sleep(3600)
                 return []
 
         opts = ClaudeAgentOptions(
@@ -541,7 +541,7 @@ class TestTimeoutsAndErrors:
         with pytest.raises(RuntimeError, match=r"list_sessions\(\).*timed out"):
             await materialize_resume_session(opts)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_list_subkeys_timeout_raises_and_cleans_temp_dir(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -550,7 +550,7 @@ class TestTimeoutsAndErrors:
 
         class HungSubkeysStore(InMemorySessionStore):
             async def list_subkeys(self, key):  # type: ignore[override]
-                await asyncio.sleep(3600)
+                await anyio.sleep(3600)
                 return []
 
         store = HungSubkeysStore()
@@ -579,18 +579,18 @@ class TestTimeoutsAndErrors:
         assert created, "load() succeeded so mkdtemp should have run"
         assert not Path(created[0]).exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cancelled_after_mkdtemp_cleans_temp_dir(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
-        """``asyncio.CancelledError`` is ``BaseException`` (not ``Exception``)
-        since 3.8 — the cleanup-on-failure block must catch it so a temp dir
-        already containing ``.credentials.json`` is not leaked when the outer
-        task is cancelled mid-subkey-load."""
+        """Cancellation is ``BaseException`` (not ``Exception``) on both
+        asyncio and trio — the cleanup-on-failure block must catch it so a
+        temp dir already containing ``.credentials.json`` is not leaked when
+        the outer task is cancelled mid-subkey-load."""
 
         class HungSubkeysStore(InMemorySessionStore):
             async def list_subkeys(self, key):  # type: ignore[override]
-                await asyncio.sleep(3600)
+                await anyio.sleep(3600)
                 return []
 
         store = HungSubkeysStore()
@@ -608,21 +608,30 @@ class TestTimeoutsAndErrors:
             created.append(d)
             return d
 
-        with patch("tempfile.mkdtemp", side_effect=spy):
-            task = asyncio.create_task(materialize_resume_session(opts))
-            # Let it run past mkdtemp and into list_subkeys.
-            for _ in range(50):
-                await asyncio.sleep(0)
-                if created:
-                    break
-            assert created, "mkdtemp should have run before cancellation"
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+        materialize_returned = False
 
+        async def _run() -> None:
+            nonlocal materialize_returned
+            await materialize_resume_session(opts)
+            materialize_returned = True  # unreachable if cleanup re-raises
+
+        with patch("tempfile.mkdtemp", side_effect=spy):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_run)
+                # Let it run past mkdtemp and into list_subkeys.
+                for _ in range(50):
+                    await anyio.sleep(0)
+                    if created:
+                        break
+                assert created, "mkdtemp should have run before cancellation"
+                tg.cancel_scope.cancel()
+
+        assert not materialize_returned, (
+            "cancellation must propagate (not be swallowed)"
+        )
         assert not Path(created[0]).exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_non_json_serializable_entry_surfaces_clear_error(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -657,7 +666,7 @@ class TestTimeoutsAndErrors:
         assert created
         assert not Path(created[0]).exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_exception_wrapped(self, cwd: Path) -> None:
         class BrokenStore(SessionStore):
             async def append(self, key, entries):  # type: ignore[override]
@@ -672,7 +681,7 @@ class TestTimeoutsAndErrors:
         with pytest.raises(RuntimeError, match="network down"):
             await materialize_resume_session(opts)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_failure_after_mkdir_cleans_temp_dir(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -732,7 +741,7 @@ def _make_mock_transport() -> Any:
 
 
 class TestClientIntegration:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_passes_config_dir_resume_and_suppresses_continue(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
@@ -805,7 +814,7 @@ class TestClientIntegration:
         # Cleanup removed the temp dir.
         assert not Path(config_dir).exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_custom_transport_skips_materialization(
         self,
         cwd: Path,
@@ -844,7 +853,7 @@ class TestClientIntegration:
             assert client._materialized is None
             await client.disconnect()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_query_custom_transport_skips_materialization(
         self,
         cwd: Path,
@@ -878,7 +887,7 @@ class TestClientIntegration:
         assert SpyStore.load_calls == 0
         assert not track_resume_dirs
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_no_materialization_passthrough(
         self, cwd: Path, isolated_home: Path
     ) -> None:
@@ -938,7 +947,7 @@ class TestSpawnFailureCleanup:
     removed even when transport.connect() raises before any try/finally that
     normally guards cleanup."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cleanup_retries_on_transient_os_error(
         self,
         cwd: Path,
@@ -975,7 +984,7 @@ class TestSpawnFailureCleanup:
         assert not config_dir.exists()
         assert len(calls) >= 3  # 2 failures + 1 success
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_failure_path_retries_rmtree(
         self,
         cwd: Path,
@@ -1016,7 +1025,7 @@ class TestSpawnFailureCleanup:
         assert not track_resume_dirs[0].exists()
         assert len(calls) >= 3
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_client_connect_failure_removes_temp_dir(
         self,
         cwd: Path,
@@ -1051,7 +1060,7 @@ class TestSpawnFailureCleanup:
             assert not d.exists(), f"leaked temp dir {d}"
         assert client._materialized is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_client_aenter_failure_removes_temp_dir(
         self,
         cwd: Path,
@@ -1085,7 +1094,7 @@ class TestSpawnFailureCleanup:
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_client_initialize_failure_closes_subprocess_before_cleanup(
         self,
         cwd: Path,
@@ -1134,7 +1143,7 @@ class TestSpawnFailureCleanup:
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_cancelled_before_spawn_removes_temp_dir(
         self,
         cwd: Path,
@@ -1157,7 +1166,7 @@ class TestSpawnFailureCleanup:
                 pass
 
             async def load(self, key):  # type: ignore[override]
-                await asyncio.sleep(3600)
+                await anyio.sleep(3600)
                 return [{"type": "user", "uuid": "u1"}]
 
         spawn_count = 0
@@ -1172,24 +1181,32 @@ class TestSpawnFailureCleanup:
         )
         client = ClaudeSDKClient(options=opts)
 
+        connect_returned = False
+
+        async def _connect() -> None:
+            nonlocal connect_returned
+            await client.connect()
+            connect_returned = True  # unreachable if cleanup re-raises
+
         with patch(
             "claude_agent_sdk._internal.transport.subprocess_cli."
             "SubprocessCLITransport",
             side_effect=fake_transport,
         ):
-            connect_task = asyncio.create_task(client.connect())
-            await asyncio.sleep(0)  # let connect reach the awaited load()
-            connect_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(connect_task, timeout=2)
+            with anyio.fail_after(2):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(_connect)
+                    await anyio.sleep(0)  # let connect reach the awaited load()
+                    tg.cancel_scope.cancel()
 
+        assert not connect_returned, "cancellation must propagate (not be swallowed)"
         assert spawn_count == 0
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
         # disconnect() after a cancelled connect must be a safe no-op.
         await client.disconnect()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_query_transport_failure_removes_temp_dir(
         self,
         cwd: Path,
@@ -1222,7 +1239,7 @@ class TestSpawnFailureCleanup:
         for d in track_resume_dirs:
             assert not d.exists(), f"leaked temp dir {d}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_query_early_break_closes_transport_before_temp_dir_removed(
         self,
         cwd: Path,

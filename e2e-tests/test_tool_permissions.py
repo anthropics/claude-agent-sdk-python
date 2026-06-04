@@ -15,7 +15,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_permission_callback_gets_called():
     """Test that can_use_tool callback gets invoked for non-read-only commands.
 

@@ -21,7 +21,7 @@ from claude_agent_sdk.types import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_include_partial_messages_stream_events():
     """Test that include_partial_messages produces StreamEvent messages."""
 
@@ -89,7 +89,7 @@ async def test_include_partial_messages_stream_events():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_include_partial_messages_thinking_deltas():
     """Test that thinking content is streamed incrementally via deltas."""
 
@@ -127,7 +127,7 @@ async def test_include_partial_messages_thinking_deltas():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_partial_messages_disabled_by_default():
     """Test that partial messages are not included when option is not set."""
 

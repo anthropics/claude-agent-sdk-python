@@ -7,10 +7,10 @@ Exercises the SessionStore-backed code paths in
 
 from __future__ import annotations
 
-import asyncio
 import uuid as uuid_mod
 from typing import Any
 
+import anyio
 import pytest
 
 from claude_agent_sdk import (
@@ -26,9 +26,10 @@ from claude_agent_sdk import (
     rename_session_via_store,
     tag_session_via_store,
 )
+from claude_agent_sdk._internal import sessions as _sessions
 from claude_agent_sdk.types import SessionKey, SessionStore
 
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +248,10 @@ class TestListSessionsFromStore:
         """list_sessions_from_store must not issue unbounded concurrent
         store.load() calls — large listings would otherwise exhaust adapter
         connection pools. Regression for the paginate-after-filter refactor."""
-        from claude_agent_sdk._internal import sessions as _sessions
 
         in_flight = 0
         peak = 0
-        gate = asyncio.Event()
+        gate = anyio.Event()
 
         class SlowStore(InMemorySessionStore):
             # Force the per-session load() fallback path under test.
@@ -275,14 +275,20 @@ class TestListSessionsFromStore:
                 [{"type": "user", "uuid": f"u{i}"}],
             )
 
-        task = asyncio.create_task(list_sessions_from_store(store, directory=DIR))
-        # Let the gather schedule and saturate the semaphore.
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert peak <= _sessions._STORE_LIST_LOAD_CONCURRENCY
-        assert peak > 0
-        gate.set()
-        result = await task
+        result: list[Any] = []
+        peak_at_saturation = 0
+
+        async def _run() -> None:
+            result.extend(await list_sessions_from_store(store, directory=DIR))
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_run)
+            # Let the loader schedule and saturate the semaphore.
+            for _ in range(5):
+                await anyio.sleep(0)
+            peak_at_saturation = peak
+            gate.set()
+        assert 0 < peak_at_saturation <= _sessions._STORE_LIST_LOAD_CONCURRENCY
         assert peak == _sessions._STORE_LIST_LOAD_CONCURRENCY
         assert len(result) <= n
 

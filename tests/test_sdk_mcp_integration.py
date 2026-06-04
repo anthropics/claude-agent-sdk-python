@@ -25,7 +25,7 @@ from claude_agent_sdk import (
 )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_sdk_mcp_server_handlers():
     """Test that SDK MCP server handlers are properly registered."""
     # Track tool executions
@@ -104,7 +104,7 @@ async def test_sdk_mcp_server_handlers():
     assert tool_executions[1]["args"]["b"] == 3
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_tool_creation():
     """Test that tools can be created with proper schemas."""
 
@@ -123,7 +123,7 @@ async def test_tool_creation():
     assert result == {"output": "test"}
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_error_handling():
     """Test that tool errors are properly handled."""
 
@@ -155,7 +155,7 @@ async def test_error_handling():
     assert "Expected error" in str(result.root.content[0].text)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_is_error_flag_propagated():
     """Test that is_error flag from tool result dict is propagated to CallToolResult."""
 
@@ -191,7 +191,7 @@ async def test_is_error_flag_propagated():
     assert "2.0" in result.root.content[0].text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_mixed_servers():
     """Test that SDK and external MCP servers can work together."""
 
@@ -216,7 +216,7 @@ async def test_mixed_servers():
     assert options.mcp_servers["external"]["type"] == "stdio"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_server_creation():
     """Test that SDK MCP servers are created correctly."""
     server = create_sdk_mcp_server(name="test-server", version="2.0.0", tools=[])
@@ -239,7 +239,7 @@ async def test_server_creation():
     assert ListToolsRequest not in instance.request_handlers
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_image_content_support():
     """Test that tools can return image content with base64 data."""
 
@@ -309,7 +309,7 @@ async def test_image_content_support():
     assert tool_executions[0]["args"]["title"] == "Sales Report"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_tool_annotations():
     """Test that tool annotations are stored and flow through list_tools."""
 
@@ -379,7 +379,7 @@ async def test_tool_annotations():
     assert tools_by_name["no_annotations"].annotations is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_tool_annotations_in_jsonrpc():
     """Test that annotations are included in JSONRPC tools/list response."""
     from claude_agent_sdk._internal.query import Query
@@ -493,7 +493,7 @@ def test_max_result_size_chars_annotation_flows_to_cli():
     )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_resource_link_content_converted_to_text():
     """Test that resource_link content blocks are converted to text."""
 
@@ -532,7 +532,7 @@ async def test_resource_link_content_converted_to_text():
     assert "A test document" in result.root.content[0].text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_embedded_resource_text_content_converted():
     """Test that embedded resource with text content is converted to text."""
 
@@ -568,7 +568,7 @@ async def test_embedded_resource_text_content_converted():
     assert result.root.content[0].text == "File contents here"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_binary_embedded_resource_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ):
@@ -606,7 +606,7 @@ async def test_binary_embedded_resource_skipped_with_warning(
     assert "Binary embedded resource" in caplog.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_unknown_content_type_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ):
@@ -636,7 +636,7 @@ async def test_unknown_content_type_skipped_with_warning(
     assert "custom_widget" in caplog.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_mixed_content_types_with_resource_link():
     """Test that mixed content with text, image, and resource_link works."""
 
@@ -674,7 +674,7 @@ async def test_mixed_content_types_with_resource_link():
     assert "Report" in result.root.content[2].text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_jsonrpc_bridge_resource_link():
     """Test that the JSONRPC bridge converts resource_link content to text."""
     from claude_agent_sdk._internal.query import Query
@@ -982,7 +982,7 @@ class TestTypedDictToJsonSchema:
 class TestTypedDictMcpIntegration:
     """Tests for TypedDict schemas flowing through create_sdk_mcp_server."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_typeddict_tool_schema_in_list_tools(self) -> None:
         from typing import TypedDict
 
@@ -1010,7 +1010,7 @@ class TestTypedDictMcpIntegration:
         assert schema["properties"]["max_results"] == {"type": "integer"}
         assert sorted(schema["required"]) == ["max_results", "query"]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_typeddict_tool_call_works(self) -> None:
         from typing import TypedDict
 
@@ -1036,7 +1036,7 @@ class TestTypedDictMcpIntegration:
         result = await call_handler(request)
         assert "42" in result.root.content[0].text
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_dict_schema_still_works(self) -> None:
         @tool("echo", "Echo input", {"message": str})
         async def echo(args: dict[str, Any]) -> dict[str, Any]:
@@ -1053,7 +1053,7 @@ class TestTypedDictMcpIntegration:
         assert schema["properties"]["message"] == {"type": "string"}
         assert schema["required"] == ["message"]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_json_schema_dict_passthrough(self) -> None:
         json_schema = {
             "type": "object",
@@ -1077,7 +1077,7 @@ class TestTypedDictMcpIntegration:
         schema = response.root.tools[0].inputSchema
         assert schema == json_schema
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cached_tool_list_is_stable(self) -> None:
         @tool("cached", "Test caching", {"x": str})
         async def cached(args: dict[str, Any]) -> dict[str, Any]:

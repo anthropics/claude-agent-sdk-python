@@ -6,7 +6,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_stderr_callback_without_debug():
     """Test that stderr callback is wired up and receives no output on a clean run."""
     stderr_lines = []

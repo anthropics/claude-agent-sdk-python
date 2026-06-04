@@ -98,7 +98,7 @@ def _make_store(client: Any, prefix: str = "p") -> S3SessionStore:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_conformance(s3_client: Any) -> None:
     counter = 0
 
@@ -111,7 +111,7 @@ async def test_conformance(s3_client: Any) -> None:
     await run_session_store_conformance(factory)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_conformance_with_options_dataclass(s3_client: Any) -> None:
     """``S3SessionStoreOptions`` is an alternative to keyword args."""
     counter = 0
@@ -133,7 +133,7 @@ async def test_conformance_with_options_dataclass(s3_client: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_part_name_format_and_sortable() -> None:
     client = _RecordingClient()
     store = _make_store(client)
@@ -159,7 +159,7 @@ async def test_append_part_name_format_and_sortable() -> None:
     assert k0 <= k1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_two_instances_distinct_part_names() -> None:
     client = _RecordingClient()
     a = _make_store(client)
@@ -174,7 +174,7 @@ async def test_append_two_instances_distinct_part_names() -> None:
     assert k0 != k1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_jsonl_serialization() -> None:
     client = _RecordingClient()
     store = _make_store(client)
@@ -186,7 +186,7 @@ async def test_append_jsonl_serialization() -> None:
     assert body == b'{"type":"x","a":1}\n{"type":"x","b":2}\n'
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_same_ms_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
     # Regression: with time.time() alone, two same-ms appends got identical ms
     # prefixes and sorted by the random hex suffix → nondeterministic load()
@@ -209,7 +209,7 @@ async def test_append_same_ms_preserves_order(monkeypatch: pytest.MonkeyPatch) -
     ]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_empty_is_noop() -> None:
     # Regression: append([]) used to PUT a "\n" body, creating a junk part
     # file per call.
@@ -219,7 +219,7 @@ async def test_append_empty_is_noop() -> None:
     assert client.calls == []
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_append_includes_subpath() -> None:
     client = _RecordingClient()
     store = _make_store(client)
@@ -238,13 +238,13 @@ async def test_append_includes_subpath() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_load_null_when_empty(s3_client: Any) -> None:
     store = _make_store(s3_client)
     assert await store.load({"project_key": "proj", "session_id": "sess"}) is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_load_sorts_and_concatenates() -> None:
     client = _RecordingClient()
     client.objects = {
@@ -257,7 +257,7 @@ async def test_load_sorts_and_concatenates() -> None:
     assert result == [{"n": 0}, {"n": 1}, {"n": 2}, {"n": 3}]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_load_paginates(s3_client: Any) -> None:
     """Real moto pagination: 5 parts at MaxKeys=2 → 3 pages."""
 
@@ -290,7 +290,7 @@ async def test_load_paginates(s3_client: Any) -> None:
     assert all("ContinuationToken" in c for c in paged.list_calls[1:])
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_load_excludes_subpath_parts() -> None:
     # Regression: ListObjectsV2 with a bare Prefix recurses into subpaths,
     # so load({project_key, session_id}) was mixing subagent entries into the
@@ -315,7 +315,7 @@ async def test_load_excludes_subpath_parts() -> None:
     result = await store.load({"project_key": "proj", "session_id": "sess"})
     assert result == [{"main": 1}, {"main": 2}]
     # Subagent part must not be fetched at all. get_object calls are
-    # bounded-parallel via asyncio.gather so recording order is unspecified —
+    # bounded-parallel via an anyio task group so recording order is unspecified —
     # the slot-indexed bodies[] preserves entry order regardless.
     fetched = sorted(c["Key"] for c in _calls_of(client, "get_object"))
     assert fetched == [
@@ -324,7 +324,7 @@ async def test_load_excludes_subpath_parts() -> None:
     ]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_load_skips_malformed_lines() -> None:
     client = _RecordingClient()
     client.objects = {
@@ -340,7 +340,7 @@ async def test_load_skips_malformed_lines() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_sessions_extracts_mtime() -> None:
     client = _RecordingClient()
     client.objects = {
@@ -357,7 +357,7 @@ async def test_list_sessions_extracts_mtime() -> None:
     assert by_id["sess-b"] == 1_700_000_003_000
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_sessions_ignores_subagent_parts() -> None:
     # Regression: without a depth filter, {session_id}/subagents/*/part-*
     # matched the part-regex, surfacing phantom session_ids and skewing mtime.
@@ -377,7 +377,7 @@ async def test_list_sessions_ignores_subagent_parts() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_delete_batch_deletes_parts() -> None:
     client = _RecordingClient()
     client.objects = {
@@ -395,7 +395,7 @@ async def test_delete_batch_deletes_parts() -> None:
     ]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_delete_subpath_direct_only(s3_client: Any) -> None:
     # Regression: InMemorySessionStore.delete({...,subpath:'a'}) removes
     # exactly key 'a'; cascade is gated on subpath is None. S3's recursive
@@ -411,7 +411,7 @@ async def test_delete_subpath_direct_only(s3_client: Any) -> None:
     assert await store.load({**base, "subpath": "a/b"}) == [{"type": "x", "ab": 1}]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_delete_cascades_without_subpath(s3_client: Any) -> None:
     store = _make_store(s3_client)
     base: SessionKey = {"project_key": "proj", "session_id": "sess"}
@@ -426,7 +426,7 @@ async def test_delete_cascades_without_subpath(s3_client: Any) -> None:
     assert await store.load({**base, "subpath": "a/b"}) is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_delete_surfaces_errors() -> None:
     client = _RecordingClient()
     client.objects = {"p/proj/sess/part-0000000000000-000000.jsonl": b"{}\n"}
@@ -448,7 +448,7 @@ async def test_delete_surfaces_errors() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_subkeys_extracts_unique_subpaths() -> None:
     client = _RecordingClient()
     client.objects = {
@@ -461,7 +461,7 @@ async def test_list_subkeys_extracts_unique_subpaths() -> None:
     assert sorted(result) == ["subagents/agent-1", "subagents/agent-2"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_subkeys_filters_traversal_segments() -> None:
     # Real AWS S3 (unlike MinIO) accepts '..' literally in object keys, so a
     # compromised/buggy writer could produce these.
@@ -483,7 +483,7 @@ async def test_list_subkeys_filters_traversal_segments() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @pytest.mark.parametrize("raw_prefix", ["", "p", "p/", "p///"])
 async def test_prefix_normalization(raw_prefix: str) -> None:
     client = _RecordingClient()
@@ -525,7 +525,7 @@ def _entry(role: str, n: int, parent: str | None, sid: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_materialize_round_trip(
     s3_client: Any, tmp_path: Path, isolated_home: Path
 ) -> None:
@@ -581,7 +581,7 @@ async def test_materialize_round_trip(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_batcher_50_entries(s3_client: Any, tmp_path: Path) -> None:
     store = _make_store(s3_client)
     projects_dir = str(tmp_path / "projects")

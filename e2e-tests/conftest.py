@@ -17,12 +17,15 @@ def api_key():
     return key
 
 
-@pytest.fixture(scope="session")
-def event_loop_policy():
-    """Use the default event loop policy for all async tests."""
-    import asyncio
+@pytest.fixture
+def anyio_backend() -> str:
+    """Pin e2e tests to the asyncio backend.
 
-    return asyncio.get_event_loop_policy()
+    Unit tests run under both asyncio and trio (see tests/conftest.py), but
+    e2e tests make real API calls, so running them under both backends would
+    double cost and runtime without exercising any additional SDK code.
+    """
+    return "asyncio"
 
 
 def pytest_configure(config):

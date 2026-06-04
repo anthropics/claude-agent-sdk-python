@@ -224,7 +224,9 @@ class S3SessionStore(SessionStore):
         keys.sort()
 
         # Bounded-parallel GetObject (serial is N×RTT); preserves sorted-key
-        # order via slot-indexed result list.
+        # order via slot-indexed result list. Unlike asyncio.gather, a task
+        # group wraps fetch failures in an ExceptionGroup — catch ClientError
+        # here with `except* ClientError` rather than a bare `except`.
         bodies: list[str | None] = [None] * len(keys)
         sem = anyio.Semaphore(_LOAD_CONCURRENCY)
 

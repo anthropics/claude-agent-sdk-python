@@ -225,8 +225,9 @@ class S3SessionStore(SessionStore):
 
         # Bounded-parallel GetObject (serial is N×RTT); preserves sorted-key
         # order via slot-indexed result list. Unlike asyncio.gather, a task
-        # group wraps fetch failures in an ExceptionGroup — catch ClientError
-        # here with `except* ClientError` rather than a bare `except`.
+        # group wraps fetch failures in an ExceptionGroup, so a plain
+        # `except ClientError` around load() won't match — use `except*`
+        # (Python 3.11+) or the `exceptiongroup` backport's catch() on 3.10.
         bodies: list[str | None] = [None] * len(keys)
         sem = anyio.Semaphore(_LOAD_CONCURRENCY)
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.91
+
+### Internal/Other Changes
+
+- Switched test suite from `pytest-asyncio` to anyio's pytest plugin, running every async test under both asyncio and trio backends to catch backend-specific regressions in CI (#1021)
+- Updated bundled Claude CLI to version 2.1.165
+
 ## 0.2.90
 
 ### Internal/Other Changes

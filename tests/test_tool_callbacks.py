@@ -53,7 +53,7 @@ class MockTransport(Transport):
 class TestToolPermissionCallbacks:
     """Test tool permission callback functionality."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_permission_callback_allow(self):
         """Test callback that allows tool execution."""
         callback_invoked = False
@@ -97,7 +97,59 @@ class TestToolPermissionCallbacks:
         response = transport.written_messages[0]
         assert '"behavior": "allow"' in response
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
+    async def test_permission_callback_suggestions_roundtrip(self):
+        """Suggestions arrive as PermissionUpdate instances and can be echoed back."""
+        from claude_agent_sdk.types import PermissionUpdate
+
+        seen_suggestions: list[Any] = []
+
+        async def always_allow(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            seen_suggestions.extend(context.suggestions)
+            persist = [
+                s for s in context.suggestions if s.destination == "localSettings"
+            ]
+            return PermissionResultAllow(updated_permissions=persist)
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=always_allow,
+            hooks=None,
+        )
+
+        wire_suggestion = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [{"toolName": "Bash", "ruleContent": "git status"}],
+        }
+        request = {
+            "type": "control_request",
+            "request_id": "test-roundtrip",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "input": {"command": "git status"},
+                "permission_suggestions": [wire_suggestion],
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(seen_suggestions) == 1
+        assert isinstance(seen_suggestions[0], PermissionUpdate)
+        assert seen_suggestions[0].destination == "localSettings"
+
+        assert len(transport.written_messages) == 1
+        response = json.loads(transport.written_messages[0])
+        sent = response["response"]["response"]["updatedPermissions"]
+        assert sent == [wire_suggestion]
+
+    @pytest.mark.anyio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""
 
@@ -121,7 +173,7 @@ class TestToolPermissionCallbacks:
                 "subtype": "can_use_tool",
                 "tool_name": "DangerousTool",
                 "input": {"command": "rm -rf /"},
-                "permission_suggestions": ["deny"],
+                "permission_suggestions": [],
             },
         }
 
@@ -133,7 +185,7 @@ class TestToolPermissionCallbacks:
         assert '"behavior": "deny"' in response
         assert '"message": "Security policy violation"' in response
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_permission_callback_input_modification(self):
         """Test callback that modifies tool input."""
 
@@ -172,7 +224,7 @@ class TestToolPermissionCallbacks:
         assert '"behavior": "allow"' in response
         assert '"safe_mode": true' in response
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_permission_callback_receives_tool_use_id(self):
         """Test that tool_use_id and agent_id are passed through to the context."""
         received_context = None
@@ -211,7 +263,7 @@ class TestToolPermissionCallbacks:
         assert received_context.tool_use_id == "toolu_01ABC123"
         assert received_context.agent_id == "agent-456"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_permission_callback_missing_agent_id(self):
         """Test that agent_id defaults to None when not sent (top-level agent)."""
         received_context = None
@@ -249,7 +301,57 @@ class TestToolPermissionCallbacks:
         assert received_context.tool_use_id == "toolu_01XYZ789"
         assert received_context.agent_id is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
+    async def test_permission_callback_receives_decision_reason(self):
+        """Test that decision_reason and permission-display fields are forwarded
+        to the context (TS SDK parity, #816)."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-reason",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "input": {"command": "rm -rf /tmp/x"},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01DEF456",
+                "blocked_path": "/tmp/x",
+                "decision_reason": "PreToolUse hook flagged this as destructive",
+                "title": "Claude wants to run a Bash command",
+                "display_name": "Bash",
+                "description": "rm -rf /tmp/x",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.blocked_path == "/tmp/x"
+        assert (
+            received_context.decision_reason
+            == "PreToolUse hook flagged this as destructive"
+        )
+        assert received_context.title == "Claude wants to run a Bash command"
+        assert received_context.display_name == "Bash"
+        assert received_context.description == "rm -rf /tmp/x"
+
+    @pytest.mark.anyio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 
@@ -289,7 +391,7 @@ class TestToolPermissionCallbacks:
 class TestHookCallbacks:
     """Test hook callback functionality."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hook_execution(self):
         """Test that hooks are called at appropriate times."""
         hook_calls = []
@@ -339,7 +441,7 @@ class TestHookCallbacks:
         last_response = transport.written_messages[-1]
         assert '"processed": true' in last_response
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hook_output_fields(self):
         """Test that all SyncHookJSONOutput fields are properly handled."""
 
@@ -423,7 +525,7 @@ class TestHookCallbacks:
         )
         assert "updatedInput" in hook_output
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_async_hook_output(self):
         """Test AsyncHookJSONOutput type with proper async fields."""
 
@@ -473,7 +575,7 @@ class TestHookCallbacks:
         assert "async_" not in result, "async_ should not appear in CLI output"
         assert result.get("asyncTimeout") == 5000
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_field_name_conversion(self):
         """Test that Python-safe field names (async_, continue_) are converted to CLI format (async, continue)."""
 
@@ -569,7 +671,7 @@ class TestClaudeAgentOptionsIntegration:
 class TestHookEventCallbacks:
     """Test hook callbacks for all hook event types."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_notification_hook_callback(self):
         """Test that a Notification hook callback receives correct input and returns output."""
         hook_calls: list[dict[str, Any]] = []
@@ -625,7 +727,7 @@ class TestHookEventCallbacks:
             == "Notification processed"
         )
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_permission_request_hook_callback(self):
         """Test that a PermissionRequest hook callback returns a decision."""
 
@@ -672,7 +774,7 @@ class TestHookEventCallbacks:
         assert result["hookSpecificOutput"]["hookEventName"] == "PermissionRequest"
         assert result["hookSpecificOutput"]["decision"] == {"type": "allow"}
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_subagent_start_hook_callback(self):
         """Test that a SubagentStart hook callback works correctly."""
 
@@ -719,7 +821,7 @@ class TestHookEventCallbacks:
         assert result["hookSpecificOutput"]["hookEventName"] == "SubagentStart"
         assert result["hookSpecificOutput"]["additionalContext"] == "Subagent approved"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_post_tool_use_hook_with_updated_mcp_output(self):
         """Test PostToolUse hook returning updatedMCPToolOutput."""
 
@@ -769,7 +871,7 @@ class TestHookEventCallbacks:
             "result": "modified output"
         }
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_pre_tool_use_hook_with_additional_context(self):
         """Test PreToolUse hook returning additionalContext."""
 
@@ -825,7 +927,7 @@ class TestHookEventCallbacks:
 class TestHookInitializeRegistration:
     """Test that new hook events can be registered through the initialize flow."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_new_hook_events_registered_in_hooks_config(self):
         """Test that all new hook event types can be configured in hooks dict."""
 

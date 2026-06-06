@@ -490,6 +490,25 @@ class TestDeleteSession:
         delete_session(sid, directory=project_path)
         assert not file_path.exists()
 
+    def test_removes_subagent_transcript_dir(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Cascades the sibling {sid}/ subagent dir alongside the .jsonl."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+        subagent_dir = project_dir / sid
+        subagent_dir.mkdir()
+        (subagent_dir / f"{uuid.uuid4()}.jsonl").write_text("{}\n")
+
+        delete_session(sid, directory=project_path)
+
+        assert not file_path.exists()
+        assert not subagent_dir.exists()
+
     def test_deletes_without_directory(self, claude_config_dir: Path):
         """Searches all project directories when no directory is given."""
         project_dir = _make_project_dir(claude_config_dir, "/any/project")

@@ -43,19 +43,24 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Authenticate to the Claude API via Workload Identity Federation
+          # (the workflow's OIDC token is exchanged for a short-lived access
+          # token) instead of a static API key.
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
 
-          claude_args: --model claude-opus-4-6
-          
           # Optional: Customize the trigger phrase (default: @claude)
           # trigger_phrase: "/claude"
-          
+
           # Optional: Trigger when specific user is assigned to an issue
           # assignee_trigger: "claude-bot"
-          
-          # Allow Claude to run linters, typecheckers, and tests
-          claude_args: |
-            --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"
 
-          # Optional: Add custom instructions for Claude to customize its behavior for your project
-          # claude_args: --system-prompt "Follow our coding standards"
+          # CLI args: model selection + allowed tools for lint/typecheck/tests.
+          # Add further flags (e.g. --system-prompt "...") to this block rather
+          # than a second claude_args key — duplicate YAML keys are rejected by
+          # GitHub Actions.
+          claude_args: |
+            --model claude-opus-4-6
+            --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"

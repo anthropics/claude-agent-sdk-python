@@ -573,17 +573,18 @@ class TestMessageParser:
         assert message.uuid is None
         assert message.session_id is None
 
-    def test_parse_task_updated_message_running_not_terminal(self):
-        """A non-terminal (running) task_updated parses; status is not terminal."""
+    @pytest.mark.parametrize("status", ["pending", "running", "paused"])
+    def test_parse_task_updated_message_non_terminal_statuses(self, status):
+        """Non-terminal task_updated statuses parse and are not treated as done."""
         data = {
             "type": "system",
             "subtype": "task_updated",
             "task_id": "task-abc",
-            "patch": {"status": "running"},
+            "patch": {"status": status},
         }
         message = parse_message(data)
         assert isinstance(message, TaskUpdatedMessage)
-        assert message.status == "running"
+        assert message.status == status
         assert message.status not in TERMINAL_TASK_STATUSES
 
     def test_parse_task_updated_message_no_patch(self):
@@ -625,9 +626,13 @@ class TestMessageParser:
         assert message.patch == {}
         assert message.status is None
 
-    @pytest.mark.parametrize("status", ["completed", "failed", "stopped", "cancelled"])
+    @pytest.mark.parametrize("status", ["completed", "failed", "killed"])
     def test_parse_task_updated_message_terminal_statuses(self, status):
-        """Every terminal patch.status is surfaced and recognized as terminal."""
+        """Every terminal task_updated patch.status is surfaced as terminal.
+
+        ``task_updated`` reports the raw ``killed`` (not the ``stopped`` form
+        the CLI maps to on ``task_notification``).
+        """
         data = {
             "type": "system",
             "subtype": "task_updated",
@@ -637,6 +642,23 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, TaskUpdatedMessage)
         assert message.status == status
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_killed_is_terminal(self):
+        """A task stopped via TaskStop reports status='killed' and is terminal.
+
+        In some kill paths no task_notification is emitted, so this task_updated
+        patch is the only terminal signal — it must clear a tracked active id.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "bs2r8eew4",
+            "patch": {"status": "killed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == "killed"
         assert message.status in TERMINAL_TASK_STATUSES
 
     def test_task_updated_backward_compat_isinstance(self):

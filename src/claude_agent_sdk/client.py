@@ -578,6 +578,39 @@ class ClaudeSDKClient:
         - The ResultMessage IS included in the yielded messages
         - If no ResultMessage is received, the iterator continues indefinitely
 
+        **Multi-yield async generator prompts:**
+        When ``query()`` is called with an async generator that yields multiple messages,
+        the CLI may group those messages and produce one ``ResultMessage`` per yield *or*
+        fewer — there is no guaranteed 1-to-1 mapping. Because ``receive_response()``
+        returns after the *first* ``ResultMessage``, a single call will silently miss
+        responses from any subsequent yields. Use a ``while`` loop with a timeout to
+        drain all responses::
+
+            import asyncio
+            from claude_agent_sdk import ClaudeSDKClient, AssistantMessage, TextBlock
+
+            async def message_generator():
+                yield {"type": "user", "message": {"role": "user", "content": "First message"}}
+                await asyncio.sleep(1)
+                yield {"type": "user", "message": {"role": "user", "content": "Second message"}}
+
+            async with ClaudeSDKClient() as client:
+                await client.query(message_generator())
+
+                while True:
+                    try:
+                        async with asyncio.timeout(30.0):
+                            async for msg in client.receive_response():
+                                if isinstance(msg, AssistantMessage):
+                                    for block in msg.content:
+                                        if isinstance(block, TextBlock):
+                                            print(block.text)
+                    except (asyncio.TimeoutError, StopAsyncIteration):
+                        break
+
+        See ``examples/streaming_mode.py`` (``example_async_iterable_prompt``) for the
+        full working example.
+
         Yields:
             Message: Each message received (UserMessage, AssistantMessage, SystemMessage, ResultMessage)
 

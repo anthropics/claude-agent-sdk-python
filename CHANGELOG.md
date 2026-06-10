@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.96
+
+### Bug Fixes
+
+- Pinned `mcp` dependency below 2.0.0 to prevent incompatible breaking changes (#1028)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.172
+
 ## 0.2.95
 
 ### Internal/Other Changes

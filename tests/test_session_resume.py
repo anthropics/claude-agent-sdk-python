@@ -1319,6 +1319,103 @@ class TestSpawnFailureCleanup:
 
 
 # ---------------------------------------------------------------------------
+# Skills + per-project memory linking
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsAndMemoryLink:
+    async def _materialized(
+        self, cwd: Path, project_key: str, **opt_kwargs: Any
+    ) -> MaterializedResume:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, resume=SESSION_ID, **opt_kwargs
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        return m
+
+    @pytest.mark.anyio
+    async def test_skills_and_memory_symlinked(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        config = isolated_home / ".claude"
+        skill = config / "skills" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# demo skill")
+        memory = config / "projects" / project_key / "memory"
+        memory.mkdir(parents=True)
+        (memory / "MEMORY.md").write_text("# memory index")
+
+        m = await self._materialized(cwd, project_key)
+
+        dst_skills = m.config_dir / "skills"
+        assert dst_skills.is_symlink()
+        assert (dst_skills / "demo" / "SKILL.md").read_text() == "# demo skill"
+
+        dst_mem = m.config_dir / "projects" / project_key / "memory"
+        assert dst_mem.is_symlink()
+        assert (dst_mem / "MEMORY.md").read_text() == "# memory index"
+
+        # Writes through the temp path persist back to the caller's store.
+        (dst_mem / "new_entry.md").write_text("learned")
+        assert (memory / "new_entry.md").read_text() == "learned"
+
+        # Cleanup unlinks without descending into the linked stores.
+        await m.cleanup()
+        assert not m.config_dir.exists()
+        assert (skill / "SKILL.md").exists()
+        assert (memory / "new_entry.md").exists()
+
+    @pytest.mark.anyio
+    async def test_missing_skills_and_memory_dirs_are_fine(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        m = await self._materialized(cwd, project_key)
+        assert not (m.config_dir / "skills").is_symlink()
+        assert not (m.config_dir / "projects" / project_key / "memory").exists()
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_source_from_caller_config_dir_env(
+        self, cwd: Path, project_key: str, tmp_path: Path
+    ) -> None:
+        custom = tmp_path / "custom-config"
+        (custom / "skills" / "envskill").mkdir(parents=True)
+        (custom / "skills" / "envskill" / "SKILL.md").write_text("# from env")
+        (custom / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "t"}})
+        )
+
+        m = await self._materialized(
+            cwd, project_key, env={"CLAUDE_CONFIG_DIR": str(custom)}
+        )
+        dst_skills = m.config_dir / "skills"
+        assert dst_skills.is_symlink()
+        assert (dst_skills / "envskill" / "SKILL.md").read_text() == "# from env"
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_symlink_failure_is_best_effort(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        config = isolated_home / ".claude"
+        (config / "skills").mkdir(parents=True)
+
+        with patch.object(
+            Path, "symlink_to", side_effect=OSError(errno.EPERM, "no symlink priv")
+        ):
+            m = await self._materialized(cwd, project_key)
+        # Resume succeeded; no skills carried — the prior behavior.
+        assert not (m.config_dir / "skills").exists()
+        await m.cleanup()
+
+
+# ---------------------------------------------------------------------------
 # MaterializedResume shape
 # ---------------------------------------------------------------------------
 

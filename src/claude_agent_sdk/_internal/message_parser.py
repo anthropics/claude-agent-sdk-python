@@ -51,11 +51,13 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         )
 
     # Hook events (emitted when ``include_hook_events`` is enabled) arrive as
-    # ``system`` messages with ``subtype`` of ``hook_started`` or
-    # ``hook_response``. Route them to ``HookEventMessage`` before the generic
-    # ``SystemMessage`` handling below.
+    # ``system`` messages with ``subtype`` of ``hook_started``,
+    # ``hook_progress`` or ``hook_response``. Route them to
+    # ``HookEventMessage`` before the generic ``SystemMessage`` handling
+    # below.
     if data.get("type") == "system" and data.get("subtype") in (
         "hook_started",
+        "hook_progress",
         "hook_response",
     ):
         hook_event_name = (

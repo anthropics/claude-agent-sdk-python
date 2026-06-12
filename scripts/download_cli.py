@@ -8,6 +8,7 @@ binary using the official install script and place it in the package directory.
 import os
 import platform
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -147,6 +148,87 @@ def copy_cli_to_bundle() -> None:
     print(f"Binary size: {size_mb:.2f} MB")
 
 
+def verify_bundled_cli_version() -> None:
+    """Verify the bundled CLI binary's reported version matches the requested
+    version, and that it matches `__cli_version__` in `_cli_version.py`.
+
+    Catches drift between the install script (which can silently fall back to
+    a different release when an exact version is unavailable) and the version
+    constant baked into the wheel. See issue #868.
+    """
+    requested = get_cli_version()
+    if requested == "latest":
+        # Nothing to verify against; user explicitly opted out of pinning.
+        return
+
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    bundle_dir = project_root / "src" / "claude_agent_sdk" / "_bundled"
+    target_name = "claude.exe" if platform.system() == "Windows" else "claude"
+    bundled_path = bundle_dir / target_name
+
+    if not bundled_path.exists():
+        print(
+            f"Error: Bundled CLI not found at {bundled_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        result = subprocess.run(
+            [str(bundled_path), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(
+            f"Error: Failed to run bundled CLI to verify version: {e}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Output looks like "2.1.118 (Claude Code)" — grab the leading version token.
+    match = re.match(r"\s*(\d+\.\d+\.\d+)", result.stdout)
+    if not match:
+        print(
+            f"Error: Could not parse CLI version from output: {result.stdout!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    actual = match.group(1)
+    if actual != requested:
+        print(
+            f"Error: Bundled CLI version mismatch — requested {requested!r}, "
+            f"installed {actual!r}. The install script likely fell back to a "
+            f"different release. Aborting build to avoid shipping a wheel "
+            f"whose bundled binary disagrees with __cli_version__.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Also cross-check the constant in _cli_version.py so the changelog and
+    # the wheel always agree.
+    cli_version_file = project_root / "src" / "claude_agent_sdk" / "_cli_version.py"
+    if cli_version_file.exists():
+        constant_match = re.search(
+            r'__cli_version__\s*=\s*"([^"]+)"', cli_version_file.read_text()
+        )
+        if constant_match and constant_match.group(1) != actual:
+            print(
+                f"Error: __cli_version__ in _cli_version.py is "
+                f"{constant_match.group(1)!r} but bundled binary reports "
+                f"{actual!r}. Update _cli_version.py or rebuild against the "
+                f"matching CLI release.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    print(f"Verified bundled CLI version: {actual}")
+
+
 def main() -> None:
     """Main entry point."""
     print("=" * 60)
@@ -158,6 +240,9 @@ def main() -> None:
 
     # Copy to bundle directory
     copy_cli_to_bundle()
+
+    # Verify the bundled binary actually matches the requested version.
+    verify_bundled_cli_version()
 
     print("=" * 60)
     print("CLI download and bundling complete!")

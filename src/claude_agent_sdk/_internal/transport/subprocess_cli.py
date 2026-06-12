@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+_WINDOWS_CMD_LENGTH_LIMIT = 32767
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
@@ -77,6 +79,7 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._tempfiles_to_cleanup: list[str] = []
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -409,6 +412,63 @@ class SubprocessCLITransport(Transport):
 
         return cmd
 
+    def _prepare_command_for_spawn(self, cmd: list[str]) -> list[str]:
+        """Rewrite oversized inline prompt args before spawning the CLI."""
+        if platform.system() != "Windows":
+            return cmd
+
+        if len(" ".join(cmd)) <= _WINDOWS_CMD_LENGTH_LIMIT:
+            return cmd
+
+        prepared = list(cmd)
+        for inline_flag, file_flag in (
+            ("--system-prompt", "--system-prompt-file"),
+            ("--append-system-prompt", "--append-system-prompt-file"),
+        ):
+            if inline_flag not in prepared:
+                continue
+
+            idx = prepared.index(inline_flag)
+            prompt = prepared[idx + 1]
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".txt",
+                encoding="utf-8",
+                delete=False,
+            ) as prompt_file:
+                prompt_file.write(prompt)
+                prompt_file_path = prompt_file.name
+
+            self._tempfiles_to_cleanup.append(prompt_file_path)
+            prepared[idx] = file_flag
+            prepared[idx + 1] = prompt_file_path
+
+            if len(" ".join(prepared)) <= _WINDOWS_CMD_LENGTH_LIMIT:
+                break
+
+        return prepared
+
+    def _cleanup_tempfiles(self) -> None:
+        """Remove temporary prompt files created for CLI arguments."""
+        for path in self._tempfiles_to_cleanup:
+            with suppress(FileNotFoundError):
+                Path(path).unlink()
+        self._tempfiles_to_cleanup.clear()
+
+    def _command_too_long_error(
+        self, cmd: list[str], cause: FileNotFoundError
+    ) -> CLIConnectionError | None:
+        """Return a clearer error for Windows command-line overflow."""
+        if getattr(cause, "winerror", None) != 206:
+            return None
+
+        cmd_length = len(" ".join(cmd))
+        return CLIConnectionError(
+            "Failed to start Claude Code: command line exceeded the Windows "
+            f"limit ({cmd_length} characters, limit {_WINDOWS_CMD_LENGTH_LIMIT}). "
+            "Use a file-backed system_prompt or reduce inline CLI arguments."
+        )
+
     async def connect(self) -> None:
         """Start subprocess."""
         if self._process:
@@ -420,7 +480,7 @@ class SubprocessCLITransport(Transport):
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()
 
-        cmd = self._build_command()
+        cmd = self._prepare_command_for_spawn(self._build_command())
         try:
             # Merge environment variables. CLAUDE_CODE_ENTRYPOINT defaults to
             # sdk-py regardless of inherited process env; options.env can override
@@ -506,13 +566,25 @@ class SubprocessCLITransport(Transport):
                     f"Working directory does not exist: {self._cwd}"
                 )
                 self._exit_error = error
+                self._cleanup_tempfiles()
+                raise error from e
+            if error := self._command_too_long_error(cmd, e):
+                self._exit_error = error
+                self._cleanup_tempfiles()
+                raise error from e
+            if self._cli_path and Path(self._cli_path).is_file():
+                error = CLIConnectionError(f"Failed to start Claude Code: {e}")
+                self._exit_error = error
+                self._cleanup_tempfiles()
                 raise error from e
             error = CLINotFoundError(f"Claude Code not found at: {self._cli_path}")
             self._exit_error = error
+            self._cleanup_tempfiles()
             raise error from e
         except Exception as e:
             error = CLIConnectionError(f"Failed to start Claude Code: {e}")
             self._exit_error = error
+            self._cleanup_tempfiles()
             raise error from e
 
     async def _handle_stderr(self) -> None:
@@ -546,6 +618,7 @@ class SubprocessCLITransport(Transport):
         """Close the transport and clean up resources."""
         if not self._process:
             self._ready = False
+            self._cleanup_tempfiles()
             return
 
         # Cancel stderr reader if active
@@ -598,6 +671,7 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream = None
         self._stderr_stream = None
         self._exit_error = None
+        self._cleanup_tempfiles()
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""

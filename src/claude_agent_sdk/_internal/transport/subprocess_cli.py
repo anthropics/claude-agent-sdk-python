@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -28,6 +29,7 @@ from . import Transport
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+_STDERR_TAIL_LIMIT = 8 * 1024  # Keep the tail of stderr for ProcessError diagnostics.
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
@@ -77,6 +79,8 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._stderr_tail: deque[str] = deque()
+        self._stderr_tail_size: int = 0
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -526,6 +530,13 @@ class SubprocessCLITransport(Transport):
                 if not line_str:
                     continue
 
+                # Capture stderr tail for ProcessError diagnostics.
+                self._stderr_tail.append(line_str)
+                self._stderr_tail_size += len(line_str) + 1
+                while self._stderr_tail and self._stderr_tail_size > _STDERR_TAIL_LIMIT:
+                    removed = self._stderr_tail.popleft()
+                    self._stderr_tail_size -= len(removed) + 1
+
                 # Call the stderr callback if provided. Isolate per-line so a
                 # raise in the user's callback doesn't terminate the loop and
                 # silently drop every subsequent line for the rest of the
@@ -707,10 +718,11 @@ class SubprocessCLITransport(Transport):
 
         # Use exit code for error detection
         if returncode is not None and returncode != 0:
+            stderr_output = "\n".join(self._stderr_tail) if self._stderr_tail else None
             self._exit_error = ProcessError(
                 f"Command failed with exit code {returncode}",
                 exit_code=returncode,
-                stderr="Check stderr output for details",
+                stderr=stderr_output,
             )
             raise self._exit_error
 

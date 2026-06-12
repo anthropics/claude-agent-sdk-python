@@ -278,6 +278,56 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_thinking_missing_signature_raises_clearer_error(self, monkeypatch):
+        """A thinking block without 'signature' raises an explanatory error.
+
+        Bare ``KeyError: 'signature'`` gives users no clue why this happened.
+        The most common cause in the wild (see #339, #949) is an
+        Anthropic-compatible upstream emitting thinking blocks without the
+        encrypted signature, so the message points at that.
+        """
+        monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING", raising=False)
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "no signature here"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        msg = str(exc_info.value)
+        assert "signature" in msg
+        assert (
+            "non-Anthropic" in msg or "CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING" in msg
+        )
+
+    def test_parse_thinking_missing_signature_skipped_with_env_var(self, monkeypatch):
+        """With the opt-out env var set, unsigned thinking blocks are dropped.
+
+        This lets users on non-Anthropic upstreams keep using the SDK without
+        crashing on every assistant message. Other blocks in the message are
+        preserved.
+        """
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING", "1")
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "no signature here"},
+                    {"type": "text", "text": "Here's my response"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], TextBlock)
+        assert message.content[0].text == "Here's my response"
+
     def test_parse_assistant_message_with_server_tool_use(self):
         """server_tool_use blocks (e.g. advisor, web_search) are preserved.
 

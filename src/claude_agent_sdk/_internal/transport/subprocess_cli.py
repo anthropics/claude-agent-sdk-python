@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -76,6 +77,7 @@ class SubprocessCLITransport(Transport):
             if options.max_buffer_size is not None
             else _DEFAULT_MAX_BUFFER_SIZE
         )
+        self._temp_files: list[str] = []  # Track temporary files for cleanup
         self._write_lock: anyio.Lock = anyio.Lock()
 
     def _find_cli(self) -> str:
@@ -321,12 +323,28 @@ class SubprocessCLITransport(Transport):
 
                 # Pass all servers to CLI
                 if servers_for_cli:
-                    cmd.extend(
-                        [
-                            "--mcp-config",
-                            json.dumps({"mcpServers": servers_for_cli}),
-                        ]
-                    )
+                    mcp_config_json = json.dumps({"mcpServers": servers_for_cli})
+
+                    # On Windows, write the MCP config to a temporary file
+                    # instead of passing it as inline JSON on the command
+                    # line. This avoids command-line argument quoting and
+                    # length issues (see #245 for the same approach with
+                    # --agents; also addresses #902).
+                    if platform.system() == "Windows":
+                        # ruff: noqa: SIM115
+                        tmp = tempfile.NamedTemporaryFile(
+                            mode="w", suffix=".json", delete=False, encoding="utf-8"
+                        )
+                        tmp.write(mcp_config_json)
+                        tmp.close()
+                        self._temp_files.append(tmp.name)
+                        cmd.extend(["--mcp-config", tmp.name])
+                        logger.debug(
+                            "Wrote MCP config to temp file for Windows: %s",
+                            tmp.name,
+                        )
+                    else:
+                        cmd.extend(["--mcp-config", mcp_config_json])
             else:
                 # String or Path format: pass directly as file path or JSON string
                 cmd.extend(["--mcp-config", str(self._options.mcp_servers)])
@@ -407,6 +425,20 @@ class SubprocessCLITransport(Transport):
         # This allows agents and other large configs to be sent via initialize request
         cmd.extend(["--input-format", "stream-json"])
 
+        # On Windows, ensure the command line doesn't exceed the platform
+        # limit (8191 chars for CreateProcess). If it does, the subprocess
+        # creation will fail with "command line too long". Individual
+        # large-value flags (like --mcp-config) are handled inline above;
+        # this is a safety net for cumulative length from many flags.
+        if platform.system() == "Windows":
+            cmd_str = " ".join(cmd)
+            if len(cmd_str) > 8000:
+                logger.warning(
+                    "Command line length (%d) approaches Windows limit (8191). "
+                    "Consider reducing the number or size of options.",
+                    len(cmd_str),
+                )
+
         return cmd
 
     async def connect(self) -> None:
@@ -428,6 +460,23 @@ class SubprocessCLITransport(Transport):
             # Filter out CLAUDECODE so SDK-spawned subprocesses don't think
             # they're running inside a Claude Code parent (see #573).
             inherited_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+            # On Windows, environment variable names are case-insensitive but
+            # the env block passed to CreateProcess preserves the casing of dict
+            # keys. If the inherited environment happens to have an SDK-key like
+            # CLAUDE_CODE_ENTRYPOINT with different casing (e.g.
+            # "claude_code_entrypoint"), Python's dict merge treats them as
+            # distinct keys, and Windows' GetEnvironmentVariable may return the
+            # inherited entry instead of the SDK-controlled value. Strip any
+            # inherited entries whose case-insensitive key matches an SDK key so
+            # that the SDK's version is the sole entry in the env block.
+            if platform.system() == "Windows":
+                _sdk_keys = {"CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION"}
+                _sdk_keys_upper = {k.upper() for k in _sdk_keys}
+                for key in list(inherited_env):
+                    if key.upper() in _sdk_keys_upper:
+                        del inherited_env[key]
+
             process_env = {
                 **inherited_env,
                 "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
@@ -544,6 +593,13 @@ class SubprocessCLITransport(Transport):
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""
+        # Clean up temporary files (e.g., MCP config files written on Windows
+        # to work around command-line length limits).
+        for temp_file in self._temp_files:
+            with suppress(Exception):
+                Path(temp_file).unlink(missing_ok=True)
+        self._temp_files.clear()
+
         if not self._process:
             self._ready = False
             return

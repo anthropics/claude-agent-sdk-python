@@ -698,3 +698,74 @@ class TestAgentDefinition:
         assert "background" not in payload
         assert "effort" not in payload
         assert "permissionMode" not in payload
+
+    def test_advisor_field_default_none_omitted(self):
+        """``advisor`` defaults to None and must not appear in the wire payload."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(description="test", prompt="p")
+        payload = self._serialize(agent)
+
+        assert "advisor" not in payload
+
+    def test_advisor_field_true_serializes_as_bool(self):
+        """``advisor=True`` opts the sub-agent into the CLI's default advisor config."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            advisor=True,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["advisor"] is True
+
+    def test_advisor_field_false_serializes_as_bool(self):
+        """``advisor=False`` is sent verbatim so callers can explicitly disable
+        an advisor that a parent profile or default would otherwise enable."""
+        from claude_agent_sdk import AgentDefinition
+
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            advisor=False,
+        )
+        payload = self._serialize(agent)
+
+        assert payload["advisor"] is False
+
+    def test_advisor_field_dict_passes_through_verbatim(self):
+        """An ``AdvisorToolConfig`` dict must reach the CLI unmodified —
+        snake_case keys, no key rewriting — so the CLI can forward it
+        straight to the API as ``BetaAdvisorTool20260301Param``."""
+        from claude_agent_sdk import AgentDefinition
+
+        config: dict = {
+            "model": "claude-opus-4-7",
+            "max_uses": 5,
+            "caching": {"type": "ephemeral", "ttl": "5m"},
+            "allowed_callers": ["direct"],
+        }
+        agent = AgentDefinition(
+            description="test",
+            prompt="p",
+            advisor=config,
+        )
+        payload = self._serialize(agent)
+
+        # asdict on a dict-typed field must not deep-copy/transform it.
+        assert payload["advisor"] == config
+        assert payload["advisor"]["model"] == "claude-opus-4-7"
+        assert payload["advisor"]["max_uses"] == 5
+        assert payload["advisor"]["caching"]["ttl"] == "5m"
+        assert payload["advisor"]["allowed_callers"] == ["direct"]
+
+    def test_advisor_config_typed_dict_is_exported(self):
+        """``AdvisorToolConfig`` must be importable from the package root so
+        callers can type their config dicts."""
+        from claude_agent_sdk import AdvisorToolConfig
+
+        # TypedDict is a dict at runtime; the import above is the contract.
+        config: AdvisorToolConfig = {"model": "claude-opus-4-7"}
+        assert config["model"] == "claude-opus-4-7"

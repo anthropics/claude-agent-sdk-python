@@ -79,6 +79,32 @@ class ToolsPreset(TypedDict):
     preset: Literal["claude_code"]
 
 
+class AdvisorToolConfig(TypedDict, total=False):
+    """Per-agent configuration for the ``advisor_20260301`` server-side tool.
+
+    Mirrors the API's ``BetaAdvisorTool20260301Param`` shape. All fields are
+    optional at the SDK layer; the CLI fills in sensible defaults for any
+    field that is omitted (e.g., picks a sibling-tier advisor model when
+    ``model`` is not set).
+
+    See https://docs.anthropic.com/en/api/beta-headers for the
+    ``advisor-tool-2026-03-01`` beta.
+    """
+
+    model: str
+    """Advisor model id (e.g., ``"claude-opus-4-7"`` for a Sonnet executor)."""
+
+    max_uses: int
+    """Maximum number of advisor consultations allowed per request."""
+
+    caching: dict[str, Any]
+    """Ephemeral cache breakpoint config for the advisor's own prompt
+    (e.g., ``{"type": "ephemeral", "ttl": "5m"}``)."""
+
+    allowed_callers: list[str]
+    """Restrict which callers can invoke the advisor (e.g., ``["direct"]``)."""
+
+
 @dataclass
 class AgentDefinition:
     """Agent definition configuration."""
@@ -99,6 +125,24 @@ class AgentDefinition:
     background: bool | None = None
     effort: EffortLevel | int | None = None
     permissionMode: PermissionMode | None = None  # noqa: N815
+    advisor: bool | AdvisorToolConfig | None = None
+    """Attach the ``advisor_20260301`` server-side tool to this sub-agent.
+
+    - ``None`` (default): no advisor; field omitted from the wire payload.
+    - ``True``: enable the advisor with CLI-default config (the CLI picks an
+      advisor model and adds the ``advisor-tool-2026-03-01`` beta header).
+    - ``AdvisorToolConfig`` dict: enable with explicit per-field config
+      (``model``, ``max_uses``, ``caching``, ...). Forwarded verbatim.
+
+    Useful for the executor/advisor pattern: a Sonnet sub-agent runs the
+    main loop while consulting an Opus advisor at decision points.
+
+    Requires a Claude Code CLI build that wires advisor configuration
+    through to per-sub-agent API calls; older CLIs silently ignore the
+    field (matching how unknown ``AgentDefinition`` fields are handled).
+    The advisor tool itself is a server-side beta — see the API docs for
+    current rollout status.
+    """
 
 
 # Permission Update types (matching TypeScript SDK)

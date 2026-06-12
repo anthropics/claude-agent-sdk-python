@@ -56,6 +56,7 @@ from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
 from .types import (
+    AdvisorToolConfig,
     AgentDefinition,
     AssistantMessage,
     BaseHookInput,
@@ -601,6 +602,7 @@ __all__ = [
     "HookJSONOutput",
     "HookMatcher",
     # Agent support
+    "AdvisorToolConfig",
     "AgentDefinition",
     "SettingSource",
     # Plugin support

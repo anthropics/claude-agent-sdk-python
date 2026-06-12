@@ -21,6 +21,7 @@ from ..types import (
     TaskNotificationMessage,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -224,6 +225,30 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             session_id=data["session_id"],
                             tool_use_id=data.get("tool_use_id"),
                             usage=data.get("usage"),
+                        )
+                    case "task_updated":
+                        # Terminal task completion sometimes arrives only as a
+                        # task_updated patch (no separate task_notification), so
+                        # expose it as a typed lifecycle message rather than a
+                        # generic SystemMessage. Parsed defensively: the patch
+                        # may omit uuid/session_id and parsing must never raise
+                        # on a lifecycle event.
+                        patch = data.get("patch")
+                        if not isinstance(patch, dict):
+                            patch = {}
+                        # Terminal-ness is derived from patch.status; the CLI is
+                        # assumed to set it on terminal transitions. A patch that
+                        # carries only end_time/result/error (no status) is left
+                        # non-terminal (status=None) — the full patch is still
+                        # preserved on .patch for callers that need more.
+                        return TaskUpdatedMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data.get("task_id", ""),
+                            patch=patch,
+                            status=patch.get("status"),
+                            session_id=data.get("session_id"),
+                            uuid=data.get("uuid"),
                         )
                     case "mirror_error":
                         # SDK-synthesized via report_mirror_error — never emitted by the CLI subprocess.

@@ -1720,6 +1720,7 @@ class ClaudeAgentOptions:
     """
 
     env: dict[str, str] = field(default_factory=dict)
+    inherit_env: bool = True
     """Environment variables to pass to the Claude Code subprocess.
 
     SDK consumers can identify their app/library in the User-Agent header by

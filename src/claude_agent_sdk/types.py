@@ -33,6 +33,8 @@ SettingSource = Literal["user", "project", "local"]
 EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
+EffortLevel: TypeAlias = EffortLevel
+
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
 

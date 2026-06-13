@@ -1009,9 +1009,50 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_process_error_uses_result_field_when_errors_empty(self):
+        """When errors[] is empty but result carries the message, use result.
+
+        The CLI emits is_error=True + subtype="success" + errors=[] + a human-
+        readable result string for API-level failures such as model_not_found
+        (HTTP 404) or overload (HTTP 529). Without this fix the exception text
+        is the misleading "Claude Code returned an error result: success".
+        """
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success",
+                        errors=[],
+                        result=(
+                            "There's an issue with the selected model "
+                            "(claude-nonexistent). It may not exist or you "
+                            "may not have access to it."
+                        ),
+                        api_error_status=404,
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: "
+                r"There's an issue with the selected model",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
     def test_process_error_after_error_result_falls_back_to_subtype(self):
-        """When the result has no errors[] (older CLI / minimal payload), the
-        improved message falls back to the subtype so it's still actionable."""
+        """When neither errors[] nor result is present (older CLI / minimal
+        payload), the message falls back to subtype so it's still actionable."""
 
         async def _test():
             transport = self._make_transport_then_raise(

@@ -157,6 +157,27 @@ class ClaudeSDKClient:
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
+        options = self.options
+
+        # When agents are defined with model specifications but no global model is set,
+        # infer a global model to ensure the CLI respects user-specified models rather
+        # than falling back to its default (which may differ from agent specifications).
+        if options.agents and options.model is None:
+            agent_models = {
+                agent_def.model
+                for agent_def in options.agents.values()
+                if agent_def.model is not None and agent_def.model != "inherit"
+            }
+            if agent_models:
+                # If all agents use the same model, use that as the global default
+                if len(agent_models) == 1:
+                    inferred_model = agent_models.pop()
+                else:
+                    # Multiple models specified: use the first non-inherit model as fallback
+                    # This ensures at least one user-specified model is used globally
+                    inferred_model = next(iter(agent_models))
+                options = replace(options, model=inferred_model)
+
         if self.options.can_use_tool:
             # canUseTool callback requires streaming mode (AsyncIterable prompt)
             if isinstance(prompt, str):
@@ -173,9 +194,7 @@ class ClaudeSDKClient:
                 )
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
-        else:
-            options = self.options
+            options = replace(options, permission_prompt_tool_name="stdio")
 
         if self._materialized is not None:
             options = apply_materialized_options(options, self._materialized)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.101
+
+### Bug Fixes
+
+- **Typed `task_updated` lifecycle events**: Exposed terminal `system/task_updated` events as typed `TaskUpdatedMessage` with `task_id`, `patch`, `status`, `session_id`, and `uuid` fields. Consumers tracking active background tasks no longer hang when a task finishes via a `task_updated` message without a corresponding `TaskNotificationMessage`. Added `TaskUpdatedStatus` type and `TERMINAL_TASK_STATUSES` frozenset for reliable active-task bookkeeping (#1016)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.177
+
 ## 0.2.100
 
 ### Internal/Other Changes

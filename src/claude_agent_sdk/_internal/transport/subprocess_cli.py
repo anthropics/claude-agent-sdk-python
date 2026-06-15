@@ -228,6 +228,8 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
             cmd.extend(["--system-prompt", self._options.system_prompt])
+        elif isinstance(self._options.system_prompt, list):
+            cmd.extend(["--system-prompt", json.dumps(self._options.system_prompt)])
         else:
             sp = self._options.system_prompt
             if sp.get("type") == "file":

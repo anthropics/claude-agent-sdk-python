@@ -1034,6 +1034,13 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    """Full raw wire dict from the CLI, including any fields not yet modeled above.
+
+    Use this to access newer CLI wire fields (e.g. ``ttft_ms``,
+    ``terminal_reason``) that are present in the raw JSON but have not yet
+    been promoted to typed attributes on this dataclass.
+    """
 
 
 @dataclass
@@ -1220,6 +1227,13 @@ class ResultMessage:
     # Emitted by the CLI since v2.1.110. Safe to log (no message content).
     api_error_status: int | None = None
     uuid: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    """Full raw wire dict from the CLI, including any fields not yet modeled above.
+
+    Use this to access newer CLI wire fields (e.g. ``ttft_ms``,
+    ``terminal_reason``, ``stop_details``) that are present in the raw JSON
+    but have not yet been promoted to typed attributes on this dataclass.
+    """
 
 
 @dataclass
@@ -1657,10 +1671,17 @@ class ClaudeAgentOptions:
         ``Skill`` tool).
     """
 
-    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    system_prompt: (
+        str | list[dict[str, Any]] | SystemPromptPreset | SystemPromptFile | None
+    ) = None
     """System prompt configuration.
 
-    - ``str`` — Use a custom system prompt.
+    - ``str`` — Use a custom system prompt string.
+    - ``list[dict]`` — Multi-block system prompt (supports ``cache_control`` and
+      other Anthropic API content block fields). Each dict should follow the
+      Anthropic API ``system`` content block schema, e.g.
+      ``[{"type": "text", "text": "You are helpful.", "cache_control": {"type": "ephemeral"}}]``.
+      Serialized to JSON when passed to the CLI subprocess.
     - ``{"type": "preset", "preset": "claude_code"}`` — Use Claude Code's default
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default

@@ -39,6 +39,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_rate_limit_error(text: str) -> bool:
+    lower = text.lower()
+    return "429" in lower or "rate limit" in lower or "too many requests" in lower
+
+
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     """Convert Python-safe field names to CLI-expected field names.
 
@@ -350,7 +355,12 @@ class Query:
                 error_text = str(e)
                 logger.error(f"Fatal error in message reader: {e}")
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            if _is_rate_limit_error(error_text or str(e)):
+                await self._message_send.send(
+                    {"type": "error", "error": error_text, "is_rate_limit": True}
+                )
+            else:
+                await self._message_send.send({"type": "error", "error": error_text})
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -849,6 +859,10 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
+                if message.get("is_rate_limit"):
+                    from .._errors import RateLimitError
+
+                    raise RateLimitError(message.get("error", "Rate limit exceeded"))
                 raise Exception(message.get("error", "Unknown error"))
 
             yield message

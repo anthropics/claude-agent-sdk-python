@@ -1227,3 +1227,84 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+
+class TestRawFieldPassthrough:
+    """Tests for raw field passthrough on ResultMessage and AssistantMessage (#1026)."""
+
+    def test_result_message_raw_contains_full_wire_data(self):
+        """ResultMessage.raw stores the original wire dict including unknown fields."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 800,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "sess_123",
+            "ttft_ms": 250,
+            "terminal_reason": "end_turn",
+            "stop_details": {"reason": "max_tokens"},
+        }
+        msg = parse_message(data)
+        assert isinstance(msg, ResultMessage)
+        assert msg.raw["ttft_ms"] == 250
+        assert msg.raw["terminal_reason"] == "end_turn"
+        assert msg.raw["stop_details"] == {"reason": "max_tokens"}
+
+    def test_result_message_raw_is_same_dict(self):
+        """ResultMessage.raw is the exact input dict."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 0,
+            "duration_api_ms": 0,
+            "is_error": False,
+            "num_turns": 0,
+            "session_id": "s",
+        }
+        msg = parse_message(data)
+        assert isinstance(msg, ResultMessage)
+        assert msg.raw is data
+
+    def test_assistant_message_raw_contains_full_wire_data(self):
+        """AssistantMessage.raw stores the original wire dict including unknown fields."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            "session_id": "sess_abc",
+            "future_field": "future_value",
+        }
+        msg = parse_message(data)
+        assert isinstance(msg, AssistantMessage)
+        assert msg.raw["future_field"] == "future_value"
+        assert msg.raw["session_id"] == "sess_abc"
+
+    def test_assistant_message_raw_is_same_dict(self):
+        """AssistantMessage.raw is the exact input dict."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [],
+                "model": "claude-sonnet-4-6",
+            },
+        }
+        msg = parse_message(data)
+        assert isinstance(msg, AssistantMessage)
+        assert msg.raw is data
+
+    def test_result_message_raw_defaults_to_empty_dict(self):
+        """ResultMessage constructed directly has raw={}."""
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=0,
+            session_id="s",
+        )
+        assert msg.raw == {}

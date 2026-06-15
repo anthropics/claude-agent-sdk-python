@@ -183,6 +183,68 @@ class TestSubprocessCLITransport:
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
 
+    def test_build_command_with_system_prompt_list(self):
+        """List-form system_prompt is serialized to JSON for --system-prompt."""
+        import json
+
+        blocks = [
+            {"type": "text", "text": "You are helpful."},
+            {
+                "type": "text",
+                "text": "Be concise.",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=blocks),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        sp_value = cmd[cmd.index("--system-prompt") + 1]
+        # Must be valid JSON
+        parsed = json.loads(sp_value)
+        assert parsed == blocks
+
+    def test_build_command_with_system_prompt_list_single_block(self):
+        """Single-element list system_prompt also serializes to JSON."""
+        import json
+
+        blocks = [{"type": "text", "text": "You are a helpful assistant."}]
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=blocks),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        sp_value = cmd[cmd.index("--system-prompt") + 1]
+        parsed = json.loads(sp_value)
+        assert parsed == blocks
+
+    def test_build_command_system_prompt_none_sends_empty_string(self):
+        """None system_prompt still emits --system-prompt with empty string."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == ""
+
+    def test_build_command_system_prompt_string_unchanged(self):
+        """String system_prompt is passed through as-is (regression guard)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="You are a pirate."),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == "You are a pirate."
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(

@@ -157,7 +157,24 @@ class ClaudeSDKClient:
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        if self.options.can_use_tool:
+        #
+        # When governance_hook is set without can_use_tool, install a default
+        # pass-through can_use_tool so the governance hook fires for every tool
+        # call that reaches the control protocol.
+        resolved_can_use_tool = self.options.can_use_tool
+        if self.options.governance_hook is not None and resolved_can_use_tool is None:
+            from .types import PermissionResultAllow, ToolPermissionContext
+
+            async def _passthrough_can_use_tool(
+                _tool_name: str,
+                _tool_input: dict[str, Any],
+                _context: ToolPermissionContext,
+            ) -> PermissionResultAllow:
+                return PermissionResultAllow()
+
+            resolved_can_use_tool = _passthrough_can_use_tool
+
+        if resolved_can_use_tool:
             # canUseTool callback requires streaming mode (AsyncIterable prompt)
             if isinstance(prompt, str):
                 raise ValueError(
@@ -173,7 +190,11 @@ class ClaudeSDKClient:
                 )
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
+            options = replace(
+                self.options,
+                permission_prompt_tool_name="stdio",
+                can_use_tool=resolved_can_use_tool,
+            )
         else:
             options = self.options
 
@@ -225,7 +246,7 @@ class ClaudeSDKClient:
         self._query = Query(
             transport=self._transport,
             is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
-            can_use_tool=self.options.can_use_tool,
+            can_use_tool=options.can_use_tool,
             hooks=self._convert_hooks_to_internal_format(self.options.hooks)
             if self.options.hooks
             else None,
@@ -234,6 +255,7 @@ class ClaudeSDKClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=self.options.skills,
+            governance_hook=self.options.governance_hook,
         )
 
         if self.options.session_store is not None:

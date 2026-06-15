@@ -7,10 +7,15 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from ..types import (
+    TERMINAL_TASK_STATUSES,
+    BackgroundTaskLateCompletionEvent,
     ClaudeAgentOptions,
     HookEvent,
     HookMatcher,
     Message,
+    ResultMessage,
+    TaskNotificationMessage,
+    TaskUpdatedMessage,
 )
 from .message_parser import parse_message
 from .query import Query
@@ -23,6 +28,32 @@ from .session_resume import (
 from .session_store_validation import validate_session_store_options
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
+
+
+def _maybe_late_completion(
+    message: Message,
+) -> BackgroundTaskLateCompletionEvent | None:
+    """Return BackgroundTaskLateCompletionEvent if message is a terminal
+    background-task lifecycle event that arrived after turn boundary, else None.
+    """
+    if isinstance(message, TaskNotificationMessage):
+        if message.status in TERMINAL_TASK_STATUSES:
+            return BackgroundTaskLateCompletionEvent(
+                task_id=message.task_id,
+                status=message.status,
+                source_message=message,
+            )
+    elif (
+        isinstance(message, TaskUpdatedMessage)
+        and message.status is not None
+        and message.status in TERMINAL_TASK_STATUSES
+    ):
+        return BackgroundTaskLateCompletionEvent(
+            task_id=message.task_id,
+            status=message.status,
+            source_message=message,
+        )
+    return None
 
 
 class InternalClient:
@@ -219,11 +250,27 @@ class InternalClient:
                 # Stream input in background for async iterables
                 query.spawn_task(query.stream_input(prompt))
 
-            # Yield parsed messages, skipping unknown message types
+            # Yield parsed messages, skipping unknown message types.
+            # Track whether we've passed the turn boundary (ResultMessage)
+            # so we can detect background tasks that complete post-turn.
+            past_turn_boundary = False
             async for data in query.receive_messages():
                 message = parse_message(data)
-                if message is not None:
+                if message is None:
+                    continue
+
+                if isinstance(message, ResultMessage):
+                    past_turn_boundary = True
                     yield message
+                    continue
+
+                if past_turn_boundary:
+                    late_event = _maybe_late_completion(message)
+                    if late_event is not None:
+                        yield late_event
+                        continue
+
+                yield message
 
         finally:
             await query.close()

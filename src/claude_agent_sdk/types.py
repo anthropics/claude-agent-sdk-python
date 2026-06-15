@@ -193,6 +193,30 @@ class PermissionUpdate:
         )
 
 
+# Governance hook types
+class GovernanceDecision(TypedDict, total=False):
+    """Decision returned by a governance hook for a pending tool call.
+
+    Fields:
+        allowed: Whether the tool call is permitted to proceed. Required.
+        reason: Optional human-readable explanation for the decision. When the
+            tool call is blocked (``allowed=False``) this message is forwarded
+            to the model as a rejection notice.
+        modified_input: If provided and ``allowed=True``, the tool executes with
+            this dict instead of the original input. Ignored when ``allowed=False``.
+    """
+
+    allowed: Required[bool]
+    reason: str
+    modified_input: dict[str, Any]
+
+
+GovernanceHook = Callable[
+    [str, dict[str, Any], "ToolPermissionContext"],
+    "GovernanceDecision | Awaitable[GovernanceDecision]",
+]
+
+
 # Tool callback types
 @dataclass
 class ToolPermissionContext:
@@ -1166,6 +1190,28 @@ class TaskUpdatedMessage(SystemMessage):
 
 
 @dataclass
+class BackgroundTaskLateCompletionEvent:
+    """Synthetic SDK event when a background task completes after the turn boundary.
+
+    Background tasks can finish after the main agent emits its ResultMessage.
+    Without this event, those completions silently drop. This event is synthesised
+    whenever a terminal task lifecycle message arrives after ResultMessage.
+
+    Consumers can call ClaudeSDKClient.send_message() upon receiving this event
+    to re-enter the agent loop.
+
+    Attributes:
+        task_id: Unique identifier of the background task that completed.
+        status: Terminal status: "completed", "failed", "stopped", or "killed".
+        source_message: The raw typed message that triggered this event.
+    """
+
+    task_id: str
+    status: str
+    source_message: "TaskNotificationMessage | TaskUpdatedMessage"
+
+
+@dataclass
 class MirrorErrorMessage(SystemMessage):
     """System message emitted when a :meth:`SessionStore.append` call fails.
 
@@ -1320,6 +1366,7 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | BackgroundTaskLateCompletionEvent
 )
 
 
@@ -1992,6 +2039,60 @@ class ClaudeAgentOptions:
     ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
     header.
     """
+
+    on_compaction_start: "Callable[[CompactionEvent], Awaitable[None]] | None" = None
+    """Async callback invoked just before context compaction begins."""
+
+    on_compaction_end: "Callable[[CompactionEvent], Awaitable[None]] | None" = None
+    """Async callback invoked just after context compaction completes."""
+
+    on_context_window_threshold: "Callable[[ContextWindowThresholdEvent], Awaitable[None]] | None" = None
+    """Async callback invoked when context window usage exceeds the configured threshold."""
+
+    context_window_threshold_pct: float = 0.8
+    """Fraction (0.0–1.0) at which on_context_window_threshold fires. Default 0.8."""
+
+    context_window_size: int | None = None
+    """Model's maximum context window size in tokens. Required for threshold tracking."""
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle event types (used by on_compaction_* / on_context_window_*)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompactionEvent:
+    """Event passed to on_compaction_start and on_compaction_end callbacks.
+
+    Attributes:
+        trigger: Why compaction was triggered: "auto" or "manual".
+        custom_instructions: Custom compaction instructions if any.
+        session_id: Session identifier.
+        raw: Raw data dict from the CLI PreCompact hook payload.
+    """
+
+    trigger: str
+    session_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    custom_instructions: str | None = None
+
+
+@dataclass
+class ContextWindowThresholdEvent:
+    """Event passed to on_context_window_threshold callback.
+
+    Attributes:
+        pct_used: Fraction of context window used (0.0–1.0).
+        tokens_used: Total tokens currently filling the context window.
+        session_id: Session identifier.
+        raw_usage: Raw usage dict from the AssistantMessage.
+    """
+
+    pct_used: float
+    tokens_used: int
+    session_id: str | None = None
+    raw_usage: dict[str, Any] = field(default_factory=dict)
 
 
 # SDK Control Protocol

@@ -1227,3 +1227,102 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    # ------------------------------------------------------------------
+    # Tests for raw field passthrough (issue #1026)
+    # ------------------------------------------------------------------
+
+    def test_result_message_raw_contains_wire_dict(self):
+        """ResultMessage.raw holds the full original wire dict including unknown fields."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "ttft_ms": 123,
+            "terminal_reason": "end_turn",
+            "stop_details": {"reason": "natural"},
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.raw is data
+        assert message.raw["ttft_ms"] == 123
+        assert message.raw["terminal_reason"] == "end_turn"
+        assert message.raw["stop_details"] == {"reason": "natural"}
+
+    def test_result_message_raw_defaults_to_empty_dict_when_constructed_directly(self):
+        """ResultMessage.raw defaults to {} when not provided (backward compat)."""
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s",
+        )
+        assert msg.raw == {}
+
+    def test_assistant_message_raw_contains_wire_dict(self):
+        """AssistantMessage.raw holds the full original wire dict including unknown fields."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+            "session_id": "sess-abc",
+            "uuid": "uuid-abc",
+            "some_future_field": "future_value",
+            "another_unknown": 42,
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.raw is data
+        assert message.raw["some_future_field"] == "future_value"
+        assert message.raw["another_unknown"] == 42
+
+    def test_assistant_message_raw_defaults_to_empty_dict_when_constructed_directly(
+        self,
+    ):
+        """AssistantMessage.raw defaults to {} when not provided (backward compat)."""
+        msg = AssistantMessage(content=[], model="claude-opus-4-5")
+        assert msg.raw == {}
+
+    def test_result_message_raw_contains_all_standard_fields(self):
+        """ResultMessage.raw includes the standard modeled fields too."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1000,
+            "is_error": False,
+            "num_turns": 3,
+            "session_id": "session_xyz",
+            "result": "done",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.raw["subtype"] == "success"
+        assert message.raw["duration_ms"] == 2000
+        assert message.raw["result"] == "done"
+
+    def test_assistant_message_raw_contains_all_standard_fields(self):
+        """AssistantMessage.raw includes the standard modeled fields too."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hello"}],
+                "model": "claude-sonnet-4-5",
+                "id": "msg_01abc",
+                "stop_reason": "end_turn",
+            },
+            "session_id": "sess-xyz",
+            "uuid": "uuid-xyz",
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.raw["session_id"] == "sess-xyz"
+        assert message.raw["message"]["model"] == "claude-sonnet-4-5"

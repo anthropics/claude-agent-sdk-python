@@ -17,6 +17,7 @@ from ..types import (
     ServerToolResultBlock,
     ServerToolUseBlock,
     StreamEvent,
+    SubagentTokenUsageEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -334,6 +335,24 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
+                ) from e
+
+        case "subagent_token_usage":
+            try:
+                usage = data.get("usage") or {}
+                return SubagentTokenUsageEvent(
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+                    agent_id=data.get("agent_id"),
+                    session_id=data["session_id"],
+                    uuid=data["uuid"],
+                    timestamp=data.get("timestamp"),
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in subagent_token_usage message: {e}", data
                 ) from e
 
         case _:

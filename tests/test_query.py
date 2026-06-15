@@ -1240,3 +1240,58 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestQueryCloseFromAsyncGenTeardown:
+    """Regression tests for #983: Query.close() must not raise when called
+    from an async-generator's cleanup context (a different task than start())."""
+
+    def test_close_from_async_gen_aclose_does_not_raise(self):
+        """Query.close() called via async-generator aclose() must not raise
+        'Attempted to exit cancel scope in a different task'."""
+
+        async def _test():
+            transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            with patch.object(q, "initialize", new_callable=AsyncMock):
+                await q.start()
+
+            # Simulate consuming some messages then abandoning the generator
+            # via aclose(), which runs finalizers in a different task context
+            # under some async backends.
+            async def gen():
+                async for msg in q.receive_messages():
+                    yield msg
+                    # break immediately to trigger aclose() cleanup
+                    return
+
+            g = gen()
+            # Consume first item, then explicitly close the generator.
+            try:
+                await g.__anext__()
+            except StopAsyncIteration:
+                pass
+            finally:
+                # aclose() is the call that previously raised the cross-task
+                # cancel-scope error; it calls q.close() in its cleanup.
+                await g.aclose()
+
+            # Explicit close should also be idempotent and not raise.
+            await q.close()
+            q.close_receive_stream()
+
+        # Must complete without any exception.
+        anyio.run(_test)
+
+    def test_close_before_start_does_not_raise(self):
+        """Query.close() before start() must be a no-op (no read task exists)."""
+
+        async def _test():
+            transport = _make_mock_transport(messages=[])
+            q = Query(transport=transport, is_streaming_mode=True)
+            # No start() called — _read_task is None.
+            await q.close()
+            q.close_receive_stream()
+
+        anyio.run(_test)

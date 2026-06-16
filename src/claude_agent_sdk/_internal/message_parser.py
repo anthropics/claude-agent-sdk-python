@@ -86,6 +86,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 if isinstance(data["message"]["content"], list):
                     user_content_blocks: list[ContentBlock] = []
                     for block in data["message"]["content"]:
+                        if not isinstance(block, dict):
+                            raise MessageParseError(
+                                f"Invalid content block (expected dict, got "
+                                f"{type(block).__name__})",
+                                data,
+                            )
                         match block["type"]:
                             case "text":
                                 user_content_blocks.append(
@@ -126,8 +132,34 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "assistant":
             try:
+                # ``content`` may be a plain string rather than a list of
+                # blocks (the Anthropic message format permits this, and the
+                # ``user`` branch above already handles it). Treat it as a
+                # single text block so parsing stays symmetric and never
+                # iterates a string character-by-character.
+                raw_content = data["message"]["content"]
+                if not isinstance(raw_content, list):
+                    return AssistantMessage(
+                        content=[TextBlock(text=raw_content)]
+                        if isinstance(raw_content, str)
+                        else raw_content,
+                        model=data["message"]["model"],
+                        parent_tool_use_id=data.get("parent_tool_use_id"),
+                        error=data.get("error"),
+                        usage=data["message"].get("usage"),
+                        message_id=data["message"].get("id"),
+                        stop_reason=data["message"].get("stop_reason"),
+                        session_id=data.get("session_id"),
+                        uuid=data.get("uuid"),
+                    )
                 content_blocks: list[ContentBlock] = []
-                for block in data["message"]["content"]:
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        raise MessageParseError(
+                            f"Invalid content block (expected dict, got "
+                            f"{type(block).__name__})",
+                            data,
+                        )
                     match block["type"]:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))

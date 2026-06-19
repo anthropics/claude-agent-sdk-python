@@ -1075,3 +1075,111 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    # -- data field: raw frame retention (issue #1026) -----------------------
+
+    def test_assistant_message_retains_raw_frame(self):
+        """AssistantMessage retains the full raw wire frame in ``data``.
+
+        Newer CLI versions emit fields like ``stop_details``, ``diagnostics``,
+        ``context_management``, and ``request_id`` that are not yet modeled
+        on the dataclass.  ``data`` is the forward-compatible escape hatch
+        so consumers can reach them without re-parsing the wire.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-sonnet-4-5",
+            },
+            "request_id": "req_01ABC",
+            "stop_details": None,
+            "diagnostics": None,
+            "context_management": None,
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.data is not None
+        assert message.data == data
+        assert message.data["request_id"] == "req_01ABC"
+        assert message.data["stop_details"] is None
+        assert message.data["diagnostics"] is None
+        assert message.data["context_management"] is None
+
+    def test_assistant_message_data_defaults_none(self):
+        """Manually constructed AssistantMessage has data=None (backward compat)."""
+        msg = AssistantMessage(
+            content=[TextBlock(text="hi")],
+            model="claude-sonnet-4-5",
+        )
+        assert msg.data is None
+
+    def test_result_message_retains_raw_frame(self):
+        """ResultMessage retains the full raw wire frame in ``data``.
+
+        Newer CLI versions emit fields like ``ttft_ms``, ``terminal_reason``,
+        ``fast_mode_state``, and ``request_id`` that are not yet modeled on
+        the dataclass.  ``data`` is the forward-compatible escape hatch so
+        consumers can reach them without re-parsing the wire.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 8127,
+            "duration_api_ms": 7903,
+            "is_error": False,
+            "num_turns": 4,
+            "session_id": "s",
+            "total_cost_usd": 0.02,
+            "usage": {},
+            "ttft_ms": 2806,
+            "terminal_reason": "completed",
+            "fast_mode_state": "off",
+            "request_id": "req_01XYZ",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.data is not None
+        assert message.data == data
+        assert message.data["ttft_ms"] == 2806
+        assert message.data["terminal_reason"] == "completed"
+        assert message.data["fast_mode_state"] == "off"
+        assert message.data["request_id"] == "req_01XYZ"
+
+    def test_result_message_data_defaults_none(self):
+        """Manually constructed ResultMessage has data=None (backward compat)."""
+        msg = ResultMessage(
+            subtype="success",
+            duration_ms=1000,
+            duration_api_ms=500,
+            is_error=False,
+            num_turns=1,
+            session_id="s",
+        )
+        assert msg.data is None
+
+    def test_assistant_message_caller_preserved_in_data(self):
+        """Per-content-block ``caller`` is reachable via ``data``.
+
+        The ``caller`` field lives inside individual content blocks on the
+        wire; it is not modeled on ``ContentBlock`` dataclasses, but the
+        raw frame in ``data`` preserves it.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hello",
+                        "caller": {"type": "direct"},
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.data is not None
+        block = message.data["message"]["content"][0]
+        assert block["caller"] == {"type": "direct"}

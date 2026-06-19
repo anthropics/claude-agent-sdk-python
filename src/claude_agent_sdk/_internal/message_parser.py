@@ -179,6 +179,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data["message"].get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
+                    data=data,
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -270,6 +271,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     errors=data.get("errors"),
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
+                    data=data,
                 )
             except KeyError as e:
                 raise MessageParseError(

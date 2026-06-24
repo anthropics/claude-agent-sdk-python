@@ -78,15 +78,24 @@ class TestMessageTypes:
 
     def test_user_message_creation(self):
         """Test creating a UserMessage."""
-        msg = UserMessage(content="Hello, Claude!")
+        msg = UserMessage(
+            content="Hello, Claude!",
+            timestamp="2026-04-30T12:00:00.000Z",
+        )
         assert msg.content == "Hello, Claude!"
+        assert msg.timestamp == "2026-04-30T12:00:00.000Z"
 
     def test_assistant_message_with_text(self):
         """Test creating an AssistantMessage with text content."""
         text_block = TextBlock(text="Hello, human!")
-        msg = AssistantMessage(content=[text_block], model="claude-opus-4-1-20250805")
+        msg = AssistantMessage(
+            content=[text_block],
+            model="claude-opus-4-1-20250805",
+            timestamp="2026-04-30T12:00:01.000Z",
+        )
         assert len(msg.content) == 1
         assert msg.content[0].text == "Hello, human!"
+        assert msg.timestamp == "2026-04-30T12:00:01.000Z"
 
     def test_assistant_message_with_thinking(self):
         """Test creating an AssistantMessage with thinking content."""
@@ -126,10 +135,12 @@ class TestMessageTypes:
             num_turns=1,
             session_id="session-123",
             total_cost_usd=0.01,
+            timestamp="2026-04-30T12:00:02.000Z",
         )
         assert msg.subtype == "success"
         assert msg.total_cost_usd == 0.01
         assert msg.session_id == "session-123"
+        assert msg.timestamp == "2026-04-30T12:00:02.000Z"
 
 
 class TestOptions:

@@ -56,6 +56,17 @@ class TestMessageParser:
         assert message.uuid == "msg-abc123-def456"
         assert len(message.content) == 1
 
+    def test_parse_user_message_with_timestamp(self):
+        """Test parsing the transcript timestamp field for user messages."""
+        data = {
+            "type": "user",
+            "timestamp": "2026-04-30T12:00:00.000Z",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.timestamp == "2026-04-30T12:00:00.000Z"
+
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
         data = {
@@ -218,6 +229,48 @@ class TestMessageParser:
         assert message.tool_use_result["newString"] == "new code"
         assert message.tool_use_result["structuredPatch"][0]["oldStart"] == 33
         assert message.uuid == "2ace3375-1879-48a0-a421-6bce25a9295a"
+
+    def test_parse_assistant_system_and_result_timestamps(self):
+        """Test parsing transcript timestamps for non-user message types."""
+        assistant = parse_message(
+            {
+                "type": "assistant",
+                "timestamp": "2026-04-30T12:00:01.000Z",
+                "session_id": "session-123",
+                "message": {
+                    "id": "msg_123",
+                    "model": "claude-opus-4-1-20250805",
+                    "content": [{"type": "text", "text": "Hi"}],
+                },
+            }
+        )
+        assert isinstance(assistant, AssistantMessage)
+        assert assistant.timestamp == "2026-04-30T12:00:01.000Z"
+
+        system = parse_message(
+            {
+                "type": "system",
+                "subtype": "init",
+                "timestamp": "2026-04-30T12:00:02.000Z",
+            }
+        )
+        assert isinstance(system, SystemMessage)
+        assert system.timestamp == "2026-04-30T12:00:02.000Z"
+
+        result = parse_message(
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 10,
+                "duration_api_ms": 8,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "session-123",
+                "timestamp": "2026-04-30T12:00:03.000Z",
+            }
+        )
+        assert isinstance(result, ResultMessage)
+        assert result.timestamp == "2026-04-30T12:00:03.000Z"
 
     def test_parse_user_message_with_string_content_and_tool_use_result(self):
         """Test parsing a user message with string content and tool_use_result."""

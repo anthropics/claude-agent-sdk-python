@@ -26,7 +26,12 @@ PermissionMode = Literal[
 ]
 
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
-SdkBeta = Literal["context-1m-2025-08-07"]
+#
+# The known literal values surface in IDE autocomplete; the trailing ``str``
+# keeps the alias open so callers can opt into beta features that ship only
+# as ``anthropic-beta`` header values (e.g. ``token-efficient-tools-2025-02-19``)
+# without waiting on the SDK to enumerate them.
+SdkBeta = Literal["context-1m-2025-08-07"] | str
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
@@ -1737,9 +1742,17 @@ class ClaudeAgentOptions:
     betas: list[SdkBeta] = field(default_factory=list)
     """Enable beta features.
 
-    Currently supported:
+    Each entry is forwarded to the CLI via ``--betas`` and ultimately ends up
+    in the ``anthropic-beta`` request header. Known values surface in editor
+    autocomplete; arbitrary strings are also accepted so callers can opt into
+    new beta features without waiting on a SDK release.
+
+    Currently surfaced as a known literal:
 
     - ``"context-1m-2025-08-07"`` — Enable 1M token context window (Sonnet 4/4.5 only).
+
+    Other beta header values that ship from the API (for example
+    ``"token-efficient-tools-2025-02-19"``) may be passed through directly.
 
     See https://docs.anthropic.com/en/api/beta-headers.
     """

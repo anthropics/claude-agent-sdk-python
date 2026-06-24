@@ -876,6 +876,14 @@ class Query:
         # close_receive_stream() once it's done iterating (#859).
         self._message_send.close()
         await self.transport.close()
+        # Clean up resources to prevent memory leaks in long-running applications
+        self.hook_callbacks.clear()
+        self.pending_control_responses.clear()
+        self.pending_control_results.clear()
+        with suppress(Exception):
+            await self._message_send.aclose()
+        with suppress(Exception):
+            await self._message_receive.aclose()
 
     def close_receive_stream(self) -> None:
         """Close the receive side of the message stream.

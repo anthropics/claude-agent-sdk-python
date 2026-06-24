@@ -293,6 +293,10 @@ class Query:
                         )
                     continue
 
+                elif msg_type == "rate_limit_event":
+                    # CLI handles rate limiting internally — skip informational event
+                    continue
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     # Flush pending transcript mirror entries before yielding

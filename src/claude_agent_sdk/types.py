@@ -1235,7 +1235,12 @@ class StreamEvent:
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
 RateLimitStatus = Literal["allowed", "allowed_warning", "rejected"]
 RateLimitType = Literal[
-    "five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"
+    "five_hour",
+    "seven_day",
+    "seven_day_opus",
+    "seven_day_sonnet",
+    "seven_day_overage_included",
+    "overage",
 ]
 
 

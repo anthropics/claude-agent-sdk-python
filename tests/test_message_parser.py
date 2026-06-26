@@ -886,6 +886,22 @@ class TestMessageParser:
             parse_message({"type": "assistant"})
         assert "Missing required field in assistant message" in str(exc_info.value)
 
+    def test_parse_assistant_string_content_raises(self):
+        """Assistant content as a bare string raises MessageParseError, not a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message(
+                {"type": "assistant", "message": {"model": "m", "content": "hi"}}
+            )
+
+    @pytest.mark.parametrize("role", ["assistant", "user"])
+    def test_non_dict_content_block_raises_documented_error(self, role: str) -> None:
+        """A non-dict block raises MessageParseError, never a raw TypeError."""
+        message: dict[str, object] = {"content": ["oops"]}
+        if role == "assistant":
+            message["model"] = "m"
+        with pytest.raises(MessageParseError):
+            parse_message({"type": role, "message": message})
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

@@ -929,7 +929,7 @@ class ThinkingBlock:
     """Thinking content block."""
 
     thinking: str
-    signature: str
+    signature: str = ""
 
 
 @dataclass

@@ -183,6 +183,32 @@ class TestSubprocessCLITransport:
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
 
+    @pytest.mark.parametrize(
+        "bad_system_prompt",
+        [
+            [{"type": "text", "text": "Be helpful"}],  # Messages-API list form
+            123,  # arbitrary non-str/dict scalar
+            ("type", "preset"),  # tuple
+        ],
+    )
+    def test_build_command_with_unsupported_system_prompt_raises(
+        self, bad_system_prompt: object
+    ):
+        """Unsupported system_prompt types raise a clear ValueError (issue #899).
+
+        Any non-str/dict value previously crashed with a cryptic
+        ``AttributeError: '<type>' object has no attribute 'get'`` because the
+        non-string branch assumed a dict. They now raise a ``ValueError`` naming
+        the accepted forms and the offending type.
+        """
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=bad_system_prompt),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(ValueError, match="system_prompt must be"):
+            transport._build_command()
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(

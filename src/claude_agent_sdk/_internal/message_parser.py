@@ -86,6 +86,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 if isinstance(data["message"]["content"], list):
                     user_content_blocks: list[ContentBlock] = []
                     for block in data["message"]["content"]:
+                        if not isinstance(block, dict):
+                            raise MessageParseError(
+                                f"Invalid content block (expected dict, got "
+                                f"{type(block).__name__})",
+                                data,
+                            )
                         match block["type"]:
                             case "text":
                                 user_content_blocks.append(
@@ -126,8 +132,21 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "assistant":
             try:
+                raw_content = data["message"]["content"]
+                if not isinstance(raw_content, list):
+                    raise MessageParseError(
+                        f"Invalid assistant content (expected list, got "
+                        f"{type(raw_content).__name__})",
+                        data,
+                    )
                 content_blocks: list[ContentBlock] = []
-                for block in data["message"]["content"]:
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        raise MessageParseError(
+                            f"Invalid content block (expected dict, got "
+                            f"{type(block).__name__})",
+                            data,
+                        )
                     match block["type"]:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))

@@ -767,7 +767,7 @@ class Query:
             "subtype": "set_max_thinking_tokens",
             "max_thinking_tokens": max_thinking_tokens,
         }
-        if not isinstance(thinking_display, _Omitted):
+        if thinking_display is not _OMIT:
             request["thinking_display"] = thinking_display
         await self._send_control_request(request)
 

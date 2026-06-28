@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from . import Transport
 from ._errors import CLIConnectionError
@@ -395,6 +395,18 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.apply_flag_settings({"effortLevel": effort})
+
+    @overload
+    async def set_max_thinking_tokens(
+        self, max_thinking_tokens: int | None
+    ) -> None: ...
+
+    @overload
+    async def set_max_thinking_tokens(
+        self,
+        max_thinking_tokens: int | None,
+        thinking_display: ThinkingDisplay | None,
+    ) -> None: ...
 
     async def set_max_thinking_tokens(
         self,

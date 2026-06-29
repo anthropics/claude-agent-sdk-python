@@ -1641,7 +1641,13 @@ class ClaudeAgentOptions:
     - ``[]`` (empty list) — Disable all built-in tools.
     - ``{"type": "preset", "preset": "claude_code"}`` — Use all default Claude Code tools.
 
-    To restrict which tools the model may call without being prompted, use
+    .. note::
+       If you set ``tools`` to an explicit list **and** use the :attr:`skills`
+       option, you must include ``"Skill"`` in the list. The SDK only
+       automatically adds ``"Skill"`` to :attr:`allowed_tools`, not to
+       ``tools``, so the ``Skill`` tool will be unavailable without it.
+
+    To restrict which tools the model may call without prompting, use
     ``allowed_tools`` instead.
     """
 
@@ -1870,6 +1876,12 @@ class ClaudeAgentOptions:
     This is the single place to turn skills on; you do not need to add
     ``"Skill"`` to ``allowed_tools`` or set ``setting_sources`` yourself — the
     SDK does both when this is set.
+
+    .. note::
+       If you also explicitly set :attr:`tools` to a list, you must include
+       ``"Skill"`` in that list. The SDK only automatically adds ``"Skill"``
+       to :attr:`allowed_tools`, not to the ``tools`` list, so the ``Skill``
+       tool will be unavailable without it.
 
     - ``None`` (default): no SDK auto-configuration. The CLI's own defaults
       still apply, so this is **not** "skills off" — to suppress every skill

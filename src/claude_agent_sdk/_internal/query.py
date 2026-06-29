@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import ProcessError, RateLimitError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -138,6 +138,13 @@ class Query:
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
+
+        # Rate limit tracking: set when a rate_limit_event with status="rejected" is received.
+        # Used to replace generic ProcessError with RateLimitError when CLI exits due to 429.
+        self._last_rate_limit_info: dict[str, Any] | None = None
+
+        # Maximum retry attempts for rate limit (set per-error when raised)
+        self._rate_limit_retries: int = 0
 
     def set_transcript_mirror_batcher(self, batcher: "TranscriptMirrorBatcher") -> None:
         """Attach a batcher that receives ``transcript_mirror`` frames.
@@ -293,6 +300,21 @@ class Query:
                         )
                     continue
 
+                elif msg_type == "rate_limit_event":
+                    # Track rate limit info for error reporting.
+                    # When status is "rejected", a 429 was hit and CLI will exit.
+                    # Store the info so we can replace the generic ProcessError
+                    # with a descriptive RateLimitError.
+                    rate_limit_info = message.get("rate_limit_info", {})
+                    if rate_limit_info.get("status") == "rejected":
+                        self._last_rate_limit_info = rate_limit_info
+                        logger.warning(
+                            "Rate limit rejected: type=%s, resets_at=%s",
+                            rate_limit_info.get("rateLimitType"),
+                            rate_limit_info.get("resetsAt"),
+                        )
+                    # Continue to yield the rate_limit_event to consumers
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     # Flush pending transcript mirror entries before yielding
@@ -337,18 +359,52 @@ class Query:
             # carries no information beyond "exit code 1" — replace it with the
             # structured error the CLI already reported so the exception is
             # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
-            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
-                error_text = (
-                    f"Claude Code returned an error result: "
-                    f"{self._last_error_result_text}"
-                )
-                logger.debug(
-                    "Replacing ProcessError (exit code %s) with result error text",
-                    e.exit_code,
-                )
+            #
+            # Additionally, when a rate_limit_event with status="rejected" was
+            # received before the CLI exit, this is a 429 rate limit error.
+            # Convert to RateLimitError with retry information.
+            if isinstance(e, ProcessError):
+                if self._last_rate_limit_info is not None:
+                    # This was a 429 rate limit - convert to RateLimitError
+                    rate_limit_type = self._last_rate_limit_info.get("rateLimitType")
+                    resets_at = self._last_rate_limit_info.get("resetsAt")
+                    # Compute retry_after from resets_at if available
+                    retry_after: float | None = None
+                    if resets_at is not None:
+                        import time
+
+                        retry_after = max(0.0, resets_at - int(time.time()))
+                    error_text = (
+                        f"API rate limit exceeded (HTTP 429): "
+                        f"type={rate_limit_type}, retry_after={retry_after}s"
+                    )
+                    logger.warning(
+                        "Rate limit hit: type=%s, resets_at=%s, retry_after=%s",
+                        rate_limit_type,
+                        resets_at,
+                        retry_after,
+                    )
+                    # Store in _last_error_result_text so receive_messages can raise it
+                    self._last_error_result_text = error_text
+                    # Send error to message stream
+                    await self._message_send.send(
+                        {"type": "error", "error": error_text, "is_rate_limit": True}
+                    )
+                elif self._last_error_result_text is not None:
+                    error_text = (
+                        f"Claude Code returned an error result: "
+                        f"{self._last_error_result_text}"
+                    )
+                    logger.debug(
+                        "Replacing ProcessError (exit code %s) with result error text",
+                        e.exit_code,
+                    )
+                else:
+                    error_text = str(e)
+                    logger.error("Fatal error in message reader: %s", e)
             else:
                 error_text = str(e)
-                logger.error(f"Fatal error in message reader: {e}")
+                logger.error("Fatal error in message reader: %s", e)
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": error_text})
         finally:
@@ -849,7 +905,10 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
-                raise Exception(message.get("error", "Unknown error"))
+                error_msg = message.get("error", "Unknown error")
+                if message.get("is_rate_limit"):
+                    raise RateLimitError(error_msg)
+                raise Exception(error_msg)
 
             yield message
 

@@ -27,7 +27,7 @@ import pytest
 # The example adapter and these tests are optional — skip the whole module
 # if the [examples] dependency group isn't installed.
 asyncpg = pytest.importorskip(
-    "asyncpg", reason="asyncpg not installed (pip install .[examples])"
+    "asyncpg", reason="asyncpg not installed (pip install -e . --group examples-postgres)"
 )
 
 

@@ -30,9 +30,9 @@ from claude_agent_sdk.testing import run_session_store_conformance
 
 # The example adapter and these tests are optional — skip the whole module
 # if the [examples] dependency group isn't installed.
-pytest.importorskip("redis", reason="redis not installed (pip install .[examples])")
+pytest.importorskip("redis", reason="redis not installed (pip install -e . --group examples-redis)")
 fakeredis = pytest.importorskip(
-    "fakeredis", reason="fakeredis not installed (pip install .[examples])"
+    "fakeredis", reason="fakeredis not installed (pip install -e . --group examples-redis)"
 )
 
 

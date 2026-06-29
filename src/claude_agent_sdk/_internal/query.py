@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import ClaudeSDKError, ProcessError
 from ..types import (
     PermissionMode,
     PermissionResultAllow,
@@ -342,15 +342,19 @@ class Query:
                     f"Claude Code returned an error result: "
                     f"{self._last_error_result_text}"
                 )
+                error_exc: Exception = ClaudeSDKError(error_text)
                 logger.debug(
                     "Replacing ProcessError (exit code %s) with result error text",
                     e.exit_code,
                 )
             else:
                 error_text = str(e)
+                error_exc = e
                 logger.error(f"Fatal error in message reader: {e}")
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            await self._message_send.send(
+                {"type": "error", "error": error_text, "exception": error_exc}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -849,7 +853,10 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
-                raise Exception(message.get("error", "Unknown error"))
+                exc = message.get("exception")
+                if isinstance(exc, Exception):
+                    raise exc
+                raise ClaudeSDKError(message.get("error", "Unknown error"))
 
             yield message
 

@@ -390,7 +390,7 @@ class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     hook_event_name: Literal["PermissionRequest"]
     tool_name: str
     tool_input: dict[str, Any]
-    permission_suggestions: NotRequired[list[Any]]
+    permission_suggestions: NotRequired[list[dict[str, Any]]]
 
 
 # Union type for all hook inputs

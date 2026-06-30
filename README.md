@@ -289,13 +289,61 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
-If you're contributing to this project, run the initial setup script to install git hooks:
+### Setting up
+
+Clone the repository and install the package in editable mode with the `dev`
+extras to pull in the test, lint, and type-check tools:
+
+```bash
+git clone https://github.com/anthropics/claude-agent-sdk-python.git
+cd claude-agent-sdk-python
+pip install -e ".[dev]"
+```
+
+The `dev` extras are declared under `[project.optional-dependencies]` in
+`pyproject.toml` and include `pytest`, `pytest-asyncio`, `pytest-cov`, `mypy`,
+`ruff`, and `anyio[trio]`.
+
+### Git hooks
+
+Run the initial setup script once to install the pre-push hook, which runs the
+same lint checks as the `lint` CI workflow before each push:
 
 ```bash
 ./scripts/initial-setup.sh
 ```
 
-This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+To skip the hook temporarily, use `git push --no-verify`.
+
+### Running checks manually
+
+The pre-push hook covers `ruff` only. Run `mypy` and `pytest` yourself before
+opening a PR:
+
+```bash
+# Lint — check and auto-fix
+python -m ruff check src/ tests/ --fix
+
+# Format
+python -m ruff format src/ tests/
+
+# Type-check (src/ only)
+python -m mypy src/
+
+# Tests
+python -m pytest tests/
+
+# A single test file
+python -m pytest tests/test_client.py
+```
+
+### Pull request conventions
+
+- Use [Conventional Commits](https://www.conventionalcommits.org/) prefixes in
+  the PR title — `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, etc.
+  This matches the merge-commit history on `main`.
+- Keep PRs scoped to one feature or fix.
+- Behavior changes should include or update a test under `tests/`.
 
 ### Building Wheels Locally
 

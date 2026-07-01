@@ -67,6 +67,8 @@ from .types import (
     ContextUsageResponse,
     DeferredToolUse,
     EffortLevel,
+    GovernanceDecision,
+    GovernanceHook,
     HookCallback,
     HookContext,
     HookEventMessage,
@@ -577,6 +579,9 @@ __all__ = [
     "ContentBlock",
     "ContextUsageCategory",
     "ContextUsageResponse",
+    # Governance hooks
+    "GovernanceDecision",
+    "GovernanceHook",
     # Tool callbacks
     "CanUseTool",
     "ToolPermissionContext",

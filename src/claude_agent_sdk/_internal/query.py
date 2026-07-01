@@ -17,6 +17,8 @@ from mcp.types import (
 
 from .._errors import ProcessError
 from ..types import (
+    GovernanceDecision,
+    GovernanceHook,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -84,6 +86,7 @@ class Query:
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
+        governance_hook: GovernanceHook | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -99,11 +102,14 @@ class Query:
                 initialize (see ``SystemPromptPreset``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
+            governance_hook: Optional policy-as-code hook called before every
+                tool call to allow, block, or rewrite the tool input
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
         self.is_streaming_mode = is_streaming_mode
         self.can_use_tool = can_use_tool
+        self.governance_hook = governance_hook
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
         self._agents = agents
@@ -405,35 +411,98 @@ class Query:
                     description=permission_request.get("description"),
                 )
 
-                response = await self.can_use_tool(
-                    permission_request["tool_name"],
-                    permission_request["input"],
-                    context,
-                )
-
-                # Convert PermissionResult to expected dict format
-                if isinstance(response, PermissionResultAllow):
-                    response_data = {
-                        "behavior": "allow",
-                        "updatedInput": (
-                            response.updated_input
-                            if response.updated_input is not None
-                            else original_input
-                        ),
-                    }
-                    if response.updated_permissions is not None:
-                        response_data["updatedPermissions"] = [
-                            permission.to_dict()
-                            for permission in response.updated_permissions
-                        ]
-                elif isinstance(response, PermissionResultDeny):
-                    response_data = {"behavior": "deny", "message": response.message}
-                    if response.interrupt:
-                        response_data["interrupt"] = response.interrupt
-                else:
-                    raise TypeError(
-                        f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}"
+                # Run governance hook first (before can_use_tool) when present.
+                # The hook may block the call or rewrite the input.
+                effective_input = original_input
+                if self.governance_hook is not None:
+                    raw_decision = self.governance_hook(
+                        permission_request["tool_name"],
+                        original_input,
+                        context,
                     )
+                    # Support both sync and async callables.
+                    decision: GovernanceDecision
+                    if hasattr(raw_decision, "__await__"):
+                        decision = await raw_decision  # type: ignore[misc]
+                    else:
+                        decision = raw_decision  # type: ignore[misc]
+
+                    if not decision["allowed"]:
+                        # Block the tool call – send a deny with the reason.
+                        reason = decision.get("reason", "Blocked by governance policy")
+                        response_data = {"behavior": "deny", "message": reason}
+                    else:
+                        # Allow – honour modified_input when provided.
+                        modified = decision.get("modified_input")
+                        if modified is not None:
+                            effective_input = modified
+                        # Fall through to can_use_tool with (possibly modified) input.
+                        response = await self.can_use_tool(
+                            permission_request["tool_name"],
+                            effective_input,
+                            context,
+                        )
+                        if isinstance(response, PermissionResultAllow):
+                            response_data = {
+                                "behavior": "allow",
+                                "updatedInput": (
+                                    response.updated_input
+                                    if response.updated_input is not None
+                                    else effective_input
+                                ),
+                            }
+                            if response.updated_permissions is not None:
+                                response_data["updatedPermissions"] = [
+                                    p.to_dict() for p in response.updated_permissions
+                                ]
+                        elif isinstance(response, PermissionResultDeny):
+                            response_data = {
+                                "behavior": "deny",
+                                "message": response.message,
+                            }
+                            if response.interrupt:
+                                response_data["interrupt"] = response.interrupt
+                        else:
+                            raise TypeError(
+                                "Tool permission callback must return "
+                                "PermissionResult (PermissionResultAllow or "
+                                f"PermissionResultDeny), got {type(response)}"
+                            )
+                else:
+                    response = await self.can_use_tool(
+                        permission_request["tool_name"],
+                        permission_request["input"],
+                        context,
+                    )
+
+                    # Convert PermissionResult to expected dict format
+                    if isinstance(response, PermissionResultAllow):
+                        response_data = {
+                            "behavior": "allow",
+                            "updatedInput": (
+                                response.updated_input
+                                if response.updated_input is not None
+                                else original_input
+                            ),
+                        }
+                        if response.updated_permissions is not None:
+                            response_data["updatedPermissions"] = [
+                                permission.to_dict()
+                                for permission in response.updated_permissions
+                            ]
+                    elif isinstance(response, PermissionResultDeny):
+                        response_data = {
+                            "behavior": "deny",
+                            "message": response.message,
+                        }
+                        if response.interrupt:
+                            response_data["interrupt"] = response.interrupt
+                    else:
+                        raise TypeError(
+                            "Tool permission callback must return PermissionResult"
+                            " (PermissionResultAllow or PermissionResultDeny),"
+                            f" got {type(response)}"
+                        )
 
             elif subtype == "hook_callback":
                 hook_callback_request: SDKHookCallbackRequest = request_data  # type: ignore[assignment]

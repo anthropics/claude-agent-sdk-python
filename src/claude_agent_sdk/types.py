@@ -1832,6 +1832,14 @@ class ClaudeAgentOptions:
     """Include partial/streaming message events in the output.
 
     When true, ``SDKPartialAssistantMessage`` events are emitted during streaming.
+
+    This also puts the underlying CLI-to-API request into SSE (output
+    streaming) mode. Set it to ``True`` if you hit the error "Streaming is
+    required for operations that may take longer than 10 minutes": that
+    pre-flight check fires whenever the output token cap is high enough that a
+    non-streaming request could exceed ``API_TIMEOUT_MS`` (default 600000ms),
+    regardless of how short your input is. Using a streaming-input prompt (an
+    async iterator) does not satisfy this check on its own.
     """
 
     include_hook_events: bool = False

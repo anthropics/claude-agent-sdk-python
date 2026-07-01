@@ -303,8 +303,16 @@ class Query:
                     self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
+                        # Prefer the joined errors[] list, then the
+                        # human-readable "result" field, before falling back to
+                        # the subtype. For some API-level errors (e.g.
+                        # model_not_found) errors[] is empty and subtype is
+                        # "success", which would otherwise produce the
+                        # contradictory "returned an error result: success".
+                        self._last_error_result_text = (
+                            "; ".join(errors)
+                            or message.get("result")
+                            or str(message.get("subtype", "unknown error"))
                         )
                     else:
                         self._last_error_result_text = None

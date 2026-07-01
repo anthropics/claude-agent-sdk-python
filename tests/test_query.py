@@ -1059,6 +1059,44 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_process_error_empty_errors_uses_result_field_not_subtype(self):
+        """Regression for #1031: when errors[] is empty but the result carries
+        a human-readable "result" field (e.g. a model_not_found 404 where the
+        protocol-level subtype is "success"), surface the result text instead
+        of the misleading "Claude Code returned an error result: success"."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success",
+                        errors=[],
+                        result=(
+                            "There's an issue with the selected model "
+                            "(nonexistent-model). It may not exist or you may "
+                            "not have access to it."
+                        ),
+                        api_error_status=404,
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: There's an issue "
+                r"with the selected model \(nonexistent-model\)\.",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
     def test_process_error_without_result_keeps_original_message(self):
         async def _test():
             transport = self._make_transport_then_raise(

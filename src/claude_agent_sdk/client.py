@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from . import Transport
 from ._errors import CLIConnectionError
@@ -12,14 +12,18 @@ from ._errors import CLIConnectionError
 if TYPE_CHECKING:
     from ._internal.session_resume import MaterializedResume
 from .types import (
+    _OMIT,
     ClaudeAgentOptions,
     ContextUsageResponse,
+    EffortLevel,
     HookEvent,
     HookMatcher,
     McpStatusResponse,
     Message,
     PermissionMode,
     ResultMessage,
+    ThinkingDisplay,
+    _Omitted,
 )
 
 
@@ -366,6 +370,97 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.set_model(model)
+
+    async def set_effort(self, effort: EffortLevel | None = None) -> None:
+        """Change the effort level during conversation (only works with streaming mode).
+
+        Effort is forwarded through the ``apply_flag_settings`` control request as
+        ``effortLevel``; it takes effect on the next turn.
+
+        Args:
+            effort: The effort level to use, or None to clear the override and fall
+                back to the value supplied at launch. One of 'low', 'medium', 'high',
+                'xhigh', 'max'.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Quick exploratory question.")
+
+                # Bump effort before a deep planning turn.
+                await client.set_effort('high')
+                await client.query("Now give a deep planning answer.")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.apply_flag_settings({"effortLevel": effort})
+
+    @overload
+    async def set_max_thinking_tokens(
+        self, max_thinking_tokens: int | None
+    ) -> None: ...
+
+    @overload
+    async def set_max_thinking_tokens(
+        self,
+        max_thinking_tokens: int | None,
+        thinking_display: ThinkingDisplay | None,
+    ) -> None: ...
+
+    async def set_max_thinking_tokens(
+        self,
+        max_thinking_tokens: int | None,
+        thinking_display: ThinkingDisplay | None | _Omitted = _OMIT,
+    ) -> None:
+        """Change the thinking-token budget during conversation (only works with streaming mode).
+
+        .. deprecated::
+           Use the ``thinking`` option in :class:`ClaudeAgentOptions` instead. On
+           newer models, this is treated as on/off (0 = disabled, any other value =
+           adaptive). For explicit control, use ``thinking={"type": "adaptive"}`` or
+           ``thinking={"type": "enabled", "budget_tokens": N}``.
+
+        Args:
+            max_thinking_tokens: Maximum tokens the model may spend on thinking, or
+                None to clear any previously set limit and use the default maximum.
+            thinking_display: Optional thinking display mode for the rest of the
+                session. A value ('summarized' or 'omitted') replaces the session
+                display mode, None clears it back to the API default, and when
+                omitted the display mode from session start is kept.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.query("Help me design this system")
+                await client.set_max_thinking_tokens(8000)
+                await client.query("Now reason carefully about the trade-offs")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_max_thinking_tokens(max_thinking_tokens, thinking_display)
+
+    async def apply_flag_settings(self, settings: dict[str, Any]) -> None:
+        """Merge settings into the flag-settings layer (only works with streaming mode).
+
+        Flag settings sit above user/project/local settings and below managed policy
+        settings in the precedence order, and apply to subsequent turns. Successive
+        calls shallow-merge top-level keys; pass None for a key to clear it from the
+        flag layer and fall back to lower-precedence sources.
+
+        Args:
+            settings: A partial settings object to merge into the flag settings.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                await client.apply_flag_settings({"effortLevel": "high"})
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.apply_flag_settings(settings)
 
     async def rewind_files(self, user_message_id: str) -> None:
         """Rewind tracked files to their state at a specific user message.

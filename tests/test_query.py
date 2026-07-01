@@ -546,6 +546,158 @@ class TestNoTimeoutForHooksAndMcpServers:
         anyio.run(_test)
 
 
+class TestPreToolUseDefer:
+    def test_defer_hook_releases_wait_for_result_before_result(self):
+        async def _test():
+            end_input_called = anyio.Event()
+
+            async def tracking_end_input():
+                end_input_called.set()
+
+            transport = _make_mock_transport(messages=[])
+            transport.end_input = tracking_end_input
+
+            async def defer_hook(input_data, tool_use_id, context):
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "defer",
+                        "permissionDecisionReason": "needs approval",
+                    }
+                }
+
+            q = Query(
+                transport=transport,
+                is_streaming_mode=True,
+                hooks={"PreToolUse": [{"matcher": "mcp__ops__ping", "hooks": []}]},
+            )
+            q.hook_callbacks["hook_0"] = defer_hook
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(q.wait_for_result_and_end_input)
+                await q._handle_control_request(
+                    {
+                        "type": "control_request",
+                        "request_id": "hook_req",
+                        "request": {
+                            "subtype": "hook_callback",
+                            "callback_id": "hook_0",
+                            "input": {"tool_name": "mcp__ops__ping"},
+                            "tool_use_id": "toolu_123",
+                        },
+                    }
+                )
+
+                with anyio.fail_after(0.5):
+                    await end_input_called.wait()
+                tg.cancel_scope.cancel()
+
+        anyio.run(_test)
+
+    def test_drops_assistant_messages_after_defer_until_result(self):
+        async def _test():
+            hook_response_written = anyio.Event()
+
+            async def defer_hook(input_data, tool_use_id, context):
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "defer",
+                    }
+                }
+
+            tool_use_assistant = {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_123",
+                            "name": "mcp__ops__ping",
+                            "input": {},
+                        }
+                    ],
+                    "model": "claude-sonnet-4-5",
+                },
+            }
+            wrap_up_assistant = {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I called the ping tool, but it failed.",
+                        }
+                    ],
+                    "model": "claude-sonnet-4-5",
+                },
+            }
+            deferred_result = {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "test",
+                "stop_reason": "tool_deferred",
+                "total_cost_usd": 0.001,
+                "deferred_tool_use": {
+                    "id": "toolu_123",
+                    "name": "mcp__ops__ping",
+                    "input": {},
+                },
+            }
+
+            transport = AsyncMock()
+
+            async def tracking_write(data):
+                response = json.loads(data)
+                if response.get("type") == "control_response":
+                    hook_response_written.set()
+
+            async def read_messages():
+                yield tool_use_assistant
+                yield {
+                    "type": "control_request",
+                    "request_id": "hook_req",
+                    "request": {
+                        "subtype": "hook_callback",
+                        "callback_id": "hook_0",
+                        "input": {"tool_name": "mcp__ops__ping"},
+                        "tool_use_id": "toolu_123",
+                    },
+                }
+                await hook_response_written.wait()
+                yield wrap_up_assistant
+                yield deferred_result
+
+            transport.read_messages = read_messages
+            transport.write = tracking_write
+            transport.close = AsyncMock()
+
+            q = Query(
+                transport=transport,
+                is_streaming_mode=True,
+                hooks={"PreToolUse": [{"matcher": "mcp__ops__ping", "hooks": []}]},
+            )
+            q.hook_callbacks["hook_0"] = defer_hook
+
+            await q.start()
+            messages = []
+            async for message in q.receive_messages():
+                messages.append(message)
+                if message.get("type") == "result":
+                    break
+            await q.close()
+
+            assert messages == [tool_use_assistant, deferred_result]
+
+        anyio.run(_test)
+
+
 class TestQueryCrossTaskCleanup:
     """Tests for cross-task cleanup of Query task groups (issue #454).
 

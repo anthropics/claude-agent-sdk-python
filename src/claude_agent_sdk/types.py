@@ -267,6 +267,15 @@ HookEvent = (
     | Literal["Notification"]
     | Literal["SubagentStart"]
     | Literal["PermissionRequest"]
+    | Literal["SessionEnd"]
+    | Literal["Setup"]
+    | Literal["TeammateIdle"]
+    | Literal["TaskCompleted"]
+    | Literal["ConfigChange"]
+    | Literal["WorktreeCreate"]
+    | Literal["WorktreeRemove"]
+    | Literal["PostToolBatch"]
+    | Literal["MessageDisplay"]
 )
 
 
@@ -393,6 +402,92 @@ class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     permission_suggestions: NotRequired[list[Any]]
 
 
+class SessionEndHookInput(BaseHookInput):
+    """Input data for SessionEnd hook events."""
+
+    hook_event_name: Literal["SessionEnd"]
+    reason: Literal[
+        "clear",
+        "resume",
+        "logout",
+        "prompt_input_exit",
+        "bypass_permissions_disabled",
+        "other",
+    ]
+
+
+class SetupHookInput(BaseHookInput):
+    """Input data for Setup hook events."""
+
+    hook_event_name: Literal["Setup"]
+    trigger: Literal["init", "maintenance"]
+
+
+class TeammateIdleHookInput(BaseHookInput):
+    """Input data for TeammateIdle hook events."""
+
+    hook_event_name: Literal["TeammateIdle"]
+    teammate_name: str
+    team_name: str
+
+
+class TaskCompletedHookInput(BaseHookInput):
+    """Input data for TaskCompleted hook events."""
+
+    hook_event_name: Literal["TaskCompleted"]
+    task_id: str
+    task_subject: str
+    task_description: NotRequired[str]
+    teammate_name: NotRequired[str]
+    team_name: NotRequired[str]
+
+
+class ConfigChangeHookInput(BaseHookInput):
+    """Input data for ConfigChange hook events."""
+
+    hook_event_name: Literal["ConfigChange"]
+    source: Literal[
+        "user_settings",
+        "project_settings",
+        "local_settings",
+        "policy_settings",
+        "skills",
+    ]
+    file_path: NotRequired[str]
+
+
+class WorktreeCreateHookInput(BaseHookInput):
+    """Input data for WorktreeCreate hook events."""
+
+    hook_event_name: Literal["WorktreeCreate"]
+    name: str
+
+
+class WorktreeRemoveHookInput(BaseHookInput):
+    """Input data for WorktreeRemove hook events."""
+
+    hook_event_name: Literal["WorktreeRemove"]
+    worktree_path: str
+
+
+class PostToolBatchHookInput(BaseHookInput):
+    """Input data for PostToolBatch hook events."""
+
+    hook_event_name: Literal["PostToolBatch"]
+    tool_calls: list[dict[str, Any]]
+
+
+class MessageDisplayHookInput(BaseHookInput):
+    """Input data for MessageDisplay hook events."""
+
+    hook_event_name: Literal["MessageDisplay"]
+    turn_id: str
+    message_id: str
+    index: int
+    final: bool
+    delta: str
+
+
 # Union type for all hook inputs
 HookInput = (
     PreToolUseHookInput
@@ -405,6 +500,15 @@ HookInput = (
     | NotificationHookInput
     | SubagentStartHookInput
     | PermissionRequestHookInput
+    | SessionEndHookInput
+    | SetupHookInput
+    | TeammateIdleHookInput
+    | TaskCompletedHookInput
+    | ConfigChangeHookInput
+    | WorktreeCreateHookInput
+    | WorktreeRemoveHookInput
+    | PostToolBatchHookInput
+    | MessageDisplayHookInput
 )
 
 
@@ -479,6 +583,34 @@ class PermissionRequestHookSpecificOutput(TypedDict):
     decision: dict[str, Any]
 
 
+class SetupHookSpecificOutput(TypedDict):
+    """Hook-specific output for Setup events."""
+
+    hookEventName: Literal["Setup"]
+    additionalContext: NotRequired[str]
+
+
+class WorktreeCreateHookSpecificOutput(TypedDict):
+    """Hook-specific output for WorktreeCreate events."""
+
+    hookEventName: Literal["WorktreeCreate"]
+    worktreePath: NotRequired[str]
+
+
+class PostToolBatchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostToolBatch events."""
+
+    hookEventName: Literal["PostToolBatch"]
+    additionalContext: NotRequired[str]
+
+
+class MessageDisplayHookSpecificOutput(TypedDict):
+    """Hook-specific output for MessageDisplay events."""
+
+    hookEventName: Literal["MessageDisplay"]
+    displayContent: NotRequired[str]
+
+
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
@@ -488,6 +620,10 @@ HookSpecificOutput = (
     | NotificationHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PermissionRequestHookSpecificOutput
+    | SetupHookSpecificOutput
+    | WorktreeCreateHookSpecificOutput
+    | PostToolBatchHookSpecificOutput
+    | MessageDisplayHookSpecificOutput
 )
 
 

@@ -2090,9 +2090,10 @@ class TestSubprocessCLITransport:
                 prompt="x", options=ClaudeAgentOptions(stderr=stderr_cb)
             )
 
+            # The stream yields chunks, not lines: one read can carry several
+            # lines, and the last one may have no trailing newline.
             async def mock_iter() -> AsyncIterator[str]:
-                yield "line 1"
-                yield "line 2"
+                yield "line 1\nline 2\n"
                 yield "line 3"
 
             transport._stderr_stream = mock_iter()  # type: ignore[assignment]
@@ -2100,6 +2101,33 @@ class TestSubprocessCLITransport:
 
             # All three lines must be delivered despite the first raise.
             assert received == ["line 1", "line 2", "line 3"]
+
+        anyio.run(_test)
+
+    def test_stderr_line_split_across_chunks_is_reassembled(self) -> None:
+        """``options.stderr`` is documented to receive lines, but the stream
+        yields chunks — a long line split at a read boundary must be delivered
+        once, whole, rather than as two fragments with the seam whitespace
+        rstripped off the first."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "a warning that got "
+                yield "split across two reads\nnext line\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            assert received == [
+                "a warning that got split across two reads",
+                "next line",
+            ]
 
         anyio.run(_test)
 

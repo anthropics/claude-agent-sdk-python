@@ -267,6 +267,7 @@ HookEvent = (
     | Literal["Notification"]
     | Literal["SubagentStart"]
     | Literal["PermissionRequest"]
+    | Literal["SessionStart"]
 )
 
 
@@ -393,6 +394,15 @@ class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     permission_suggestions: NotRequired[list[Any]]
 
 
+class SessionStartHookInput(BaseHookInput):
+    """Input data for SessionStart hook events."""
+
+    hook_event_name: Literal["SessionStart"]
+    source: Literal["startup", "resume", "clear", "compact"]
+    agent_type: NotRequired[str]
+    model: NotRequired[str]
+
+
 # Union type for all hook inputs
 HookInput = (
     PreToolUseHookInput
@@ -405,6 +415,7 @@ HookInput = (
     | NotificationHookInput
     | SubagentStartHookInput
     | PermissionRequestHookInput
+    | SessionStartHookInput
 )
 
 

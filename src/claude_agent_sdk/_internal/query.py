@@ -303,9 +303,13 @@ class Query:
                     self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
+                        subtype = message.get("subtype", "")
+                        fallback = (
+                            subtype
+                            if subtype and subtype != "success"
+                            else "unknown error"
                         )
+                        self._last_error_result_text = "; ".join(errors) or fallback
                     else:
                         self._last_error_result_text = None
                 elif not (

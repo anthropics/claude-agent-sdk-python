@@ -834,6 +834,55 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
 
+    def test_parse_result_message_models_metrics_and_retains_frame(self):
+        """ResultMessage models the stable scalar metrics as typed attributes
+        and retains the raw frame so unmodeled/future fields stay reachable
+        (issue #1026)."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 8127,
+            "duration_api_ms": 7903,
+            "is_error": False,
+            "num_turns": 4,
+            "session_id": "s",
+            "total_cost_usd": 0.02,
+            "ttft_ms": 2806,
+            "terminal_reason": "completed",
+            "fast_mode_state": "off",
+            "some_future_field": 42,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        # Typed metrics.
+        assert message.ttft_ms == 2806
+        assert message.terminal_reason == "completed"
+        assert message.fast_mode_state == "off"
+        # Escape hatch: a field the SDK does not model stays reachable.
+        assert message.data is not None
+        assert message.data["some_future_field"] == 42
+
+    def test_parse_assistant_message_models_request_id_and_retains_frame(self):
+        """AssistantMessage models top-level request_id and retains the raw
+        frame so unmodeled fields (e.g. message.stop_details) stay reachable
+        (issue #1026)."""
+        data = {
+            "type": "assistant",
+            "request_id": "req_123",
+            "message": {
+                "content": [{"type": "text", "text": "Hi"}],
+                "model": "claude-opus-4-1-20250805",
+                "stop_details": {"reason": "end_turn"},
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        # Typed field.
+        assert message.request_id == "req_123"
+        # Escape hatch: an unmodeled nested field stays reachable.
+        assert message.data is not None
+        assert message.data["message"]["stop_details"] == {"reason": "end_turn"}
+
     def test_parse_rate_limit_event(self):
         """Test parsing a rate_limit_event into a typed RateLimitEvent."""
         data = {

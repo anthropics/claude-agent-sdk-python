@@ -542,6 +542,52 @@ class SubprocessCLITransport(Transport):
         except Exception:
             logger.debug("stderr stream read failed", exc_info=True)
 
+    def _close_stdout_pipe_fd(self) -> None:
+        """Close the kernel read-end FD of the subprocess stdout pipe.
+
+        anyio's ``StreamReaderWrapper.aclose()`` on the asyncio backend only
+        sets a Python-level exception on the underlying ``StreamReader`` —
+        it does NOT close the kernel pipe FD owned by the asyncio
+        ``_UnixReadPipeTransport``. To actually deliver EPIPE to the child
+        we have to close that transport directly.
+
+        We walk a small chain of private attributes
+        (``self._process._process._transport.get_pipe_transport(1)``):
+            - ``self._process``  : anyio ``Process`` wrapper
+            - ``._process``      : the wrapped ``asyncio.subprocess.Process``
+            - ``._transport``    : ``_UnixSubprocessTransport`` (or uvloop's
+                                   equivalent)
+            - ``.get_pipe_transport(1)`` : public method since Python 3.4,
+              returns the stdout read-end transport (fd 1 in child numbering)
+            - ``.close()``       : public method, tears the pipe down
+
+        Anything missing on this chain (different anyio backend, future
+        Python/anyio rewrite, exotic transport) is logged at WARNING and
+        the legacy SIGTERM/SIGKILL path in ``close()`` keeps the contract
+        intact — i.e. no regression vs. today, just no improvement.
+
+        WARNING level (not DEBUG): production users typically run on
+        asyncio (often uvloop). If this fallback fires the pipe-deadlock
+        fix is silently inert; surface it loudly.
+
+        Fixes: #728
+        """
+        if self._process is None:
+            return
+        try:
+            inner = self._process._process  # type: ignore[attr-defined]
+            transport = inner._transport
+            pipe_transport = transport.get_pipe_transport(1)
+            if pipe_transport is not None:
+                pipe_transport.close()
+        except Exception:
+            logger.warning(
+                "_close_stdout_pipe_fd: could not reach asyncio pipe "
+                "transport (anyio/asyncio internals changed?); falling "
+                "back to SIGTERM/SIGKILL path. See #728.",
+                exc_info=True,
+            )
+
     async def close(self) -> None:
         """Close the transport and clean up resources."""
         if not self._process:
@@ -567,6 +613,38 @@ class SubprocessCLITransport(Transport):
             with suppress(Exception):
                 await self._stderr_stream.aclose()
             self._stderr_stream = None
+
+        # Close the stdout read-end *before* waiting for the subprocess.
+        #
+        # Why: the subprocess (claude CLI / Node.js) gets EOF on stdin from
+        # the block above and then writes its final stream-json record. If
+        # the 64 KB pipe buffer is full and we still hold the read-end open,
+        # the child blocks inside the kernel on write(). Nobody is reading
+        # the pipe (Query.close() cancelled the stdout reader before calling
+        # us), so SIGTERM is the only escape — but Node.js leaves write()
+        # SA_RESTART-interruptible, so we burn the full 5 s + SIGKILL budget.
+        #
+        # Closing the read-end here delivers EPIPE on the child's next
+        # write(); claude then exits cleanly and process.wait() returns
+        # immediately.
+        #
+        # NOTE: ``await self._stdout_stream.aclose()`` alone is NOT enough on
+        # the asyncio backend — StreamReaderWrapper.aclose() only sets a
+        # Python-level exception on the StreamReader without closing the
+        # kernel FD via _UnixReadPipeTransport. See ``_close_stdout_pipe_fd``
+        # below for the actual mechanism.
+        #
+        # Fixes: #728
+        self._close_stdout_pipe_fd()
+        # The await below is load-bearing: pipe_transport.close() schedules
+        # _call_connection_lost via call_soon(), so the FD is not actually
+        # closed until the loop runs another step. ``await aclose()`` gives
+        # the loop that step *before* we enter process.wait(), so the child
+        # sees EPIPE while we are already waiting. Do NOT remove the await.
+        if self._stdout_stream:
+            with suppress(Exception):
+                await self._stdout_stream.aclose()
+            self._stdout_stream = None
 
         # Wait for graceful shutdown after stdin EOF, then terminate if needed.
         # The subprocess needs time to flush its session file after receiving

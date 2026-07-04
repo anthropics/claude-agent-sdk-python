@@ -47,7 +47,20 @@ class Transport(ABC):
 
     @abstractmethod
     async def close(self) -> None:
-        """Close the transport connection and clean up resources."""
+        """Close the transport connection and clean up resources.
+
+        Contract: the SDK calls this from inside a shielded ``anyio``
+        cancel scope, so cancellation from an enclosing scope (a task-group
+        failure, an expiring ``move_on_after``, a cancelled task) will *not*
+        interrupt it. Cleanup is therefore guaranteed to run — but an
+        implementation that blocks forever here blocks the caller's
+        ``__aexit__``/``disconnect()`` forever with no way out.
+
+        Implementations must bound their own awaits (e.g. wrap them in
+        ``anyio.move_on_after``/``anyio.fail_after``, whose deadlines still
+        fire inside the shield) rather than relying on the caller to cancel
+        them.
+        """
         pass
 
     @abstractmethod

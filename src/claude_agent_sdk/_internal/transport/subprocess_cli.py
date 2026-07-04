@@ -612,8 +612,14 @@ class SubprocessCLITransport(Transport):
             pass  # Stream closed, exit normally
         except Exception:
             logger.debug("stderr stream read failed", exc_info=True)
-
-        emit(framer.flush())
+        finally:
+            # In a `finally` so the last partial line still reaches the callback
+            # when close() cancels this task: cancellation arrives as a
+            # BaseException, which neither `except` above catches. A diagnostic
+            # written without a trailing newline before the CLI stalled is
+            # exactly what the caller needs at that moment. `emit` is
+            # synchronous, so it is safe to run during cancellation unwind.
+            emit(framer.flush())
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""

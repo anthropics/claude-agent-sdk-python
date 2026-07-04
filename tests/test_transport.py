@@ -2160,6 +2160,35 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_stderr_pending_line_is_flushed_when_task_is_cancelled(self) -> None:
+        """close() cancels the stderr task, and cancellation is a BaseException
+        that the reader's `except` clauses don't catch. A diagnostic written
+        without a trailing newline before the CLI stalled must still reach the
+        callback rather than being lost with the buffer."""
+
+        async def _test() -> None:
+            received: list[str] = []
+            started = anyio.Event()
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "Error: model overloaded"  # no trailing newline
+                started.set()
+                await anyio.sleep(60)  # the CLI stalls, holding the stream open
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(transport._handle_stderr)
+                await started.wait()
+                tg.cancel_scope.cancel()
+
+            assert received == ["Error: model overloaded"]
+
+        anyio.run(_test)
+
 
 class TestAtexitChildCleanup:
     """Tests for the atexit handler that terminates orphaned CLI subprocesses."""

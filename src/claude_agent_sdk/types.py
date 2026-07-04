@@ -1703,9 +1703,13 @@ def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
     """
     if options.can_use_tool is None:
         return
-    message = _get_can_use_tool_shadowed_warning(
-        options.permission_mode, options.allowed_tools
-    )
+    # skills="all" makes the transport append a bare "Skill" to the effective
+    # allowed_tools, so it shadows the callback just like a hand-written entry.
+    # skills=[names] appends Skill(name) specifiers, which do not.
+    allowed_tools = options.allowed_tools
+    if options.skills == "all" and "Skill" not in allowed_tools:
+        allowed_tools = [*allowed_tools, "Skill"]
+    message = _get_can_use_tool_shadowed_warning(options.permission_mode, allowed_tools)
     if message is not None:
         # stacklevel=2 attributes the warning to the SDK connect()/query()
         # internals that call this. The user's own call site sits at a

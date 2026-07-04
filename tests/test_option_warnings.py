@@ -139,6 +139,40 @@ class TestGetCanUseToolShadowedWarning:
         assert _get_can_use_tool_shadowed_warning(None, []) is None
 
 
+class TestSkillsShadowing:
+    """skills="all" makes the transport inject a bare "Skill" allow rule."""
+
+    def test_skills_all_shadows_the_skill_tool(self):
+        options = ClaudeAgentOptions(can_use_tool=_can_use_tool, skills="all")
+        with pytest.warns(CanUseToolShadowedWarning, match="invoked for: Skill"):
+            _warn_if_can_use_tool_shadowed(options)
+
+    def test_named_skills_do_not_shadow(self):
+        """skills=[names] injects Skill(name) specifiers, which are not whole-tool."""
+        options = ClaudeAgentOptions(can_use_tool=_can_use_tool, skills=["reviewer"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", CanUseToolShadowedWarning)
+            _warn_if_can_use_tool_shadowed(options)
+
+    def test_skills_all_does_not_duplicate_explicit_skill_entry(self):
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool, skills="all", allowed_tools=["Skill"]
+        )
+        with pytest.warns(CanUseToolShadowedWarning) as record:
+            _warn_if_can_use_tool_shadowed(options)
+        assert "invoked for: Skill." in str(record[0].message)
+
+    def test_skills_all_leaves_caller_allowed_tools_untouched(self):
+        """The injected entry must not mutate the caller's list."""
+        allowed = ["Read"]
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool, skills="all", allowed_tools=allowed
+        )
+        with pytest.warns(CanUseToolShadowedWarning, match="Read, Skill"):
+            _warn_if_can_use_tool_shadowed(options)
+        assert allowed == ["Read"]
+
+
 class TestWarnIfCanUseToolShadowed:
     """Direct tests of the emit function (mirrors TS warnIfCanUseToolShadowed)."""
 

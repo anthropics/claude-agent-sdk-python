@@ -25,11 +25,43 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import (
     _get_can_use_tool_shadowed_warning,
     _warn_if_can_use_tool_shadowed,
+    _whole_tool_allowed,
 )
 
 
 async def _can_use_tool(tool_name, input_data, context):
     return PermissionResultAllow()
+
+
+class TestWholeToolAllowed:
+    """allowed_tools entries that allow a whole tool, mirroring the CLI parser."""
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            # No specifier -- a plain tool-wide allow.
+            ("Read", "Read"),
+            ("mcp__server__tool", "mcp__server__tool"),
+            # Empty / lone-wildcard specifiers collapse to a tool-wide allow.
+            ("Read(*)", "Read"),
+            ("Read()", "Read"),
+            ("mcp__server__tool(*)", "mcp__server__tool"),
+            # A real specifier only allows matching invocations.
+            ("Bash(ls:*)", None),
+            ("Bash(git log:*)", None),
+            ("Bash(*.py)", None),
+            # Blank entries match no tool.
+            ("", None),
+            ("   ", None),
+            # Malformed entries fall back to the whole string as a tool name in
+            # the CLI, so they match nothing.
+            ("Bash(ls:*", None),
+            ("Bash(ls)x", None),
+            ("(foo)", None),
+        ],
+    )
+    def test_whole_tool_allowed(self, entry, expected):
+        assert _whole_tool_allowed(entry) == expected
 
 
 class TestGetCanUseToolShadowedWarning:
@@ -75,6 +107,18 @@ class TestGetCanUseToolShadowedWarning:
         assert "Read" in message
         assert "bypassPermissions" not in message
 
+    def test_wildcard_and_empty_specifiers_are_whole_tool_allows(self):
+        """Tool(*) and Tool() are tool-wide allow rules, exactly like bare Tool."""
+        message = _get_can_use_tool_shadowed_warning(None, ["Read(*)", "Write()"])
+        assert message is not None
+        assert "invoked for: Read, Write." in message
+
+    def test_blank_entries_never_reach_the_message(self):
+        """A whitespace-only entry must not render as `invoked for:    .`"""
+        message = _get_can_use_tool_shadowed_warning(None, ["   ", "Read"])
+        assert message is not None
+        assert "invoked for: Read." in message
+
     def test_specifier_and_empty_entries_return_none(self):
         assert (
             _get_can_use_tool_shadowed_warning(
@@ -106,6 +150,15 @@ class TestWarnIfCanUseToolShadowed:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error", CanUseToolShadowedWarning)
+            _warn_if_can_use_tool_shadowed(options)
+
+    def test_warns_when_callback_set_with_wildcard_specifier(self):
+        """Regression: Read(*) fully shadows the callback and must not stay silent."""
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool,
+            allowed_tools=["Read(*)"],
+        )
+        with pytest.warns(CanUseToolShadowedWarning, match="invoked for: Read"):
             _warn_if_can_use_tool_shadowed(options)
 
     def test_no_warning_for_accept_edits_with_specifier_entries(self):

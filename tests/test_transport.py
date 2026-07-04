@@ -2131,6 +2131,35 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_stderr_line_without_newline_is_flushed_at_buffer_limit(self) -> None:
+        """A producer that never emits a newline must not grow the pending
+        buffer without bound: once it passes ``max_buffer_size`` the partial
+        line is flushed to the callback and the buffer resets."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x",
+                options=ClaudeAgentOptions(stderr=received.append, max_buffer_size=10),
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                # 15 chars with no newline in sight, then a normal line.
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "bbb\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            # Flushed once the 15 chars passed the 10-char limit, rather than
+            # buffering forever waiting for a newline.
+            assert received == ["a" * 15, "bbb"]
+
+        anyio.run(_test)
+
 
 class TestAtexitChildCleanup:
     """Tests for the atexit handler that terminates orphaned CLI subprocesses."""

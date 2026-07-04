@@ -437,15 +437,26 @@ class TestSubprocessBuffering:
         )
 
     def test_whitespace_preserved_across_realistic_64kib_chunking(self) -> None:
-        """Prose well over 64KiB, cut into chunks at exactly the boundary
-        anyio's asyncio backend uses, must round-trip byte for byte."""
-        content = "the quick brown fox jumps over the lazy dog " * 3000  # ~132KB
+        """A long whitespace run spanning several 64KiB reads must survive intact.
+
+        Whether the old code corrupted a payload depended on whether a read
+        boundary happened to land on whitespace, so a prose payload only fails
+        some of the time. Use a value that is almost entirely spaces: then every
+        interior boundary is guaranteed to land inside the run, and the old
+        reader stripped whole chunks away (losing ~400k characters).
+        """
+        content = "S" + " " * 400_000 + "E"
         line = (
             json.dumps({"type": "assistant", "data": content}, separators=(",", ":"))
             + "\n"
         )
         chunks = [line[i : i + 65536] for i in range(0, len(line), 65536)]
-        assert len(chunks) > 2
+        assert len(chunks) > 6
+
+        # Every interior chunk boundary lands inside the whitespace run, so
+        # str.strip() on a chunk is guaranteed to eat characters.
+        for boundary in range(65536, len(line), 65536):
+            assert line[boundary - 1] == " " and line[boundary] == " "
 
         messages = self._collect(chunks)
 

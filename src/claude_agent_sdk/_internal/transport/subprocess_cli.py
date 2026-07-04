@@ -59,9 +59,9 @@ class _LineFramer:
 
     def __init__(self) -> None:
         # Only ever holds fragments of the line currently being received, none
-        # of which contain a newline. Joining once a newline arrives keeps
-        # reassembly linear in the size of the line, not quadratic in the
-        # number of chunks.
+        # of which contain a newline. Accumulating in a list and joining once a
+        # newline arrives is O(total) without relying on CPython's in-place
+        # `str +=` realloc optimization, which other implementations lack.
         self._pending: list[str] = []
         self.pending_len = 0
 

@@ -49,12 +49,18 @@ class Transport(ABC):
     async def close(self) -> None:
         """Close the transport connection and clean up resources.
 
-        Contract: the SDK calls this from inside a shielded ``anyio``
-        cancel scope, so cancellation from an enclosing scope (a task-group
-        failure, an expiring ``move_on_after``, a cancelled task) will *not*
-        interrupt it. Cleanup is therefore guaranteed to run — but an
+        Contract: the SDK calls this from inside a shielded ``anyio`` cancel
+        scope, so cancellation from an enclosing *anyio* scope (a task-group
+        failure, an expiring ``move_on_after``, a cancelled anyio task) will
+        *not* interrupt it, and cleanup runs to completion. But an
         implementation that blocks forever here blocks the caller's
         ``__aexit__``/``disconnect()`` forever with no way out.
+
+        (An anyio shield does not stop a *raw asyncio* cancellation —
+        ``asyncio.wait_for``/``asyncio.timeout`` firing, a bare
+        ``task.cancel()``, loop shutdown — from being delivered at an await
+        inside ``close()``. Implementations that must clean up on that path
+        should not rely on the shield alone.)
 
         Implementations must bound their own awaits (e.g. wrap them in
         ``anyio.move_on_after``/``anyio.fail_after``, whose deadlines still

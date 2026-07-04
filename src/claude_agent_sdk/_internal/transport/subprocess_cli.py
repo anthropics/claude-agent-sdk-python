@@ -552,12 +552,23 @@ class SubprocessCLITransport(Transport):
         terminate/kill escalation ran — orphaning the CLI child, which then
         surfaces as `<defunct>` once nothing is left to wait() on it.
 
-        Every await in *this* scope is bounded (~20s worst case), so
+        Every await in *this* scope is bounded (~20s worst case), so an anyio
         cancellation is delayed but never blocked: the stream `aclose()`s are a
         non-blocking `close()` plus a checkpoint on both anyio backends (they
         never await `wait_closed()`, so undrained stdin cannot wedge them), the
         stderr task is cancelled before it is awaited, and the lock acquire and
         every process `wait()` carry an explicit deadline.
+
+        Caveat: an anyio shield only defers cancellation that *originates from
+        an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
+        `asyncio.timeout` firing, a bare `task.cancel()`, loop shutdown) is
+        still delivered at the next await in here, and the escalation below only
+        catches `TimeoutError` — so it would be skipped. That is a pre-existing
+        limitation of the shield on the asyncio backend rather than something
+        this scope introduces, and it is still strictly better than before: the
+        `finally` keeps a still-running child in `_ACTIVE_CHILDREN` for the
+        atexit reaper instead of dropping it. Making the escalation robust to a
+        foreign `CancelledError` is a follow-up.
         """
         if not self._process:
             self._ready = False

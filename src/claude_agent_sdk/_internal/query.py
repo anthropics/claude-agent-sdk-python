@@ -868,8 +868,9 @@ class Query:
           this scope existed, so nothing here makes it worse.
         - ``transport.close()``. For a custom ``Transport`` (accepted by
           ``query(transport=...)`` and ``ClaudeSDKClient(transport=...)``) that
-          is arbitrary user code, and it is now uncancellable from the outside:
-          a custom ``close()`` that never returns hangs ``disconnect()``.
+          is arbitrary user code, and an enclosing anyio cancel scope can no
+          longer interrupt it: a custom ``close()`` that never returns hangs
+          ``disconnect()``.
           ``Transport.close()`` documents the resulting contract —
           implementations must bound their own awaits. Bounding it here instead
           would only abandon a wedged transport half-closed, which is the very

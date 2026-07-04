@@ -28,12 +28,13 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     SubprocessCLITransport,
 )
 
-pytestmark = [
-    pytest.mark.anyio,
-    pytest.mark.skipif(
-        sys.platform == "win32", reason="uses POSIX process states via ps"
-    ),
-]
+pytestmark = pytest.mark.anyio
+
+# Only the tests that spawn the shebang-based fake CLI or read process state via
+# `ps` are POSIX-only. The pure-mock bookkeeping test runs everywhere.
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="spawns a shebang script / reads `ps` state"
+)
 
 # A stand-in `claude` CLI: answers `-v`, replies to control requests so
 # connect() completes, and exits on stdin EOF.
@@ -96,6 +97,7 @@ def _process_state(pid: int) -> str:
     return "zombie" if out.startswith("Z") else "alive"
 
 
+@posix_only
 async def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> None:
     """close() called with the surrounding scope already cancelled must still
     shut the child down; without shielding, the first await bails out."""
@@ -117,21 +119,24 @@ async def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> Non
     assert process not in _ACTIVE_CHILDREN
 
 
+@posix_only
 async def test_cancelled_client_context_leaves_no_child(tmp_path: Path) -> None:
     """A cancelled `async with ClaudeSDKClient()` must not leak the CLI child."""
     pid = -1
-    # connect() spawns two interpreters (version check + CLI), ~0.15s; the
-    # margin here is for loaded CI runners, and the inner sleep is what the
-    # timeout actually cancels.
-    with anyio.move_on_after(2):
+    # No wall-clock deadline: connect() has provably completed by the time we
+    # cancel, so a slow/loaded runner cannot make this flake. The cancellation
+    # is still delivered while __aexit__ runs, which is the path under test.
+    with anyio.CancelScope() as scope:
         options = ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path)))
         async with ClaudeSDKClient(options=options) as client:
             transport = client._transport
             assert isinstance(transport, SubprocessCLITransport)
             assert transport._process is not None
             pid = transport._process.pid
-            await anyio.sleep(30)  # cancelled here
+            scope.cancel()
+            await anyio.sleep(30)  # raises immediately; __aexit__ runs cancelled
 
+    assert scope.cancelled_caught
     assert pid > 0
     assert _process_state(pid) == "gone"
 
@@ -174,6 +179,7 @@ async def test_still_running_child_stays_tracked_for_atexit_reaper(
         assert process in _ACTIVE_CHILDREN
 
 
+@posix_only
 async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
     """The normal path still drops the child from _ACTIVE_CHILDREN."""
     transport = SubprocessCLITransport(
@@ -188,6 +194,7 @@ async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
     assert process not in _ACTIVE_CHILDREN
 
 
+@posix_only
 def test_fake_cli_speaks_the_protocol(tmp_path: Path) -> None:
     """Guard the fixture itself: a broken fake CLI would make the tests above
     pass for the wrong reason."""

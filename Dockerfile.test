@@ -25,5 +25,14 @@ RUN pip install -e ".[dev]"
 # Verify CLI installation
 RUN claude -v
 
+# Trust the workspace so Claude Code honors this repo's project-scoped
+# permission grants and does not emit untrusted-workspace diagnostics on
+# stderr. Must come after `claude -v`, which is the last step that writes
+# ~/.claude.json. Trust is keyed on the WORKDIR (/app; .dockerignore omits
+# .git), so it only applies when the container runs the source baked in here
+# from /app -- a bind-mounted checkout at another path is not covered.
+# See scripts/trust_workspace.py.
+RUN python scripts/trust_workspace.py
+
 # Default: run unit tests
 CMD ["python", "-m", "pytest", "tests/", "-v"]

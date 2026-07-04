@@ -854,7 +854,16 @@ class Query:
             yield message
 
     async def close(self) -> None:
-        """Close the query and transport."""
+        """Close the query and transport.
+
+        Shielded: this runs on the cancellation path (``__aexit__`` after a
+        cancelled task), and an unshielded await here would abort before
+        ``transport.close()`` ever ran, leaking the CLI subprocess.
+        """
+        with anyio.CancelScope(shield=True):
+            await self._close_impl()
+
+    async def _close_impl(self) -> None:
         self._closed = True
         # Final-flush mirror entries before tearing down so .return()/break
         # don't drop the current turn when the process exits immediately.

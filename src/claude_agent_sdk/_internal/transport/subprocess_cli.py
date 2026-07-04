@@ -550,9 +550,14 @@ class SubprocessCLITransport(Transport):
         `async with ClaudeSDKClient()` unwinding on cancel), and an
         unshielded close() would abort at the first await — before the
         terminate/kill escalation ran — orphaning the CLI child, which then
-        surfaces as `<defunct>` once nothing is left to wait() on it. Every
-        await in *this* scope is bounded (~20s worst case), so cancellation
-        is delayed but never blocked.
+        surfaces as `<defunct>` once nothing is left to wait() on it.
+
+        Every await in *this* scope is bounded (~20s worst case), so
+        cancellation is delayed but never blocked: the stream `aclose()`s are a
+        non-blocking `close()` plus a checkpoint on both anyio backends (they
+        never await `wait_closed()`, so undrained stdin cannot wedge them), the
+        stderr task is cancelled before it is awaited, and the lock acquire and
+        every process `wait()` carry an explicit deadline.
         """
         if not self._process:
             self._ready = False

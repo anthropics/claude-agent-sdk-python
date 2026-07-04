@@ -58,6 +58,13 @@ class TestWholeToolAllowed:
             ("Bash(ls:*", None),
             ("Bash(ls)x", None),
             ("(foo)", None),
+            # These two pin the guards: "(*)" has no tool name before the paren
+            # (dropping the open_index check would emit an empty tool name), and
+            # "Read(*x" never closes (dropping the endswith check would emit a
+            # false-positive "Read"). Both would otherwise slip past the content
+            # check, which only sees "*" and "*x".
+            ("(*)", None),
+            ("Read(*x", None),
         ],
     )
     def test_whole_tool_allowed(self, entry, expected):

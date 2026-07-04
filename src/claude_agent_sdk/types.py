@@ -1632,7 +1632,12 @@ ThinkingConfig = ThinkingConfigAdaptive | ThinkingConfigEnabled | ThinkingConfig
 
 
 class CanUseToolShadowedWarning(UserWarning):
-    """can_use_tool is set but some tool calls are auto-approved before it runs."""
+    """can_use_tool is set but some tool calls are auto-approved before it runs.
+
+    The TypeScript SDK reports the same condition as a process warning with code
+    ``CLAUDE_SDK_CAN_USE_TOOL_SHADOWED``; suppress this one with
+    ``warnings.filterwarnings("ignore", category=CanUseToolShadowedWarning)``.
+    """
 
 
 def _whole_tool_allowed(entry: str) -> str | None:
@@ -1675,11 +1680,11 @@ def _get_can_use_tool_shadowed_warning(
         return None
     return (
         f"can_use_tool will not be invoked for: {', '.join(shadowed)}. "
-        "These allowed_tools entries auto-approve the whole tool before the "
-        "callback is consulted. To gate every tool call, use a PreToolUse "
-        "hook; or remove those entries from allowed_tools so they fall "
-        "through to can_use_tool. Allow rules from settings files can also "
-        "shadow the callback but are not visible here."
+        "An allowed_tools entry that allows a whole tool auto-approves it "
+        "before the callback is consulted. To gate every tool call, use a "
+        "PreToolUse hook; or narrow the entry so calls fall through to "
+        "can_use_tool. Allow rules from settings files can also shadow the "
+        "callback but are not visible here."
     )
 
 

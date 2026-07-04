@@ -549,9 +549,10 @@ class SubprocessCLITransport(Transport):
         routinely reached while the caller's task is being cancelled (e.g.
         `async with ClaudeSDKClient()` unwinding on cancel), and an
         unshielded close() would abort at the first await — before the
-        terminate/kill escalation ran — leaving the CLI child running and,
-        once the parent stopped waiting on it, defunct. Every await inside
-        the shield is bounded, so cancellation is delayed but never blocked.
+        terminate/kill escalation ran — orphaning the CLI child, which then
+        surfaces as `<defunct>` once nothing is left to wait() on it. Every
+        await in *this* scope is bounded (~20s worst case), so cancellation
+        is delayed but never blocked.
         """
         if not self._process:
             self._ready = False
@@ -613,8 +614,10 @@ class SubprocessCLITransport(Transport):
             finally:
                 # Only stop tracking a child we actually reaped. A still-running
                 # process (kill raced, or wait timed out) stays in the set so the
-                # atexit reaper can still signal it — dropping it here is what
-                # turned a cancelled close() into a permanent zombie.
+                # atexit reaper gets a chance at it — dropping it here is what
+                # turned a cancelled close() into a leaked child. The reaper only
+                # sends SIGTERM, so this rescues a child that is on its way out,
+                # not one that survived SIGKILL.
                 if self._process.returncode is not None:
                     _ACTIVE_CHILDREN.discard(self._process)
 

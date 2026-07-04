@@ -859,6 +859,11 @@ class Query:
         Shielded: this runs on the cancellation path (``__aexit__`` after a
         cancelled task), and an unshielded await here would abort before
         ``transport.close()`` ever ran, leaking the CLI subprocess.
+
+        Unlike ``transport.close()``'s shield, this one is not bounded: the
+        final mirror flush below reaches a user-supplied ``SessionStore``, so a
+        slow store can stall ``__aexit__``. That flush was already shielded on
+        its own before this scope existed, so nothing here makes it worse.
         """
         with anyio.CancelScope(shield=True):
             await self._close_impl()

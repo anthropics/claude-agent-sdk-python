@@ -3,8 +3,11 @@
 `close()` runs on the cancellation path (a cancelled `async with
 ClaudeSDKClient()`, an expiring `move_on_after`, a failing task group). If the
 cleanup awaits are cancellable, the terminate/kill escalation is skipped and the
-child is left running -- and once nobody wait()s it, it shows up as
-`[claude] <defunct>`.
+child is left running -- an orphan that surfaces as `[claude] <defunct>` once
+nothing is left to wait() on it.
+
+Every test here runs under both asyncio and trio (``anyio_backend`` in
+conftest.py): the leak reproduces on both.
 """
 
 import json
@@ -12,6 +15,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,9 +28,12 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     SubprocessCLITransport,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="uses POSIX process states via ps"
-)
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.skipif(
+        sys.platform == "win32", reason="uses POSIX process states via ps"
+    ),
+]
 
 # A stand-in `claude` CLI: answers `-v`, replies to control requests so
 # connect() completes, and exits on stdin EOF.
@@ -60,6 +67,18 @@ FAKE_CLI = textwrap.dedent(
 ).lstrip()
 
 
+@pytest.fixture
+def restore_active_children() -> Iterator[None]:
+    """Keep a test's leftovers out of the module-global _ACTIVE_CHILDREN, even
+    when the test fails partway through."""
+    before = set(_ACTIVE_CHILDREN)
+    try:
+        yield
+    finally:
+        for extra in _ACTIVE_CHILDREN - before:
+            _ACTIVE_CHILDREN.discard(extra)
+
+
 def _write_fake_cli(tmp_path: Path) -> Path:
     script = tmp_path / "fake_claude.py"
     script.write_text(FAKE_CLI)
@@ -77,111 +96,96 @@ def _process_state(pid: int) -> str:
     return "zombie" if out.startswith("Z") else "alive"
 
 
-def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> None:
+async def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> None:
     """close() called with the surrounding scope already cancelled must still
     shut the child down; without shielding, the first await bails out."""
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path))),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+    pid = process.pid
 
-    async def _test() -> None:
-        transport = SubprocessCLITransport(
-            prompt="hi",
-            options=ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path))),
-        )
-        await transport.connect()
-        process = transport._process
-        assert process is not None
-        pid = process.pid
+    with anyio.CancelScope() as scope:
+        scope.cancel()  # every await inside close() would raise
+        await transport.close()
 
-        with anyio.CancelScope() as scope:
-            scope.cancel()  # every await inside close() would raise
-            await transport.close()
-
-        assert process.returncode is not None
-        assert _process_state(pid) == "gone"
-        assert process not in _ACTIVE_CHILDREN
-
-    anyio.run(_test)
+    assert process.returncode is not None
+    assert _process_state(pid) == "gone"
+    assert process not in _ACTIVE_CHILDREN
 
 
-def test_cancelled_client_context_leaves_no_child(tmp_path: Path) -> None:
+async def test_cancelled_client_context_leaves_no_child(tmp_path: Path) -> None:
     """A cancelled `async with ClaudeSDKClient()` must not leak the CLI child."""
+    pid = -1
+    # connect() spawns two interpreters (version check + CLI), ~0.15s; the
+    # margin here is for loaded CI runners, and the inner sleep is what the
+    # timeout actually cancels.
+    with anyio.move_on_after(2):
+        options = ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path)))
+        async with ClaudeSDKClient(options=options) as client:
+            transport = client._transport
+            assert isinstance(transport, SubprocessCLITransport)
+            assert transport._process is not None
+            pid = transport._process.pid
+            await anyio.sleep(30)  # cancelled here
 
-    async def _test() -> int:
-        pid = -1
-        with anyio.move_on_after(0.5):
-            options = ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path)))
-            async with ClaudeSDKClient(options=options) as client:
-                transport = client._transport
-                assert isinstance(transport, SubprocessCLITransport)
-                assert transport._process is not None
-                pid = transport._process.pid
-                await anyio.sleep(30)  # cancelled here
-        return pid
-
-    pid = anyio.run(_test)
     assert pid > 0
     assert _process_state(pid) == "gone"
 
 
-def test_still_running_child_stays_tracked_for_atexit_reaper() -> None:
+async def test_still_running_child_stays_tracked_for_atexit_reaper(
+    restore_active_children: None,
+) -> None:
     """If close() cannot reap the child, it must stay in _ACTIVE_CHILDREN so the
-    atexit reaper still signals it, rather than being silently forgotten."""
+    atexit reaper still gets a chance to signal it, rather than being silently
+    forgotten."""
+    with patch("anyio.open_process") as mock_exec:
+        version_process = MagicMock()
+        version_process.stdout = MagicMock()
+        version_process.stdout.receive = AsyncMock(return_value=b"2.0.0 (Claude Code)")
+        version_process.terminate = MagicMock()
+        version_process.wait = AsyncMock()
 
-    async def _test() -> None:
-        with patch("anyio.open_process") as mock_exec:
-            version_process = MagicMock()
-            version_process.stdout = MagicMock()
-            version_process.stdout.receive = AsyncMock(
-                return_value=b"2.0.0 (Claude Code)"
-            )
-            version_process.terminate = MagicMock()
-            version_process.wait = AsyncMock()
+        process = MagicMock()
+        process.returncode = None  # never exits, even after SIGKILL
+        process.terminate = MagicMock()
+        process.kill = MagicMock()
+        process.stdout = MagicMock()
+        process.stderr = MagicMock()
+        process.stdin = MagicMock(aclose=AsyncMock())
+        process.wait = AsyncMock()
 
-            process = MagicMock()
-            process.returncode = None  # never exits, even after SIGKILL
-            process.terminate = MagicMock()
-            process.kill = MagicMock()
-            process.stdout = MagicMock()
-            process.stderr = MagicMock()
-            process.stdin = MagicMock(aclose=AsyncMock())
-            process.wait = AsyncMock()
+        mock_exec.side_effect = [version_process, process]
 
-            mock_exec.side_effect = [version_process, process]
-
-            transport = SubprocessCLITransport(
-                prompt="hi", options=ClaudeAgentOptions(cli_path="/usr/bin/claude")
-            )
-            await transport.connect()
-            assert process in _ACTIVE_CHILDREN
-
-            with patch("anyio.fail_after", side_effect=TimeoutError):
-                await transport.close()
-
-            process.terminate.assert_called_once()
-            process.kill.assert_called_once()
-            try:
-                assert process in _ACTIVE_CHILDREN
-            finally:
-                _ACTIVE_CHILDREN.discard(process)
-
-    anyio.run(_test)
-
-
-def test_reaped_child_is_untracked(tmp_path: Path) -> None:
-    """The normal path still drops the child from _ACTIVE_CHILDREN."""
-
-    async def _test() -> None:
         transport = SubprocessCLITransport(
-            prompt="hi",
-            options=ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path))),
+            prompt="hi", options=ClaudeAgentOptions(cli_path="/usr/bin/claude")
         )
         await transport.connect()
-        process = transport._process
-        assert process is not None
-        await transport.close()
-        assert process.returncode is not None
-        assert process not in _ACTIVE_CHILDREN
+        assert process in _ACTIVE_CHILDREN
 
-    anyio.run(_test)
+        with patch("anyio.fail_after", side_effect=TimeoutError):
+            await transport.close()
+
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        assert process in _ACTIVE_CHILDREN
+
+
+async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
+    """The normal path still drops the child from _ACTIVE_CHILDREN."""
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path))),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+    await transport.close()
+    assert process.returncode is not None
+    assert process not in _ACTIVE_CHILDREN
 
 
 def test_fake_cli_speaks_the_protocol(tmp_path: Path) -> None:

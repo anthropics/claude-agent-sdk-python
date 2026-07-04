@@ -1671,11 +1671,15 @@ def _get_can_use_tool_shadowed_warning(
             "explicit deny rules) before the callback is consulted. To gate "
             "every tool call, use a PreToolUse hook instead."
         )
-    shadowed = [
-        tool
-        for entry in allowed_tools
-        if (tool := _whole_tool_allowed(entry)) is not None
-    ]
+    # dict.fromkeys dedupes while preserving order: redundant configs like
+    # ["Read", "Read()"] resolve to the same tool and must not report it twice.
+    shadowed = list(
+        dict.fromkeys(
+            tool
+            for entry in allowed_tools
+            if (tool := _whole_tool_allowed(entry)) is not None
+        )
+    )
     if not shadowed:
         return None
     return (

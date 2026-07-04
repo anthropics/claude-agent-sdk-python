@@ -126,6 +126,19 @@ class TestGetCanUseToolShadowedWarning:
         assert message is not None
         assert "invoked for: Read." in message
 
+    def test_entries_resolving_to_the_same_tool_are_reported_once(self):
+        """["Read", "Read()"] both resolve to Read -- don't say "Read, Read."."""
+        message = _get_can_use_tool_shadowed_warning(
+            None, ["Read", "Read()", "Read(*)"]
+        )
+        assert message is not None
+        assert "invoked for: Read." in message
+
+    def test_dedup_preserves_first_seen_order(self):
+        message = _get_can_use_tool_shadowed_warning(None, ["Write", "Read", "Write()"])
+        assert message is not None
+        assert "invoked for: Write, Read." in message
+
     def test_specifier_and_empty_entries_return_none(self):
         assert (
             _get_can_use_tool_shadowed_warning(
@@ -157,6 +170,15 @@ class TestSkillsShadowing:
     def test_skills_all_does_not_duplicate_explicit_skill_entry(self):
         options = ClaudeAgentOptions(
             can_use_tool=_can_use_tool, skills="all", allowed_tools=["Skill"]
+        )
+        with pytest.warns(CanUseToolShadowedWarning) as record:
+            _warn_if_can_use_tool_shadowed(options)
+        assert "invoked for: Skill." in str(record[0].message)
+
+    def test_skills_all_with_wildcard_skill_entry_reports_skill_once(self):
+        """skills="all" appends bare Skill even if Skill(*) is present; dedup it."""
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool, skills="all", allowed_tools=["Skill(*)"]
         )
         with pytest.warns(CanUseToolShadowedWarning) as record:
             _warn_if_can_use_tool_shadowed(options)

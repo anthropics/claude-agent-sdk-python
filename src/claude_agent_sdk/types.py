@@ -1,6 +1,7 @@
 """Type definitions for Claude SDK."""
 
 import sys
+import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1630,6 +1631,97 @@ class ThinkingConfigDisabled(TypedDict):
 ThinkingConfig = ThinkingConfigAdaptive | ThinkingConfigEnabled | ThinkingConfigDisabled
 
 
+class CanUseToolShadowedWarning(UserWarning):
+    """can_use_tool is set but some tool calls are auto-approved before it runs.
+
+    The TypeScript SDK reports the same condition as a process warning with code
+    ``CLAUDE_SDK_CAN_USE_TOOL_SHADOWED``; suppress this one with
+    ``warnings.filterwarnings("ignore", category=CanUseToolShadowedWarning)``.
+    """
+
+
+def _whole_tool_allowed(entry: str) -> str | None:
+    """Return the tool an ``allowed_tools`` entry allows outright, else None.
+
+    Mirrors the CLI's rule parser: an entry allows a whole tool when it has no
+    ``(...)`` specifier (``"Read"``), or when the specifier is empty or a lone
+    wildcard (``"Read()"``, ``"Read(*)"``). A real specifier (``"Bash(ls:*)"``)
+    only allows matching invocations. Malformed entries fall back to the whole
+    string as a tool name in the CLI, so they match nothing and are ignored.
+    """
+    if not entry.strip():
+        return None
+    open_index = entry.find("(")
+    if open_index == -1:
+        return entry
+    if open_index == 0 or not entry.endswith(")"):
+        return None
+    return entry[:open_index] if entry[open_index + 1 : -1] in ("", "*") else None
+
+
+def _get_can_use_tool_shadowed_warning(
+    permission_mode: PermissionMode | None,
+    allowed_tools: list[str],
+) -> str | None:
+    """Return the shadowing warning message for these options, or None."""
+    if permission_mode == "bypassPermissions":
+        return (
+            "can_use_tool will not be invoked: permission_mode "
+            "'bypassPermissions' auto-approves every tool call (except "
+            "explicit deny rules) before the callback is consulted. To gate "
+            "every tool call, use a PreToolUse hook instead."
+        )
+    # dict.fromkeys dedupes while preserving order: redundant configs like
+    # ["Read", "Read()"] resolve to the same tool and must not report it twice.
+    shadowed = list(
+        dict.fromkeys(
+            tool
+            for entry in allowed_tools
+            if (tool := _whole_tool_allowed(entry)) is not None
+        )
+    )
+    if not shadowed:
+        return None
+    return (
+        f"can_use_tool will not be invoked for: {', '.join(shadowed)}. "
+        "An allowed_tools entry that allows a whole tool auto-approves it "
+        "before the callback is consulted. To gate every tool call, use a "
+        "PreToolUse hook; or narrow the entry so calls fall through to "
+        "can_use_tool. Allow rules from settings files can also shadow the "
+        "callback but are not visible here."
+    )
+
+
+def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
+    """Warn if can_use_tool is shadowed. Called once per query construction.
+
+    Advisory only (no raise): shadowing can be intentional, e.g. a callback
+    used solely for tools outside allowed_tools.
+
+    Emission is unconditional, but stacklevel=2 puts the warning registry in the
+    SDK entry point that calls this, not in user code -- so under Python's
+    default filter a given message is shown once per *process*, not once per
+    calling module. Two unrelated callers with the same shadowed config together
+    produce one warning, not one each. Distinct messages (naming different
+    tools) are each shown once.
+    """
+    if options.can_use_tool is None:
+        return
+    # skills="all" makes the transport append a bare "Skill" to the effective
+    # allowed_tools, so it shadows the callback just like a hand-written entry.
+    # skills=[names] appends Skill(name) specifiers, which do not.
+    allowed_tools = options.allowed_tools
+    if options.skills == "all" and "Skill" not in allowed_tools:
+        allowed_tools = [*allowed_tools, "Skill"]
+    message = _get_can_use_tool_shadowed_warning(options.permission_mode, allowed_tools)
+    if message is not None:
+        # stacklevel=2 attributes the warning to the SDK connect()/query()
+        # internals that call this. The user's own call site sits at a
+        # different, async-frame-dependent depth for each entry point, so
+        # precise caller attribution isn't feasible here.
+        warnings.warn(message, CanUseToolShadowedWarning, stacklevel=2)
+
+
 @dataclass
 class ClaudeAgentOptions:
     """Query options for Claude SDK."""
@@ -1808,8 +1900,14 @@ class ClaudeAgentOptions:
     invoked for tool calls already permitted by ``allowed_tools``,
     ``permission_mode`` (e.g. ``"acceptEdits"`` / ``"bypassPermissions"``), or
     ``permissions.allow`` rules in settings, since those never reach a prompt.
+    A :class:`CanUseToolShadowedWarning` is emitted when the client connects
+    (or the query starts) if this callback is set alongside options that
+    visibly shadow it (``allowed_tools`` entries that allow a whole tool, such
+    as ``"Read"``, ``"Read()"`` or ``"Read(*)"``, or
+    ``permission_mode="bypassPermissions"``).
     To observe or gate *every* tool call regardless of permission rules, use a
-    ``PreToolUse`` hook via ``hooks`` instead.
+    ``PreToolUse`` hook via ``hooks`` instead — but note that a ``PreToolUse``
+    hook returning an *allow* decision also skips this callback.
     """
 
     hooks: dict[HookEvent, list[HookMatcher]] | None = None

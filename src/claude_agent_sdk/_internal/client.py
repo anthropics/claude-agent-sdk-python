@@ -11,6 +11,7 @@ from ..types import (
     HookEvent,
     HookMatcher,
     Message,
+    _warn_if_can_use_tool_shadowed,
 )
 from .message_parser import parse_message
 from .query import Query
@@ -111,6 +112,9 @@ class InternalClient:
                     "can_use_tool callback cannot be used with permission_prompt_tool_name. "
                     "Please use one or the other."
                 )
+
+            # Advisory: warn if other options shadow the callback
+            _warn_if_can_use_tool_shadowed(options)
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             configured_options = replace(options, permission_prompt_tool_name="stdio")

@@ -61,6 +61,7 @@ from .types import (
     AssistantMessage,
     BaseHookInput,
     CanUseTool,
+    CanUseToolShadowedWarning,
     ClaudeAgentOptions,
     ContentBlock,
     ContextUsageCategory,
@@ -579,6 +580,7 @@ __all__ = [
     "ContextUsageResponse",
     # Tool callbacks
     "CanUseTool",
+    "CanUseToolShadowedWarning",
     "ToolPermissionContext",
     "PermissionResult",
     "PermissionResultAllow",

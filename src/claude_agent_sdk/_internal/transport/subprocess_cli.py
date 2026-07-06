@@ -622,61 +622,105 @@ class SubprocessCLITransport(Transport):
             emit(framer.flush())
 
     async def close(self) -> None:
-        """Close the transport and clean up resources."""
+        """Close the transport and clean up resources.
+
+        The whole body runs inside a shielded cancel scope. Cleanup is
+        routinely reached while the caller's task is being cancelled (e.g.
+        `async with ClaudeSDKClient()` unwinding on cancel), and an
+        unshielded close() would abort at the first await — before the
+        terminate/kill escalation ran — orphaning the CLI child, which then
+        surfaces as `<defunct>` once nothing is left to wait() on it.
+
+        Every await in *this* scope is bounded (~20s worst case), so an anyio
+        cancellation is delayed but never blocked: the stream `aclose()`s are a
+        non-blocking `close()` plus a checkpoint on both anyio backends (they
+        never await `wait_closed()`, so undrained stdin cannot wedge them), the
+        stderr task is cancelled before it is awaited, and the lock acquire and
+        every process `wait()` carry an explicit deadline.
+
+        Caveat: an anyio shield only defers cancellation that *originates from
+        an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
+        `asyncio.timeout` firing, a bare `task.cancel()`, loop shutdown) is
+        still delivered at the next await in here, and the escalation below only
+        catches `TimeoutError` — so it would be skipped. That is a pre-existing
+        limitation of the shield on the asyncio backend rather than something
+        this scope introduces, and it is still strictly better than before: the
+        `finally` keeps a still-running child in `_ACTIVE_CHILDREN` for the
+        atexit reaper instead of dropping it. Making the escalation robust to a
+        foreign `CancelledError` is a follow-up.
+        """
         if not self._process:
             self._ready = False
             return
 
-        # Cancel stderr reader if active
-        if self._stderr_task is not None and not self._stderr_task.done():
-            self._stderr_task.cancel()
-            with suppress(Exception):
-                await self._stderr_task.wait()
-        self._stderr_task = None
-
-        # Close stdin stream (acquire lock to prevent race with concurrent writes)
-        async with self._write_lock:
-            self._ready = False  # Set inside lock to prevent TOCTOU with write()
-            if self._stdin_stream:
+        with anyio.CancelScope(shield=True):
+            # Cancel stderr reader if active
+            if self._stderr_task is not None and not self._stderr_task.done():
+                self._stderr_task.cancel()
                 with suppress(Exception):
-                    await self._stdin_stream.aclose()
-                self._stdin_stream = None
+                    await self._stderr_task.wait()
+            self._stderr_task = None
 
-        if self._stderr_stream:
-            with suppress(Exception):
-                await self._stderr_stream.aclose()
-            self._stderr_stream = None
+            # Close stdin stream (hold the write lock to prevent a race with
+            # concurrent writes). Bounded: a writer blocked on a full stdin
+            # pipe must not pin the shielded scope forever.
+            lock_held = False
+            with anyio.move_on_after(5):
+                await self._write_lock.acquire()
+                lock_held = True
+            try:
+                self._ready = False  # Set inside lock to prevent TOCTOU with write()
+                if self._stdin_stream:
+                    with suppress(Exception):
+                        await self._stdin_stream.aclose()
+                    self._stdin_stream = None
+            finally:
+                if lock_held:
+                    self._write_lock.release()
 
-        # Wait for graceful shutdown after stdin EOF, then terminate if needed.
-        # The subprocess needs time to flush its session file after receiving
-        # EOF on stdin. Without this grace period, SIGTERM can interrupt the
-        # write and cause the last assistant message to be lost (see #625).
-        try:
-            if self._process.returncode is None:
-                try:
-                    with anyio.fail_after(5):
-                        await self._process.wait()
-                except TimeoutError:
-                    # Graceful shutdown timed out — force terminate
-                    with suppress(ProcessLookupError):
-                        self._process.terminate()
+            if self._stderr_stream:
+                with suppress(Exception):
+                    await self._stderr_stream.aclose()
+                self._stderr_stream = None
+
+            # Wait for graceful shutdown after stdin EOF, then terminate if
+            # needed. The subprocess needs time to flush its session file after
+            # receiving EOF on stdin. Without this grace period, SIGTERM can
+            # interrupt the write and cause the last assistant message to be
+            # lost (see #625).
+            try:
+                if self._process.returncode is None:
                     try:
                         with anyio.fail_after(5):
                             await self._process.wait()
                     except TimeoutError:
-                        # SIGTERM handler blocked — force kill (SIGKILL)
+                        # Graceful shutdown timed out — force terminate
                         with suppress(ProcessLookupError):
-                            self._process.kill()
-                        with suppress(Exception):
-                            await self._process.wait()
-        finally:
-            _ACTIVE_CHILDREN.discard(self._process)
+                            self._process.terminate()
+                        try:
+                            with anyio.fail_after(5):
+                                await self._process.wait()
+                        except TimeoutError:
+                            # SIGTERM handler blocked — force kill (SIGKILL)
+                            with suppress(ProcessLookupError):
+                                self._process.kill()
+                            with suppress(Exception), anyio.fail_after(5):
+                                await self._process.wait()
+            finally:
+                # Only stop tracking a child we actually reaped. A still-running
+                # process (kill raced, or wait timed out) stays in the set so the
+                # atexit reaper gets a chance at it — dropping it here is what
+                # turned a cancelled close() into a leaked child. The reaper only
+                # sends SIGTERM, so this rescues a child that is on its way out,
+                # not one that survived SIGKILL.
+                if self._process.returncode is not None:
+                    _ACTIVE_CHILDREN.discard(self._process)
 
-        self._process = None
-        self._stdout_stream = None
-        self._stdin_stream = None
-        self._stderr_stream = None
-        self._exit_error = None
+            self._process = None
+            self._stdout_stream = None
+            self._stdin_stream = None
+            self._stderr_stream = None
+            self._exit_error = None
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""

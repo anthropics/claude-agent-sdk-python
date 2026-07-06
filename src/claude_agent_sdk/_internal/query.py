@@ -854,7 +854,36 @@ class Query:
             yield message
 
     async def close(self) -> None:
-        """Close the query and transport."""
+        """Close the query and transport.
+
+        Shielded: this runs on the cancellation path (``__aexit__`` after a
+        cancelled task), and an unshielded await here would abort before
+        ``transport.close()`` ever ran, leaking the CLI subprocess.
+
+        Unlike ``transport.close()``'s shield, this one is not bounded, and it
+        covers two awaits that can reach user-supplied code:
+
+        - The final mirror flush below, which reaches a user-supplied
+          ``SessionStore``. That flush was already shielded on its own before
+          this scope existed, so nothing here makes it worse.
+        - ``transport.close()``. For a custom ``Transport`` (accepted by
+          ``query(transport=...)`` and ``ClaudeSDKClient(transport=...)``) that
+          is arbitrary user code, and an enclosing anyio cancel scope can no
+          longer interrupt it: a custom ``close()`` that never returns hangs
+          ``disconnect()``.
+          ``Transport.close()`` documents the resulting contract —
+          implementations must bound their own awaits. Bounding it here instead
+          would only abandon a wedged transport half-closed, which is the very
+          leak this shield exists to prevent, so the obligation belongs on the
+          implementation.
+
+        The SDK's own ``SubprocessCLITransport.close()`` bounds every await
+        (~20s worst case).
+        """
+        with anyio.CancelScope(shield=True):
+            await self._close_impl()
+
+    async def _close_impl(self) -> None:
         self._closed = True
         # Final-flush mirror entries before tearing down so .return()/break
         # don't drop the current turn when the process exits immediately.

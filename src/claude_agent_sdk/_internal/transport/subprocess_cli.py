@@ -47,6 +47,67 @@ def _kill_active_children() -> None:
 atexit.register(_kill_active_children)
 
 
+class _LineFramer:
+    """Reassembles complete lines from a stream that yields arbitrary chunks.
+
+    anyio's TextReceiveStream yields CHUNKS (one per receive() call, up to 64KiB
+    on the asyncio backend), not lines, so a large line spans several chunks and
+    a chunk boundary can fall anywhere — including inside a JSON string value.
+    Splitting on "\\n" and never stripping a chunk is what keeps whitespace at
+    the seam intact.
+    """
+
+    def __init__(self) -> None:
+        # Only ever holds fragments of the line currently being received, none
+        # of which contain a newline. Accumulating in a list and joining once a
+        # newline arrives is O(total) without relying on CPython's in-place
+        # `str +=` realloc optimization, which other implementations lack.
+        self._pending: list[str] = []
+        self.pending_len = 0
+
+    def push(self, chunk: str) -> list[str]:
+        """Add a chunk, returning any lines it completed."""
+        self._pending.append(chunk)
+        self.pending_len += len(chunk)
+        if "\n" not in chunk:
+            return []
+
+        *lines, tail = "".join(self._pending).split("\n")
+        self._pending, self.pending_len = [tail], len(tail)
+        return lines
+
+    def flush(self) -> str:
+        """Take the trailing partial line, if any."""
+        line = "".join(self._pending)
+        self._pending, self.pending_len = [], 0
+        return line
+
+
+def _parse_stdout_line(line: str) -> dict[str, Any] | None:
+    """Parse one complete line of the CLI's NDJSON stdout.
+
+    Returns None for lines that carry no message: blank lines, and non-JSON
+    output such as ``[SandboxDebug] ...`` that some CLI builds write to stdout
+    (#347). A line that looks like JSON but does not parse is corrupt — with
+    proper line framing there is no later data that could complete it — so it
+    raises rather than silently dropping a message.
+    """
+    # `line` is a complete line, so surrounding whitespace (e.g. the "\r" of a
+    # CRLF) is meaningless. Only chunks must never be stripped.
+    line = line.strip()
+    if not line:
+        return None
+    if not line.startswith("{"):
+        logger.debug("Skipping non-JSON line from CLI stdout: %s", line[:200])
+        return None
+
+    try:
+        data: dict[str, Any] = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise SDKJSONDecodeError(line, e) from e
+    return data
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
@@ -520,27 +581,45 @@ class SubprocessCLITransport(Transport):
         if not self._stderr_stream:
             return
 
-        try:
-            async for line in self._stderr_stream:
-                line_str = line.rstrip()
-                if not line_str:
-                    continue
+        def emit(line: str) -> None:
+            line = line.rstrip()
+            if not line:
+                return
 
-                # Call the stderr callback if provided. Isolate per-line so a
-                # raise in the user's callback doesn't terminate the loop and
-                # silently drop every subsequent line for the rest of the
-                # session.
-                if self._options.stderr:
-                    try:
-                        self._options.stderr(line_str)
-                    except Exception:
-                        logger.debug(
-                            "stderr callback raised; continuing", exc_info=True
-                        )
+            # Call the stderr callback if provided. Isolate per-line so a
+            # raise in the user's callback doesn't terminate the loop and
+            # silently drop every subsequent line for the rest of the
+            # session.
+            if self._options.stderr:
+                try:
+                    self._options.stderr(line)
+                except Exception:
+                    logger.debug("stderr callback raised; continuing", exc_info=True)
+
+        # `options.stderr` is documented to receive lines, but the stream yields
+        # chunks, so frame the lines here rather than handing the callback
+        # whatever a read happened to return.
+        framer = _LineFramer()
+        try:
+            async for chunk in self._stderr_stream:
+                for line in framer.push(chunk):
+                    emit(line)
+                # A producer that never emits a newline can't grow the buffer
+                # without bound; flush it as a partial line instead.
+                if framer.pending_len > self._max_buffer_size:
+                    emit(framer.flush())
         except anyio.ClosedResourceError:
             pass  # Stream closed, exit normally
         except Exception:
             logger.debug("stderr stream read failed", exc_info=True)
+        finally:
+            # In a `finally` so the last partial line still reaches the callback
+            # when close() cancels this task: cancellation arrives as a
+            # BaseException, which neither `except` above catches. A diagnostic
+            # written without a trailing newline before the CLI stalled is
+            # exactly what the caller needs at that moment. `emit` is
+            # synchronous, so it is safe to run during cancellation unwind.
+            emit(framer.flush())
 
     async def close(self) -> None:
         """Close the transport and clean up resources."""
@@ -642,62 +721,48 @@ class SubprocessCLITransport(Transport):
         if not self._process or not self._stdout_stream:
             raise CLIConnectionError("Not connected")
 
-        json_buffer = ""
+        # The CLI writes NDJSON: one message per line. Frame the lines out of
+        # the chunks the stream actually yields (see _LineFramer).
+        framer = _LineFramer()
 
-        # Process stdout messages
+        def guard(length: int) -> None:
+            """Bound a single message, whether it is complete yet or not."""
+            if length > self._max_buffer_size:
+                raise SDKJSONDecodeError(
+                    f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
+                    ValueError(
+                        f"Buffer size {length} exceeds limit {self._max_buffer_size}"
+                    ),
+                )
+
         try:
-            async for line in self._stdout_stream:
-                line_str = line.strip()
-                if not line_str:
-                    continue
-
-                # Accumulate partial JSON until we can parse it
-                # Note: TextReceiveStream can truncate long lines, so we need to buffer
-                # and speculatively parse until we get a complete JSON object
-                json_lines = line_str.split("\n")
-
-                for json_line in json_lines:
-                    json_line = json_line.strip()
-                    if not json_line:
-                        continue
-
-                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
-                    # mid-parse — they corrupt the buffer otherwise (#347).
-                    if not json_buffer and not json_line.startswith("{"):
-                        logger.debug(
-                            "Skipping non-JSON line from CLI stdout: %s",
-                            json_line[:200],
-                        )
-                        continue
-
-                    # Keep accumulating partial JSON until we can parse it
-                    json_buffer += json_line
-
-                    if len(json_buffer) > self._max_buffer_size:
-                        buffer_length = len(json_buffer)
-                        json_buffer = ""
-                        raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
-                            ValueError(
-                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
-                            ),
-                        )
-
-                    try:
-                        data = json.loads(json_buffer)
-                        json_buffer = ""
+            async for chunk in self._stdout_stream:
+                for line in framer.push(chunk):
+                    guard(len(line))
+                    data = _parse_stdout_line(line)
+                    if data is not None:
                         yield data
-                    except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
-                        # a full JSON object. If there is an actual issue, we
-                        # raise an error after exceeding the configured limit.
-                        continue
+                guard(framer.pending_len)
 
         except anyio.ClosedResourceError:
             pass
         except GeneratorExit:
-            # Client disconnected
-            pass
+            # Client disconnected: return without falling through to the
+            # process-exit check, since awaiting there would make CPython
+            # complain that the async generator ignored GeneratorExit.
+            return
+
+        # Flush whatever is left. The CLI terminates every message with "\n", so
+        # a residual tail means either a producer that omits the final newline
+        # (yield it) or one cut off mid-write (unrecoverable — drop it).
+        tail = framer.flush()
+        try:
+            data = _parse_stdout_line(tail)
+        except SDKJSONDecodeError:
+            logger.debug("Dropping truncated JSON at end of CLI stdout: %s", tail[:200])
+            data = None
+        if data is not None:
+            yield data
 
         # Check process completion and handle errors
         try:

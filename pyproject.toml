@@ -101,6 +101,12 @@ strict_equality = true
 module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# twine is not a declared dependency (not even in the [dev] extra); the
+# import in scripts/build_wheel.py is guarded by try/except ImportError.
+module = ["twine"]
+ignore_missing_imports = true
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88

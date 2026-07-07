@@ -11,11 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "download_cli.py"
+
 # scripts/ is not a package, so load download_cli.py by path
-_spec = importlib.util.spec_from_file_location(
-    "download_cli",
-    Path(__file__).parent.parent / "scripts" / "download_cli.py",
-)
+_spec = importlib.util.spec_from_file_location("download_cli", SCRIPT_PATH)
 assert _spec is not None and _spec.loader is not None
 download_cli = importlib.util.module_from_spec(_spec)
 sys.modules["download_cli"] = download_cli
@@ -389,3 +388,51 @@ class TestWindowsInstall:
         assert "$env:" not in command
         # env=None inherits ours, so no version is injected there either.
         assert call.kwargs["env"] is None
+
+
+class TestCommandLine:
+    """The script itself reports a bad version rather than raising through.
+
+    build_wheel.py runs this file as `python scripts/download_cli.py`, so an
+    uncaught ValueError would surface as a traceback in a build log. Only the
+    rejected path is exercised here: it fails in get_cli_version() before any
+    curl or installer runs, so the test touches no network.
+    """
+
+    def _run(self, version: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            env={**os.environ, "CLAUDE_CLI_VERSION": version},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_invalid_version_exits_nonzero_without_a_traceback(self) -> None:
+        result = self._run("1.0.0; id")
+
+        assert result.returncode == 1
+        assert "Invalid CLAUDE_CLI_VERSION" in result.stderr
+        assert "Traceback" not in result.stderr
+
+    def test_error_names_the_offending_value(self) -> None:
+        """Named in the one-line message, not merely in a traceback frame.
+
+        Anchored to the start of a line: an uncaught raise renders the same
+        text under `ValueError: `, which *contains* `Error: ` as a substring,
+        so a plain `in` check would pass on the very traceback this guards
+        against. Scanning lines rather than stderr as a whole also keeps it
+        immune to any warning Python prints first.
+        """
+        stderr = self._run("1.0.0; id").stderr
+
+        (error_line,) = [
+            line for line in stderr.splitlines() if line.startswith("Error: ")
+        ]
+        assert "1.0.0; id" in error_line
+
+    def test_nothing_is_installed_before_the_version_is_rejected(self) -> None:
+        """The banner prints, then it bails -- no download is announced."""
+        result = self._run("--help")
+
+        assert result.returncode == 1
+        assert "Downloading Claude Code CLI version" not in result.stdout

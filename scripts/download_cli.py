@@ -276,4 +276,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # get_cli_version() raises on a bad CLAUDE_CLI_VERSION, and this script
+    # runs as a build step. Report that the way every other failure here is
+    # reported -- one line on stderr, exit 1 -- instead of letting a traceback
+    # out. The shared validator keeps raising, because update_cli_version.py
+    # and the tests read the exception; only the entry point turns it into an
+    # exit status. Matches update_cli_version.py's __main__.
+    try:
+        main()
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)

@@ -33,6 +33,9 @@ VERSION_PATTERN = version_validation.VERSION_PATTERN
 # name instead of having it spliced into the PowerShell command text.
 INSTALL_VERSION_ENV_VAR = "CLAUDE_CLI_INSTALL_VERSION"
 
+# How many times retry_install() runs an attempt before giving up.
+MAX_INSTALL_ATTEMPTS = 3
+
 
 def get_cli_version() -> str:
     """Get the CLI version to download from environment or default.
@@ -118,26 +121,32 @@ def retry_install(attempt: Callable[[], None]) -> None:
     # Small jitter to stagger parallel matrix builds hitting the same endpoint
     time.sleep(random.uniform(0, 5))
 
-    last_err: subprocess.CalledProcessError | None = None
-    for attempt_num in range(1, 4):
+    # The failure is reported from inside the handler for the last attempt, so
+    # the error is in scope and non-None by construction. Stashing it in a
+    # `CalledProcessError | None` and reading it after the loop instead would
+    # rely on the reader -- and the type checker -- knowing that range(1, 4)
+    # cannot be empty.
+    for attempt_num in range(1, MAX_INSTALL_ATTEMPTS + 1):
         try:
             attempt()
             return
         except subprocess.CalledProcessError as e:
-            last_err = e
-            if attempt_num < 3:
-                delay = 2**attempt_num
+            if attempt_num == MAX_INSTALL_ATTEMPTS:
                 print(
-                    f"Install attempt {attempt_num} failed (exit {e.returncode}), "
-                    f"retrying in {delay}s...",
+                    f"Error downloading CLI after {MAX_INSTALL_ATTEMPTS} attempts: {e}",
                     file=sys.stderr,
                 )
-                time.sleep(delay)
+                print(f"stdout: {e.stdout.decode()}", file=sys.stderr)
+                print(f"stderr: {e.stderr.decode()}", file=sys.stderr)
+                sys.exit(1)
 
-    print(f"Error downloading CLI after 3 attempts: {last_err}", file=sys.stderr)
-    print(f"stdout: {last_err.stdout.decode()}", file=sys.stderr)
-    print(f"stderr: {last_err.stderr.decode()}", file=sys.stderr)
-    sys.exit(1)
+            delay = 2**attempt_num
+            print(
+                f"Install attempt {attempt_num} failed (exit {e.returncode}), "
+                f"retrying in {delay}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
 
 def download_cli() -> None:

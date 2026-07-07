@@ -1,6 +1,7 @@
 """Tests for scripts/download_cli.py version validation and install invocation."""
 
 import importlib.util
+import os
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -104,6 +105,27 @@ class TestGetCliVersion:
         assert "^" not in download_cli.VERSION_PATTERN.pattern
         assert "$" not in download_cli.VERSION_PATTERN.pattern
         assert not download_cli.VERSION_PATTERN.fullmatch("1.0.0\n")
+
+    def test_script_validates_when_run_directly(self, tmp_path: Path) -> None:
+        """build_wheel.py runs this file as a subprocess, so the shared
+        validation module must import without scripts/ being a package.
+
+        PATH is emptied so that if validation ever regresses this reaches a
+        missing `curl` instead of really installing the CLI; sys.executable is
+        absolute, so python itself still starts. The timeout bounds the retry
+        sleeps on that path.
+        """
+        script = Path(__file__).parent.parent / "scripts" / "download_cli.py"
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            env=os.environ | {"CLAUDE_CLI_VERSION": "1.0.0; id", "PATH": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode != 0
+        assert "Invalid CLAUDE_CLI_VERSION" in result.stderr
+        assert "ModuleNotFoundError" not in result.stderr
 
 
 @pytest.fixture

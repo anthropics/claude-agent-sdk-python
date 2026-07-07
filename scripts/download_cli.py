@@ -8,7 +8,6 @@ binary using the official install script and place it in the package directory.
 import os
 import platform
 import random
-import re
 import shutil
 import subprocess
 import sys
@@ -17,21 +16,18 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-# A version must start with an alphanumeric character (so flag-shaped values
-# like "--help" are rejected) and may then contain only characters that appear
-# in real CLI versions, including dev builds such as
-# "2.1.146-dev.20260519.t105443.shaece3dab".
-#
-# This allowlist is defense in depth rather than the only thing standing between
-# a hostile CLAUDE_CLI_VERSION and a shell: neither install path interpolates the
-# version into a command string. Widening it requires re-reading
-# tests/test_download_cli.py::TestGetCliVersion.
-#
-# Deliberately unanchored, and matched with fullmatch() rather than match():
-# with "^...$" a swap to match() would silently accept a trailing newline
-# ("1.0.0\n"); unanchored, the same swap accepts obvious prefixes like
-# "1.0.0; id" and fails immediately in tests.
-VERSION_PATTERN = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]*")
+# scripts/ is not a package. Running this file directly -- as build_wheel.py
+# does, via `python scripts/download_cli.py` -- already puts scripts/ on
+# sys.path, but loading it by path (importlib.spec_from_file_location, as the
+# tests do) does not. Add it either way so the shared module resolves.
+_SCRIPTS_DIR = str(Path(__file__).parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import _cli_version_validation as version_validation  # noqa: E402
+
+# Re-exported: this module's callers and tests refer to download_cli.VERSION_PATTERN.
+VERSION_PATTERN = version_validation.VERSION_PATTERN
 
 # The Windows installer reads the version out of the environment under this
 # name instead of having it spliced into the PowerShell command text.
@@ -46,12 +42,9 @@ def get_cli_version() -> str:
             "latest" or a value matching VERSION_PATTERN.
     """
     version = os.environ.get("CLAUDE_CLI_VERSION", "latest")
-    if version != "latest" and not VERSION_PATTERN.fullmatch(version):
-        raise ValueError(
-            f"Invalid CLAUDE_CLI_VERSION: {version!r}. "
-            f"Expected 'latest' or a version matching {VERSION_PATTERN.pattern}"
-        )
-    return version
+    return version_validation.validate_version(
+        version, source="CLAUDE_CLI_VERSION", allow_latest=True
+    )
 
 
 def find_installed_cli() -> Path | None:

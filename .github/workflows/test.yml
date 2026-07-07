@@ -60,6 +60,10 @@ jobs:
 
       - name: Install Claude Code (Linux/macOS)
         if: runner.os == 'Linux' || runner.os == 'macOS'
+        # `shell: bash` runs with -eo pipefail. Without pipefail the step takes
+        # its status from `bash`, which exits 0 on an empty script, so a failed
+        # `curl` leaves the CLI uninstalled and the step green.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -149,6 +153,8 @@ jobs:
 
       - name: Install Claude Code (Linux)
         if: runner.os == 'Linux'
+        # `shell: bash` runs with -eo pipefail; see the note in the test job.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH

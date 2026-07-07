@@ -8,16 +8,50 @@ binary using the official install script and place it in the package directory.
 import os
 import platform
 import random
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
+
+# A version must start with an alphanumeric character (so flag-shaped values
+# like "--help" are rejected) and may then contain only characters that appear
+# in real CLI versions, including dev builds such as
+# "2.1.146-dev.20260519.t105443.shaece3dab".
+#
+# This allowlist is defense in depth rather than the only thing standing between
+# a hostile CLAUDE_CLI_VERSION and a shell: neither install path interpolates the
+# version into a command string. Widening it requires re-reading
+# tests/test_download_cli.py::TestGetCliVersion.
+#
+# Deliberately unanchored, and matched with fullmatch() rather than match():
+# with "^...$" a swap to match() would silently accept a trailing newline
+# ("1.0.0\n"); unanchored, the same swap accepts obvious prefixes like
+# "1.0.0; id" and fails immediately in tests.
+VERSION_PATTERN = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]*")
+
+# The Windows installer reads the version out of the environment under this
+# name instead of having it spliced into the PowerShell command text.
+INSTALL_VERSION_ENV_VAR = "CLAUDE_CLI_INSTALL_VERSION"
 
 
 def get_cli_version() -> str:
-    """Get the CLI version to download from environment or default."""
-    return os.environ.get("CLAUDE_CLI_VERSION", "latest")
+    """Get the CLI version to download from environment or default.
+
+    Raises:
+        ValueError: If CLAUDE_CLI_VERSION is set to something other than
+            "latest" or a value matching VERSION_PATTERN.
+    """
+    version = os.environ.get("CLAUDE_CLI_VERSION", "latest")
+    if version != "latest" and not VERSION_PATTERN.fullmatch(version):
+        raise ValueError(
+            f"Invalid CLAUDE_CLI_VERSION: {version!r}. "
+            f"Expected 'latest' or a version matching {VERSION_PATTERN.pattern}"
+        )
+    return version
 
 
 def find_installed_cli() -> Path | None:
@@ -50,6 +84,69 @@ def find_installed_cli() -> Path | None:
     return None
 
 
+def run_command(command: list[str], env: dict[str, str] | None = None) -> None:
+    """Run one install command with no shell and no inherited stdin.
+
+    install.sh runs `claude install`, which branches on `[ -t 0 ]`. Under the
+    old `curl | bash` its stdin was the pipe, so it never saw a TTY; keep it
+    that way rather than handing it the caller's terminal.
+
+    ``env`` replaces the child's environment when given; None inherits ours.
+    """
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+
+
+def check_install_script(script_path: str) -> None:
+    """Reject a downloaded install script that is not a shell script.
+
+    claude.ai answers unknown paths with HTTP 200 and an HTML body, which
+    `curl -f` cannot detect, so check the shebang before executing the file.
+    A wrong body is deterministic, so this fails fast instead of retrying.
+    """
+    with Path(script_path).open("rb") as f:
+        magic = f.read(2)
+    if magic != b"#!":
+        print(
+            f"Error: downloaded install script does not start with a shebang "
+            f"(first bytes: {magic!r}). Refusing to execute it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def retry_install(attempt: Callable[[], None]) -> None:
+    """Run an install attempt, retrying the whole attempt on command failure."""
+    # Small jitter to stagger parallel matrix builds hitting the same endpoint
+    time.sleep(random.uniform(0, 5))
+
+    last_err: subprocess.CalledProcessError | None = None
+    for attempt_num in range(1, 4):
+        try:
+            attempt()
+            return
+        except subprocess.CalledProcessError as e:
+            last_err = e
+            if attempt_num < 3:
+                delay = 2**attempt_num
+                print(
+                    f"Install attempt {attempt_num} failed (exit {e.returncode}), "
+                    f"retrying in {delay}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+
+    print(f"Error downloading CLI after 3 attempts: {last_err}", file=sys.stderr)
+    print(f"stdout: {last_err.stdout.decode()}", file=sys.stderr)
+    print(f"stderr: {last_err.stderr.decode()}", file=sys.stderr)
+    sys.exit(1)
+
+
 def download_cli() -> None:
     """Download Claude Code CLI using the official install script."""
     version = get_cli_version()
@@ -59,7 +156,13 @@ def download_cli() -> None:
 
     # Build install command based on platform
     if system == "Windows":
-        # Use PowerShell installer on Windows
+        # Use PowerShell installer on Windows. The version is handed to
+        # PowerShell in the environment and referenced by name, so it is never
+        # part of the command text that PowerShell parses. `$env:NAME` in
+        # argument position expands to exactly one argument -- PowerShell does
+        # not re-split or re-parse it -- which is the argv separation the Unix
+        # path gets from `["bash", script, version]`.
+        install_env: dict[str, str] | None = None
         if version == "latest":
             install_cmd = [
                 "powershell",
@@ -74,39 +177,45 @@ def download_cli() -> None:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                f"& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) {version}",
+                "& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) "
+                f"$env:{INSTALL_VERSION_ENV_VAR}",
             ]
-    else:
+            install_env = {**os.environ, INSTALL_VERSION_ENV_VAR: version}
+        retry_install(lambda: run_command(install_cmd, env=install_env))
+        return
+
+    # Download install.sh to a file and run it directly rather than piping
+    # curl into bash through a shell string: nothing is interpolated into a
+    # command line, and check=True sees curl's and bash's exit codes
+    # separately instead of only the last status of a pipeline.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = str(Path(tmpdir) / "install.sh")
+
+        # -L follows the cross-host redirect to the bootstrap script.
         # --retry-all-errors covers 429 from claude.ai when multiple matrix
-        # jobs fetch install.sh simultaneously. pipefail propagates curl's
-        # exit code through the pipe so subprocess.run's check=True catches it.
-        curl = "curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://claude.ai/install.sh"
-        target = "" if version == "latest" else f" -s {version}"
-        install_cmd = ["bash", "-c", f"set -o pipefail; {curl} | bash{target}"]
+        # jobs fetch install.sh simultaneously.
+        curl_cmd = [
+            "curl",
+            "-fsSL",
+            "--retry",
+            "5",
+            "--retry-delay",
+            "2",
+            "--retry-all-errors",
+            "-o",
+            script_path,
+            "https://claude.ai/install.sh",
+        ]
+        bash_cmd = ["bash", script_path]
+        if version != "latest":
+            bash_cmd.append(version)
 
-    # Small jitter to stagger parallel matrix builds hitting the same endpoint
-    time.sleep(random.uniform(0, 5))
+        def attempt() -> None:
+            run_command(curl_cmd)
+            check_install_script(script_path)
+            run_command(bash_cmd)
 
-    last_err: subprocess.CalledProcessError | None = None
-    for attempt in range(1, 4):
-        try:
-            subprocess.run(install_cmd, check=True, capture_output=True)
-            return
-        except subprocess.CalledProcessError as e:
-            last_err = e
-            if attempt < 3:
-                delay = 2**attempt
-                print(
-                    f"Install attempt {attempt} failed (exit {e.returncode}), "
-                    f"retrying in {delay}s...",
-                    file=sys.stderr,
-                )
-                time.sleep(delay)
-
-    print(f"Error downloading CLI after 3 attempts: {last_err}", file=sys.stderr)
-    print(f"stdout: {last_err.stdout.decode()}", file=sys.stderr)
-    print(f"stderr: {last_err.stderr.decode()}", file=sys.stderr)
-    sys.exit(1)
+        retry_install(attempt)
 
 
 def copy_cli_to_bundle() -> None:

@@ -17,6 +17,7 @@ from claude_agent_sdk import (
     tag_session,
 )
 from claude_agent_sdk._internal.session_mutations import (
+    _parse_fork_transcript,
     _sanitize_unicode,
     _try_append,
 )
@@ -668,6 +669,82 @@ class TestForkSession:
         original_msgs = get_session_messages(sid, directory=project_path)
         fork_msgs = get_session_messages(result.session_id, directory=project_path)
         # Fork has same visible messages + 1 custom-title entry (not visible)
+        assert len(fork_msgs) == len(original_msgs)
+
+    @pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085"])
+    def test_parse_fork_transcript_keeps_unicode_line_separators(
+        self, sep: str
+    ) -> None:
+        """A JSONL line containing a raw U+2028/U+2029/U+0085 must be kept.
+
+        These are valid unescaped inside a JSON string and are emitted raw by
+        the CLI's JSON.stringify; str.splitlines() would fragment the line and
+        drop it, so the fork parser must split on "\\n" only (like the read
+        path, _parse_transcript_entries).
+        """
+        entry = {
+            "type": "user",
+            "uuid": str(uuid.uuid4()),
+            "parentUuid": None,
+            "sessionId": "s",
+            "message": {"role": "user", "content": f"a{sep}b"},
+        }
+        content = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+        transcript, _ = _parse_fork_transcript(content, "s")
+
+        assert len(transcript) == 1
+        assert transcript[0]["message"]["content"] == f"a{sep}b"
+
+    def test_fork_preserves_message_with_line_separator(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Fork keeps a message whose content contains a raw U+2028 (issue: fork
+        dropped it because str.splitlines() split the JSONL line)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+
+        sid = str(uuid.uuid4())
+        u1, u2 = str(uuid.uuid4()), str(uuid.uuid4())
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": u1,
+                    "parentUuid": None,
+                    "sessionId": sid,
+                    "timestamp": "2026-03-01T00:00:00Z",
+                    "message": {"role": "user", "content": "question"},
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": u2,
+                    "parentUuid": u1,
+                    "sessionId": sid,
+                    "timestamp": "2026-03-01T00:00:00Z",
+                    # Raw U+2028 LINE SEPARATOR inside the text: valid JSON,
+                    # not a JSONL line break.
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "answer\u2028more"}],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ]
+        (project_dir / f"{sid}.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+        original_msgs = get_session_messages(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path)
+        fork_msgs = get_session_messages(result.session_id, directory=project_path)
         assert len(fork_msgs) == len(original_msgs)
 
     def test_fork_up_to_message_id(self, claude_config_dir: Path, tmp_path: Path):

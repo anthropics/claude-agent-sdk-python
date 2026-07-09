@@ -22,7 +22,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
-from claude_agent_sdk._errors import ProcessError
+from claude_agent_sdk._errors import CLIConnectionError, ProcessError
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -1240,3 +1240,105 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestPendingControlRequestsOnClose:
+    """Tests for pending control requests when close() cancels the read task.
+
+    A caller-initiated close()/disconnect() cancels the read task, which raises
+    the cancelled exception and so skips the `except Exception` bulk-fail
+    branch. Without the signal in the reader's `finally`, an in-flight
+    interrupt() waits out the full 60s timeout for a control_response that can
+    never arrive (issue #1094).
+    """
+
+    def _make_hanging_transport(self, reading: anyio.Event | None = None):
+        """A transport whose read never yields, so only close() ends the loop.
+
+        `reading` is set once the read loop is actually inside the generator:
+        close() must not cancel the read task before it enters the try/finally,
+        or the signal under test never runs.
+        """
+        mock_transport = AsyncMock()
+
+        async def mock_receive():
+            if reading is not None:
+                reading.set()
+            await anyio.sleep_forever()
+            yield {}  # pragma: no cover - never reached
+
+        mock_transport.read_messages = mock_receive
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        return mock_transport
+
+    @pytest.mark.anyio
+    async def test_inflight_control_request_fails_fast_on_close(self):
+        """An interrupt() awaiting a response when close() lands must raise."""
+        reading = anyio.Event()
+        q = Query(
+            transport=self._make_hanging_transport(reading), is_streaming_mode=True
+        )
+        await q.start()
+        with anyio.fail_after(5):
+            await reading.wait()
+
+        errors: list[Exception] = []
+
+        async def send_interrupt():
+            try:
+                await q._send_control_request({"subtype": "interrupt"})
+            except Exception as e:  # noqa: BLE001 - recorded for the assertion
+                errors.append(e)
+
+        # fail_after bounds the test: before the fix the interrupt task blocks
+        # for the full 60s control-request timeout instead of failing here.
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(send_interrupt)
+                while not q.pending_control_responses:
+                    await anyio.sleep(0.01)
+                await q.close()
+
+        assert len(errors) == 1
+        assert isinstance(errors[0], CLIConnectionError)
+        assert "Control request interrupted" in str(errors[0])
+
+    @pytest.mark.anyio
+    async def test_close_signals_pending_control_requests(self):
+        """close() signals every unresolved pending control request."""
+        reading = anyio.Event()
+        q = Query(
+            transport=self._make_hanging_transport(reading), is_streaming_mode=True
+        )
+        event = anyio.Event()
+        q.pending_control_responses["req_1"] = event
+
+        await q.start()
+        with anyio.fail_after(5):
+            await reading.wait()
+        await q.close()
+
+        assert event.is_set()
+        assert isinstance(q.pending_control_results["req_1"], CLIConnectionError)
+
+    @pytest.mark.anyio
+    async def test_close_preserves_an_already_resolved_result(self):
+        """A request resolved before close() keeps its response."""
+        reading = anyio.Event()
+        q = Query(
+            transport=self._make_hanging_transport(reading), is_streaming_mode=True
+        )
+        event = anyio.Event()
+        q.pending_control_responses["req_1"] = event
+        q.pending_control_results["req_1"] = {"response": {"ok": True}}
+
+        await q.start()
+        with anyio.fail_after(5):
+            await reading.wait()
+        await q.close()
+
+        assert q.pending_control_results["req_1"] == {"response": {"ok": True}}

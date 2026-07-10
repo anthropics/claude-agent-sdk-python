@@ -137,6 +137,49 @@ class TestSubprocessCLITransport:
         assert "--system-prompt" in cmd
         assert "Be helpful" in cmd
 
+    def test_build_command_rejects_oversized_system_prompt_on_linux(self):
+        """Test oversized string prompts get an actionable error on Linux."""
+        from claude_agent_sdk._errors import CLIConnectionError
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="x" * 64),
+        )
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+                return_value="Linux",
+            ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.os.sysconf",
+                return_value=1,
+            ),
+            pytest.raises(CLIConnectionError) as exc_info,
+        ):
+            transport._build_command()
+
+        message = str(exc_info.value)
+        assert "system_prompt is too large" in message
+        assert "64 bytes" in message
+        assert "system_prompt={'type': 'file'" in message
+
+    def test_build_command_allows_large_system_prompt_off_linux(self):
+        """Test non-Linux platforms keep passing string prompts directly."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="x" * 16),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            return_value="Windows",
+        ):
+            cmd = transport._build_command()
+
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == "x" * 16
+
     def test_build_command_with_system_prompt_preset(self):
         """Test building CLI command with system prompt preset."""
         transport = SubprocessCLITransport(

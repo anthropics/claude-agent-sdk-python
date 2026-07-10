@@ -29,6 +29,24 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+_LINUX_MAX_ARG_STRLEN_PAGE_MULTIPLIER = 32
+
+
+def _get_linux_max_arg_strlen() -> int | None:
+    """Return Linux's per-argument execve byte limit, if available."""
+    if platform.system() != "Linux":
+        return None
+
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+
+    if not isinstance(page_size, int) or page_size <= 0:
+        return None
+
+    return _LINUX_MAX_ARG_STRLEN_PAGE_MULTIPLIER * page_size
+
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
@@ -288,6 +306,16 @@ class SubprocessCLITransport(Transport):
         if self._options.system_prompt is None:
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
+            max_arg_strlen = _get_linux_max_arg_strlen()
+            system_prompt_size = len(self._options.system_prompt.encode())
+            if max_arg_strlen is not None and system_prompt_size >= max_arg_strlen:
+                raise CLIConnectionError(
+                    "system_prompt is too large to pass as a command-line "
+                    f"argument on Linux ({system_prompt_size} bytes; "
+                    f"limit is {max_arg_strlen} bytes). Write the prompt to "
+                    "a file and pass system_prompt={'type': 'file', "
+                    "'path': '/path/to/prompt.txt'} instead."
+                )
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
             sp = self._options.system_prompt

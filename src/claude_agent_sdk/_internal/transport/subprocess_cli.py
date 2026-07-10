@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Linux caps a single argv entry at MAX_ARG_STRLEN (PAGE_SIZE * 32 = 128 KiB,
+# including the trailing NUL). A --system-prompt at or above that makes exec()
+# fail with "[Errno 7] Argument list too long" before the CLI even starts
+# (issue #1096). Prompts this large are written to a temp file and passed via
+# --system-prompt-file instead. The threshold keeps comfortable headroom below
+# the hard limit.
+_MAX_INLINE_SYSTEM_PROMPT_BYTES = 64 * 1024
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
@@ -132,6 +141,7 @@ class SubprocessCLITransport(Transport):
         self._stderr_task: TaskHandle | None = None
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
+        self._temp_files: list[Path] = []  # Oversized args materialized to disk
         self._max_buffer_size = (
             options.max_buffer_size
             if options.max_buffer_size is not None
@@ -279,6 +289,31 @@ class SubprocessCLITransport(Transport):
 
         return allowed_tools, setting_sources
 
+    def _write_system_prompt_file(self, content: str) -> str:
+        """Materialize an oversized system prompt to a temp file.
+
+        A single argv entry above the kernel's per-arg limit makes exec() fail
+        before the CLI runs (issue #1096), so a very large ``--system-prompt``
+        is written to disk and consumed via ``--system-prompt-file`` instead.
+        The file is removed by :meth:`close`.
+        """
+        fd, path = tempfile.mkstemp(prefix="claude-system-prompt-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+        except BaseException:
+            Path(path).unlink(missing_ok=True)
+            raise
+        self._temp_files.append(Path(path))
+        return path
+
+    def _cleanup_temp_files(self) -> None:
+        """Remove any temp files created for oversized CLI arguments."""
+        for path in self._temp_files:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+        self._temp_files = []
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         if self._cli_path is None:
@@ -288,7 +323,18 @@ class SubprocessCLITransport(Transport):
         if self._options.system_prompt is None:
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
-            cmd.extend(["--system-prompt", self._options.system_prompt])
+            system_prompt = self._options.system_prompt
+            if len(system_prompt.encode("utf-8")) >= _MAX_INLINE_SYSTEM_PROMPT_BYTES:
+                # Too large to pass as an argv entry without tripping the kernel's
+                # per-arg limit (issue #1096) — hand it over through a file.
+                cmd.extend(
+                    [
+                        "--system-prompt-file",
+                        self._write_system_prompt_file(system_prompt),
+                    ]
+                )
+            else:
+                cmd.extend(["--system-prompt", system_prompt])
         else:
             sp = self._options.system_prompt
             if sp.get("type") == "file":
@@ -649,6 +695,10 @@ class SubprocessCLITransport(Transport):
         atexit reaper instead of dropping it. Making the escalation robust to a
         foreign `CancelledError` is a follow-up.
         """
+        # Reached on every teardown path, including a connect() that failed
+        # after _build_command() already materialized a prompt file.
+        self._cleanup_temp_files()
+
         if not self._process:
             self._ready = False
             return

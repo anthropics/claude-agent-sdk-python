@@ -129,7 +129,10 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Track first result for proper stream closure with SDK MCP servers
+        # Set when a run-ending result arrives (a result frame with no tasks
+        # in flight) so the stdin-closing waiter can wake; see #1088 and
+        # _inflight_tasks below. Named for history — it once tracked the
+        # literal first result.
         self._first_result_event = anyio.Event()
         # Task IDs of started-but-not-finished tasks. A result frame only ends
         # one turn, not the run: background tasks keep running past it and
@@ -871,7 +874,7 @@ class Query:
         """
         if self.sdk_mcp_servers or self.hooks:
             logger.debug(
-                "Waiting for first result before closing stdin "
+                "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)})"
             )

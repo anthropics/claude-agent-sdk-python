@@ -31,11 +31,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
-# Linux caps a single argv element (MAX_ARG_STRLEN) at 32 * PAGE_SIZE = 131072
-# bytes, including the trailing NUL. A ``--system-prompt`` value at or above this
-# makes execve() fail with E2BIG ("Argument list too long") before the CLI ever
-# starts, so oversized prompts are written to a temp file and passed via
-# ``--system-prompt-file`` instead (see issue #1096).
+# Linux caps a single argv element (MAX_ARG_STRLEN) at 32 * PAGE_SIZE, which is
+# 131072 bytes (including the trailing NUL) on the common 4 KiB page size. A
+# ``--system-prompt`` value at or above this makes execve() fail with E2BIG
+# ("Argument list too long") before the CLI ever starts, so oversized prompts
+# are written to a temp file and passed via ``--system-prompt-file`` instead
+# (see issue #1096). The threshold is a fixed conservative value: systems with
+# larger pages allow more, and spilling to a file early is harmless.
 _MAX_SYSTEM_PROMPT_ARG_BYTES = 131072
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
@@ -289,6 +291,13 @@ class SubprocessCLITransport(Transport):
 
         return allowed_tools, setting_sources
 
+    def _remove_system_prompt_tmp(self) -> None:
+        """Remove the temp file backing ``--system-prompt-file``, if any."""
+        if self._system_prompt_tmp is not None:
+            with suppress(OSError):
+                self._system_prompt_tmp.unlink()
+            self._system_prompt_tmp = None
+
     def _write_system_prompt_file(self, system_prompt: str) -> str:
         """Write an oversized system prompt to a temp file and return its path.
 
@@ -296,16 +305,28 @@ class SubprocessCLITransport(Transport):
         per-argument OS limit and aborts the CLI before startup (issue #1096).
         The file is removed in :meth:`close`.
         """
-        fd, path = tempfile.mkstemp(prefix="claude-system-prompt-", suffix=".txt")
+        # _build_command() may run more than once; drop the previous temp file
+        # so it cannot leak.
+        self._remove_system_prompt_tmp()
+        # NamedTemporaryFile owns the fd, so it cannot leak even if opening or
+        # writing fails; delete=False because the CLI reads it after we return.
+        tmp = None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(system_prompt)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="claude-system-prompt-",
+                suffix=".txt",
+                delete=False,
+            ) as tmp:
+                tmp.write(system_prompt)
         except BaseException:
-            with suppress(OSError):
-                Path(path).unlink()
+            if tmp is not None:
+                with suppress(OSError):
+                    Path(tmp.name).unlink()
             raise
-        self._system_prompt_tmp = Path(path)
-        return path
+        self._system_prompt_tmp = Path(tmp.name)
+        return tmp.name
 
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
@@ -317,7 +338,9 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
             system_prompt = self._options.system_prompt
-            if len(system_prompt.encode("utf-8")) >= _MAX_SYSTEM_PROMPT_ARG_BYTES:
+            # Measure the same bytes subprocess hands to execve(): argv elements
+            # are encoded with the filesystem encoding, not necessarily UTF-8.
+            if len(os.fsencode(system_prompt)) >= _MAX_SYSTEM_PROMPT_ARG_BYTES:
                 # Too large to pass as a single argv element (see #1096); hand it
                 # to the CLI as a file via the already-supported flag instead.
                 cmd.extend(
@@ -691,10 +714,7 @@ class SubprocessCLITransport(Transport):
         # Remove the temp file backing an oversized --system-prompt-file, if we
         # created one. Runs regardless of process state so a failed connect()
         # does not leak it (see #1096).
-        if self._system_prompt_tmp is not None:
-            with suppress(OSError):
-                self._system_prompt_tmp.unlink()
-            self._system_prompt_tmp = None
+        self._remove_system_prompt_tmp()
 
         if not self._process:
             self._ready = False

@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 
-from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk._internal.transport.subprocess_cli import (
+    _MAX_SYSTEM_PROMPT_ARG_BYTES,
+    SubprocessCLITransport,
+)
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
@@ -185,28 +188,32 @@ class TestSubprocessCLITransport:
         assert "/path/to/prompt.md" in cmd
 
     def test_build_command_with_oversized_system_prompt_uses_file(self):
-        """A system prompt over the argv limit goes via file, not inline (#1096)."""
-        big = "x" * 200_000  # exceeds MAX_ARG_STRLEN (131072 bytes)
+        """A system prompt at the argv limit goes via file, not inline (#1096)."""
+        big = "x" * _MAX_SYSTEM_PROMPT_ARG_BYTES  # smallest size that must spill
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(system_prompt=big),
         )
 
         cmd = transport._build_command()
-        # Must not be inlined as a single oversized argv element.
-        assert big not in cmd
-        assert "--system-prompt" not in cmd
-        assert "--system-prompt-file" in cmd
+        try:
+            # Must not be inlined as a single oversized argv element.
+            assert big not in cmd
+            assert "--system-prompt" not in cmd
+            assert "--system-prompt-file" in cmd
 
-        path = cmd[cmd.index("--system-prompt-file") + 1]
-        assert transport._system_prompt_tmp is not None
-        assert Path(path).read_text(encoding="utf-8") == big
+            path = cmd[cmd.index("--system-prompt-file") + 1]
+            assert transport._system_prompt_tmp is not None
+            assert Path(path).read_text(encoding="utf-8") == big
+        finally:
+            # close() would normally remove this; don't leave it behind if an
+            # assertion above fails.
+            if transport._system_prompt_tmp is not None:
+                transport._system_prompt_tmp.unlink(missing_ok=True)
 
-        Path(path).unlink()  # cleanup (close() would normally remove this)
-
-    def test_build_command_system_prompt_at_limit_stays_inline(self):
-        """A prompt just under the limit is still passed inline (#1096)."""
-        prompt = "x" * (131072 - 1)  # 131071 bytes: largest that fits in one arg
+    def test_build_command_system_prompt_under_limit_stays_inline(self):
+        """The largest prompt that fits in one argv element stays inline (#1096)."""
+        prompt = "x" * (_MAX_SYSTEM_PROMPT_ARG_BYTES - 1)
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(system_prompt=prompt),
@@ -217,12 +224,36 @@ class TestSubprocessCLITransport:
         assert "--system-prompt-file" not in cmd
         assert transport._system_prompt_tmp is None
 
+    def test_build_command_twice_replaces_oversized_prompt_file(self):
+        """Rebuilding the command must not leak the previous temp file (#1096)."""
+        big = "x" * _MAX_SYSTEM_PROMPT_ARG_BYTES
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=big),
+        )
+
+        first = second = None
+        try:
+            transport._build_command()
+            first = transport._system_prompt_tmp
+            transport._build_command()
+            second = transport._system_prompt_tmp
+
+            assert first is not None
+            assert second is not None
+            assert not first.exists()  # replaced file was removed
+            assert second.exists()
+        finally:
+            for path in (first, second):
+                if path is not None:
+                    path.unlink(missing_ok=True)
+
     @pytest.mark.anyio
     async def test_close_removes_oversized_system_prompt_file(self):
         """close() deletes the temp file created for an oversized prompt (#1096)."""
         transport = SubprocessCLITransport(
             prompt="test",
-            options=make_options(system_prompt="x" * 200_000),
+            options=make_options(system_prompt="x" * _MAX_SYSTEM_PROMPT_ARG_BYTES),
         )
         transport._build_command()
 

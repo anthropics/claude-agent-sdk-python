@@ -357,3 +357,16 @@ The workflow tracks both the package version and the bundled CLI version separat
 ## License and terms
 
 Use of this SDK is governed by Anthropic's [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms), including when you use it to power products and services that you make available to your own customers and end users, except to the extent a specific component or dependency is covered by a different license as indicated in that component's LICENSE file.
+
+## CLI subprocess environment
+
+When the SDK spawns the Claude Code CLI, it inherits the parent process environment **except** a small filter list (today: `CLAUDECODE` is stripped so nested CLI sessions do not inherit coordinator/session flags unintentionally).
+
+Implications:
+
+- Other parent env vars (for example coordinator-mode flags if present in your shell) may still be inherited unless filtered.
+- Prefer explicit `env=` options when you need a clean subprocess environment.
+- Large `system_prompt` strings should use the file form (`{"type": "file", "path": ...}`) on platforms with per-argument length limits.
+
+See the transport implementation in `src/claude_agent_sdk/_internal/transport/subprocess_cli.py` for the exact filter list.
+

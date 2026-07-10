@@ -83,6 +83,16 @@ jobs:
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
 
+      # CI's fresh checkout is an untrusted workspace, so Claude Code drops
+      # the project-scoped permissions.allow grants in this repo's committed
+      # .claude/settings.json and warns on stderr about it. Record the trust a
+      # developer grants via the trust dialog once, so runs launched from the
+      # checkout exercise the real trusted-workspace settings path. Only
+      # affects CLI runs whose cwd is inside the checkout (some e2e tests
+      # deliberately use a temp cwd). See scripts/trust_workspace.py.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
+
       - name: Run end-to-end tests with real API
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
@@ -171,6 +181,11 @@ jobs:
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
+
+      # Same as in test-e2e: trust the fresh checkout so Claude Code honors the
+      # project-scoped grants in this repo's committed .claude/settings.json.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
 
       - name: Run example scripts (Linux)
         if: runner.os == 'Linux'

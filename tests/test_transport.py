@@ -4,6 +4,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -182,6 +183,56 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" not in cmd
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
+
+    def test_build_command_with_oversized_system_prompt_uses_file(self):
+        """A system prompt over the argv limit goes via file, not inline (#1096)."""
+        big = "x" * 200_000  # exceeds MAX_ARG_STRLEN (131072 bytes)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=big),
+        )
+
+        cmd = transport._build_command()
+        # Must not be inlined as a single oversized argv element.
+        assert big not in cmd
+        assert "--system-prompt" not in cmd
+        assert "--system-prompt-file" in cmd
+
+        path = cmd[cmd.index("--system-prompt-file") + 1]
+        assert transport._system_prompt_tmp is not None
+        assert Path(path).read_text(encoding="utf-8") == big
+
+        Path(path).unlink()  # cleanup (close() would normally remove this)
+
+    def test_build_command_system_prompt_at_limit_stays_inline(self):
+        """A prompt just under the limit is still passed inline (#1096)."""
+        prompt = "x" * (131072 - 1)  # 131071 bytes: largest that fits in one arg
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=prompt),
+        )
+
+        cmd = transport._build_command()
+        assert "--system-prompt" in cmd
+        assert "--system-prompt-file" not in cmd
+        assert transport._system_prompt_tmp is None
+
+    @pytest.mark.anyio
+    async def test_close_removes_oversized_system_prompt_file(self):
+        """close() deletes the temp file created for an oversized prompt (#1096)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt="x" * 200_000),
+        )
+        transport._build_command()
+
+        tmp = transport._system_prompt_tmp
+        assert tmp is not None and tmp.exists()
+
+        await transport.close()
+
+        assert not tmp.exists()
+        assert transport._system_prompt_tmp is None
 
     def test_build_command_with_options(self):
         """Test building CLI command with options."""

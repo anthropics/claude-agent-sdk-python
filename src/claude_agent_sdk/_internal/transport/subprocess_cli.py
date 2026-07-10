@@ -288,7 +288,29 @@ class SubprocessCLITransport(Transport):
         if self._options.system_prompt is None:
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
-            cmd.extend(["--system-prompt", self._options.system_prompt])
+            # Linux/macOS enforce MAX_ARG_STRLEN (32 * PAGE_SIZE) per argv element.
+            # A huge --system-prompt string fails at execve with "Argument list too long"
+            # before any API request. Prefer the file form above that threshold.
+            prompt = self._options.system_prompt
+            max_arg_strlen = None
+            if hasattr(os, "sysconf"):
+                try:
+                    page = os.sysconf("SC_PAGE_SIZE")
+                    if isinstance(page, int) and page > 0:
+                        max_arg_strlen = 32 * page
+                except (ValueError, OSError, AttributeError):
+                    max_arg_strlen = None
+            if max_arg_strlen is not None:
+                size = len(prompt.encode("utf-8"))
+                if size >= max_arg_strlen:
+                    raise CLIConnectionError(
+                        f"system_prompt is {size} bytes, which meets/exceeds the OS "
+                        f"per-argument limit of {max_arg_strlen} bytes (MAX_ARG_STRLEN). "
+                        "Pass a file instead, e.g. "
+                        'system_prompt={"type": "file", "path": "/path/to/prompt.txt"} '
+                        "(maps to --system-prompt-file)."
+                    )
+            cmd.extend(["--system-prompt", prompt])
         else:
             sp = self._options.system_prompt
             if sp.get("type") == "file":

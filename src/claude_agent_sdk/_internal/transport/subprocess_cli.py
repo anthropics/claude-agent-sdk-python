@@ -254,7 +254,7 @@ class SubprocessCLITransport(Transport):
 
         Does not mutate the original options object.
         """
-        allowed_tools: list[str] = list(self._options.allowed_tools)
+        allowed_tools: list[str] = list(self._options.allowed_tools or [])
         setting_sources: list[str] | None = (
             list(self._options.setting_sources)
             if self._options.setting_sources is not None

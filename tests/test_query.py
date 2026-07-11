@@ -309,6 +309,113 @@ class TestStringPromptWithSdkMcpServers:
 
         anyio.run(_test)
 
+    def test_streaming_prompt_with_can_use_tool_waits_for_result(self):
+        """A can_use_tool callback must keep stdin open until the first
+        result, exactly like SDK MCP servers and hooks: the CLI delivers
+        can_use_tool permission requests over the control protocol, and the
+        SDK writes the permission response back over stdin.
+
+        The mock transport enforces the real CLI contract: the can_use_tool
+        control request arrives only after the input stream is exhausted, the
+        result is not produced until the permission response has been
+        written, and writing after end_input() fails (closed stdin).
+        Regression test: without waiting, end_input() fired as soon as the
+        input stream was exhausted and every permission response hit closed
+        stdin ("Tool permission request failed: Error: Stream closed").
+        """
+
+        async def _test():
+            from claude_agent_sdk import PermissionResultAllow
+
+            permission_calls = []
+
+            async def on_permission(tool_name, tool_input, context):
+                permission_calls.append(tool_name)
+                return PermissionResultAllow()
+
+            async def one_message():
+                yield {
+                    "type": "user",
+                    "session_id": "",
+                    "message": {"role": "user", "content": "Write a file"},
+                    "parent_tool_use_id": None,
+                }
+
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            stdin_open = True
+            permission_response_written = anyio.Event()
+            writes = []
+
+            async def tracking_write(data):
+                if not stdin_open:
+                    raise RuntimeError("stdin closed")
+                writes.append(data)
+                if "control_response" in data:
+                    permission_response_written.set()
+
+            async def tracking_end_input():
+                nonlocal stdin_open
+                stdin_open = False
+
+            mock_transport.write = tracking_write
+            mock_transport.end_input = tracking_end_input
+
+            async def mock_receive():
+                # The permission request arrives mid-turn, after the input
+                # stream is exhausted; the CLI cannot finish the turn until
+                # the SDK responds.
+                yield {
+                    "type": "control_request",
+                    "request_id": "perm_1",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Write",
+                        "input": {"file_path": "x.txt", "content": "hi"},
+                    },
+                }
+                with anyio.fail_after(5):
+                    await permission_response_written.wait()
+                for msg in _ASSISTANT_AND_RESULT:
+                    yield msg
+
+            mock_transport.read_messages = mock_receive
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                messages = []
+                with anyio.fail_after(10):
+                    async for msg in query(
+                        prompt=one_message(),
+                        options=ClaudeAgentOptions(can_use_tool=on_permission),
+                    ):
+                        messages.append(msg)
+
+            assert permission_calls == ["Write"]
+            assert len(messages) == 2
+            assert isinstance(messages[0], AssistantMessage)
+            assert isinstance(messages[1], ResultMessage)
+
+            control_responses = [
+                json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
+            ]
+            assert len(control_responses) == 1
+            assert control_responses[0]["response"]["response"]["behavior"] == "allow"
+
+        anyio.run(_test)
+
     def test_string_prompt_with_hooks_waits_for_result(self):
         """end_input() should wait for first result when hooks are configured,
         even without SDK MCP servers."""

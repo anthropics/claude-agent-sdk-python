@@ -809,18 +809,19 @@ class Query:
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the first result (if needed) then close stdin.
 
-        If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives. The control protocol
-        requires stdin to remain open for the entire conversation, so no
-        timeout is applied. The event is guaranteed to fire: either when the
-        result message arrives, or in _read_messages' finally block if the
-        process exits early.
+        If SDK MCP servers, hooks, or a can_use_tool callback require
+        bidirectional communication, keeps stdin open until the first result
+        arrives. The control protocol requires stdin to remain open for the
+        entire conversation, so no timeout is applied. The event is guaranteed
+        to fire: either when the result message arrives, or in _read_messages'
+        finally block if the process exits early.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        if self.sdk_mcp_servers or self.hooks or self.can_use_tool:
             logger.debug(
                 "Waiting for first result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={bool(self.can_use_tool)})"
             )
             await self._first_result_event.wait()
 
@@ -829,8 +830,9 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or a can_use_tool callback are present,
+        waits for the first result before closing stdin to allow bidirectional
+        control protocol communication.
         """
         try:
             async for message in stream:

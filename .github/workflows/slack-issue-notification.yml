@@ -22,7 +22,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*New Issue:* <${{ github.event.issue.html_url }}|#${{ github.event.issue.number }} ${{ github.event.issue.title }}>"
+                    "text": ${{ toJSON(format('*New Issue:* <{0}|#{1} {2}>', github.event.issue.html_url, github.event.issue.number, github.event.issue.title)) }}
                   }
                 },
                 {

@@ -349,8 +349,12 @@ class Query:
             else:
                 error_text = str(e)
                 logger.error(f"Fatal error in message reader: {e}")
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            # Put error in stream so iterators can handle it. Use send_nowait
+            # to avoid blocking on a full buffer or a consumer that has stopped
+            # iterating. If the buffer is full, we close the stream in finally;
+            # the consumer will then see EndOfStream after draining.
+            with suppress(anyio.WouldBlock):
+                self._message_send.send_nowait({"type": "error", "error": error_text})
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries

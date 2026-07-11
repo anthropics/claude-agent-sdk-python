@@ -1240,3 +1240,114 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestSubprocessDeathPropagation:
+    """Regression test for #1110: subprocess death must not hang the consumer.
+
+    When the CLI subprocess dies mid-run (e.g., rate-limit exhaustion), the
+    stream must either raise an exception or terminate iteration so consumers
+    can react instead of hanging indefinitely.
+    """
+
+    def test_subprocess_death_raises_error_without_hanging(self):
+        """ProcessError during message reading must reach the async iterator."""
+
+        async def _test():
+            mock_transport = AsyncMock()
+
+            async def mock_receive():
+                # Yield one message, then die with ProcessError
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Starting..."}],
+                        "model": "claude-sonnet-4-20250514",
+                    },
+                }
+                raise ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                )
+
+            mock_transport.read_messages = mock_receive
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            with pytest.raises(Exception, match=r"Command failed"):
+                # This must not hang - the error must propagate
+                async for msg in q.receive_messages():
+                    received.append(msg)
+
+            await q.close()
+
+            # Consumer should have received the assistant message before the error
+            assert len(received) == 1
+            assert received[0]["type"] == "assistant"
+
+        anyio.run(_test)
+
+    def test_subprocess_death_unblocks_parked_consumer(self):
+        """Consumer blocked waiting for next message must unblock on subprocess death."""
+
+        async def _test():
+            mock_transport = AsyncMock()
+            first_message_yielded = anyio.Event()
+
+            async def mock_receive():
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Message 1"}],
+                        "model": "claude-sonnet-4-20250514",
+                    },
+                }
+                # Wait for consumer to process first message
+                await first_message_yielded.wait()
+                # Then die with ProcessError
+                raise ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                )
+
+            mock_transport.read_messages = mock_receive
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            consumer_raised = anyio.Event()
+
+            async def consumer():
+                try:
+                    async for msg in q.receive_messages():
+                        received.append(msg)
+                        first_message_yielded.set()
+                        # Continue iterating - should unblock with error
+                except Exception:
+                    consumer_raised.set()
+                    raise
+
+            # Run with a timeout to prove it doesn't hang
+            with anyio.fail_after(5.0):
+                with pytest.raises(Exception, match=r"Command failed"):
+                    await consumer()
+                await consumer_raised.wait()
+
+            await q.close()
+            assert len(received) == 1
+            assert consumer_raised.is_set()
+
+        anyio.run(_test)

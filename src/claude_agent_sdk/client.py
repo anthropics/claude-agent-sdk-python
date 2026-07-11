@@ -22,8 +22,11 @@ from .types import (
     Message,
     PermissionMode,
     ResultMessage,
+
     ThinkingDisplay,
     _Omitted,
+    _warn_if_can_use_tool_shadowed,
+
 )
 
 
@@ -175,6 +178,9 @@ class ClaudeSDKClient:
                     "can_use_tool callback cannot be used with permission_prompt_tool_name. "
                     "Please use one or the other."
                 )
+
+            # Advisory: warn if other options shadow the callback
+            _warn_if_can_use_tool_shadowed(self.options)
 
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             options = replace(self.options, permission_prompt_tool_name="stdio")

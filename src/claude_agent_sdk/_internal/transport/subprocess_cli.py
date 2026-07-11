@@ -47,6 +47,67 @@ def _kill_active_children() -> None:
 atexit.register(_kill_active_children)
 
 
+class _LineFramer:
+    """Reassembles complete lines from a stream that yields arbitrary chunks.
+
+    anyio's TextReceiveStream yields CHUNKS (one per receive() call, up to 64KiB
+    on the asyncio backend), not lines, so a large line spans several chunks and
+    a chunk boundary can fall anywhere — including inside a JSON string value.
+    Splitting on "\\n" and never stripping a chunk is what keeps whitespace at
+    the seam intact.
+    """
+
+    def __init__(self) -> None:
+        # Only ever holds fragments of the line currently being received, none
+        # of which contain a newline. Accumulating in a list and joining once a
+        # newline arrives is O(total) without relying on CPython's in-place
+        # `str +=` realloc optimization, which other implementations lack.
+        self._pending: list[str] = []
+        self.pending_len = 0
+
+    def push(self, chunk: str) -> list[str]:
+        """Add a chunk, returning any lines it completed."""
+        self._pending.append(chunk)
+        self.pending_len += len(chunk)
+        if "\n" not in chunk:
+            return []
+
+        *lines, tail = "".join(self._pending).split("\n")
+        self._pending, self.pending_len = [tail], len(tail)
+        return lines
+
+    def flush(self) -> str:
+        """Take the trailing partial line, if any."""
+        line = "".join(self._pending)
+        self._pending, self.pending_len = [], 0
+        return line
+
+
+def _parse_stdout_line(line: str) -> dict[str, Any] | None:
+    """Parse one complete line of the CLI's NDJSON stdout.
+
+    Returns None for lines that carry no message: blank lines, and non-JSON
+    output such as ``[SandboxDebug] ...`` that some CLI builds write to stdout
+    (#347). A line that looks like JSON but does not parse is corrupt — with
+    proper line framing there is no later data that could complete it — so it
+    raises rather than silently dropping a message.
+    """
+    # `line` is a complete line, so surrounding whitespace (e.g. the "\r" of a
+    # CRLF) is meaningless. Only chunks must never be stripped.
+    line = line.strip()
+    if not line:
+        return None
+    if not line.startswith("{"):
+        logger.debug("Skipping non-JSON line from CLI stdout: %s", line[:200])
+        return None
+
+    try:
+        data: dict[str, Any] = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise SDKJSONDecodeError(line, e) from e
+    return data
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
@@ -520,84 +581,146 @@ class SubprocessCLITransport(Transport):
         if not self._stderr_stream:
             return
 
-        try:
-            async for line in self._stderr_stream:
-                line_str = line.rstrip()
-                if not line_str:
-                    continue
+        def emit(line: str) -> None:
+            line = line.rstrip()
+            if not line:
+                return
 
-                # Call the stderr callback if provided. Isolate per-line so a
-                # raise in the user's callback doesn't terminate the loop and
-                # silently drop every subsequent line for the rest of the
-                # session.
-                if self._options.stderr:
-                    try:
-                        self._options.stderr(line_str)
-                    except Exception:
-                        logger.debug(
-                            "stderr callback raised; continuing", exc_info=True
-                        )
+            # Call the stderr callback if provided. Isolate per-line so a
+            # raise in the user's callback doesn't terminate the loop and
+            # silently drop every subsequent line for the rest of the
+            # session.
+            if self._options.stderr:
+                try:
+                    self._options.stderr(line)
+                except Exception:
+                    logger.debug("stderr callback raised; continuing", exc_info=True)
+
+        # `options.stderr` is documented to receive lines, but the stream yields
+        # chunks, so frame the lines here rather than handing the callback
+        # whatever a read happened to return.
+        framer = _LineFramer()
+        try:
+            async for chunk in self._stderr_stream:
+                for line in framer.push(chunk):
+                    emit(line)
+                # A producer that never emits a newline can't grow the buffer
+                # without bound; flush it as a partial line instead.
+                if framer.pending_len > self._max_buffer_size:
+                    emit(framer.flush())
         except anyio.ClosedResourceError:
             pass  # Stream closed, exit normally
         except Exception:
             logger.debug("stderr stream read failed", exc_info=True)
+        finally:
+            # In a `finally` so the last partial line still reaches the callback
+            # when close() cancels this task: cancellation arrives as a
+            # BaseException, which neither `except` above catches. A diagnostic
+            # written without a trailing newline before the CLI stalled is
+            # exactly what the caller needs at that moment. `emit` is
+            # synchronous, so it is safe to run during cancellation unwind.
+            emit(framer.flush())
 
     async def close(self) -> None:
-        """Close the transport and clean up resources."""
+        """Close the transport and clean up resources.
+
+        The whole body runs inside a shielded cancel scope. Cleanup is
+        routinely reached while the caller's task is being cancelled (e.g.
+        `async with ClaudeSDKClient()` unwinding on cancel), and an
+        unshielded close() would abort at the first await — before the
+        terminate/kill escalation ran — orphaning the CLI child, which then
+        surfaces as `<defunct>` once nothing is left to wait() on it.
+
+        Every await in *this* scope is bounded (~20s worst case), so an anyio
+        cancellation is delayed but never blocked: the stream `aclose()`s are a
+        non-blocking `close()` plus a checkpoint on both anyio backends (they
+        never await `wait_closed()`, so undrained stdin cannot wedge them), the
+        stderr task is cancelled before it is awaited, and the lock acquire and
+        every process `wait()` carry an explicit deadline.
+
+        Caveat: an anyio shield only defers cancellation that *originates from
+        an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
+        `asyncio.timeout` firing, a bare `task.cancel()`, loop shutdown) is
+        still delivered at the next await in here, and the escalation below only
+        catches `TimeoutError` — so it would be skipped. That is a pre-existing
+        limitation of the shield on the asyncio backend rather than something
+        this scope introduces, and it is still strictly better than before: the
+        `finally` keeps a still-running child in `_ACTIVE_CHILDREN` for the
+        atexit reaper instead of dropping it. Making the escalation robust to a
+        foreign `CancelledError` is a follow-up.
+        """
         if not self._process:
             self._ready = False
             return
 
-        # Cancel stderr reader if active
-        if self._stderr_task is not None and not self._stderr_task.done():
-            self._stderr_task.cancel()
-            with suppress(Exception):
-                await self._stderr_task.wait()
-        self._stderr_task = None
-
-        # Close stdin stream (acquire lock to prevent race with concurrent writes)
-        async with self._write_lock:
-            self._ready = False  # Set inside lock to prevent TOCTOU with write()
-            if self._stdin_stream:
+        with anyio.CancelScope(shield=True):
+            # Cancel stderr reader if active
+            if self._stderr_task is not None and not self._stderr_task.done():
+                self._stderr_task.cancel()
                 with suppress(Exception):
-                    await self._stdin_stream.aclose()
-                self._stdin_stream = None
+                    await self._stderr_task.wait()
+            self._stderr_task = None
 
-        if self._stderr_stream:
-            with suppress(Exception):
-                await self._stderr_stream.aclose()
-            self._stderr_stream = None
+            # Close stdin stream (hold the write lock to prevent a race with
+            # concurrent writes). Bounded: a writer blocked on a full stdin
+            # pipe must not pin the shielded scope forever.
+            lock_held = False
+            with anyio.move_on_after(5):
+                await self._write_lock.acquire()
+                lock_held = True
+            try:
+                self._ready = False  # Set inside lock to prevent TOCTOU with write()
+                if self._stdin_stream:
+                    with suppress(Exception):
+                        await self._stdin_stream.aclose()
+                    self._stdin_stream = None
+            finally:
+                if lock_held:
+                    self._write_lock.release()
 
-        # Wait for graceful shutdown after stdin EOF, then terminate if needed.
-        # The subprocess needs time to flush its session file after receiving
-        # EOF on stdin. Without this grace period, SIGTERM can interrupt the
-        # write and cause the last assistant message to be lost (see #625).
-        try:
-            if self._process.returncode is None:
-                try:
-                    with anyio.fail_after(5):
-                        await self._process.wait()
-                except TimeoutError:
-                    # Graceful shutdown timed out — force terminate
-                    with suppress(ProcessLookupError):
-                        self._process.terminate()
+            if self._stderr_stream:
+                with suppress(Exception):
+                    await self._stderr_stream.aclose()
+                self._stderr_stream = None
+
+            # Wait for graceful shutdown after stdin EOF, then terminate if
+            # needed. The subprocess needs time to flush its session file after
+            # receiving EOF on stdin. Without this grace period, SIGTERM can
+            # interrupt the write and cause the last assistant message to be
+            # lost (see #625).
+            try:
+                if self._process.returncode is None:
                     try:
                         with anyio.fail_after(5):
                             await self._process.wait()
                     except TimeoutError:
-                        # SIGTERM handler blocked — force kill (SIGKILL)
+                        # Graceful shutdown timed out — force terminate
                         with suppress(ProcessLookupError):
-                            self._process.kill()
-                        with suppress(Exception):
-                            await self._process.wait()
-        finally:
-            _ACTIVE_CHILDREN.discard(self._process)
+                            self._process.terminate()
+                        try:
+                            with anyio.fail_after(5):
+                                await self._process.wait()
+                        except TimeoutError:
+                            # SIGTERM handler blocked — force kill (SIGKILL)
+                            with suppress(ProcessLookupError):
+                                self._process.kill()
+                            with suppress(Exception), anyio.fail_after(5):
+                                await self._process.wait()
+            finally:
+                # Only stop tracking a child we actually reaped. A still-running
+                # process (kill raced, or wait timed out) stays in the set so the
+                # atexit reaper gets a chance at it — dropping it here is what
+                # turned a cancelled close() into a leaked child. The reaper only
+                # sends SIGTERM, so this rescues a child that is on its way out,
+                # not one that survived SIGKILL.
+                if self._process.returncode is not None:
+                    _ACTIVE_CHILDREN.discard(self._process)
 
-        self._process = None
-        self._stdout_stream = None
-        self._stdin_stream = None
-        self._stderr_stream = None
-        self._exit_error = None
+            self._process = None
+            self._stdout_stream = None
+            self._stdin_stream = None
+            self._stderr_stream = None
+            self._exit_error = None
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""
@@ -642,62 +765,48 @@ class SubprocessCLITransport(Transport):
         if not self._process or not self._stdout_stream:
             raise CLIConnectionError("Not connected")
 
-        json_buffer = ""
+        # The CLI writes NDJSON: one message per line. Frame the lines out of
+        # the chunks the stream actually yields (see _LineFramer).
+        framer = _LineFramer()
 
-        # Process stdout messages
+        def guard(length: int) -> None:
+            """Bound a single message, whether it is complete yet or not."""
+            if length > self._max_buffer_size:
+                raise SDKJSONDecodeError(
+                    f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
+                    ValueError(
+                        f"Buffer size {length} exceeds limit {self._max_buffer_size}"
+                    ),
+                )
+
         try:
-            async for line in self._stdout_stream:
-                line_str = line.strip()
-                if not line_str:
-                    continue
-
-                # Accumulate partial JSON until we can parse it
-                # Note: TextReceiveStream can truncate long lines, so we need to buffer
-                # and speculatively parse until we get a complete JSON object
-                json_lines = line_str.split("\n")
-
-                for json_line in json_lines:
-                    json_line = json_line.strip()
-                    if not json_line:
-                        continue
-
-                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
-                    # mid-parse — they corrupt the buffer otherwise (#347).
-                    if not json_buffer and not json_line.startswith("{"):
-                        logger.debug(
-                            "Skipping non-JSON line from CLI stdout: %s",
-                            json_line[:200],
-                        )
-                        continue
-
-                    # Keep accumulating partial JSON until we can parse it
-                    json_buffer += json_line
-
-                    if len(json_buffer) > self._max_buffer_size:
-                        buffer_length = len(json_buffer)
-                        json_buffer = ""
-                        raise SDKJSONDecodeError(
-                            f"JSON message exceeded maximum buffer size of {self._max_buffer_size} bytes",
-                            ValueError(
-                                f"Buffer size {buffer_length} exceeds limit {self._max_buffer_size}"
-                            ),
-                        )
-
-                    try:
-                        data = json.loads(json_buffer)
-                        json_buffer = ""
+            async for chunk in self._stdout_stream:
+                for line in framer.push(chunk):
+                    guard(len(line))
+                    data = _parse_stdout_line(line)
+                    if data is not None:
                         yield data
-                    except json.JSONDecodeError:
-                        # We are speculatively decoding the buffer until we get
-                        # a full JSON object. If there is an actual issue, we
-                        # raise an error after exceeding the configured limit.
-                        continue
+                guard(framer.pending_len)
 
         except anyio.ClosedResourceError:
             pass
         except GeneratorExit:
-            # Client disconnected
-            pass
+            # Client disconnected: return without falling through to the
+            # process-exit check, since awaiting there would make CPython
+            # complain that the async generator ignored GeneratorExit.
+            return
+
+        # Flush whatever is left. The CLI terminates every message with "\n", so
+        # a residual tail means either a producer that omits the final newline
+        # (yield it) or one cut off mid-write (unrecoverable — drop it).
+        tail = framer.flush()
+        try:
+            data = _parse_stdout_line(tail)
+        except SDKJSONDecodeError:
+            logger.debug("Dropping truncated JSON at end of CLI stdout: %s", tail[:200])
+            data = None
+        if data is not None:
+            yield data
 
         # Check process completion and handle errors
         try:

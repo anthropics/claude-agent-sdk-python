@@ -2090,9 +2090,10 @@ class TestSubprocessCLITransport:
                 prompt="x", options=ClaudeAgentOptions(stderr=stderr_cb)
             )
 
+            # The stream yields chunks, not lines: one read can carry several
+            # lines, and the last one may have no trailing newline.
             async def mock_iter() -> AsyncIterator[str]:
-                yield "line 1"
-                yield "line 2"
+                yield "line 1\nline 2\n"
                 yield "line 3"
 
             transport._stderr_stream = mock_iter()  # type: ignore[assignment]
@@ -2100,6 +2101,91 @@ class TestSubprocessCLITransport:
 
             # All three lines must be delivered despite the first raise.
             assert received == ["line 1", "line 2", "line 3"]
+
+        anyio.run(_test)
+
+    def test_stderr_line_split_across_chunks_is_reassembled(self) -> None:
+        """``options.stderr`` is documented to receive lines, but the stream
+        yields chunks — a long line split at a read boundary must be delivered
+        once, whole, rather than as two fragments with the seam whitespace
+        rstripped off the first."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "a warning that got "
+                yield "split across two reads\nnext line\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            assert received == [
+                "a warning that got split across two reads",
+                "next line",
+            ]
+
+        anyio.run(_test)
+
+    def test_stderr_line_without_newline_is_flushed_at_buffer_limit(self) -> None:
+        """A producer that never emits a newline must not grow the pending
+        buffer without bound: once it passes ``max_buffer_size`` the partial
+        line is flushed to the callback and the buffer resets."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x",
+                options=ClaudeAgentOptions(stderr=received.append, max_buffer_size=10),
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                # 15 chars with no newline in sight, then a normal line.
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "bbb\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            # Flushed once the 15 chars passed the 10-char limit, rather than
+            # buffering forever waiting for a newline.
+            assert received == ["a" * 15, "bbb"]
+
+        anyio.run(_test)
+
+    def test_stderr_pending_line_is_flushed_when_task_is_cancelled(self) -> None:
+        """close() cancels the stderr task, and cancellation is a BaseException
+        that the reader's `except` clauses don't catch. A diagnostic written
+        without a trailing newline before the CLI stalled must still reach the
+        callback rather than being lost with the buffer."""
+
+        async def _test() -> None:
+            received: list[str] = []
+            started = anyio.Event()
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "Error: model overloaded"  # no trailing newline
+                started.set()
+                await anyio.sleep(60)  # the CLI stalls, holding the stream open
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(transport._handle_stderr)
+                await started.wait()
+                tg.cancel_scope.cancel()
+
+            assert received == ["Error: model overloaded"]
 
         anyio.run(_test)
 

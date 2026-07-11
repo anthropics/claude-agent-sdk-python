@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.2.116
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.207
+- Fixed CI workspace trust so Claude Code honors project-scoped permission grants in checkout directories (#1085)
+
+## 0.2.115
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.206
+
+## 0.2.114
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.205
+
+## 0.2.113
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.204
+
+## 0.2.112
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.203
+
+## 0.2.111
+
+### Bug Fixes
+
+- **Zombie CLI subprocess prevention**: Shielded subprocess cleanup from asyncio cancellation so `SIGTERM`/`SIGKILL` teardown always runs, preventing orphaned `claude` child processes when the parent task is cancelled (#1082)
+- **Silent whitespace loss on large NDJSON lines**: Fixed the NDJSON parser silently dropping whitespace when a single line exceeded the 64 KiB stream buffer, which could corrupt tool output or assistant message content (#1083)
+- **TypeError on non-dict message content**: Fixed an uncaught `TypeError` when the CLI emits a message whose `content` field is a plain string or other non-dict value instead of the expected list of content blocks (#1058)
+- **`can_use_tool` shadowed by `allowed_tools`**: Added a runtime warning when a `can_use_tool` callback is registered alongside `allowed_tools` or `bypassPermissions`, which silently prevents the callback from ever firing (#1081)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.202
+- Fixed e2e stderr test flakiness by running the query from a clean working directory (#1084)
+
 ## 0.2.110
 
 ### Internal/Other Changes

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.116
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.207
+- Fixed CI workspace trust so Claude Code honors project-scoped permission grants in checkout directories (#1085)
+
 ## 0.2.115
 
 ### Internal/Other Changes

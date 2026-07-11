@@ -116,12 +116,14 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     return UserMessage(
                         content=user_content_blocks,
                         uuid=uuid,
+                        timestamp=data.get("timestamp"),
                         parent_tool_use_id=parent_tool_use_id,
                         tool_use_result=tool_use_result,
                     )
                 return UserMessage(
                     content=data["message"]["content"],
                     uuid=uuid,
+                    timestamp=data.get("timestamp"),
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
                 )
@@ -199,6 +201,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data["message"].get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -219,6 +222,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             session_id=data["session_id"],
                             tool_use_id=data.get("tool_use_id"),
                             task_type=data.get("task_type"),
+                            timestamp=data.get("timestamp"),
                         )
                     case "task_progress":
                         return TaskProgressMessage(
@@ -231,6 +235,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             session_id=data["session_id"],
                             tool_use_id=data.get("tool_use_id"),
                             last_tool_name=data.get("last_tool_name"),
+                            timestamp=data.get("timestamp"),
                         )
                     case "task_notification":
                         return TaskNotificationMessage(
@@ -244,6 +249,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             session_id=data["session_id"],
                             tool_use_id=data.get("tool_use_id"),
                             usage=data.get("usage"),
+                            timestamp=data.get("timestamp"),
                         )
                     case "task_updated":
                         # Terminal task completion sometimes arrives only as a
@@ -276,11 +282,13 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             data=data,
                             key=data.get("key"),
                             error=data.get("error", ""),
+                            timestamp=data.get("timestamp"),
                         )
                     case _:
                         return SystemMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                         )
             except KeyError as e:
                 raise MessageParseError(
@@ -314,6 +322,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     errors=data.get("errors"),
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(

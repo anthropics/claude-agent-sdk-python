@@ -1,6 +1,7 @@
 """Message parser for Claude Code SDK responses."""
 
 import logging
+import os
 from typing import Any
 
 from .._errors import MessageParseError
@@ -151,6 +152,34 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))
                         case "thinking":
+                            if "signature" not in block:
+                                # Thinking blocks emitted by Anthropic models
+                                # always carry an encrypted ``signature`` used
+                                # for multi-turn round-tripping. A missing
+                                # ``signature`` almost always means the
+                                # upstream is an Anthropic-compatible (but
+                                # non-Anthropic) backend that doesn't generate
+                                # one. See issues #339, #949.
+                                if os.environ.get(
+                                    "CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING"
+                                ):
+                                    logger.warning(
+                                        "Dropping thinking block without "
+                                        "'signature' field "
+                                        "(CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING set)."
+                                    )
+                                    continue
+                                raise MessageParseError(
+                                    "Assistant message contains a 'thinking' "
+                                    "block without 'signature'. This usually "
+                                    "means the upstream is not an Anthropic "
+                                    "model — extended thinking from "
+                                    "non-Anthropic backends is unsupported. "
+                                    "Disable thinking on the upstream, or set "
+                                    "CLAUDE_AGENT_SDK_SKIP_UNSIGNED_THINKING=1 "
+                                    "to drop such blocks.",
+                                    data,
+                                )
                             content_blocks.append(
                                 ThinkingBlock(
                                     thinking=block["thinking"],

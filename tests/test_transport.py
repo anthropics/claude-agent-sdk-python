@@ -393,6 +393,50 @@ class TestSubprocessCLITransport:
         assert "--resume" in cmd
         assert "session-123" in cmd
 
+    def test_session_continuation_uses_latest_project_session(self):
+        """Test continuation resolves the latest session for the current cwd."""
+        transport = SubprocessCLITransport(
+            prompt="Continue from before",
+            options=make_options(
+                continue_conversation=True,
+                cwd="/tmp/project",
+            ),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.list_sessions"
+        ) as mock_list_sessions:
+            mock_session = Mock(session_id="550e8400-e29b-41d4-a716-446655440000")
+            mock_list_sessions.return_value = [mock_session]
+
+            cmd = transport._build_command()
+
+        mock_list_sessions.assert_called_once_with(directory="/tmp/project", limit=1)
+        assert "--continue" in cmd
+        assert "--resume" in cmd
+        idx = cmd.index("--resume")
+        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_session_continuation_skips_resume_when_no_prior_session(self):
+        """Test continuation without prior sessions does not add --resume."""
+        transport = SubprocessCLITransport(
+            prompt="Continue from before",
+            options=make_options(
+                continue_conversation=True,
+                cwd="/tmp/project",
+            ),
+        )
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.list_sessions",
+            return_value=[],
+        ) as mock_list_sessions:
+            cmd = transport._build_command()
+
+        mock_list_sessions.assert_called_once_with(directory="/tmp/project", limit=1)
+        assert "--continue" in cmd
+        assert "--resume" not in cmd
+
     def test_session_id(self):
         """Test custom session ID option."""
         transport = SubprocessCLITransport(

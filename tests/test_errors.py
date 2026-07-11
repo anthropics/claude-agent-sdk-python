@@ -23,6 +23,14 @@ class TestErrorTypes:
         error = CLINotFoundError("Claude Code not found")
         assert isinstance(error, ClaudeSDKError)
         assert "Claude Code not found" in str(error)
+        assert error.cli_path is None
+
+    def test_cli_not_found_error_with_path(self):
+        """Test CLINotFoundError stores cli_path and includes it in the message."""
+        error = CLINotFoundError("Claude Code not found", cli_path="/usr/bin/claude")
+        assert error.cli_path == "/usr/bin/claude"
+        assert "Claude Code not found" in str(error)
+        assert "/usr/bin/claude" in str(error)
 
     def test_connection_error(self):
         """Test CLIConnectionError."""

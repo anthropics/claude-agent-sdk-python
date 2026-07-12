@@ -54,6 +54,23 @@ async for message in query(prompt="Tell me a joke", options=options):
     print(message)
 ```
 
+For large system prompts, use the file form to avoid platform command-line
+argument limits:
+
+```python
+options = ClaudeAgentOptions(
+    system_prompt={
+        "type": "file",
+        "path": "/path/to/system-prompt.txt",
+    }
+)
+```
+
+On Linux, each command-line argument is subject to `MAX_ARG_STRLEN`
+(`32 × page size`), typically 128 KiB on systems with 4 KiB pages. The file
+form passes only the file path as an argument, rather than the prompt
+content, avoiding the per-argument limit for the prompt itself.
+
 ### Using Tools
 
 By default, Claude has access to the full [Claude Code toolset](https://code.claude.com/docs/en/settings#tools-available-to-claude) (Read, Write, Edit, Bash, and others). `allowed_tools` is a permission allowlist: listed tools are auto-approved, and unlisted tools fall through to `permission_mode` and `can_use_tool` for a decision. It does not remove tools from Claude's toolset. To block specific tools, use `disallowed_tools`. See the [permissions guide](https://platform.claude.com/docs/en/agent-sdk/permissions) for the full evaluation order.

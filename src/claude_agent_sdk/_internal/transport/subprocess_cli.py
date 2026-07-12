@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
+# After the CLI process exits, how long the stdout pipe must stay silent with
+# the reader parked on it before the reader is forcibly unblocked. See
+# _unblock_reader_on_exit.
+_EXIT_STREAM_GRACE_SECONDS = 2.0
+
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
 # prevents orphaned `claude` processes from leaking when callers crash or exit
@@ -130,6 +135,12 @@ class SubprocessCLITransport(Transport):
         self._stdin_stream: TextSendStream | None = None
         self._stderr_stream: TextReceiveStream | None = None
         self._stderr_task: TaskHandle | None = None
+        self._exit_watcher_task: TaskHandle | None = None
+        # Read-loop introspection for _unblock_reader_on_exit: whether the
+        # reader is currently parked awaiting a stdout chunk, and how many
+        # chunks it has consumed so far.
+        self._awaiting_stdout = False
+        self._stdout_chunks = 0
         self._ready = False
         self._exit_error: Exception | None = None  # Track process exit errors
         self._max_buffer_size = (
@@ -554,6 +565,10 @@ class SubprocessCLITransport(Transport):
                 # same pattern as Query._read_task.
                 self._stderr_task = spawn_detached(self._handle_stderr())
 
+            # Watch for process death so the read loop can't hang on a pipe
+            # kept open by orphaned CLI helper processes.
+            self._exit_watcher_task = spawn_detached(self._unblock_reader_on_exit())
+
             # Setup stdin for streaming (always used now)
             if self._process.stdin:
                 self._stdin_stream = TextSendStream(self._process.stdin)
@@ -621,6 +636,53 @@ class SubprocessCLITransport(Transport):
             # synchronous, so it is safe to run during cancellation unwind.
             emit(framer.flush())
 
+    async def _unblock_reader_on_exit(self) -> None:
+        """Force the stdout read loop to finish when the process is dead but
+        stdout never reaches EOF.
+
+        EOF is not a reliable process-death signal: helper processes spawned
+        by the CLI inherit its stdout pipe, and when the CLI exits without
+        reaping them (a crash, or the deliberate nonzero exit after a fatal
+        error) a surviving helper keeps the write end open. The read loop then
+        blocks forever and neither the trailing ProcessError nor end-of-stream
+        ever reaches consumers (#1110).
+
+        After the process exits, close the stdout stream once the reader has
+        been parked on a silent pipe for a full grace window. Both conditions
+        matter: a reader that is mid-drain or suspended at ``yield`` by
+        consumer backpressure (``_awaiting_stdout`` False) is left alone, and
+        a chunk arriving during the window (``_stdout_chunks`` moved) restarts
+        it — so output the CLI wrote before dying is never cut off. Closing
+        the stream sends the read loop through its existing
+        ``ClosedResourceError`` path into the normal exit-code check.
+        """
+        if self._process is None:
+            return
+        # Poll returncode rather than awaiting wait(): on the asyncio backend
+        # wait() itself is gated on the pipes disconnecting (the transport only
+        # finishes once every pipe protocol reports disconnected), so in
+        # exactly the scenario this watcher exists for, wait() blocks on the
+        # same orphan-held pipe as the read loop. returncode is set from the
+        # child-exit signal and becomes visible regardless of pipe holders.
+        while self._process.returncode is None:
+            await anyio.sleep(_EXIT_STREAM_GRACE_SECONDS)
+        prev_chunks = self._stdout_chunks
+        while True:
+            await anyio.sleep(_EXIT_STREAM_GRACE_SECONDS)
+            stream = self._stdout_stream
+            if stream is None:
+                return
+            if self._stdout_chunks == prev_chunks and self._awaiting_stdout:
+                break
+            prev_chunks = self._stdout_chunks
+        logger.debug(
+            "CLI process exited but stdout never reached EOF "
+            "(likely inherited by an orphaned child process); "
+            "closing the stream to unblock the reader"
+        )
+        with suppress(Exception):
+            await stream.aclose()
+
     async def close(self) -> None:
         """Close the transport and clean up resources.
 
@@ -660,6 +722,16 @@ class SubprocessCLITransport(Transport):
                 with suppress(Exception):
                     await self._stderr_task.wait()
             self._stderr_task = None
+
+            # Cancel the process-exit watcher (same pattern as stderr task)
+            if (
+                self._exit_watcher_task is not None
+                and not self._exit_watcher_task.done()
+            ):
+                self._exit_watcher_task.cancel()
+                with suppress(Exception):
+                    await self._exit_watcher_task.wait()
+            self._exit_watcher_task = None
 
             # Close stdin stream (hold the write lock to prevent a race with
             # concurrent writes). Bounded: a writer blocked on a full stdin
@@ -780,7 +852,19 @@ class SubprocessCLITransport(Transport):
                 )
 
         try:
-            async for chunk in self._stdout_stream:
+            stream_iter = aiter(self._stdout_stream)
+            while True:
+                # Flag the park-on-read state (and count chunks) so
+                # _unblock_reader_on_exit can tell an idle pipe apart from a
+                # reader suspended at `yield` by consumer backpressure.
+                self._awaiting_stdout = True
+                try:
+                    chunk = await anext(stream_iter)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    self._awaiting_stdout = False
+                self._stdout_chunks += 1
                 for line in framer.push(chunk):
                     guard(len(line))
                     data = _parse_stdout_line(line)
@@ -808,9 +892,15 @@ class SubprocessCLITransport(Transport):
         if data is not None:
             yield data
 
-        # Check process completion and handle errors
+        # Check process completion and handle errors. Prefer the already-set
+        # returncode: when _unblock_reader_on_exit closed the stream, wait()
+        # would block right here on the asyncio backend (it is gated on the
+        # same orphan-held pipe the watcher just detected — see that method).
         try:
-            returncode = await self._process.wait()
+            if self._process.returncode is not None:
+                returncode = self._process.returncode
+            else:
+                returncode = await self._process.wait()
         except Exception:
             returncode = -1
 

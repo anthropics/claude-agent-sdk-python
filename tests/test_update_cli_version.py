@@ -55,13 +55,31 @@ class TestAcceptedVersions:
             "2.1.195",
             "2.1.201",
             DEV_VERSION,
-            "1.2.3+build.4",
-            "0",
+            "1.2.3-beta.1",
+            "1.2.3-rc.1+build.4",
         ],
     )
     def test_round_trip(self, version_file: Path, version: str) -> None:
         update_cli_version.update_cli_version(version, version_file)
         assert import_version(version_file) == version
+
+    @pytest.mark.parametrize(
+        ("argument", "written"),
+        [
+            ("1.2.3\n", "1.2.3"),
+            ("1.2.3\r\n", "1.2.3"),
+            ("  2.1.201  ", "2.1.201"),
+            (f"{DEV_VERSION}\n", DEV_VERSION),
+        ],
+    )
+    def test_surrounding_whitespace_is_stripped_before_writing(
+        self, version_file: Path, argument: str, written: str
+    ) -> None:
+        """A version read out of a file arrives with a trailing newline. Strip
+        it -- and write the stripped value, not the raw one, so the newline
+        never lands inside the string literal."""
+        update_cli_version.update_cli_version(argument, version_file)
+        assert import_version(version_file) == written
 
     def test_docstring_and_shape_preserved(self, version_file: Path) -> None:
         update_cli_version.update_cli_version(DEV_VERSION, version_file)
@@ -92,8 +110,9 @@ class TestRejectedVersions:
             "1.0.0\\g<0>",
             "\\g<0>",
             "1.0.0\\n",
-            # Newlines: an extra source line in the generated module.
-            "1.0.0\n",
+            # Newlines *inside* the value: an extra source line in the
+            # generated module. (A merely trailing newline is stripped -- see
+            # TestAcceptedVersions.)
             "1.0.0\nimport os",
             "\n",
             # Empty and flag-shaped.
@@ -106,9 +125,19 @@ class TestRejectedVersions:
             "$(id)",
             "`id`",
             "1.0.0 2.0.0",
-            " 1.0.0",
+            " 1.0.0 2.0.0 ",
             "../../etc/passwd",
             ".1.2.3",
+            # Not versions at all: the old allowlist took these for concrete
+            # versions and pinned them into the file, deferring the failure to
+            # the wheel build.
+            "0",
+            "1.2",
+            "1.2.3.4",
+            "1.2.3+build.4",
+            "v2.1.207",
+            "next",
+            "beta",
         ],
     )
     def test_rejected_and_file_untouched(
@@ -118,20 +147,39 @@ class TestRejectedVersions:
             update_cli_version.update_cli_version(version, version_file)
         assert version_file.read_text() == ORIGINAL
 
-    def test_latest_is_rejected(self, version_file: Path) -> None:
-        """_cli_version.py must name one concrete build, never "latest".
+    @pytest.mark.parametrize("tag", ["latest", "stable", "LATEST", "Stable"])
+    def test_dist_tags_are_rejected(self, version_file: Path, tag: str) -> None:
+        """_cli_version.py must name one concrete build, never a moving tag.
 
         build-and-publish.yml builds five wheels on five runners, each of which
         independently runs build_wheel.py -> download_cli.py with this value.
-        "latest" would let the runners resolve different CLI builds into wheels
-        published under a single SDK version, and would leave _cli_version.py --
-        the only record of what shipped -- naming nothing. download_cli.py
-        accepts "latest" because CLAUDE_CLI_VERSION defaults to it for
-        unpinned local builds; that is a different question from what may be
-        pinned into the file.
+        A dist-tag would let the runners resolve different CLI builds into
+        wheels published under a single SDK version, and would leave
+        _cli_version.py -- the only record of what shipped -- naming nothing.
+        "stable" is the dangerous one: it passes the installer too, so before
+        this guard it silently pinned a moving tag and the build *succeeded*.
+        download_cli.py accepts the tags because CLAUDE_CLI_VERSION defaults to
+        "latest" for unpinned local builds; that is a different question from
+        what may be pinned into the file.
         """
-        with pytest.raises(ValueError, match="Invalid CLI version"):
-            update_cli_version.update_cli_version("latest", version_file)
+        with pytest.raises(ValueError, match="Invalid CLI version") as excinfo:
+            update_cli_version.update_cli_version(tag, version_file)
+
+        assert "moving dist-tag" in str(excinfo.value)
+        assert "not a concrete version" in str(excinfo.value)
+        assert version_file.read_text() == ORIGINAL
+
+    def test_leading_v_is_named_not_normalized(self, version_file: Path) -> None:
+        """It reached the file before, and failed at wheel-build time."""
+        with pytest.raises(ValueError) as excinfo:
+            update_cli_version.update_cli_version("v2.1.207", version_file)
+
+        assert "Did you mean '2.1.207'?" in str(excinfo.value)
+        assert version_file.read_text() == ORIGINAL
+
+    def test_unsupported_dist_tag_is_named(self, version_file: Path) -> None:
+        with pytest.raises(ValueError, match="not a supported dist-tag"):
+            update_cli_version.update_cli_version("next", version_file)
         assert version_file.read_text() == ORIGINAL
 
     def test_error_names_the_offending_value(self, version_file: Path) -> None:
@@ -161,7 +209,7 @@ class TestReplacementIsLiteral:
 
     @pytest.fixture
     def no_validation(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def accept(version: str, *, source: str, allow_latest: bool) -> str:
+        def accept(version: str, *, source: str, allow_dist_tag: bool) -> str:
             return version
 
         monkeypatch.setattr(
@@ -258,11 +306,21 @@ class TestCommandLine:
         assert result.stdout == ""
         assert self._target(cwd).read_text() == ORIGINAL
 
-    def test_latest_exits_nonzero_without_writing(self, cwd: Path) -> None:
-        result = self._run(cwd, "latest")
+    @pytest.mark.parametrize("tag", ["latest", "stable"])
+    def test_dist_tag_exits_nonzero_without_writing(self, cwd: Path, tag: str) -> None:
+        """`stable` used to pin cleanly and build cleanly -- against whatever
+        the tag happened to point at that day."""
+        result = self._run(cwd, tag)
 
         assert result.returncode == 1
         assert "not a concrete version" in result.stderr
+        assert self._target(cwd).read_text() == ORIGINAL
+
+    def test_leading_v_exits_nonzero_without_writing(self, cwd: Path) -> None:
+        result = self._run(cwd, "v2.1.207")
+
+        assert result.returncode == 1
+        assert "Did you mean '2.1.207'?" in result.stderr
         assert self._target(cwd).read_text() == ORIGINAL
 
     def test_missing_argument_prints_usage_to_stderr(self, cwd: Path) -> None:

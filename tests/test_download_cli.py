@@ -25,7 +25,13 @@ ENV_VAR = download_cli.INSTALL_VERSION_ENV_VAR
 
 
 class TestGetCliVersion:
-    """CLAUDE_CLI_VERSION must be 'latest' or a plain version token."""
+    """CLAUDE_CLI_VERSION must be a dist-tag or a concrete version.
+
+    The grammar mirrors the installer's own
+    (`stable|latest|N.N.N(-suffix)?`), narrowed: anything this accepts but the
+    installer rejects is an error deferred to install time, where it surfaces
+    behind a retry loop as a misleading download failure.
+    """
 
     def test_default_is_latest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDE_CLI_VERSION", raising=False)
@@ -35,16 +41,62 @@ class TestGetCliVersion:
         "version",
         [
             "latest",
+            "stable",
             "1.2.3",
             "2.1.195",
             DEV_VERSION,
-            "1.2.3+build.4",
-            "0",
+            "1.2.3-beta.1",
+            "1.2.3-rc.1+build.4",
         ],
     )
     def test_accepted(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
         assert download_cli.get_cli_version() == version
+
+    def test_stable_is_a_downloadable_dist_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`stable` is a moving tag the installer resolves, like `latest`.
+
+        Allowed here (a download resolves it at install time) and rejected by
+        update_cli_version.py (a pin must name one concrete build).
+        """
+        monkeypatch.setenv("CLAUDE_CLI_VERSION", "stable")
+        assert download_cli.get_cli_version() == "stable"
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("LATEST", "latest"),
+            ("Latest", "latest"),
+            ("STABLE", "stable"),
+            ("Stable", "stable"),
+        ],
+    )
+    def test_dist_tags_are_case_insensitive_and_normalized(
+        self, monkeypatch: pytest.MonkeyPatch, version: str, expected: str
+    ) -> None:
+        """ "LATEST" is the sentinel, not a mysterious "concrete version"."""
+        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
+        assert download_cli.get_cli_version() == expected
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("1.2.3\n", "1.2.3"),
+            ("1.2.3\r\n", "1.2.3"),
+            (" 1.2.3 ", "1.2.3"),
+            ("\tlatest\n", "latest"),
+            (f"  {DEV_VERSION}\r\n", DEV_VERSION),
+        ],
+    )
+    def test_surrounding_whitespace_is_stripped(
+        self, monkeypatch: pytest.MonkeyPatch, version: str, expected: str
+    ) -> None:
+        """A trailing newline from a file read or a CRLF checkout is
+        unambiguous in intent; the stripped value is what is used downstream."""
+        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
+        assert download_cli.get_cli_version() == expected
 
     @pytest.mark.parametrize(
         "version",
@@ -57,18 +109,60 @@ class TestGetCliVersion:
             "1.0.0 && id",
             "1.0.0 | id",
             "1.0.0\nid",
-            "1.0.0\n",
             "1.0.0 2.0.0",
             "$VERSION",
             "../../etc/passwd",
             "",
             ".1.2.3",
+            # Not versions at all -- the old allowlist took these for concrete
+            # versions and let the installer reject them 11 seconds later.
+            "0",
+            "1.2",
+            "1.2.3.4",
+            "1.2.3+build.4",  # the installer's grammar has no bare "+" suffix
+            "v2.1.207",
+            "next",
+            "beta",
+            "nightly",
         ],
     )
     def test_rejected(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
         with pytest.raises(ValueError, match="Invalid CLAUDE_CLI_VERSION"):
             download_cli.get_cli_version()
+
+    @pytest.mark.parametrize("version", ["v2.1.207", "V1.2.3"])
+    def test_leading_v_is_named_not_normalized(
+        self, monkeypatch: pytest.MonkeyPatch, version: str
+    ) -> None:
+        """The likeliest typo gets told what to type, and is never silently
+        rewritten into a different version than the caller asked for."""
+        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
+        with pytest.raises(ValueError) as excinfo:
+            download_cli.get_cli_version()
+
+        message = str(excinfo.value)
+        assert f"Did you mean {version[1:]!r}?" in message
+        assert "no leading 'v'" in message
+
+    @pytest.mark.parametrize("version", ["next", "beta", "nightly"])
+    def test_unsupported_dist_tag_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, version: str
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
+        with pytest.raises(ValueError) as excinfo:
+            download_cli.get_cli_version()
+
+        message = str(excinfo.value)
+        assert "not a supported dist-tag" in message
+        assert "'latest'" in message
+        assert "'stable'" in message
+
+    @pytest.mark.parametrize("version", ["2.1.207", DEV_VERSION, "1.0.0-alpha"])
+    def test_pattern_admits_every_published_version_shape(self, version: str) -> None:
+        """The tightened pattern is about false *accepts*; it must not start
+        rejecting anything real, releases or dev builds."""
+        assert download_cli.VERSION_PATTERN.fullmatch(version)
 
     def test_error_names_the_offending_value(
         self, monkeypatch: pytest.MonkeyPatch
@@ -220,6 +314,13 @@ class TestUnixInstall:
         assert bash_cmd[0] == "bash"
         assert len(bash_cmd) == 2
 
+    def test_stable_is_passed_as_an_argument(self) -> None:
+        """`latest` is the installer's default and so is expressed by passing
+        nothing; every other accepted value, `stable` included, is an argv
+        element the installer resolves."""
+        _, bash_cmd = _run_unix_download("stable")
+        assert bash_cmd == ["bash", bash_cmd[1], "stable"]
+
     @pytest.mark.parametrize("version", ["1.2.3", DEV_VERSION])
     def test_version_is_its_own_argv_element(self, version: str) -> None:
         """Regression guard: the version must never be interpolated into a
@@ -306,6 +407,77 @@ class TestUnixInstall:
         assert excinfo.value.code == 1
         # curl attempted 3 times, bash never reached.
         assert [call.args[0][0] for call in run.call_args_list] == ["curl"] * 3
+
+
+@pytest.mark.usefixtures("no_sleep")
+class TestArgumentRejectionIsNotRetried:
+    """An installer that rejects its arguments is not a flaky network.
+
+    The installer validates the version it is handed and answers a mismatch
+    with a usage line. Retrying that burns ~11s of backoff and then reports it
+    as "Error downloading CLI after 3 attempts", which reads like a download
+    failure. Same rationale as the shebang check: deterministic, so fail fast.
+    """
+
+    USAGE = b"Usage: install.sh [version|stable|latest]\n"
+
+    def _run_with_failing_bash(
+        self, stderr: bytes = USAGE, stdout: bytes = b""
+    ) -> list[list[str]]:
+        error = subprocess.CalledProcessError(1, ["bash"], output=stdout, stderr=stderr)
+
+        def fake_run(command: list[str], **kwargs: object) -> MagicMock:
+            if command[0] == "curl":
+                Path(command[command.index("-o") + 1]).write_bytes(b"#!/bin/bash\n")
+                return MagicMock()
+            raise error
+
+        with (
+            patch.object(download_cli.platform, "system", return_value="Linux"),
+            patch.object(download_cli.subprocess, "run", side_effect=fake_run) as run,
+            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        return [call.args[0][0] for call in run.call_args_list]
+
+    def test_usage_rejection_runs_bash_once(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert self._run_with_failing_bash() == ["curl", "bash"]
+
+        err = capsys.readouterr().err
+        assert "rejected its arguments" in err
+        assert "not a network failure" in err
+        assert "after 3 attempts" not in err
+
+    def test_usage_on_stdout_is_also_a_rejection(self) -> None:
+        """install.ps1 writes its usage line to stdout, not stderr."""
+        assert self._run_with_failing_bash(stderr=b"", stdout=b"Usage: ...\n") == [
+            "curl",
+            "bash",
+        ]
+
+    def test_a_real_install_failure_still_retries(self) -> None:
+        """Only the usage verdict short-circuits; a genuine failure keeps its
+        three attempts."""
+        commands = self._run_with_failing_bash(stderr=b"curl: (6) could not resolve\n")
+        assert commands == ["curl", "bash"] * download_cli.MAX_INSTALL_ATTEMPTS
+
+    @pytest.mark.parametrize(
+        ("stderr", "expected"),
+        [
+            (b"Usage: install.sh [version]", True),
+            (b"usage: install.ps1 <version>", True),
+            (b"error: unknown option", False),
+            (b"", False),
+        ],
+    )
+    def test_is_argument_rejection(self, stderr: bytes, expected: bool) -> None:
+        error = subprocess.CalledProcessError(1, ["bash"], output=b"", stderr=stderr)
+        assert download_cli.is_argument_rejection(error) is expected
 
 
 def _run_windows_download(version: str) -> Any:

@@ -33,11 +33,13 @@ def update_cli_version(new_version: str, version_path: Path | None = None) -> No
     # _cli_version.py is a real source file that gets imported, and the value
     # written here is later read back by build_wheel.py and passed to
     # download_cli.py. Validate before touching the file: an unvalidated value
-    # closes the string literal and injects arbitrary Python. "latest" is
-    # rejected -- unlike the download, which resolves it at install time, the
-    # pinned file has to name the one build that went into the wheels.
-    version_validation.validate_version(
-        new_version, source="CLI version", allow_latest=False
+    # closes the string literal and injects arbitrary Python. The moving
+    # dist-tags ("latest", "stable") are rejected -- unlike the download, which
+    # resolves them at install time, the pinned file has to name the one build
+    # that went into the wheels. Write the *validated* value: it is the input
+    # with surrounding whitespace stripped.
+    new_version = version_validation.validate_version(
+        new_version, source="CLI version", allow_dist_tag=False
     )
 
     if version_path is None:

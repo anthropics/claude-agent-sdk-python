@@ -15,6 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 # scripts/ is not a package. Running this file directly -- as build_wheel.py
 # does, via `python scripts/download_cli.py` -- already puts scripts/ on
@@ -40,13 +41,16 @@ MAX_INSTALL_ATTEMPTS = 3
 def get_cli_version() -> str:
     """Get the CLI version to download from environment or default.
 
+    Returns the stripped, dist-tag-normalized value -- use it, rather than the
+    raw environment string, for everything downstream.
+
     Raises:
-        ValueError: If CLAUDE_CLI_VERSION is set to something other than
-            "latest" or a value matching VERSION_PATTERN.
+        ValueError: If CLAUDE_CLI_VERSION is set to something other than a
+            dist-tag ("latest", "stable") or a value matching VERSION_PATTERN.
     """
     version = os.environ.get("CLAUDE_CLI_VERSION", "latest")
     return version_validation.validate_version(
-        version, source="CLAUDE_CLI_VERSION", allow_latest=True
+        version, source="CLAUDE_CLI_VERSION", allow_dist_tag=True
     )
 
 
@@ -116,6 +120,42 @@ def check_install_script(script_path: str) -> None:
         sys.exit(1)
 
 
+def _decode(stream: bytes | str | None) -> str:
+    """One captured stream as text. run_command() captures bytes; be tolerant."""
+    if stream is None:
+        return ""
+    if isinstance(stream, bytes):
+        return stream.decode(errors="replace")
+    return stream
+
+
+def _output_of(error: subprocess.CalledProcessError) -> str:
+    """The failed command's stdout and stderr, decoded, as one string."""
+    return f"{_decode(error.stdout)}\n{_decode(error.stderr)}"
+
+
+def is_argument_rejection(error: subprocess.CalledProcessError) -> bool:
+    """True when the installer rejected its arguments rather than failing to run.
+
+    install.sh and install.ps1 validate the version they are handed against
+    their own grammar -- roughly `stable|latest|N.N.N(-suffix)?` -- and answer a
+    mismatch by printing a usage line and exiting. Like the shebang check, that
+    verdict is deterministic: the same arguments fail the same way every time,
+    so retrying only burns the backoff and then reports the deterministic
+    rejection as "Error downloading CLI after 3 attempts", which reads like a
+    network problem. Fail fast instead.
+    """
+    return "usage:" in _output_of(error).lower()
+
+
+def _fail(headline: str, error: subprocess.CalledProcessError) -> NoReturn:
+    """Report a failed install command and exit."""
+    print(headline, file=sys.stderr)
+    print(f"stdout: {_decode(error.stdout)}", file=sys.stderr)
+    print(f"stderr: {_decode(error.stderr)}", file=sys.stderr)
+    sys.exit(1)
+
+
 def retry_install(attempt: Callable[[], None]) -> None:
     """Run an install attempt, retrying the whole attempt on command failure."""
     # Small jitter to stagger parallel matrix builds hitting the same endpoint
@@ -131,14 +171,19 @@ def retry_install(attempt: Callable[[], None]) -> None:
             attempt()
             return
         except subprocess.CalledProcessError as e:
-            if attempt_num == MAX_INSTALL_ATTEMPTS:
-                print(
-                    f"Error downloading CLI after {MAX_INSTALL_ATTEMPTS} attempts: {e}",
-                    file=sys.stderr,
+            if is_argument_rejection(e):
+                _fail(
+                    f"Error: the installer rejected its arguments (exit "
+                    f"{e.returncode}). This is not a network failure and will "
+                    f"not succeed on a retry.",
+                    e,
                 )
-                print(f"stdout: {e.stdout.decode()}", file=sys.stderr)
-                print(f"stderr: {e.stderr.decode()}", file=sys.stderr)
-                sys.exit(1)
+
+            if attempt_num == MAX_INSTALL_ATTEMPTS:
+                _fail(
+                    f"Error downloading CLI after {MAX_INSTALL_ATTEMPTS} attempts: {e}",
+                    e,
+                )
 
             delay = 2**attempt_num
             print(
@@ -164,6 +209,10 @@ def download_cli() -> None:
         # argument position expands to exactly one argument -- PowerShell does
         # not re-split or re-parse it -- which is the argv separation the Unix
         # path gets from `["bash", script, version]`.
+        # "latest" is the installer's own default, so it is expressed by
+        # passing no argument at all. Every other accepted value -- a concrete
+        # version, or the "stable" dist-tag -- is passed through the same
+        # argument path.
         install_env: dict[str, str] | None = None
         if version == "latest":
             install_cmd = [

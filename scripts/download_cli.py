@@ -129,11 +129,6 @@ def _decode(stream: bytes | str | None) -> str:
     return stream
 
 
-def _output_of(error: subprocess.CalledProcessError) -> str:
-    """The failed command's stdout and stderr, decoded, as one string."""
-    return f"{_decode(error.stdout)}\n{_decode(error.stderr)}"
-
-
 def is_argument_rejection(error: subprocess.CalledProcessError) -> bool:
     """True when the installer rejected its arguments rather than failing to run.
 
@@ -144,8 +139,12 @@ def is_argument_rejection(error: subprocess.CalledProcessError) -> bool:
     so retrying only burns the backoff and then reports the deterministic
     rejection as "Error downloading CLI after 3 attempts", which reads like a
     network problem. Fail fast instead.
+
+    install.ps1 prints its usage line to stdout and install.sh to stderr, so
+    both streams are searched.
     """
-    return "usage:" in _output_of(error).lower()
+    output = f"{_decode(error.stdout)}\n{_decode(error.stderr)}"
+    return "usage:" in output.lower()
 
 
 def _fail(headline: str, error: subprocess.CalledProcessError) -> NoReturn:

@@ -67,6 +67,13 @@ _DIST_TAG_SHAPED = re.compile(r"[A-Za-z][0-9A-Za-z-]*")
 _SUPPORTED_TAGS = ", ".join(repr(tag) for tag in DIST_TAGS)
 
 
+def _expected(allow_dist_tag: bool) -> str:
+    """The phrase naming what the caller should have passed instead."""
+    if allow_dist_tag:
+        return f"{_SUPPORTED_TAGS}, or a concrete version"
+    return "a concrete version"
+
+
 def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
     """Return the usable form of ``version``, or raise.
 
@@ -104,6 +111,11 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
             f"wheels. Expected a version matching {VERSION_PATTERN.pattern}"
         )
 
+    if VERSION_PATTERN.fullmatch(candidate):
+        return candidate
+
+    # Rejected from here on; what is left is choosing the most useful reason.
+
     # "v2.1.207" is the single most likely typo, and the installer rejects it.
     # Say so, rather than printing the pattern and leaving the reader to spot
     # the leading "v". Not normalized away: the caller asked for something we
@@ -115,24 +127,12 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
         )
 
     if _DIST_TAG_SHAPED.fullmatch(candidate):
-        expected = (
-            f"{_SUPPORTED_TAGS}, or a concrete version"
-            if allow_dist_tag
-            else "a concrete version"
-        )
         raise ValueError(
             f"Invalid {source}: {candidate!r} is not a supported dist-tag; "
-            f"use {expected}"
+            f"use {_expected(allow_dist_tag)}"
         )
 
-    if not VERSION_PATTERN.fullmatch(candidate):
-        expected = (
-            f"{_SUPPORTED_TAGS}, or a version"
-            if allow_dist_tag
-            else "a concrete version"
-        )
-        raise ValueError(
-            f"Invalid {source}: {version!r}. "
-            f"Expected {expected} matching {VERSION_PATTERN.pattern}"
-        )
-    return candidate
+    raise ValueError(
+        f"Invalid {source}: {version!r}. "
+        f"Expected {_expected(allow_dist_tag)} matching {VERSION_PATTERN.pattern}"
+    )

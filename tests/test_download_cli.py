@@ -4,7 +4,8 @@ import importlib.util
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -41,6 +42,10 @@ class TestGetCliVersion:
         "version",
         [
             "latest",
+            # `stable` is a moving tag the installer resolves, like `latest`:
+            # allowed here (a download resolves it at install time) and
+            # rejected by update_cli_version.py (a pin must name one concrete
+            # build).
             "stable",
             "1.2.3",
             "2.1.195",
@@ -52,17 +57,6 @@ class TestGetCliVersion:
     def test_accepted(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
         assert download_cli.get_cli_version() == version
-
-    def test_stable_is_a_downloadable_dist_tag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`stable` is a moving tag the installer resolves, like `latest`.
-
-        Allowed here (a download resolves it at install time) and rejected by
-        update_cli_version.py (a pin must name one concrete build).
-        """
-        monkeypatch.setenv("CLAUDE_CLI_VERSION", "stable")
-        assert download_cli.get_cli_version() == "stable"
 
     @pytest.mark.parametrize(
         ("version", "expected"),
@@ -228,7 +222,12 @@ def no_sleep() -> Iterator[None]:
         yield
 
 
-def _fake_curl(body: bytes = b"#!/bin/bash\necho install\n") -> object:
+SHEBANG_BODY = b"#!/bin/bash\necho install\n"
+
+_RunSideEffect = Callable[..., MagicMock]
+
+
+def _fake_curl(body: bytes = SHEBANG_BODY) -> _RunSideEffect:
     """A subprocess.run side effect that makes `curl -o PATH` write ``body``."""
 
     def side_effect(command: list[str], **kwargs: object) -> MagicMock:
@@ -239,17 +238,30 @@ def _fake_curl(body: bytes = b"#!/bin/bash\necho install\n") -> object:
     return side_effect
 
 
-def _run_unix_download(
-    version: str, body: bytes = b"#!/bin/bash\necho install\n"
-) -> list[list[str]]:
-    """Run download_cli() on the Unix path, returning the argv of each subprocess."""
+@contextmanager
+def _unix_install(
+    version: str, side_effect: _RunSideEffect | None = None
+) -> Iterator[MagicMock]:
+    """Pin download_cli() to the Unix path, yielding the patched subprocess.run.
+
+    ``side_effect`` defaults to a curl that writes a real shebang script; pass
+    one that raises to exercise a failing command.
+    """
     with (
         patch.object(download_cli.platform, "system", return_value="Linux"),
         patch.object(
-            download_cli.subprocess, "run", side_effect=_fake_curl(body)
+            download_cli.subprocess,
+            "run",
+            side_effect=side_effect or _fake_curl(),
         ) as mock_run,
         patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
     ):
+        yield mock_run
+
+
+def _run_unix_download(version: str, body: bytes = SHEBANG_BODY) -> list[list[str]]:
+    """Run download_cli() on the Unix path, returning the argv of each subprocess."""
+    with _unix_install(version, _fake_curl(body)) as mock_run:
         download_cli.download_cli()
     return [call.args[0] for call in mock_run.call_args_list]
 
@@ -294,13 +306,7 @@ class TestUnixInstall:
     def test_stdin_is_devnull(self) -> None:
         """install.sh runs `claude install`, which branches on `[ -t 0 ]`. The
         old `curl | bash` gave it a pipe; it must never inherit a real TTY."""
-        with (
-            patch.object(download_cli.platform, "system", return_value="Linux"),
-            patch.object(
-                download_cli.subprocess, "run", side_effect=_fake_curl()
-            ) as mock_run,
-            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
-        ):
+        with _unix_install("1.2.3") as mock_run:
             download_cli.download_cli()
 
         assert mock_run.call_args_list
@@ -341,13 +347,7 @@ class TestUnixInstall:
         assert bash_cmd == ["bash", bash_cmd[1], version]
 
     def test_never_uses_shell_true(self) -> None:
-        with (
-            patch.object(download_cli.platform, "system", return_value="Linux"),
-            patch.object(
-                download_cli.subprocess, "run", side_effect=_fake_curl()
-            ) as mock_run,
-            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
-        ):
+        with _unix_install("1.2.3") as mock_run:
             download_cli.download_cli()
 
         for call in mock_run.call_args_list:
@@ -369,11 +369,7 @@ class TestUnixInstall:
         """claude.ai serves HTTP 200 + HTML for unknown paths, which `curl -f`
         cannot detect. Such a body must never reach bash."""
         with (
-            patch.object(download_cli.platform, "system", return_value="Linux"),
-            patch.object(
-                download_cli.subprocess, "run", side_effect=_fake_curl(body)
-            ) as mock_run,
-            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
+            _unix_install("1.2.3", _fake_curl(body)) as mock_run,
             pytest.raises(SystemExit) as excinfo,
         ):
             download_cli.download_cli()
@@ -397,9 +393,7 @@ class TestUnixInstall:
             return MagicMock()
 
         with (
-            patch.object(download_cli.platform, "system", return_value="Linux"),
-            patch.object(download_cli.subprocess, "run", side_effect=fake_run) as run,
-            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
+            _unix_install("1.2.3", fake_run) as run,
             pytest.raises(SystemExit) as excinfo,
         ):
             download_cli.download_cli()
@@ -433,9 +427,7 @@ class TestArgumentRejectionIsNotRetried:
             raise error
 
         with (
-            patch.object(download_cli.platform, "system", return_value="Linux"),
-            patch.object(download_cli.subprocess, "run", side_effect=fake_run) as run,
-            patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": "1.2.3"}),
+            _unix_install("1.2.3", fake_run) as run,
             pytest.raises(SystemExit) as excinfo,
         ):
             download_cli.download_cli()

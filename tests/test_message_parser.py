@@ -410,6 +410,43 @@ class TestMessageParser:
         assert isinstance(message, AssistantMessage)
         assert message.usage is None
 
+    def test_parse_assistant_message_envelope_fields(self):
+        """stop_details / diagnostics / context_management survive the parse.
+
+        The CLI (observed v2.1.150) emits these inside the message envelope;
+        previously the parser silently dropped them (#1026).
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+                "stop_details": {"reason": "end_turn"},
+                "diagnostics": {"warnings": []},
+                "context_management": {"applied": False},
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.stop_details == {"reason": "end_turn"}
+        assert message.diagnostics == {"warnings": []}
+        assert message.context_management == {"applied": False}
+
+    def test_parse_assistant_message_envelope_fields_default_none(self):
+        """Older-CLI assistant frames parse with None for the envelope fields."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.stop_details is None
+        assert message.diagnostics is None
+        assert message.context_management is None
+
     def test_parse_valid_system_message(self):
         """Test parsing a valid system message."""
         data = {"type": "system", "subtype": "start"}
@@ -1166,6 +1203,49 @@ class TestMessageParser:
         assert message.api_error_status == 529
         assert message.is_error is True
         assert message.subtype == "success"
+
+    def test_parse_result_message_with_run_telemetry_fields(self):
+        """ResultMessage surfaces ttft_ms / terminal_reason / fast_mode_state.
+
+        The CLI (observed v2.1.150) emits these on the final result message;
+        previously the parser silently dropped them with no way for SDK
+        consumers to recover them (#1026). Values verbatim from a recorded
+        CLI session.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 8127,
+            "duration_api_ms": 7903,
+            "is_error": False,
+            "num_turns": 4,
+            "session_id": "session_telemetry",
+            "ttft_ms": 2806,
+            "terminal_reason": "completed",
+            "fast_mode_state": "off",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.ttft_ms == 2806
+        assert message.terminal_reason == "completed"
+        assert message.fast_mode_state == "off"
+
+    def test_parse_result_message_run_telemetry_defaults_none(self):
+        """Older-CLI result frames (no telemetry fields) parse with None defaults."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_old_cli",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.ttft_ms is None
+        assert message.terminal_reason is None
+        assert message.fast_mode_state is None
 
     def test_parse_result_message_success_no_errors(self):
         """Test that a successful result message has no errors field."""

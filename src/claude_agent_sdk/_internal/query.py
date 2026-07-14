@@ -303,8 +303,10 @@ class Query:
                     self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
+                        self._last_error_result_text = (
+                            "; ".join(errors)
+                            or message.get("result")
+                            or str(message.get("subtype", "unknown error"))
                         )
                     else:
                         self._last_error_result_text = None

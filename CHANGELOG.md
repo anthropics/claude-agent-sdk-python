@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.117
+
+### Bug Fixes
+
+- **Escaped untrusted fields in Slack issue notification workflow**: Fixed the Slack notification workflow to properly escape issue titles and usernames using `jq` instead of bash substitution, preventing malformed JSON payloads and mrkdwn injection from specially crafted issue titles (#1116)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.208
+
 ## 0.2.116
 
 ### Internal/Other Changes

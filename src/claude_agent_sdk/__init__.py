@@ -147,7 +147,8 @@ from .types import (
     ToolUseBlock,
     UserMessage,
     UserPromptSubmitHookInput,
-)
+
+    EffortLevel,)
 
 # MCP Server Support
 

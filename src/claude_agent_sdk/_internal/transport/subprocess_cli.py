@@ -291,7 +291,22 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--system-prompt", self._options.system_prompt])
         else:
             sp = self._options.system_prompt
-            if sp.get("type") == "file":
+            # Support list-of-content-blocks form for system_prompt (Anthropic API accepts this).
+            if isinstance(sp, list):
+                # Write JSON array to a temporary file and pass via --system-prompt-file so
+                # the CLI can forward the structured content as-is.
+                import tempfile
+
+                tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8")
+                json.dump(sp, tmp)
+                tmp.flush()
+                tmp.close()
+                # Ensure the temporary file is removed when the Python process exits
+                import atexit, os
+
+                atexit.register(lambda p=tmp.name: os.remove(p) if os.path.exists(p) else None)
+                cmd.extend(["--system-prompt-file", tmp.name])
+            elif sp.get("type") == "file":
                 cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
             elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(

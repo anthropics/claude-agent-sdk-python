@@ -66,6 +66,10 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    # tests/test_build_wheel.py, test_download_cli.py and test_update_cli_version.py
+    # load their subject out of scripts/ at import time, so an sdist that ships
+    # /tests without /scripts cannot even collect its own test suite.
+    "/scripts",
     "/examples",
     "/README.md",
     "/LICENSE",

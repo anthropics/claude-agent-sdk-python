@@ -15,6 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 # scripts/ is not a package. Running this file directly -- as build_wheel.py
 # does, via `python scripts/download_cli.py` -- already puts scripts/ on
@@ -35,6 +36,11 @@ VERSION_PATTERN = version_validation.VERSION_PATTERN
 # The Windows installer reads the version out of the environment under this
 # name instead of having it spliced into the PowerShell command text.
 INSTALL_VERSION_ENV_VAR = "CLAUDE_CLI_INSTALL_VERSION"
+
+# Where the downloaded PowerShell installer is written. Handed to PowerShell in
+# the environment for the same reason the version is: a temp path is not part
+# of the command text PowerShell parses.
+INSTALL_SCRIPT_ENV_VAR = "CLAUDE_CLI_INSTALL_SCRIPT"
 
 # How many times retry_install() runs an attempt before giving up.
 MAX_INSTALL_ATTEMPTS = 3
@@ -104,6 +110,17 @@ def run_command(command: list[str], env: dict[str, str] | None = None) -> None:
     )
 
 
+def _reject_install_script(script_path: str, reason: str) -> NoReturn:
+    """Report a downloaded installer we refuse to execute, and exit."""
+    head = Path(script_path).read_bytes()[:64]
+    print(
+        f"Error: downloaded install script {reason} (first bytes: {head!r}). "
+        f"Refusing to execute it.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def check_install_script(script_path: str) -> None:
     """Reject a downloaded install script that is not a shell script.
 
@@ -114,12 +131,27 @@ def check_install_script(script_path: str) -> None:
     with Path(script_path).open("rb") as f:
         magic = f.read(2)
     if magic != b"#!":
-        print(
-            f"Error: downloaded install script does not start with a shebang "
-            f"(first bytes: {magic!r}). Refusing to execute it.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        _reject_install_script(script_path, "does not start with a shebang")
+
+
+def check_powershell_install_script(script_path: str) -> None:
+    """Reject a downloaded install.ps1 that is not a PowerShell script.
+
+    The Windows counterpart of check_install_script(): the same HTTP 200 +
+    HTML body that `curl -f` cannot detect is also invisible to
+    Invoke-RestMethod, and would otherwise be parsed and executed by
+    PowerShell. A .ps1 has no shebang to check, so instead reject what the
+    error page actually is -- an XML/HTML document, whose first non-blank
+    character is '<' -- and an empty body, which is never a valid installer.
+    A wrong body is deterministic, so this fails fast instead of retrying.
+    """
+    body = Path(script_path).read_bytes()
+    # A UTF-8 BOM is legal in a .ps1 and common in PowerShell-authored files.
+    stripped = body.removeprefix(b"\xef\xbb\xbf").lstrip()
+    if not stripped:
+        _reject_install_script(script_path, "is empty")
+    if stripped.startswith(b"<"):
+        _reject_install_script(script_path, "looks like an HTML or XML document")
 
 
 def _decode(stream: bytes | str | None) -> str:
@@ -145,6 +177,18 @@ def retry_install(attempt: Callable[[], None]) -> None:
         try:
             attempt()
             return
+        except (FileNotFoundError, OSError) as e:
+            # The command could not be started at all: no `curl`, no `bash`, no
+            # `powershell` on PATH. Deterministic -- a second attempt cannot
+            # make the binary appear -- so fail immediately rather than
+            # sleeping through three of them and then blaming the download.
+            # The old `bash -c` form surfaced this as a plain exit 127; keep it
+            # just as legible now that the binaries are exec'd directly.
+            print(
+                f"Error: could not run the install command: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except subprocess.CalledProcessError as e:
             if attempt_num == MAX_INSTALL_ATTEMPTS:
                 print(
@@ -173,36 +217,55 @@ def download_cli() -> None:
 
     # Build install command based on platform
     if system == "Windows":
-        # Use PowerShell installer on Windows. The version is handed to
-        # PowerShell in the environment and referenced by name, so it is never
-        # part of the command text that PowerShell parses. `$env:NAME` in
-        # argument position expands to exactly one argument -- PowerShell does
-        # not re-split or re-parse it -- which is the argv separation the Unix
-        # path gets from `["bash", script, version]`.
+        # Use the PowerShell installer on Windows, downloaded to a file and
+        # checked before it is executed -- the same download / verify / execute
+        # sequence as the Unix path below, rather than piping the response body
+        # straight into `iex`.
+        #
+        # Both the script path and the version are handed to PowerShell in the
+        # environment and referenced by name, so neither is part of the command
+        # text that PowerShell parses. `$env:NAME` in argument position expands
+        # to exactly one argument -- PowerShell does not re-split or re-parse
+        # it -- which is the argv separation the Unix path gets from
+        # `["bash", script, version]`.
+        #
         # "latest" is the installer's own default, so it is expressed by
         # passing no argument at all. Every other accepted value -- a concrete
         # version, or the "stable" dist-tag -- is passed through the same
         # argument path.
-        install_env: dict[str, str] | None = None
-        if version == "latest":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ps_script_path = str(Path(tmpdir) / "install.ps1")
+
+            download_env = {**os.environ, INSTALL_SCRIPT_ENV_VAR: ps_script_path}
+            download_cmd = [
+                "powershell",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "$ProgressPreference = 'SilentlyContinue'; "
+                "Invoke-RestMethod -Uri https://claude.ai/install.ps1 "
+                f"-OutFile $env:{INSTALL_SCRIPT_ENV_VAR}",
+            ]
+
+            install_env = dict(download_env)
+            ps_install = f"& $env:{INSTALL_SCRIPT_ENV_VAR}"
+            if version != "latest":
+                ps_install += f" $env:{INSTALL_VERSION_ENV_VAR}"
+                install_env[INSTALL_VERSION_ENV_VAR] = version
             install_cmd = [
                 "powershell",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                "irm https://claude.ai/install.ps1 | iex",
+                ps_install,
             ]
-        else:
-            install_cmd = [
-                "powershell",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) "
-                f"$env:{INSTALL_VERSION_ENV_VAR}",
-            ]
-            install_env = {**os.environ, INSTALL_VERSION_ENV_VAR: version}
-        retry_install(lambda: run_command(install_cmd, env=install_env))
+
+            def windows_attempt() -> None:
+                run_command(download_cmd, env=download_env)
+                check_powershell_install_script(ps_script_path)
+                run_command(install_cmd, env=install_env)
+
+            retry_install(windows_attempt)
         return
 
     # Download install.sh to a file and run it directly rather than piping

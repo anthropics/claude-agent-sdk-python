@@ -439,22 +439,60 @@ class TestUnixInstall:
         assert "could not resolve" in err
 
 
-def _run_windows_download(version: str) -> Any:
-    """Run download_cli() on the Windows path, returning the single run() call."""
+SCRIPT_ENV_VAR = download_cli.INSTALL_SCRIPT_ENV_VAR
+
+PS_BODY = b"# install.ps1\nWrite-Host installing\n"
+
+
+def _fake_irm(body: bytes = PS_BODY) -> _RunSideEffect:
+    """A subprocess.run side effect making the download step write ``body``.
+
+    The Windows download step names its output file only in the environment, so
+    that is where the fake finds the path to write -- the same indirection the
+    real PowerShell command resolves.
+    """
+
+    def side_effect(command: list[str], **kwargs: Any) -> MagicMock:
+        env = kwargs.get("env") or {}
+        path = env.get(SCRIPT_ENV_VAR)
+        if path and "Invoke-RestMethod" in command[-1]:
+            Path(path).write_bytes(body)
+        return MagicMock()
+
+    return side_effect
+
+
+@contextmanager
+def _windows_install(
+    version: str, side_effect: _RunSideEffect | None = None
+) -> Iterator[MagicMock]:
+    """Pin download_cli() to the Windows path, yielding the patched run."""
     with (
         patch.object(download_cli.platform, "system", return_value="Windows"),
-        patch.object(download_cli.subprocess, "run") as mock_run,
+        patch.object(
+            download_cli.subprocess,
+            "run",
+            side_effect=side_effect or _fake_irm(),
+        ) as mock_run,
         patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
     ):
+        yield mock_run
+
+
+def _run_windows_download(version: str, body: bytes = PS_BODY) -> tuple[Any, Any]:
+    """Run download_cli() on Windows, returning its (download, install) calls."""
+    with _windows_install(version, _fake_irm(body)) as mock_run:
         download_cli.download_cli()
 
-    (call,) = mock_run.call_args_list
-    return call
+    download_call, install_call = mock_run.call_args_list
+    return download_call, install_call
 
 
 @pytest.mark.usefixtures("no_sleep")
 class TestWindowsInstall:
-    """The PowerShell branch routes through the same validation."""
+    """The PowerShell branch downloads install.ps1, checks the body, then runs
+    it -- the same download / verify / execute shape as the Unix path -- and
+    routes the version through the same validation."""
 
     def test_rejects_injected_version_before_running_anything(self) -> None:
         with (
@@ -470,12 +508,38 @@ class TestWindowsInstall:
 
         mock_run.assert_not_called()
 
+    def test_downloads_then_executes_script(self) -> None:
+        download_call, install_call = _run_windows_download("1.2.3")
+
+        download_cmd = download_call.args[0]
+        assert download_cmd[0] == "powershell"
+        assert (
+            "Invoke-RestMethod -Uri https://claude.ai/install.ps1" in (download_cmd[-1])
+        )
+
+        # The download writes install.ps1 into a temp dir; the install step runs
+        # that same file, both reaching it through the environment.
+        script_path = download_call.kwargs["env"][SCRIPT_ENV_VAR]
+        assert Path(script_path).name == "install.ps1"
+        assert install_call.kwargs["env"][SCRIPT_ENV_VAR] == script_path
+        assert install_call.args[0][-1].startswith(f"& $env:{SCRIPT_ENV_VAR}")
+
+    def test_script_path_is_never_in_the_powershell_command_text(self) -> None:
+        """A temp path can contain spaces (Windows: "C:\\Users\\Foo Bar\\..."),
+        so it goes through the environment too, never into the command text."""
+        download_call, install_call = _run_windows_download("1.2.3")
+
+        script_path = download_call.kwargs["env"][SCRIPT_ENV_VAR]
+        for call in (download_call, install_call):
+            for arg in call.args[0]:
+                assert script_path not in arg, f"script path interpolated into {arg!r}"
+
     def test_valid_version_reaches_powershell_command(self) -> None:
-        call = _run_windows_download(DEV_VERSION)
-        cmd = call.args[0]
+        _, install_call = _run_windows_download(DEV_VERSION)
+        cmd = install_call.args[0]
         assert cmd[0] == "powershell"
         assert cmd[-1].endswith(f"$env:{ENV_VAR}")
-        assert call.kwargs["stdin"] is subprocess.DEVNULL
+        assert install_call.kwargs["stdin"] is subprocess.DEVNULL
 
     @pytest.mark.parametrize("version", ["1.2.3", DEV_VERSION])
     def test_version_is_never_in_the_powershell_command_text(
@@ -483,16 +547,15 @@ class TestWindowsInstall:
     ) -> None:
         """Regression guard: the version must reach PowerShell through the
         environment, never spliced into the `-Command` string it parses."""
-        call = _run_windows_download(version)
-
-        for arg in call.args[0]:
-            assert version not in arg, f"version interpolated into {arg!r}"
+        for call in _run_windows_download(version):
+            for arg in call.args[0]:
+                assert version not in arg, f"version interpolated into {arg!r}"
 
     @pytest.mark.parametrize("version", ["1.2.3", DEV_VERSION])
     def test_version_is_carried_in_the_environment(self, version: str) -> None:
-        call = _run_windows_download(version)
+        _, install_call = _run_windows_download(version)
 
-        env = call.kwargs["env"]
+        env = install_call.kwargs["env"]
         assert env is not None, "PowerShell must be given an explicit environment"
         assert env[ENV_VAR] == version
         # The child still needs PATH, SystemRoot, etc. to run at all.
@@ -501,24 +564,157 @@ class TestWindowsInstall:
     def test_command_references_the_env_var_it_sets(self) -> None:
         """The name in the command text and the name in the environment are the
         same constant, so a rename cannot desynchronize them silently."""
-        call = _run_windows_download("1.2.3")
-        assert f"$env:{ENV_VAR}" in call.args[0][-1]
-        assert ENV_VAR in call.kwargs["env"]
+        _, install_call = _run_windows_download("1.2.3")
+        assert f"$env:{ENV_VAR}" in install_call.args[0][-1]
+        assert ENV_VAR in install_call.kwargs["env"]
 
-    def test_latest_uses_plain_installer(self) -> None:
-        call = _run_windows_download("latest")
-        assert call.args[0][-1] == "irm https://claude.ai/install.ps1 | iex"
+    def test_stdin_is_devnull(self) -> None:
+        for call in _run_windows_download("1.2.3"):
+            assert call.kwargs["stdin"] is subprocess.DEVNULL
 
     def test_latest_passes_no_version_argument(self) -> None:
         """`latest` invokes the installer with no argument at all -- not with an
         empty string -- and sets no version in the child's environment."""
-        call = _run_windows_download("latest")
+        _, install_call = _run_windows_download("latest")
 
-        command = call.args[0][-1]
-        assert "scriptblock" not in command
-        assert "$env:" not in command
-        # env=None inherits ours, so no version is injected there either.
-        assert call.kwargs["env"] is None
+        command = install_call.args[0][-1]
+        assert command == f"& $env:{SCRIPT_ENV_VAR}"
+        assert ENV_VAR not in command
+        assert ENV_VAR not in install_call.kwargs["env"]
+
+    def test_stable_is_passed_as_an_argument(self) -> None:
+        _, install_call = _run_windows_download("stable")
+        assert install_call.args[0][-1] == (f"& $env:{SCRIPT_ENV_VAR} $env:{ENV_VAR}")
+        assert install_call.kwargs["env"][ENV_VAR] == "stable"
+
+    def test_never_pipes_the_response_body_into_iex(self) -> None:
+        """Regression guard for the body-integrity gap: an unchecked body must
+        never be executed straight off the wire."""
+        for version in ("latest", "1.2.3"):
+            for call in _run_windows_download(version):
+                command = call.args[0][-1]
+                assert "iex" not in command
+                assert "scriptblock" not in command
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<!DOCTYPE html>\n<html><body>Not found</body></html>",
+            b"\n  <html>oops</html>",
+            b'<?xml version="1.0"?><Error/>',
+            b"",
+            b"   \n\t\n",
+        ],
+    )
+    def test_non_powershell_body_is_rejected_before_execution(
+        self, body: bytes, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """claude.ai answers unknown paths with HTTP 200 + HTML, which
+        Invoke-RestMethod cannot detect either. Such a body must never be run,
+        and -- being deterministic -- must not be retried."""
+        with (
+            _windows_install("1.2.3", _fake_irm(body)) as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        assert "Refusing to execute it" in capsys.readouterr().err
+        # The download ran once; the installer never, and nothing was retried.
+        assert len(mock_run.call_args_list) == 1
+
+    def test_powershell_body_is_executed(self) -> None:
+        """A body with a UTF-8 BOM -- legal, and common, in a real .ps1 -- is
+        not mistaken for a bad one."""
+        download_call, install_call = _run_windows_download(
+            "1.2.3", body=b"\xef\xbb\xbf# install.ps1\nWrite-Host hi\n"
+        )
+        assert "Invoke-RestMethod" in download_call.args[0][-1]
+        assert install_call.args[0][-1].startswith(f"& $env:{SCRIPT_ENV_VAR}")
+
+
+@pytest.mark.usefixtures("no_sleep")
+class TestMissingBinaryFailsFast:
+    """A command that cannot be started at all is deterministic.
+
+    The Unix path exec's `curl` and `bash` directly, so a missing binary raises
+    FileNotFoundError rather than exiting 127 through a shell. That must be a
+    one-line error and an exit 1 -- not a traceback, and not three attempts and
+    a misleading "Error downloading CLI after 3 attempts".
+    """
+
+    def _missing(self, name: str) -> _RunSideEffect:
+        def side_effect(command: list[str], **kwargs: object) -> MagicMock:
+            raise FileNotFoundError(2, "No such file or directory", name)
+
+        return side_effect
+
+    def test_missing_curl_is_not_retried(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            _unix_install("1.2.3", self._missing("curl")) as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        assert len(mock_run.call_args_list) == 1
+        err = capsys.readouterr().err
+        assert "could not run the install command" in err
+        assert "curl" in err
+        assert "after 3 attempts" not in err
+
+    def test_missing_bash_is_not_retried(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        curl = _fake_curl()
+
+        def side_effect(command: list[str], **kwargs: object) -> MagicMock:
+            if command[0] == "curl":
+                return curl(command, **kwargs)
+            raise FileNotFoundError(2, "No such file or directory", "bash")
+
+        with (
+            _unix_install("1.2.3", side_effect) as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        assert [call.args[0][0] for call in mock_run.call_args_list] == ["curl", "bash"]
+        assert "could not run the install command" in capsys.readouterr().err
+
+    def test_missing_powershell_is_not_retried(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            _windows_install("1.2.3", self._missing("powershell")) as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        assert len(mock_run.call_args_list) == 1
+        assert "could not run the install command" in capsys.readouterr().err
+
+    def test_other_os_errors_are_not_retried_either(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """PermissionError (a noexec tmpdir, say) is just as deterministic."""
+
+        def side_effect(command: list[str], **kwargs: object) -> MagicMock:
+            raise PermissionError(13, "Permission denied", "curl")
+
+        with (
+            _unix_install("1.2.3", side_effect) as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            download_cli.download_cli()
+
+        assert excinfo.value.code == 1
+        assert len(mock_run.call_args_list) == 1
+        assert "could not run the install command" in capsys.readouterr().err
 
 
 class TestCommandLine:

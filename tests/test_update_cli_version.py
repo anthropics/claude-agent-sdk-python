@@ -138,6 +138,10 @@ class TestRejectedVersions:
             "v2.1.207",
             "next",
             "beta",
+            # Case variants of the dist-tags: the installer's grammar is
+            # case-sensitive, so these are not tags it would resolve either.
+            "LATEST",
+            "Stable",
         ],
     )
     def test_rejected_and_file_untouched(
@@ -147,7 +151,7 @@ class TestRejectedVersions:
             update_cli_version.update_cli_version(version, version_file)
         assert version_file.read_text() == ORIGINAL
 
-    @pytest.mark.parametrize("tag", ["latest", "stable", "LATEST", "Stable"])
+    @pytest.mark.parametrize("tag", ["latest", "stable"])
     def test_dist_tags_are_rejected(self, version_file: Path, tag: str) -> None:
         """_cli_version.py must name one concrete build, never a moving tag.
 

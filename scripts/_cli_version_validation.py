@@ -56,8 +56,10 @@ import re
 # versions -- see the module docstring.
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.+-]+)?")
 
-# The moving tags the installer resolves at install time. Compared lowercased,
-# so "LATEST" is the sentinel rather than a mysterious "concrete version".
+# The moving tags the installer resolves at install time. Matched exactly:
+# install.sh's own grammar is case-sensitive, so "Latest" is not a tag it would
+# resolve, and accepting it here would widen what reaches a real network
+# install. "Latest" is rejected, with the lowercase spelling suggested.
 DIST_TAGS = ("latest", "stable")
 
 # Anything word-shaped that is not a version: "next", "beta", "nightly". Named
@@ -92,7 +94,7 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
             name the one concrete build that went into the wheels.
 
     Returns:
-        The stripped version, with a dist-tag normalized to lowercase.
+        The stripped version.
 
     Raises:
         ValueError: If ``version`` is neither an allowed dist-tag nor a
@@ -100,11 +102,11 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
     """
     candidate = version.strip()
 
-    # A dist-tag fails VERSION_PATTERN, so it is recognized by name -- and
-    # case-insensitively, so "LATEST" is not mistaken for something else.
-    if candidate.lower() in DIST_TAGS:
+    # A dist-tag fails VERSION_PATTERN, so it is recognized by name -- exactly,
+    # matching the installer's own case-sensitive grammar.
+    if candidate in DIST_TAGS:
         if allow_dist_tag:
-            return candidate.lower()
+            return candidate
         raise ValueError(
             f"Invalid {source}: {candidate!r} is a moving dist-tag, not a concrete "
             f"version. A pinned version must name the one build that goes into the "
@@ -115,6 +117,15 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
         return candidate
 
     # Rejected from here on; what is left is choosing the most useful reason.
+
+    # "Latest" is a tag the installer would not resolve either, so it is an
+    # error rather than something to normalize -- but name the spelling that
+    # works. Only where a tag is a legal answer at all; for a pin, the
+    # dist-tag-shaped branch below correctly says to use a concrete version.
+    if allow_dist_tag and candidate.lower() in DIST_TAGS:
+        raise ValueError(
+            f"Invalid {source}: {candidate!r}. Did you mean {candidate.lower()!r}?"
+        )
 
     # "v2.1.207" is the single most likely typo, and the installer rejects it.
     # Say so, rather than printing the pattern and leaving the reader to spot

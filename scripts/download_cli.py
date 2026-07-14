@@ -15,15 +15,17 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
 
 # scripts/ is not a package. Running this file directly -- as build_wheel.py
 # does, via `python scripts/download_cli.py` -- already puts scripts/ on
 # sys.path, but loading it by path (importlib.spec_from_file_location, as the
-# tests do) does not. Add it either way so the shared module resolves.
+# tests do) does not. Add it either way so the shared module resolves. Appended,
+# not prepended: the tests import this file by path, so the entry outlives the
+# import and would otherwise let a future scripts/json.py shadow the stdlib for
+# the whole pytest process.
 _SCRIPTS_DIR = str(Path(__file__).parent)
 if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+    sys.path.append(_SCRIPTS_DIR)
 
 import _cli_version_validation as version_validation  # noqa: E402
 
@@ -41,8 +43,8 @@ MAX_INSTALL_ATTEMPTS = 3
 def get_cli_version() -> str:
     """Get the CLI version to download from environment or default.
 
-    Returns the stripped, dist-tag-normalized value -- use it, rather than the
-    raw environment string, for everything downstream.
+    Returns the stripped value -- use it, rather than the raw environment
+    string, for everything downstream.
 
     Raises:
         ValueError: If CLAUDE_CLI_VERSION is set to something other than a
@@ -129,32 +131,6 @@ def _decode(stream: bytes | str | None) -> str:
     return stream
 
 
-def is_argument_rejection(error: subprocess.CalledProcessError) -> bool:
-    """True when the installer rejected its arguments rather than failing to run.
-
-    install.sh and install.ps1 validate the version they are handed against
-    their own grammar -- roughly `stable|latest|N.N.N(-suffix)?` -- and answer a
-    mismatch by printing a usage line and exiting. Like the shebang check, that
-    verdict is deterministic: the same arguments fail the same way every time,
-    so retrying only burns the backoff and then reports the deterministic
-    rejection as "Error downloading CLI after 3 attempts", which reads like a
-    network problem. Fail fast instead.
-
-    install.ps1 prints its usage line to stdout and install.sh to stderr, so
-    both streams are searched.
-    """
-    output = f"{_decode(error.stdout)}\n{_decode(error.stderr)}"
-    return "usage:" in output.lower()
-
-
-def _fail(headline: str, error: subprocess.CalledProcessError) -> NoReturn:
-    """Report a failed install command and exit."""
-    print(headline, file=sys.stderr)
-    print(f"stdout: {_decode(error.stdout)}", file=sys.stderr)
-    print(f"stderr: {_decode(error.stderr)}", file=sys.stderr)
-    sys.exit(1)
-
-
 def retry_install(attempt: Callable[[], None]) -> None:
     """Run an install attempt, retrying the whole attempt on command failure."""
     # Small jitter to stagger parallel matrix builds hitting the same endpoint
@@ -170,19 +146,14 @@ def retry_install(attempt: Callable[[], None]) -> None:
             attempt()
             return
         except subprocess.CalledProcessError as e:
-            if is_argument_rejection(e):
-                _fail(
-                    f"Error: the installer rejected its arguments (exit "
-                    f"{e.returncode}). This is not a network failure and will "
-                    f"not succeed on a retry.",
-                    e,
-                )
-
             if attempt_num == MAX_INSTALL_ATTEMPTS:
-                _fail(
+                print(
                     f"Error downloading CLI after {MAX_INSTALL_ATTEMPTS} attempts: {e}",
-                    e,
+                    file=sys.stderr,
                 )
+                print(f"stdout: {_decode(e.stdout)}", file=sys.stderr)
+                print(f"stderr: {_decode(e.stderr)}", file=sys.stderr)
+                sys.exit(1)
 
             delay = 2**attempt_num
             print(

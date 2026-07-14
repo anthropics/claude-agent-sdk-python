@@ -59,7 +59,7 @@ class TestGetCliVersion:
         assert download_cli.get_cli_version() == version
 
     @pytest.mark.parametrize(
-        ("version", "expected"),
+        ("version", "suggestion"),
         [
             ("LATEST", "latest"),
             ("Latest", "latest"),
@@ -67,12 +67,17 @@ class TestGetCliVersion:
             ("Stable", "stable"),
         ],
     )
-    def test_dist_tags_are_case_insensitive_and_normalized(
-        self, monkeypatch: pytest.MonkeyPatch, version: str, expected: str
+    def test_dist_tags_are_case_sensitive(
+        self, monkeypatch: pytest.MonkeyPatch, version: str, suggestion: str
     ) -> None:
-        """ "LATEST" is the sentinel, not a mysterious "concrete version"."""
+        """The installer's own grammar is case-sensitive, so "Latest" is not a
+        tag it would resolve. Reject it -- naming the spelling that works --
+        rather than quietly turning it into a live install."""
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
-        assert download_cli.get_cli_version() == expected
+        with pytest.raises(ValueError, match="Invalid CLAUDE_CLI_VERSION") as excinfo:
+            download_cli.get_cli_version()
+
+        assert f"Did you mean {suggestion!r}?" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("version", "expected"),
@@ -402,28 +407,20 @@ class TestUnixInstall:
         # curl attempted 3 times, bash never reached.
         assert [call.args[0][0] for call in run.call_args_list] == ["curl"] * 3
 
+    def test_a_failing_install_retries_the_whole_attempt(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A failing bash re-runs curl too: the script is re-downloaded, so a
+        truncated or half-written body is not reused across attempts."""
+        error = subprocess.CalledProcessError(
+            1, ["bash"], output=b"", stderr=b"curl: (6) could not resolve\n"
+        )
 
-@pytest.mark.usefixtures("no_sleep")
-class TestArgumentRejectionIsNotRetried:
-    """An installer that rejects its arguments is not a flaky network.
-
-    The installer validates the version it is handed and answers a mismatch
-    with a usage line. Retrying that burns ~11s of backoff and then reports it
-    as "Error downloading CLI after 3 attempts", which reads like a download
-    failure. Same rationale as the shebang check: deterministic, so fail fast.
-    """
-
-    USAGE = b"Usage: install.sh [version|stable|latest]\n"
-
-    def _run_with_failing_bash(
-        self, stderr: bytes = USAGE, stdout: bytes = b""
-    ) -> list[list[str]]:
-        error = subprocess.CalledProcessError(1, ["bash"], output=stdout, stderr=stderr)
+        curl = _fake_curl()
 
         def fake_run(command: list[str], **kwargs: object) -> MagicMock:
             if command[0] == "curl":
-                Path(command[command.index("-o") + 1]).write_bytes(b"#!/bin/bash\n")
-                return MagicMock()
+                return curl(command, **kwargs)
             raise error
 
         with (
@@ -433,43 +430,13 @@ class TestArgumentRejectionIsNotRetried:
             download_cli.download_cli()
 
         assert excinfo.value.code == 1
-        return [call.args[0][0] for call in run.call_args_list]
-
-    def test_usage_rejection_runs_bash_once(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        assert self._run_with_failing_bash() == ["curl", "bash"]
-
-        err = capsys.readouterr().err
-        assert "rejected its arguments" in err
-        assert "not a network failure" in err
-        assert "after 3 attempts" not in err
-
-    def test_usage_on_stdout_is_also_a_rejection(self) -> None:
-        """install.ps1 writes its usage line to stdout, not stderr."""
-        assert self._run_with_failing_bash(stderr=b"", stdout=b"Usage: ...\n") == [
+        assert [call.args[0][0] for call in run.call_args_list] == [
             "curl",
             "bash",
-        ]
-
-    def test_a_real_install_failure_still_retries(self) -> None:
-        """Only the usage verdict short-circuits; a genuine failure keeps its
-        three attempts."""
-        commands = self._run_with_failing_bash(stderr=b"curl: (6) could not resolve\n")
-        assert commands == ["curl", "bash"] * download_cli.MAX_INSTALL_ATTEMPTS
-
-    @pytest.mark.parametrize(
-        ("stderr", "expected"),
-        [
-            (b"Usage: install.sh [version]", True),
-            (b"usage: install.ps1 <version>", True),
-            (b"error: unknown option", False),
-            (b"", False),
-        ],
-    )
-    def test_is_argument_rejection(self, stderr: bytes, expected: bool) -> None:
-        error = subprocess.CalledProcessError(1, ["bash"], output=b"", stderr=stderr)
-        assert download_cli.is_argument_rejection(error) is expected
+        ] * download_cli.MAX_INSTALL_ATTEMPTS
+        err = capsys.readouterr().err
+        assert f"after {download_cli.MAX_INSTALL_ATTEMPTS} attempts" in err
+        assert "could not resolve" in err
 
 
 def _run_windows_download(version: str) -> Any:

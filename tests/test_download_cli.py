@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -244,24 +244,36 @@ def _fake_curl(body: bytes = SHEBANG_BODY) -> _RunSideEffect:
 
 
 @contextmanager
+def _install(
+    system: str, version: str, side_effect: _RunSideEffect
+) -> Iterator[MagicMock]:
+    """Pin download_cli() to one platform's path, yielding the patched run.
+
+    The two platform paths differ in what they run, not in how they are driven:
+    both are reached by fixing platform.system(), stubbing subprocess.run, and
+    putting the version in the environment. That harness lives here once.
+    """
+    with (
+        patch.object(download_cli.platform, "system", return_value=system),
+        patch.object(
+            download_cli.subprocess,
+            "run",
+            side_effect=side_effect,
+        ) as mock_run,
+        patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
+    ):
+        yield mock_run
+
+
 def _unix_install(
     version: str, side_effect: _RunSideEffect | None = None
-) -> Iterator[MagicMock]:
+) -> AbstractContextManager[MagicMock]:
     """Pin download_cli() to the Unix path, yielding the patched subprocess.run.
 
     ``side_effect`` defaults to a curl that writes a real shebang script; pass
     one that raises to exercise a failing command.
     """
-    with (
-        patch.object(download_cli.platform, "system", return_value="Linux"),
-        patch.object(
-            download_cli.subprocess,
-            "run",
-            side_effect=side_effect or _fake_curl(),
-        ) as mock_run,
-        patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
-    ):
-        yield mock_run
+    return _install("Linux", version, side_effect or _fake_curl())
 
 
 def _run_unix_download(version: str, body: bytes = SHEBANG_BODY) -> list[list[str]]:
@@ -462,21 +474,11 @@ def _fake_irm(body: bytes = PS_BODY) -> _RunSideEffect:
     return side_effect
 
 
-@contextmanager
 def _windows_install(
     version: str, side_effect: _RunSideEffect | None = None
-) -> Iterator[MagicMock]:
+) -> AbstractContextManager[MagicMock]:
     """Pin download_cli() to the Windows path, yielding the patched run."""
-    with (
-        patch.object(download_cli.platform, "system", return_value="Windows"),
-        patch.object(
-            download_cli.subprocess,
-            "run",
-            side_effect=side_effect or _fake_irm(),
-        ) as mock_run,
-        patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
-    ):
-        yield mock_run
+    return _install("Windows", version, side_effect or _fake_irm())
 
 
 def _run_windows_download(version: str, body: bytes = PS_BODY) -> tuple[Any, Any]:

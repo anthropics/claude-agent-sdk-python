@@ -289,13 +289,14 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
-If you're contributing to this project, run the initial setup script to install git hooks:
+If you're contributing to this project, see [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, lint/typecheck/test commands, and PR conventions. In short:
 
 ```bash
-./scripts/initial-setup.sh
+pip install -e ".[dev]"   # install dev dependencies
+./scripts/initial-setup.sh  # install git hooks
 ```
 
-This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+The setup script installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
 
 ### Building Wheels Locally
 

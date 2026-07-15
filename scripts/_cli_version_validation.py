@@ -76,6 +76,51 @@ def _expected(allow_dist_tag: bool) -> str:
     return "a concrete version"
 
 
+def _rejection(version: str, allow_dist_tag: bool) -> str:
+    """Why ``version`` is unusable -- the most specific reason that applies.
+
+    The caller prefixes "Invalid <source>: ", so each reason here reads as the
+    rest of that sentence.
+    """
+    candidate = version.strip()
+
+    # Reachable only when a tag is not a legal answer: validate_version()
+    # returns the tag otherwise.
+    if candidate in DIST_TAGS:
+        return (
+            f"{candidate!r} is a moving dist-tag, not a concrete version. A pinned "
+            f"version must name the one build that goes into the wheels. Expected "
+            f"a version matching {VERSION_PATTERN.pattern}"
+        )
+
+    # "Latest" is a tag the installer would not resolve either, so it is an
+    # error rather than something to normalize -- but name the spelling that
+    # works. Only where a tag is a legal answer at all; for a pin, the
+    # dist-tag-shaped branch below correctly says to use a concrete version.
+    if allow_dist_tag and candidate.lower() in DIST_TAGS:
+        return f"{candidate!r}. Did you mean {candidate.lower()!r}?"
+
+    # "v2.1.207" is the single most likely typo, and the installer rejects it.
+    # Say so, rather than printing the pattern and leaving the reader to spot
+    # the leading "v". Not normalized away: the caller asked for something we
+    # do not support, and silently installing a different string is worse.
+    if candidate[:1] in ("v", "V") and VERSION_PATTERN.fullmatch(candidate[1:]):
+        return f"{candidate!r}. Did you mean {candidate[1:]!r}? (no leading 'v')"
+
+    if _DIST_TAG_SHAPED.fullmatch(candidate):
+        return (
+            f"{candidate!r} is not a supported dist-tag; "
+            f"use {_expected(allow_dist_tag)}"
+        )
+
+    # Nothing recognizable. Name the raw value, not the stripped one: if the
+    # whitespace is the problem, the reader has to be able to see it.
+    return (
+        f"{version!r}. Expected {_expected(allow_dist_tag)} "
+        f"matching {VERSION_PATTERN.pattern}"
+    )
+
+
 def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
     """Return the usable form of ``version``, or raise.
 
@@ -104,46 +149,10 @@ def validate_version(version: str, *, source: str, allow_dist_tag: bool) -> str:
 
     # A dist-tag fails VERSION_PATTERN, so it is recognized by name -- exactly,
     # matching the installer's own case-sensitive grammar.
-    if candidate in DIST_TAGS:
-        if allow_dist_tag:
-            return candidate
-        raise ValueError(
-            f"Invalid {source}: {candidate!r} is a moving dist-tag, not a concrete "
-            f"version. A pinned version must name the one build that goes into the "
-            f"wheels. Expected a version matching {VERSION_PATTERN.pattern}"
-        )
+    if candidate in DIST_TAGS and allow_dist_tag:
+        return candidate
 
     if VERSION_PATTERN.fullmatch(candidate):
         return candidate
 
-    # Rejected from here on; what is left is choosing the most useful reason.
-
-    # "Latest" is a tag the installer would not resolve either, so it is an
-    # error rather than something to normalize -- but name the spelling that
-    # works. Only where a tag is a legal answer at all; for a pin, the
-    # dist-tag-shaped branch below correctly says to use a concrete version.
-    if allow_dist_tag and candidate.lower() in DIST_TAGS:
-        raise ValueError(
-            f"Invalid {source}: {candidate!r}. Did you mean {candidate.lower()!r}?"
-        )
-
-    # "v2.1.207" is the single most likely typo, and the installer rejects it.
-    # Say so, rather than printing the pattern and leaving the reader to spot
-    # the leading "v". Not normalized away: the caller asked for something we
-    # do not support, and silently installing a different string is worse.
-    if candidate[:1] in ("v", "V") and VERSION_PATTERN.fullmatch(candidate[1:]):
-        raise ValueError(
-            f"Invalid {source}: {candidate!r}. "
-            f"Did you mean {candidate[1:]!r}? (no leading 'v')"
-        )
-
-    if _DIST_TAG_SHAPED.fullmatch(candidate):
-        raise ValueError(
-            f"Invalid {source}: {candidate!r} is not a supported dist-tag; "
-            f"use {_expected(allow_dist_tag)}"
-        )
-
-    raise ValueError(
-        f"Invalid {source}: {version!r}. "
-        f"Expected {_expected(allow_dist_tag)} matching {VERSION_PATTERN.pattern}"
-    )
+    raise ValueError(f"Invalid {source}: {_rejection(version, allow_dist_tag)}")

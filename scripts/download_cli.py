@@ -45,6 +45,10 @@ INSTALL_SCRIPT_ENV_VAR = "CLAUDE_CLI_INSTALL_SCRIPT"
 # How many times retry_install() runs an attempt before giving up.
 MAX_INSTALL_ATTEMPTS = 3
 
+# What an unset CLAUDE_CLI_VERSION means, and -- being the installer's own
+# default -- the one value both install paths express by passing no argument.
+DEFAULT_VERSION = "latest"
+
 
 def get_cli_version() -> str:
     """Get the CLI version to download from environment or default.
@@ -56,7 +60,7 @@ def get_cli_version() -> str:
         ValueError: If CLAUDE_CLI_VERSION is set to something other than a
             dist-tag ("latest", "stable") or a value matching VERSION_PATTERN.
     """
-    version = os.environ.get("CLAUDE_CLI_VERSION", "latest")
+    version = os.environ.get("CLAUDE_CLI_VERSION", DEFAULT_VERSION)
     return version_validation.validate_version(
         version, source="CLAUDE_CLI_VERSION", allow_dist_tag=True
     )
@@ -144,13 +148,18 @@ def check_powershell_install_script(script_path: str) -> None:
     error page actually is -- an XML/HTML document, whose first non-blank
     character is '<' -- and an empty body, which is never a valid installer.
     A wrong body is deterministic, so this fails fast instead of retrying.
+
+    '<' on its own would be too blunt: a .ps1 may legitimately open with '<#',
+    the start of a block comment, which is where about_Comment_Based_Help puts
+    a script's help block. Exempt that one opener -- no HTML or XML document
+    begins with it.
     """
     body = Path(script_path).read_bytes()
     # A UTF-8 BOM is legal in a .ps1 and common in PowerShell-authored files.
     stripped = body.removeprefix(b"\xef\xbb\xbf").lstrip()
     if not stripped:
         _reject_install_script(script_path, "is empty")
-    if stripped.startswith(b"<"):
+    if stripped.startswith(b"<") and not stripped.startswith(b"<#"):
         _reject_install_script(script_path, "looks like an HTML or XML document")
 
 
@@ -177,7 +186,7 @@ def retry_install(attempt: Callable[[], None]) -> None:
         try:
             attempt()
             return
-        except (FileNotFoundError, OSError) as e:
+        except OSError as e:
             # The command could not be started at all: no `curl`, no `bash`, no
             # `powershell` on PATH. Deterministic -- a second attempt cannot
             # make the binary appear -- so fail immediately rather than
@@ -208,70 +217,55 @@ def retry_install(attempt: Callable[[], None]) -> None:
             time.sleep(delay)
 
 
-def download_cli() -> None:
-    """Download Claude Code CLI using the official install script."""
-    version = get_cli_version()
-    system = platform.system()
+def _powershell(command: str) -> list[str]:
+    """A PowerShell invocation of ``command``."""
+    return ["powershell", "-ExecutionPolicy", "Bypass", "-Command", command]
 
-    print(f"Downloading Claude Code CLI version: {version}")
 
-    # Build install command based on platform
-    if system == "Windows":
-        # Use the PowerShell installer on Windows, downloaded to a file and
-        # checked before it is executed -- the same download / verify / execute
-        # sequence as the Unix path below, rather than piping the response body
-        # straight into `iex`.
-        #
-        # Both the script path and the version are handed to PowerShell in the
-        # environment and referenced by name, so neither is part of the command
-        # text that PowerShell parses. `$env:NAME` in argument position expands
-        # to exactly one argument -- PowerShell does not re-split or re-parse
-        # it -- which is the argv separation the Unix path gets from
-        # `["bash", script, version]`.
-        #
-        # "latest" is the installer's own default, so it is expressed by
-        # passing no argument at all. Every other accepted value -- a concrete
-        # version, or the "stable" dist-tag -- is passed through the same
-        # argument path.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ps_script_path = str(Path(tmpdir) / "install.ps1")
+def _install_on_windows(version: str) -> None:
+    """Download install.ps1, check the body, then execute it.
 
-            download_env = {**os.environ, INSTALL_SCRIPT_ENV_VAR: ps_script_path}
-            download_cmd = [
-                "powershell",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "$ProgressPreference = 'SilentlyContinue'; "
-                "Invoke-RestMethod -Uri https://claude.ai/install.ps1 "
-                f"-OutFile $env:{INSTALL_SCRIPT_ENV_VAR}",
-            ]
+    The same download / verify / execute sequence as the Unix path, rather than
+    piping the response body straight into `iex`.
 
-            install_env = dict(download_env)
-            ps_install = f"& $env:{INSTALL_SCRIPT_ENV_VAR}"
-            if version != "latest":
-                ps_install += f" $env:{INSTALL_VERSION_ENV_VAR}"
-                install_env[INSTALL_VERSION_ENV_VAR] = version
-            install_cmd = [
-                "powershell",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                ps_install,
-            ]
+    Both the script path and the version are handed to PowerShell in the
+    environment and referenced by name, so neither is part of the command text
+    that PowerShell parses. `$env:NAME` in argument position expands to exactly
+    one argument -- PowerShell does not re-split or re-parse it -- which is the
+    argv separation the Unix path gets from `["bash", script, version]`.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = str(Path(tmpdir) / "install.ps1")
 
-            def windows_attempt() -> None:
-                run_command(download_cmd, env=download_env)
-                check_powershell_install_script(ps_script_path)
-                run_command(install_cmd, env=install_env)
+        download_env = {**os.environ, INSTALL_SCRIPT_ENV_VAR: script_path}
+        download_cmd = _powershell(
+            "$ProgressPreference = 'SilentlyContinue'; "
+            "Invoke-RestMethod -Uri https://claude.ai/install.ps1 "
+            f"-OutFile $env:{INSTALL_SCRIPT_ENV_VAR}"
+        )
 
-            retry_install(windows_attempt)
-        return
+        install_env = dict(download_env)
+        install_command = f"& $env:{INSTALL_SCRIPT_ENV_VAR}"
+        if version != DEFAULT_VERSION:
+            install_command += f" $env:{INSTALL_VERSION_ENV_VAR}"
+            install_env[INSTALL_VERSION_ENV_VAR] = version
+        install_cmd = _powershell(install_command)
 
-    # Download install.sh to a file and run it directly rather than piping
-    # curl into bash through a shell string: nothing is interpolated into a
-    # command line, and check=True sees curl's and bash's exit codes
-    # separately instead of only the last status of a pipeline.
+        def attempt() -> None:
+            run_command(download_cmd, env=download_env)
+            check_powershell_install_script(script_path)
+            run_command(install_cmd, env=install_env)
+
+        retry_install(attempt)
+
+
+def _install_on_unix(version: str) -> None:
+    """Download install.sh, check the body, then execute it.
+
+    Run directly rather than piped from curl through a shell string: nothing is
+    interpolated into a command line, and check=True sees curl's and bash's
+    exit codes separately instead of only the last status of a pipeline.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = str(Path(tmpdir) / "install.sh")
 
@@ -291,7 +285,7 @@ def download_cli() -> None:
             "https://claude.ai/install.sh",
         ]
         bash_cmd = ["bash", script_path]
-        if version != "latest":
+        if version != DEFAULT_VERSION:
             bash_cmd.append(version)
 
         def attempt() -> None:
@@ -300,6 +294,22 @@ def download_cli() -> None:
             run_command(bash_cmd)
 
         retry_install(attempt)
+
+
+def download_cli() -> None:
+    """Download Claude Code CLI using the official install script.
+
+    Both platform paths pass "latest" by passing no argument at all: it is the
+    installer's own default. Every other accepted value -- a concrete version,
+    or the "stable" dist-tag -- goes through the argument path.
+    """
+    version = get_cli_version()
+    print(f"Downloading Claude Code CLI version: {version}")
+
+    if platform.system() == "Windows":
+        _install_on_windows(version)
+    else:
+        _install_on_unix(version)
 
 
 def copy_cli_to_bundle() -> None:

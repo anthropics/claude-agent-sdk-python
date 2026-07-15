@@ -6,13 +6,10 @@ import re
 import sys
 from pathlib import Path
 
-# scripts/ is not a package. Running this file directly -- `python
-# scripts/update_cli_version.py 1.2.3` -- already puts scripts/ on sys.path,
-# but loading it by path (importlib.spec_from_file_location, as the tests do)
-# does not. Add it either way so the shared module resolves. Appended, not
-# prepended: the tests import this file by path, so the entry outlives the
-# import and would otherwise let a future scripts/json.py shadow the stdlib for
-# the whole pytest process.
+# scripts/ is not a package. Running this file directly already puts scripts/ on
+# sys.path, but loading it by path (importlib.spec_from_file_location, as the
+# tests do) does not. Add it either way so the shared module resolves. Appended,
+# not prepended, for the reason spelled out in download_cli.py.
 _SCRIPTS_DIR = str(Path(__file__).parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.append(_SCRIPTS_DIR)

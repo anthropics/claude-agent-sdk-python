@@ -623,12 +623,23 @@ class TestWindowsInstall:
         # The download ran once; the installer never, and nothing was retried.
         assert len(mock_run.call_args_list) == 1
 
-    def test_powershell_body_is_executed(self) -> None:
-        """A body with a UTF-8 BOM -- legal, and common, in a real .ps1 -- is
-        not mistaken for a bad one."""
-        download_call, install_call = _run_windows_download(
-            "1.2.3", body=b"\xef\xbb\xbf# install.ps1\nWrite-Host hi\n"
-        )
+    @pytest.mark.parametrize(
+        "body",
+        [
+            PS_BODY,
+            # A UTF-8 BOM is legal, and common, in a real .ps1.
+            b"\xef\xbb\xbf# install.ps1\nWrite-Host hi\n",
+            # A block comment opens with '<' -- and about_Comment_Based_Help
+            # puts exactly such a help block at the top of a script, ahead of
+            # param(), which is what real installers do. The '<' check must not
+            # mistake it for an HTML error page.
+            b"<#\n.SYNOPSIS\nInstalls Claude Code.\n#>\nparam([string]$Version)\n",
+            b"\xef\xbb\xbf\r\n<#\n.SYNOPSIS\nInstalls Claude Code.\n#>\n",
+        ],
+    )
+    def test_powershell_body_is_executed(self, body: bytes) -> None:
+        """A valid installer body reaches PowerShell."""
+        download_call, install_call = _run_windows_download("1.2.3", body=body)
         assert "Invoke-RestMethod" in download_call.args[0][-1]
         assert install_call.args[0][-1].startswith(f"& $env:{SCRIPT_ENV_VAR}")
 

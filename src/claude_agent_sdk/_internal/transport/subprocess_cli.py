@@ -349,11 +349,16 @@ class SubprocessCLITransport(Transport):
         if self._options.continue_conversation:
             cmd.append("--continue")
 
+        # Pass these as --flag=value rather than as two argv tokens. The CLI
+        # declares --resume with an optional value, so in the two-token form a
+        # dash-leading value is not bound to the flag and is instead parsed as
+        # a separate CLI flag -- letting an untrusted value inject arbitrary
+        # flags. The equals form always binds the value to the flag.
         if self._options.resume:
-            cmd.extend(["--resume", self._options.resume])
+            cmd.append(f"--resume={self._options.resume}")
 
         if self._options.session_id:
-            cmd.extend(["--session-id", self._options.session_id])
+            cmd.append(f"--session-id={self._options.session_id}")
 
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()

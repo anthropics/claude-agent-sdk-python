@@ -101,6 +101,48 @@ class TestSubprocessCLITransport:
         transport = SubprocessCLITransport(prompt="test", options=make_options())
         assert "--strict-mcp-config" not in transport._build_command()
 
+    def test_build_command_resume_and_session_id(self):
+        """Test that resume and session_id are passed as --flag=value."""
+        session_id = "8f8b1c0e-2b1e-4a3f-9c2d-5e6f7a8b9c0d"
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(resume="abc123", session_id=session_id),
+        )
+        cmd = transport._build_command()
+
+        assert "--resume=abc123" in cmd
+        assert f"--session-id={session_id}" in cmd
+        # Never emitted as two separate argv tokens.
+        assert "--resume" not in cmd
+        assert "--session-id" not in cmd
+        assert "abc123" not in cmd
+        assert session_id not in cmd
+
+    def test_build_command_resume_and_session_id_do_not_inject_flags(self):
+        """Dash-leading values must not become standalone argv flags.
+
+        The CLI declares --resume with an optional value, so in the two-token
+        form (["--resume", value]) a dash-leading value is parsed as a separate
+        flag rather than as the option's value. Applications that route
+        untrusted input into these options would then let an attacker inject
+        arbitrary CLI flags. The --flag=value form binds the value to the flag,
+        and the CLI rejects it as an invalid session ID.
+        """
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(resume="--evil", session_id="-r"),
+        )
+        cmd = transport._build_command()
+
+        assert "--resume=--evil" in cmd
+        assert "--session-id=-r" in cmd
+        # The injected values never appear as standalone argv tokens...
+        assert "--evil" not in cmd
+        assert "-r" not in cmd
+        # ...nor do the bare flags that would let the next token detach.
+        assert "--resume" not in cmd
+        assert "--session-id" not in cmd
+
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
         from pathlib import Path
@@ -390,8 +432,7 @@ class TestSubprocessCLITransport:
 
         cmd = transport._build_command()
         assert "--continue" in cmd
-        assert "--resume" in cmd
-        assert "session-123" in cmd
+        assert "--resume=session-123" in cmd
 
     def test_session_id(self):
         """Test custom session ID option."""
@@ -401,9 +442,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--session-id" in cmd
-        idx = cmd.index("--session-id")
-        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+        assert "--session-id=550e8400-e29b-41d4-a716-446655440000" in cmd
 
     def test_session_id_not_set_by_default(self):
         """Test that --session-id is not passed when session_id is None."""
@@ -413,7 +452,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--session-id" not in cmd
+        assert not any(arg.startswith("--session-id") for arg in cmd)
 
     def test_connect_close(self):
         """Test connect and close lifecycle."""

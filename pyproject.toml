@@ -66,6 +66,10 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    # tests/test_build_wheel.py, test_download_cli.py and test_update_cli_version.py
+    # load their subject out of scripts/ at import time, so an sdist that ships
+    # /tests without /scripts cannot even collect its own test suite.
+    "/scripts",
     "/examples",
     "/README.md",
     "/LICENSE",
@@ -99,6 +103,12 @@ strict_equality = true
 # opentelemetry-api is an optional dependency (the [otel] extra); the
 # import in subprocess_cli.py is guarded by try/except ImportError.
 module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# twine is not a declared dependency (not even in the [dev] extra); the
+# import in scripts/build_wheel.py is guarded by try/except ImportError.
+module = ["twine"]
 ignore_missing_imports = true
 
 [tool.ruff]

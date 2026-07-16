@@ -7,6 +7,10 @@ on:
     paths:
       - 'scripts/build_wheel.py'
       - 'scripts/download_cli.py'
+      # Imported by download_cli.py: it decides which versions the build accepts.
+      - 'scripts/_cli_version_validation.py'
+      # The pin build_wheel.py reads to decide which CLI goes into the wheels.
+      - 'src/claude_agent_sdk/_cli_version.py'
       - '.github/workflows/build-and-publish.yml'
       - '.github/workflows/build-wheel-check.yml'
       - 'pyproject.toml'

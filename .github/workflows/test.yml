@@ -60,6 +60,12 @@ jobs:
 
       - name: Install Claude Code (Linux/macOS)
         if: runner.os == 'Linux' || runner.os == 'macOS'
+        # `shell: bash` runs with -eo pipefail. Without pipefail the pipeline
+        # takes its status from `bash`, which exits 0 on an empty script, so a
+        # failed `curl` shows up later as a confusing "claude: not found" in a
+        # different step. With it, the step that actually broke is the one that
+        # fails.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -159,6 +165,8 @@ jobs:
 
       - name: Install Claude Code (Linux)
         if: runner.os == 'Linux'
+        # `shell: bash` runs with -eo pipefail; see the note in the test job.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH

@@ -22,6 +22,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
+
+# scripts/ is not a package; see the note in download_cli.py.
+_SCRIPTS_DIR = str(Path(__file__).parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.append(_SCRIPTS_DIR)
+
+import _cli_version_validation as version_validation  # noqa: E402
 
 try:
     import twine  # noqa: F401
@@ -69,17 +77,48 @@ def update_version(version: str) -> None:
     )
 
 
-def get_bundled_cli_version() -> str:
-    """Get the CLI version that should be bundled from _cli_version.py."""
-    version_file = Path("src/claude_agent_sdk/_cli_version.py")
-    if not version_file.exists():
-        return "latest"
+CLI_VERSION_FILE = Path("src/claude_agent_sdk/_cli_version.py")
 
-    content = version_file.read_text()
-    match = re.search(r'__cli_version__ = "([^"]+)"', content)
-    if match:
-        return match.group(1)
-    return "latest"
+# The assignment update_cli_version.py writes.
+CLI_VERSION_PATTERN = re.compile(r'__cli_version__ = "([^"]+)"')
+
+
+def _fail_unpinned(reason: str) -> NoReturn:
+    """Report an unusable CLI pin and stop the build."""
+    print(
+        f"Error: cannot determine the CLI version to bundle: {reason}", file=sys.stderr
+    )
+    print(
+        f"Expected a concrete version in {CLI_VERSION_FILE} "
+        f'(written as `__cli_version__ = "2.1.207"`). '
+        f"Fix the pin, or pass --cli-version explicitly.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def get_bundled_cli_version() -> str:
+    """Get the CLI version that should be bundled from _cli_version.py.
+
+    Fails the build rather than falling back to a dist-tag: _cli_version.py is
+    the only record of which CLI build goes into the wheels, and each of the
+    release matrix's runners would resolve a moving "latest" independently.
+    """
+    if not CLI_VERSION_FILE.exists():
+        _fail_unpinned(f"{CLI_VERSION_FILE} does not exist")
+
+    match = CLI_VERSION_PATTERN.search(CLI_VERSION_FILE.read_text())
+    if not match:
+        _fail_unpinned(
+            f"no `{CLI_VERSION_PATTERN.pattern}` assignment found in {CLI_VERSION_FILE}"
+        )
+
+    try:
+        return version_validation.validate_version(
+            match.group(1), source=str(CLI_VERSION_FILE), allow_dist_tag=False
+        )
+    except ValueError as exc:
+        _fail_unpinned(str(exc))
 
 
 def download_cli(cli_version: str | None = None) -> None:

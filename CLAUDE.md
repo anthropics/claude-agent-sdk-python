@@ -3,11 +3,11 @@
 ```bash
 # Lint and style
 # Check for issues and fix automatically
-python -m ruff check src/ tests/ --fix
-python -m ruff format src/ tests/
+python -m ruff check src/ tests/ scripts/ --fix
+python -m ruff format src/ tests/ scripts/
 
-# Typecheck (only done for src/)
-python -m mypy src/
+# Typecheck
+python -m mypy src/ scripts/
 
 # Run all tests
 python -m pytest tests/

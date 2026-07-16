@@ -1290,7 +1290,8 @@ class HookEventMessage(SystemMessage):
     full raw payload is available in ``data``.
 
     These arrive on the wire as ``{"type": "system", "subtype":
-    "hook_started" | "hook_response", "hook_event": "PreToolUse", ...}``.
+    "hook_started" | "hook_progress" | "hook_response",
+    "hook_event": "PreToolUse", ...}``.
 
     Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
     ``case SystemMessage()`` checks continue to match. The base ``subtype``
@@ -1298,9 +1299,10 @@ class HookEventMessage(SystemMessage):
 
     Attributes:
         subtype: Lifecycle phase — ``"hook_started"`` when a hook begins
-            executing, ``"hook_response"`` when it completes (the latter
-            carries ``output``, ``exit_code``, and ``outcome`` keys in
-            ``data``).
+            executing, ``"hook_progress"`` for intermediate progress updates
+            (matching the TypeScript SDK's lifecycle), ``"hook_response"``
+            when it completes (the latter carries ``output``, ``exit_code``,
+            and ``outcome`` keys in ``data``).
         hook_event_name: Name of the hook event (e.g. ``"PreToolUse"``,
             ``"PostToolUse"``, ``"Stop"``).
         data: Full raw event dict from the CLI, including any

@@ -84,6 +84,7 @@ class Query:
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
+        include_hook_events: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -99,6 +100,10 @@ class Query:
                 initialize (see ``SystemPromptPreset``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
+            include_hook_events: When True, the CLI emits hook lifecycle
+                events (hook_started, hook_progress, hook_response) into the
+                message stream. Sent as ``includeHookEvents`` in the
+                initialize request to the CLI.
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -109,6 +114,7 @@ class Query:
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
         self._skills = skills
+        self._include_hook_events = include_hook_events
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -212,6 +218,9 @@ class Query:
         # only send the field when it's an explicit list.
         if isinstance(self._skills, list):
             request["skills"] = self._skills
+
+        if self._include_hook_events:
+            request["includeHookEvents"] = True
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

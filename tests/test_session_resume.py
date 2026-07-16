@@ -795,8 +795,8 @@ class TestClientIntegration:
         cmd = SubprocessCLITransport(
             prompt="x", options=transport_opts
         )._build_command()
-        assert "--resume" in cmd
-        assert cmd[cmd.index("--resume") + 1] == SESSION_ID
+        assert f"--resume={SESSION_ID}" in cmd
+        assert "--resume" not in cmd
         assert "--continue" not in cmd
 
         # Batcher points at the temp projects dir.

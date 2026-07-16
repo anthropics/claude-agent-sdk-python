@@ -1632,6 +1632,30 @@ class TestSubprocessCLITransport:
         assert network["httpProxyPort"] == 8080
         assert network["socksProxyPort"] == 8081
 
+    def test_sandbox_with_bwrap_extra_binds(self):
+        """Test sandbox with bwrapExtraBinds for additional container mounts."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "bwrapExtraBinds": ["/etc/hosts", "/etc/resolv.conf"],
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        assert parsed["sandbox"]["enabled"] is True
+        assert parsed["sandbox"]["bwrapExtraBinds"] == ["/etc/hosts", "/etc/resolv.conf"]
+
     def test_build_command_with_tools_array(self):
         """Test building CLI command with tools as array of tool names."""
         transport = SubprocessCLITransport(

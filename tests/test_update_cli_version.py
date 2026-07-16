@@ -75,8 +75,7 @@ class TestAcceptedVersions:
     def test_surrounding_whitespace_is_stripped_before_writing(
         self, version_file: Path, argument: str, written: str
     ) -> None:
-        """A version read out of a file arrives with a trailing newline. Strip
-        it -- and write the stripped value, not the raw one, so the newline
+        """The stripped value is written, so a trailing newline from a file read
         never lands inside the string literal."""
         update_cli_version.update_cli_version(argument, version_file)
         assert import_version(version_file) == written
@@ -155,16 +154,11 @@ class TestRejectedVersions:
     def test_dist_tags_are_rejected(self, version_file: Path, tag: str) -> None:
         """_cli_version.py must name one concrete build, never a moving tag.
 
-        build-and-publish.yml builds five wheels on five runners, each of which
-        independently runs build_wheel.py -> download_cli.py with this value.
-        A dist-tag would let the runners resolve different CLI builds into
-        wheels published under a single SDK version, and would leave
-        _cli_version.py -- the only record of what shipped -- naming nothing.
-        "stable" is the dangerous one: it passes the installer too, so before
-        this guard it silently pinned a moving tag and the build *succeeded*.
-        download_cli.py accepts the tags because CLAUDE_CLI_VERSION defaults to
-        "latest" for unpinned local builds; that is a different question from
-        what may be pinned into the file.
+        Five release runners each run build_wheel.py -> download_cli.py with
+        this value, so a dist-tag would let them resolve different CLI builds
+        into wheels published under one SDK version. "stable" is the dangerous
+        one: it passes the installer too, so before this guard it pinned a
+        moving tag and the build *succeeded*.
         """
         with pytest.raises(ValueError, match="Invalid CLI version") as excinfo:
             update_cli_version.update_cli_version(tag, version_file)

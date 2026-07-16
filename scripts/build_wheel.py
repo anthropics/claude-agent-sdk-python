@@ -24,10 +24,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-# scripts/ is not a package. Running this file directly already puts scripts/ on
-# sys.path, but loading it by path (importlib.spec_from_file_location, as the
-# tests do) does not. Add it either way so the shared module resolves. Appended,
-# not prepended, for the reason spelled out in download_cli.py.
+# scripts/ is not a package; see the note in download_cli.py.
 _SCRIPTS_DIR = str(Path(__file__).parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.append(_SCRIPTS_DIR)
@@ -103,12 +100,9 @@ def _fail_unpinned(reason: str) -> NoReturn:
 def get_bundled_cli_version() -> str:
     """Get the CLI version that should be bundled from _cli_version.py.
 
-    Fails the build rather than falling back to a dist-tag. _cli_version.py is
-    the only record of which CLI build goes into the wheels; defaulting to the
-    moving "latest" when the pin is missing, unparseable, or itself a dist-tag
-    would silently publish an unpinned -- and, across the release matrix,
-    potentially inconsistent -- set of wheels. update_cli_version.py refuses to
-    *write* a moving tag; this is the same rule on the read side.
+    Fails the build rather than falling back to a dist-tag: _cli_version.py is
+    the only record of which CLI build goes into the wheels, and each of the
+    release matrix's runners would resolve a moving "latest" independently.
     """
     if not CLI_VERSION_FILE.exists():
         _fail_unpinned(f"{CLI_VERSION_FILE} does not exist")

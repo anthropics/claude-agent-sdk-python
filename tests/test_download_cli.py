@@ -23,6 +23,7 @@ _spec.loader.exec_module(download_cli)
 
 DEV_VERSION = "2.1.146-dev.20260519.t105443.shaece3dab"
 ENV_VAR = download_cli.INSTALL_VERSION_ENV_VAR
+SCRIPT_ENV_VAR = download_cli.INSTALL_SCRIPT_ENV_VAR
 
 
 class TestGetCliVersion:
@@ -44,8 +45,7 @@ class TestGetCliVersion:
             "latest",
             # `stable` is a moving tag the installer resolves, like `latest`:
             # allowed here (a download resolves it at install time) and
-            # rejected by update_cli_version.py (a pin must name one concrete
-            # build).
+            # rejected by update_cli_version.py (a pin must name one build).
             "stable",
             "1.2.3",
             "2.1.195",
@@ -57,27 +57,6 @@ class TestGetCliVersion:
     def test_accepted(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
         assert download_cli.get_cli_version() == version
-
-    @pytest.mark.parametrize(
-        ("version", "suggestion"),
-        [
-            ("LATEST", "latest"),
-            ("Latest", "latest"),
-            ("STABLE", "stable"),
-            ("Stable", "stable"),
-        ],
-    )
-    def test_dist_tags_are_case_sensitive(
-        self, monkeypatch: pytest.MonkeyPatch, version: str, suggestion: str
-    ) -> None:
-        """The installer's own grammar is case-sensitive, so "Latest" is not a
-        tag it would resolve. Reject it -- naming the spelling that works --
-        rather than quietly turning it into a live install."""
-        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
-        with pytest.raises(ValueError, match="Invalid CLAUDE_CLI_VERSION") as excinfo:
-            download_cli.get_cli_version()
-
-        assert f"Did you mean {suggestion!r}?" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("version", "expected"),
@@ -92,70 +71,64 @@ class TestGetCliVersion:
     def test_surrounding_whitespace_is_stripped(
         self, monkeypatch: pytest.MonkeyPatch, version: str, expected: str
     ) -> None:
-        """A trailing newline from a file read or a CRLF checkout is
-        unambiguous in intent; the stripped value is what is used downstream."""
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
         assert download_cli.get_cli_version() == expected
 
     @pytest.mark.parametrize(
-        "version",
+        ("version", "expected_message"),
         [
-            "1.0.0; touch /tmp/pwned",
-            "--help",
-            "-s",
-            "$(id)",
-            "`id`",
-            "1.0.0 && id",
-            "1.0.0 | id",
-            "1.0.0\nid",
-            "1.0.0 2.0.0",
-            "$VERSION",
-            "../../etc/passwd",
-            "",
-            ".1.2.3",
+            # Injection and flag shapes.
+            ("1.0.0; touch /tmp/pwned", None),
+            ("--help", None),
+            ("-s", None),
+            ("$(id)", None),
+            ("`id`", None),
+            ("1.0.0 && id", None),
+            ("1.0.0 | id", None),
+            ("1.0.0\nid", None),
+            ("1.0.0 2.0.0", None),
+            ("$VERSION", None),
+            ("../../etc/passwd", None),
+            ("", None),
+            (".1.2.3", None),
             # Not versions at all -- the old allowlist took these for concrete
             # versions and let the installer reject them 11 seconds later.
-            "0",
-            "1.2",
-            "1.2.3.4",
-            "1.2.3+build.4",  # the installer's grammar has no bare "+" suffix
-            "v2.1.207",
-            "next",
-            "beta",
-            "nightly",
+            ("0", None),
+            ("1.2", None),
+            ("1.2.3.4", None),
+            ("1.2.3+build.4", None),  # the installer has no bare "+" suffix
+            # The likeliest typo is told what to type, never silently rewritten
+            # into a different version than the caller asked for.
+            ("v2.1.207", "Did you mean '2.1.207'? (no leading 'v')"),
+            ("V1.2.3", "Did you mean '1.2.3'? (no leading 'v')"),
+            # Word-shaped, but not a tag the installer resolves.
+            ("next", "not a supported dist-tag; use 'latest', 'stable'"),
+            ("beta", "not a supported dist-tag; use 'latest', 'stable'"),
+            ("nightly", "not a supported dist-tag; use 'latest', 'stable'"),
+            # The installer's grammar is case-sensitive, so "Latest" is not a
+            # tag it would resolve: reject it -- naming the spelling that works
+            # -- rather than quietly turning it into a live install.
+            ("LATEST", "Did you mean 'latest'?"),
+            ("Latest", "Did you mean 'latest'?"),
+            ("STABLE", "Did you mean 'stable'?"),
+            ("Stable", "Did you mean 'stable'?"),
         ],
     )
-    def test_rejected(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
-        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
-        with pytest.raises(ValueError, match="Invalid CLAUDE_CLI_VERSION"):
-            download_cli.get_cli_version()
-
-    @pytest.mark.parametrize("version", ["v2.1.207", "V1.2.3"])
-    def test_leading_v_is_named_not_normalized(
-        self, monkeypatch: pytest.MonkeyPatch, version: str
+    def test_rejected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        version: str,
+        expected_message: str | None,
     ) -> None:
-        """The likeliest typo gets told what to type, and is never silently
-        rewritten into a different version than the caller asked for."""
         monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
-        with pytest.raises(ValueError) as excinfo:
+        with pytest.raises(ValueError, match="Invalid CLAUDE_CLI_VERSION") as excinfo:
             download_cli.get_cli_version()
 
         message = str(excinfo.value)
-        assert f"Did you mean {version[1:]!r}?" in message
-        assert "no leading 'v'" in message
-
-    @pytest.mark.parametrize("version", ["next", "beta", "nightly"])
-    def test_unsupported_dist_tag_is_named(
-        self, monkeypatch: pytest.MonkeyPatch, version: str
-    ) -> None:
-        monkeypatch.setenv("CLAUDE_CLI_VERSION", version)
-        with pytest.raises(ValueError) as excinfo:
-            download_cli.get_cli_version()
-
-        message = str(excinfo.value)
-        assert "not a supported dist-tag" in message
-        assert "'latest'" in message
-        assert "'stable'" in message
+        # The offending value is always named, so the reader can see it.
+        assert repr(version) in message or version in message
+        if expected_message is not None:
+            assert expected_message in message
 
     @pytest.mark.parametrize("version", ["2.1.207", DEV_VERSION, "1.0.0-alpha"])
     def test_pattern_admits_every_published_version_shape(self, version: str) -> None:
@@ -163,29 +136,15 @@ class TestGetCliVersion:
         rejecting anything real, releases or dev builds."""
         assert download_cli.VERSION_PATTERN.fullmatch(version)
 
-    def test_error_names_the_offending_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("CLAUDE_CLI_VERSION", "1.0.0; id")
-        with pytest.raises(ValueError) as excinfo:
-            download_cli.get_cli_version()
-        assert "1.0.0; id" in str(excinfo.value)
-
     @pytest.mark.parametrize(
         "char",
         [" ", ";", "$", "`", '"', "'", "(", ")", "&", "|", "\n", "\r"],
     )
     def test_version_pattern_admits_no_shell_metacharacters(self, char: str) -> None:
-        """VERSION_PATTERN must never admit a shell metacharacter.
-
-        No install path depends on this any more: the Unix path passes the
-        version as its own argv element, and the Windows path hands it to
-        PowerShell in the environment rather than in the command text. The
-        allowlist is still the invariant we want -- a version that can express
-        `;` or `$` is not a version -- so keep it as defense in depth. Widening
-        the pattern (to permit `_` or `~`, say) must not let any of these
-        through.
-        """
+        """No install path depends on this any more -- the version is an argv
+        element on Unix and an environment variable on Windows -- but a version
+        that can express `;` or `$` is not a version. Keep it as defense in
+        depth: widening the pattern must not let any of these through."""
         assert not download_cli.VERSION_PATTERN.fullmatch(char)
         assert not download_cli.VERSION_PATTERN.fullmatch(f"1.2.3{char}")
         assert not download_cli.VERSION_PATTERN.fullmatch(f"1.2.3{char}whoami")
@@ -198,27 +157,6 @@ class TestGetCliVersion:
         assert "$" not in download_cli.VERSION_PATTERN.pattern
         assert not download_cli.VERSION_PATTERN.fullmatch("1.0.0\n")
 
-    def test_script_validates_when_run_directly(self, tmp_path: Path) -> None:
-        """build_wheel.py runs this file as a subprocess, so the shared
-        validation module must import without scripts/ being a package.
-
-        PATH is emptied so that if validation ever regresses this reaches a
-        missing `curl` instead of really installing the CLI; sys.executable is
-        absolute, so python itself still starts. The timeout bounds the retry
-        sleeps on that path.
-        """
-        script = Path(__file__).parent.parent / "scripts" / "download_cli.py"
-        result = subprocess.run(
-            [sys.executable, str(script)],
-            env=os.environ | {"CLAUDE_CLI_VERSION": "1.0.0; id", "PATH": str(tmp_path)},
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert result.returncode != 0
-        assert "Invalid CLAUDE_CLI_VERSION" in result.stderr
-        assert "ModuleNotFoundError" not in result.stderr
-
 
 @pytest.fixture
 def no_sleep() -> Iterator[None]:
@@ -228,6 +166,7 @@ def no_sleep() -> Iterator[None]:
 
 
 SHEBANG_BODY = b"#!/bin/bash\necho install\n"
+PS_BODY = b"# install.ps1\nWrite-Host installing\n"
 
 _RunSideEffect = Callable[..., MagicMock]
 
@@ -238,6 +177,24 @@ def _fake_curl(body: bytes = SHEBANG_BODY) -> _RunSideEffect:
     def side_effect(command: list[str], **kwargs: object) -> MagicMock:
         if command[0] == "curl" and "-o" in command:
             Path(command[command.index("-o") + 1]).write_bytes(body)
+        return MagicMock()
+
+    return side_effect
+
+
+def _fake_irm(body: bytes = PS_BODY) -> _RunSideEffect:
+    """A subprocess.run side effect making the download step write ``body``.
+
+    The Windows download step names its output file only in the environment, so
+    that is where the fake finds the path to write -- the same indirection the
+    real PowerShell command resolves.
+    """
+
+    def side_effect(command: list[str], **kwargs: Any) -> MagicMock:
+        env = kwargs.get("env") or {}
+        path = env.get(SCRIPT_ENV_VAR)
+        if path and "Invoke-RestMethod" in command[-1]:
+            Path(path).write_bytes(body)
         return MagicMock()
 
     return side_effect
@@ -255,25 +212,25 @@ def _install(
     """
     with (
         patch.object(download_cli.platform, "system", return_value=system),
-        patch.object(
-            download_cli.subprocess,
-            "run",
-            side_effect=side_effect,
-        ) as mock_run,
+        patch.object(download_cli.subprocess, "run", side_effect=side_effect) as run,
         patch.dict(download_cli.os.environ, {"CLAUDE_CLI_VERSION": version}),
     ):
-        yield mock_run
+        yield run
 
 
 def _unix_install(
     version: str, side_effect: _RunSideEffect | None = None
 ) -> AbstractContextManager[MagicMock]:
-    """Pin download_cli() to the Unix path, yielding the patched subprocess.run.
-
-    ``side_effect`` defaults to a curl that writes a real shebang script; pass
-    one that raises to exercise a failing command.
-    """
+    """Pin download_cli() to the Unix path; ``side_effect`` defaults to a curl
+    that writes a real shebang script."""
     return _install("Linux", version, side_effect or _fake_curl())
+
+
+def _windows_install(
+    version: str, side_effect: _RunSideEffect | None = None
+) -> AbstractContextManager[MagicMock]:
+    """Pin download_cli() to the Windows path, yielding the patched run."""
+    return _install("Windows", version, side_effect or _fake_irm())
 
 
 def _run_unix_download(version: str, body: bytes = SHEBANG_BODY) -> list[list[str]]:
@@ -281,6 +238,40 @@ def _run_unix_download(version: str, body: bytes = SHEBANG_BODY) -> list[list[st
     with _unix_install(version, _fake_curl(body)) as mock_run:
         download_cli.download_cli()
     return [call.args[0] for call in mock_run.call_args_list]
+
+
+def _run_windows_download(version: str, body: bytes = PS_BODY) -> tuple[Any, Any]:
+    """Run download_cli() on Windows, returning its (download, install) calls."""
+    with _windows_install(version, _fake_irm(body)) as mock_run:
+        download_cli.download_cli()
+
+    download_call, install_call = mock_run.call_args_list
+    return download_call, install_call
+
+
+@pytest.mark.usefixtures("no_sleep")
+@pytest.mark.parametrize(
+    ("installer", "side_effect"),
+    [(_unix_install, _fake_curl()), (_windows_install, _fake_irm())],
+    ids=["unix", "windows"],
+)
+def test_no_command_uses_a_shell_or_inherits_stdin(
+    installer: Callable[..., AbstractContextManager[MagicMock]],
+    side_effect: _RunSideEffect,
+) -> None:
+    """install.sh runs `claude install`, which branches on `[ -t 0 ]`. The old
+    `curl | bash` gave it a pipe; it must never inherit a real TTY. And nothing
+    may reintroduce a shell, on either platform."""
+    with installer("1.2.3", side_effect) as mock_run:
+        download_cli.download_cli()
+
+    assert mock_run.call_args_list
+    for call in mock_run.call_args_list:
+        assert call.kwargs["stdin"] is subprocess.DEVNULL, (
+            f"{call.args[0][0]} may inherit the caller's TTY"
+        )
+        assert call.kwargs.get("shell") is not True
+        assert call.kwargs["check"] is True
 
 
 @pytest.mark.usefixtures("no_sleep")
@@ -320,18 +311,6 @@ class TestUnixInstall:
             f"curl -{flag} missing from {curl_cmd!r}"
         )
 
-    def test_stdin_is_devnull(self) -> None:
-        """install.sh runs `claude install`, which branches on `[ -t 0 ]`. The
-        old `curl | bash` gave it a pipe; it must never inherit a real TTY."""
-        with _unix_install("1.2.3") as mock_run:
-            download_cli.download_cli()
-
-        assert mock_run.call_args_list
-        for call in mock_run.call_args_list:
-            assert call.kwargs["stdin"] is subprocess.DEVNULL, (
-                f"{call.args[0][0]} may inherit the caller's TTY"
-            )
-
     def test_latest_passes_no_version_argument(self) -> None:
         _, bash_cmd = _run_unix_download("latest")
         assert bash_cmd[0] == "bash"
@@ -362,14 +341,6 @@ class TestUnixInstall:
 
         bash_cmd = commands[-1]
         assert bash_cmd == ["bash", bash_cmd[1], version]
-
-    def test_never_uses_shell_true(self) -> None:
-        with _unix_install("1.2.3") as mock_run:
-            download_cli.download_cli()
-
-        for call in mock_run.call_args_list:
-            assert call.kwargs.get("shell") is not True
-            assert call.kwargs["check"] is True
 
     @pytest.mark.parametrize(
         "body",
@@ -451,45 +422,6 @@ class TestUnixInstall:
         assert "could not resolve" in err
 
 
-SCRIPT_ENV_VAR = download_cli.INSTALL_SCRIPT_ENV_VAR
-
-PS_BODY = b"# install.ps1\nWrite-Host installing\n"
-
-
-def _fake_irm(body: bytes = PS_BODY) -> _RunSideEffect:
-    """A subprocess.run side effect making the download step write ``body``.
-
-    The Windows download step names its output file only in the environment, so
-    that is where the fake finds the path to write -- the same indirection the
-    real PowerShell command resolves.
-    """
-
-    def side_effect(command: list[str], **kwargs: Any) -> MagicMock:
-        env = kwargs.get("env") or {}
-        path = env.get(SCRIPT_ENV_VAR)
-        if path and "Invoke-RestMethod" in command[-1]:
-            Path(path).write_bytes(body)
-        return MagicMock()
-
-    return side_effect
-
-
-def _windows_install(
-    version: str, side_effect: _RunSideEffect | None = None
-) -> AbstractContextManager[MagicMock]:
-    """Pin download_cli() to the Windows path, yielding the patched run."""
-    return _install("Windows", version, side_effect or _fake_irm())
-
-
-def _run_windows_download(version: str, body: bytes = PS_BODY) -> tuple[Any, Any]:
-    """Run download_cli() on Windows, returning its (download, install) calls."""
-    with _windows_install(version, _fake_irm(body)) as mock_run:
-        download_cli.download_cli()
-
-    download_call, install_call = mock_run.call_args_list
-    return download_call, install_call
-
-
 @pytest.mark.usefixtures("no_sleep")
 class TestWindowsInstall:
     """The PowerShell branch downloads install.ps1, checks the body, then runs
@@ -516,7 +448,7 @@ class TestWindowsInstall:
         download_cmd = download_call.args[0]
         assert download_cmd[0] == "powershell"
         assert (
-            "Invoke-RestMethod -Uri https://claude.ai/install.ps1" in (download_cmd[-1])
+            "Invoke-RestMethod -Uri https://claude.ai/install.ps1" in download_cmd[-1]
         )
 
         # The download writes install.ps1 into a temp dir; the install step runs
@@ -536,43 +468,26 @@ class TestWindowsInstall:
             for arg in call.args[0]:
                 assert script_path not in arg, f"script path interpolated into {arg!r}"
 
-    def test_valid_version_reaches_powershell_command(self) -> None:
-        _, install_call = _run_windows_download(DEV_VERSION)
-        cmd = install_call.args[0]
-        assert cmd[0] == "powershell"
-        assert cmd[-1].endswith(f"$env:{ENV_VAR}")
-        assert install_call.kwargs["stdin"] is subprocess.DEVNULL
-
     @pytest.mark.parametrize("version", ["1.2.3", DEV_VERSION])
-    def test_version_is_never_in_the_powershell_command_text(
+    def test_version_is_carried_in_the_environment_not_the_command_text(
         self, version: str
     ) -> None:
         """Regression guard: the version must reach PowerShell through the
-        environment, never spliced into the `-Command` string it parses."""
-        for call in _run_windows_download(version):
+        environment, never spliced into the `-Command` string it parses. The
+        name in the command text and the name in the environment are the same
+        constant, so a rename cannot desynchronize them silently."""
+        download_call, install_call = _run_windows_download(version)
+
+        for call in (download_call, install_call):
             for arg in call.args[0]:
                 assert version not in arg, f"version interpolated into {arg!r}"
-
-    @pytest.mark.parametrize("version", ["1.2.3", DEV_VERSION])
-    def test_version_is_carried_in_the_environment(self, version: str) -> None:
-        _, install_call = _run_windows_download(version)
 
         env = install_call.kwargs["env"]
         assert env is not None, "PowerShell must be given an explicit environment"
         assert env[ENV_VAR] == version
+        assert f"$env:{ENV_VAR}" in install_call.args[0][-1]
         # The child still needs PATH, SystemRoot, etc. to run at all.
         assert "CLAUDE_CLI_VERSION" in env
-
-    def test_command_references_the_env_var_it_sets(self) -> None:
-        """The name in the command text and the name in the environment are the
-        same constant, so a rename cannot desynchronize them silently."""
-        _, install_call = _run_windows_download("1.2.3")
-        assert f"$env:{ENV_VAR}" in install_call.args[0][-1]
-        assert ENV_VAR in install_call.kwargs["env"]
-
-    def test_stdin_is_devnull(self) -> None:
-        for call in _run_windows_download("1.2.3"):
-            assert call.kwargs["stdin"] is subprocess.DEVNULL
 
     def test_latest_passes_no_version_argument(self) -> None:
         """`latest` invokes the installer with no argument at all -- not with an
@@ -632,9 +547,9 @@ class TestWindowsInstall:
             # A UTF-8 BOM is legal, and common, in a real .ps1.
             b"\xef\xbb\xbf# install.ps1\nWrite-Host hi\n",
             # A block comment opens with '<' -- and about_Comment_Based_Help
-            # puts exactly such a help block at the top of a script, ahead of
-            # param(), which is what real installers do. The '<' check must not
-            # mistake it for an HTML error page.
+            # puts exactly such a help block at the top of a script, which is
+            # what real installers do. The '<' check must not mistake it for an
+            # HTML error page.
             b"<#\n.SYNOPSIS\nInstalls Claude Code.\n#>\nparam([string]$Version)\n",
             b"\xef\xbb\xbf\r\n<#\n.SYNOPSIS\nInstalls Claude Code.\n#>\n",
         ],
@@ -646,27 +561,44 @@ class TestWindowsInstall:
         assert install_call.args[0][-1].startswith(f"& $env:{SCRIPT_ENV_VAR}")
 
 
+def _raise(error: Exception) -> _RunSideEffect:
+    def side_effect(command: list[str], **kwargs: object) -> MagicMock:
+        raise error
+
+    return side_effect
+
+
 @pytest.mark.usefixtures("no_sleep")
 class TestMissingBinaryFailsFast:
     """A command that cannot be started at all is deterministic.
 
-    The Unix path exec's `curl` and `bash` directly, so a missing binary raises
+    The install commands are exec'd directly, so a missing binary raises
     FileNotFoundError rather than exiting 127 through a shell. That must be a
     one-line error and an exit 1 -- not a traceback, and not three attempts and
     a misleading "Error downloading CLI after 3 attempts".
     """
 
-    def _missing(self, name: str) -> _RunSideEffect:
-        def side_effect(command: list[str], **kwargs: object) -> MagicMock:
-            raise FileNotFoundError(2, "No such file or directory", name)
-
-        return side_effect
-
-    def test_missing_curl_is_not_retried(
-        self, capsys: pytest.CaptureFixture[str]
+    @pytest.mark.parametrize(
+        ("installer", "error"),
+        [
+            (_unix_install, FileNotFoundError(2, "No such file or directory", "curl")),
+            (
+                _windows_install,
+                FileNotFoundError(2, "No such file or directory", "powershell"),
+            ),
+            # A noexec tmpdir, say, is just as deterministic as a missing binary.
+            (_unix_install, PermissionError(13, "Permission denied", "curl")),
+        ],
+        ids=["missing-curl", "missing-powershell", "permission-denied"],
+    )
+    def test_first_command_failing_to_start_is_not_retried(
+        self,
+        installer: Callable[..., AbstractContextManager[MagicMock]],
+        error: Exception,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         with (
-            _unix_install("1.2.3", self._missing("curl")) as mock_run,
+            installer("1.2.3", _raise(error)) as mock_run,
             pytest.raises(SystemExit) as excinfo,
         ):
             download_cli.download_cli()
@@ -675,12 +607,12 @@ class TestMissingBinaryFailsFast:
         assert len(mock_run.call_args_list) == 1
         err = capsys.readouterr().err
         assert "could not run the install command" in err
-        assert "curl" in err
         assert "after 3 attempts" not in err
 
     def test_missing_bash_is_not_retried(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """The installer itself failing to start, after a successful download."""
         curl = _fake_curl()
 
         def side_effect(command: list[str], **kwargs: object) -> MagicMock:
@@ -698,81 +630,59 @@ class TestMissingBinaryFailsFast:
         assert [call.args[0][0] for call in mock_run.call_args_list] == ["curl", "bash"]
         assert "could not run the install command" in capsys.readouterr().err
 
-    def test_missing_powershell_is_not_retried(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        with (
-            _windows_install("1.2.3", self._missing("powershell")) as mock_run,
-            pytest.raises(SystemExit) as excinfo,
-        ):
-            download_cli.download_cli()
-
-        assert excinfo.value.code == 1
-        assert len(mock_run.call_args_list) == 1
-        assert "could not run the install command" in capsys.readouterr().err
-
-    def test_other_os_errors_are_not_retried_either(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """PermissionError (a noexec tmpdir, say) is just as deterministic."""
-
-        def side_effect(command: list[str], **kwargs: object) -> MagicMock:
-            raise PermissionError(13, "Permission denied", "curl")
-
-        with (
-            _unix_install("1.2.3", side_effect) as mock_run,
-            pytest.raises(SystemExit) as excinfo,
-        ):
-            download_cli.download_cli()
-
-        assert excinfo.value.code == 1
-        assert len(mock_run.call_args_list) == 1
-        assert "could not run the install command" in capsys.readouterr().err
-
 
 class TestCommandLine:
     """The script itself reports a bad version rather than raising through.
 
     build_wheel.py runs this file as `python scripts/download_cli.py`, so an
-    uncaught ValueError would surface as a traceback in a build log. Only the
-    rejected path is exercised here: it fails in get_cli_version() before any
-    curl or installer runs, so the test touches no network.
+    uncaught ValueError would surface as a traceback in a build log, and the
+    shared validation module has to import with scripts/ not a package.
+
+    Only rejected versions are exercised: they fail in get_cli_version() before
+    any curl or installer runs, so no test here touches the network. PATH is
+    emptied as a second belt -- if validation ever regressed, the run would hit
+    a missing `curl` rather than really installing the CLI.
     """
 
-    def _run(self, version: str) -> subprocess.CompletedProcess[str]:
+    def _run(self, tmp_path: Path, version: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCRIPT_PATH)],
-            env={**os.environ, "CLAUDE_CLI_VERSION": version},
+            env={**os.environ, "CLAUDE_CLI_VERSION": version, "PATH": str(tmp_path)},
             capture_output=True,
             text=True,
+            timeout=60,
         )
 
-    def test_invalid_version_exits_nonzero_without_a_traceback(self) -> None:
-        result = self._run("1.0.0; id")
+    def test_invalid_version_exits_nonzero_without_a_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, "1.0.0; id")
 
         assert result.returncode == 1
         assert "Invalid CLAUDE_CLI_VERSION" in result.stderr
         assert "Traceback" not in result.stderr
+        assert "ModuleNotFoundError" not in result.stderr
 
-    def test_error_names_the_offending_value(self) -> None:
+    def test_error_names_the_offending_value(self, tmp_path: Path) -> None:
         """Named in the one-line message, not merely in a traceback frame.
 
         Anchored to the start of a line: an uncaught raise renders the same
         text under `ValueError: `, which *contains* `Error: ` as a substring,
         so a plain `in` check would pass on the very traceback this guards
-        against. Scanning lines rather than stderr as a whole also keeps it
-        immune to any warning Python prints first.
+        against.
         """
-        stderr = self._run("1.0.0; id").stderr
+        stderr = self._run(tmp_path, "1.0.0; id").stderr
 
         (error_line,) = [
             line for line in stderr.splitlines() if line.startswith("Error: ")
         ]
         assert "1.0.0; id" in error_line
 
-    def test_nothing_is_installed_before_the_version_is_rejected(self) -> None:
+    def test_nothing_is_installed_before_the_version_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
         """The banner prints, then it bails -- no download is announced."""
-        result = self._run("--help")
+        result = self._run(tmp_path, "--help")
 
         assert result.returncode == 1
         assert "Downloading Claude Code CLI version" not in result.stdout

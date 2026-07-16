@@ -6,10 +6,7 @@ import re
 import sys
 from pathlib import Path
 
-# scripts/ is not a package. Running this file directly already puts scripts/ on
-# sys.path, but loading it by path (importlib.spec_from_file_location, as the
-# tests do) does not. Add it either way so the shared module resolves. Appended,
-# not prepended, for the reason spelled out in download_cli.py.
+# scripts/ is not a package; see the note in download_cli.py.
 _SCRIPTS_DIR = str(Path(__file__).parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.append(_SCRIPTS_DIR)
@@ -30,14 +27,10 @@ def update_cli_version(new_version: str, version_path: Path | None = None) -> No
             target file has no ``__cli_version__`` assignment to replace. The
             file is left untouched in both cases.
     """
-    # _cli_version.py is a real source file that gets imported, and the value
-    # written here is later read back by build_wheel.py and passed to
-    # download_cli.py. Validate before touching the file: an unvalidated value
-    # closes the string literal and injects arbitrary Python. The moving
-    # dist-tags ("latest", "stable") are rejected -- unlike the download, which
-    # resolves them at install time, the pinned file has to name the one build
-    # that went into the wheels. Write the *validated* value: it is the input
-    # with surrounding whitespace stripped.
+    # Validate before touching the file: this writes into a real source file
+    # that later gets imported, so an unvalidated value closes the string
+    # literal and injects arbitrary Python. The validated value is the input
+    # with surrounding whitespace stripped -- write that, not the raw input.
     new_version = version_validation.validate_version(
         new_version, source="CLI version", allow_dist_tag=False
     )
@@ -48,12 +41,8 @@ def update_cli_version(new_version: str, version_path: Path | None = None) -> No
 
     # json.dumps() rather than an f-string: it always emits a closed,
     # double-quoted, fully escaped literal, so a widened VERSION_PATTERN could
-    # never make this file unparseable or inject code. It is byte-identical to
-    # `"{new_version}"` for every version the pattern admits today. Note it is
-    # only a containment barrier: a version holding a quote would emit `"a\"b"`,
-    # which build_wheel.py's `"([^"]+)"` reader truncates to `a\` rather than
-    # round-tripping. repr() is not an option -- it emits single quotes, which
-    # that same reader would not match at all.
+    # never make this file unparseable or inject code. repr() is not an option
+    # -- it emits single quotes, which build_wheel.py's reader would not match.
     literal = f"__cli_version__ = {json.dumps(new_version)}"
 
     # A callable replacement, because re.sub() applies backslash-escape

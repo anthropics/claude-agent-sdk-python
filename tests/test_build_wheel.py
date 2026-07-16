@@ -74,11 +74,9 @@ def pinned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 class TestGetBundledCliVersion:
     """The CLI pin is the only record of which build goes into the wheels.
 
-    An unreadable pin must fail the build. Falling back to the moving "latest"
-    dist-tag -- which download_cli.py accepts -- would publish an unpinned set
-    of wheels, each of the five release runners resolving "latest"
-    independently. update_cli_version.py refuses to write a moving tag; this is
-    the same rule on the read side.
+    An unreadable pin must fail the build: falling back to the moving "latest"
+    -- which download_cli.py accepts -- would publish an unpinned set of wheels,
+    each of the five release runners resolving it independently.
     """
 
     def test_reads_the_pinned_version(self, pinned: Path) -> None:

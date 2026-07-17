@@ -175,7 +175,10 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
 
     # Main transcript: <project_key>/<session_id>.jsonl
     if len(parts) == 2 and second.endswith(".jsonl"):
-        return {"project_key": project_key, "session_id": second[: -len(".jsonl")]}
+        session_id = second[: -len(".jsonl")]
+        if not session_id:
+            return None
+        return {"project_key": project_key, "session_id": session_id}
 
     # Subagent transcript: <project_key>/<session_id>/subagents/.../agent-<id>.jsonl
     if len(parts) >= 4:
@@ -183,6 +186,8 @@ def file_path_to_session_key(file_path: str, projects_dir: str) -> SessionKey | 
         last = subpath_parts[-1]
         if last.endswith(".jsonl"):
             subpath_parts[-1] = last[: -len(".jsonl")]
+        if any(not part for part in subpath_parts):
+            return None
         # Subpaths are always /-joined regardless of os.sep so keys are
         # portable across platforms.
         return {

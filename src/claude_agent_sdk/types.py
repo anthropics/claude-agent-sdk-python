@@ -1024,7 +1024,14 @@ class UserMessage:
 
 @dataclass
 class AssistantMessage:
-    """Assistant message with content blocks."""
+    """Assistant message with content blocks.
+
+    The ``data`` field retains the full raw wire frame from the CLI so that
+    newer, unmodeled fields (e.g. ``stop_details``, ``diagnostics``,
+    ``context_management``, ``caller``, ``request_id``) are reachable before
+    they are explicitly modeled.  This mirrors the ``SystemMessage.data``
+    pattern.  Defaults to ``None`` for manually constructed messages.
+    """
 
     content: list[ContentBlock]
     model: str
@@ -1035,6 +1042,7 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1199,7 +1207,14 @@ class DeferredToolUse:
 
 @dataclass
 class ResultMessage:
-    """Result message with cost and usage information."""
+    """Result message with cost and usage information.
+
+    The ``data`` field retains the full raw wire frame from the CLI so that
+    newer, unmodeled fields (e.g. ``ttft_ms``, ``terminal_reason``,
+    ``fast_mode_state``, ``request_id``) are reachable before they are
+    explicitly modeled.  This mirrors the ``SystemMessage.data`` pattern.
+    Defaults to ``None`` for manually constructed messages.
+    """
 
     subtype: str
     duration_ms: int
@@ -1221,6 +1236,7 @@ class ResultMessage:
     # Emitted by the CLI since v2.1.110. Safe to log (no message content).
     api_error_status: int | None = None
     uuid: str | None = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass

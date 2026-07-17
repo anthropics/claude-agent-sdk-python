@@ -58,6 +58,14 @@ def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     return converted
 
 
+def _hook_output_defers_tool(hook_output: dict[str, Any]) -> bool:
+    hook_specific = hook_output.get("hookSpecificOutput")
+    return (
+        isinstance(hook_specific, dict)
+        and hook_specific.get("permissionDecision") == "defer"
+    )
+
+
 class Query:
     """Handles bidirectional control protocol on top of Transport.
 
@@ -130,6 +138,7 @@ class Query:
 
         # Track first result for proper stream closure with SDK MCP servers
         self._first_result_event = anyio.Event()
+        self._deferred_tool_result_pending = False
         # Set to the result's error text when the most recent message is a
         # result with is_error=True. Used to replace the generic "exit code 1"
         # ProcessError with the structured error the CLI already reported.
@@ -293,6 +302,13 @@ class Query:
                         )
                     continue
 
+                if self._deferred_tool_result_pending and msg_type in (
+                    "assistant",
+                    "stream_event",
+                    "user",
+                ):
+                    continue
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     # Flush pending transcript mirror entries before yielding
@@ -308,6 +324,7 @@ class Query:
                         )
                     else:
                         self._last_error_result_text = None
+                    self._deferred_tool_result_pending = False
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -380,6 +397,7 @@ class Query:
 
         try:
             response_data: dict[str, Any] = {}
+            should_end_input = False
 
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
@@ -450,6 +468,7 @@ class Query:
                 )
                 # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
                 response_data = _convert_hook_output_for_cli(hook_output)
+                should_end_input = _hook_output_defers_tool(response_data)
 
             elif subtype == "mcp_message":
                 # Handle SDK MCP request
@@ -481,6 +500,9 @@ class Query:
                 },
             }
             await self.transport.write(json.dumps(success_response) + "\n")
+            if should_end_input:
+                self._deferred_tool_result_pending = True
+                self._first_result_event.set()
 
         except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has

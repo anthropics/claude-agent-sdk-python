@@ -2258,3 +2258,151 @@ class TestAtexitChildCleanup:
                     await proc.wait()
 
         anyio.run(_test)
+
+
+class TestReaderUnblockOnProcessExit:
+    """Regression tests for #1110: process death must end read_messages even
+    when stdout never reaches EOF.
+
+    Helper processes spawned by the CLI inherit its stdout pipe; if the CLI
+    dies without reaping them, EOF never arrives. On the asyncio backend
+    ``process.wait()`` is gated on the same pipes, so the mocks here enforce
+    the real contract: ``wait()`` never returns, only ``returncode`` is set.
+    """
+
+    class _PipeHeldOpenStream:
+        """Stdout stream whose EOF never arrives (orphan holds the pipe).
+
+        Yields the given chunks, then parks forever — until aclose(), after
+        which the parked (or next) read raises ClosedResourceError, exactly
+        like a real TextReceiveStream.
+        """
+
+        def __init__(self, chunks: list[str]) -> None:
+            self._chunks = list(chunks)
+            self._closed = anyio.Event()
+
+        def __aiter__(self) -> "TestReaderUnblockOnProcessExit._PipeHeldOpenStream":
+            return self
+
+        async def __anext__(self) -> str:
+            if self._closed.is_set():
+                raise anyio.ClosedResourceError
+            if self._chunks:
+                return self._chunks.pop(0)
+            await self._closed.wait()
+            raise anyio.ClosedResourceError
+
+        async def aclose(self) -> None:
+            self._closed.set()
+
+    class _ExitedProcessWithHeldPipes:
+        """Process that has exited, but whose wait() never completes.
+
+        Mirrors asyncio's behavior when an inherited pipe outlives the child:
+        returncode is set from the exit signal while wait() stays blocked on
+        pipe disconnection. The fix must not rely on wait().
+        """
+
+        def __init__(self, returncode: int) -> None:
+            self.returncode = returncode
+
+        async def wait(self) -> int:
+            await anyio.sleep(3600)
+            return self.returncode
+
+    def _make_transport(self, returncode: int, chunks: list[str]):
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        transport._process = self._ExitedProcessWithHeldPipes(returncode)  # type: ignore[assignment]
+        transport._stdout_stream = self._PipeHeldOpenStream(chunks)  # type: ignore[assignment]
+        return transport
+
+    def test_crash_with_orphan_held_pipe_raises_process_error(self, monkeypatch):
+        """CLI died with exit 1, orphan holds stdout: must raise, not hang."""
+        from claude_agent_sdk._errors import ProcessError
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.setattr(subprocess_cli, "_EXIT_STREAM_GRACE_SECONDS", 0.05)
+
+        async def _test():
+            transport = self._make_transport(
+                returncode=1,
+                chunks=['{"type": "assistant", "message": {"content": []}}\n'],
+            )
+            watcher = spawn_detached(transport._unblock_reader_on_exit())
+            received = []
+            try:
+                with anyio.fail_after(5):
+                    with pytest.raises(ProcessError, match="exit code 1"):
+                        async for message in transport.read_messages():
+                            received.append(message)
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+            # Output produced before death must still be delivered.
+            assert len(received) == 1
+            assert received[0]["type"] == "assistant"
+
+        anyio.run(_test)
+
+    def test_clean_exit_with_orphan_held_pipe_ends_stream(self, monkeypatch):
+        """CLI exited 0 but orphan holds stdout: stream must end cleanly."""
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.setattr(subprocess_cli, "_EXIT_STREAM_GRACE_SECONDS", 0.05)
+
+        async def _test():
+            transport = self._make_transport(
+                returncode=0,
+                chunks=['{"type": "result", "subtype": "success"}\n'],
+            )
+            watcher = spawn_detached(transport._unblock_reader_on_exit())
+            received = []
+            try:
+                with anyio.fail_after(5):
+                    async for message in transport.read_messages():
+                        received.append(message)
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+            assert len(received) == 1
+            assert received[0]["type"] == "result"
+
+        anyio.run(_test)
+
+    def test_backpressure_is_not_mistaken_for_idle_pipe(self, monkeypatch):
+        """A reader parked at yield (slow consumer) must not be force-closed.
+
+        The consumer takes longer than the grace window to process each
+        message while more chunks are still arriving; every chunk must be
+        delivered before the trailing ProcessError.
+        """
+        from claude_agent_sdk._errors import ProcessError
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.setattr(subprocess_cli, "_EXIT_STREAM_GRACE_SECONDS", 0.05)
+
+        async def _test():
+            chunks = [
+                f'{{"type": "assistant", "message": {{"content": [], "i": {i}}}}}\n'
+                for i in range(5)
+            ]
+            transport = self._make_transport(returncode=1, chunks=chunks)
+            watcher = spawn_detached(transport._unblock_reader_on_exit())
+            received = []
+            try:
+                with anyio.fail_after(10):
+                    with pytest.raises(ProcessError, match="exit code 1"):
+                        async for message in transport.read_messages():
+                            received.append(message)
+                            # Slower than the grace window.
+                            await anyio.sleep(0.15)
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+            assert len(received) == 5
+
+        anyio.run(_test)

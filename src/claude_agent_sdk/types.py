@@ -1035,6 +1035,7 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1221,6 +1222,7 @@ class ResultMessage:
     # Emitted by the CLI since v2.1.110. Safe to log (no message content).
     api_error_status: int | None = None
     uuid: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -2258,3 +2258,257 @@ class TestAtexitChildCleanup:
                     await proc.wait()
 
         anyio.run(_test)
+
+
+def _mock_connect_processes() -> tuple[MagicMock, MagicMock]:
+    """Build the (version probe, main process) mocks connect() awaits."""
+    version_process = MagicMock()
+    version_process.stdout = MagicMock()
+    version_process.stdout.receive = AsyncMock(return_value=b"2.0.0 (Claude Code)")
+    version_process.terminate = MagicMock()
+    version_process.wait = AsyncMock()
+
+    main_process = MagicMock()
+    main_process.stdout = MagicMock()
+    main_stdin = MagicMock()
+    main_stdin.aclose = AsyncMock()
+    main_process.stdin = main_stdin
+    main_process.returncode = None
+    return version_process, main_process
+
+
+class TestWindowsBatchScriptRefusal:
+    """connect() must never spawn a .bat/.cmd script on Windows.
+
+    CreateProcess routes batch scripts through cmd.exe /c, and cmd.exe
+    re-parses the whole command line, so every argument value would reach
+    a shell. The refusal happens before the version probe, so no spawn of
+    the script occurs at all.
+    """
+
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+
+    def test_npm_cmd_shim_from_which_is_refused(self):
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value="C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD",
+                ),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_explicit_bat_cli_path_is_refused(self):
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(cli_path="C:\\tools\\claude.bat"),
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize(
+        "cli_path",
+        [
+            "C:\\tools\\claude.cmd.",
+            "C:\\tools\\claude.CMD ",
+            "C:\\tools\\claude.cmd:stream",
+            "C:\\tools\\.cmd",
+            "C:claude.cmd",
+            "C:/tools/claude.cmd",
+            "\\\\server\\share\\claude.cmd",
+            "C:\\tools\\claude.cmd\\.",
+            "C:\\tools\\claude.cmd\\x\\..",
+            "C:\\tools\\claude.cmd\\\\.",
+            "C:/tools/claude.cmd//x/..",
+            "C:\\tools\\claude.cmd\\",
+            "C:\\tools\\claude:evil.cmd",
+            "C:\\tools\\claude.exe:evil.cmd",
+            ":claude.cmd",
+        ],
+    )
+    def test_suffix_tricks_are_refused(self, cli_path: str):
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions(cli_path=cli_path)
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_native_exe_is_allowed_on_windows(self):
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(
+                    cli_path="C:\\Users\\u\\.local\\bin\\claude.EXE"
+                ),
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize("system", ["Linux", "Darwin"])
+    def test_posix_platforms_are_unchanged(self, system: str):
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value=system),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value="/usr/local/bin/claude",
+                ),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == "/usr/local/bin/claude"
+
+        anyio.run(_test)
+
+    def test_guard_is_a_no_op_off_windows(self):
+        with patch(self._PLATFORM, return_value="Linux"):
+            SubprocessCLITransport._reject_windows_batch_cli("/odd/claude.cmd")
+
+
+class TestExtraArgsValueBinding:
+    """extra_args uses the equals form for dash-leading values so the value
+    binds to its flag instead of parsing as a separate CLI flag."""
+
+    def test_dash_leading_value_uses_equals_form(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(extra_args={"future-flag": "--evil"}),
+        )
+        cmd = transport._build_command()
+        assert "--future-flag=--evil" in cmd
+        assert "--evil" not in cmd
+        assert "--future-flag" not in cmd
+
+    def test_ordinary_value_keeps_two_token_form(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                extra_args={"future-flag": "plain", "bool-flag": None}
+            ),
+        )
+        cmd = transport._build_command()
+        idx = cmd.index("--future-flag")
+        assert cmd[idx + 1] == "plain"
+        assert "--bool-flag" in cmd
+
+
+class TestWindowsCmdMetacharacterRejection:
+    """Defense in depth: resume/session_id reject cmd.exe metacharacters on
+    Windows so those values stay inert even if a cmd.exe hop reappears."""
+
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "x&calc",
+            "x|whoami",
+            "x<in",
+            "x>out",
+            "x^y",
+            "x%PATH%y",
+            "x!VAR!y",
+            'x"y',
+            "x\ny",
+            "x\ry",
+        ],
+    )
+    def test_bad_resume_values_raise_on_windows(self, value: str):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(resume=value)
+        )
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            pytest.raises(ValueError, match="unsafe"),
+        ):
+            transport._build_command()
+
+    def test_bad_session_id_raises_on_windows(self):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(session_id="x&ver")
+        )
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            pytest.raises(ValueError, match="session_id"),
+        ):
+            transport._build_command()
+
+    def test_ordinary_title_is_accepted_on_windows(self):
+        title = "My project - daily notes (v2) #3"
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(resume=title)
+        )
+        with patch(self._PLATFORM, return_value="Windows"):
+            cmd = transport._build_command()
+        assert f"--resume={title}" in cmd
+
+    def test_posix_allows_metacharacters(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(resume="title & % | notes", session_id="a>b"),
+        )
+        with patch(self._PLATFORM, return_value="Linux"):
+            cmd = transport._build_command()
+        assert "--resume=title & % | notes" in cmd
+        assert "--session-id=a>b" in cmd

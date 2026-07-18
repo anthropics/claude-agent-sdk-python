@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
+# cmd.exe metacharacters (plus the quote character cmd.exe uses to toggle
+# its quoting state, and "!", which expands like "%" when delayed expansion
+# is enabled). subprocess.list2cmdline quotes arguments for the MSVCRT argv
+# rules only -- it adds quotes only around whitespace -- so in a
+# whitespace-free argument these characters reach a cmd.exe command line
+# verbatim. See _reject_windows_batch_cli / _reject_windows_cmd_metacharacters.
+_CMD_EXE_METACHARACTERS = '&|<>^%!"'
+
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
 # prevents orphaned `claude` processes from leaking when callers crash or exit
@@ -186,6 +194,112 @@ class SubprocessCLITransport(Transport):
             return str(bundled_path)
 
         return None
+
+    @staticmethod
+    def _reject_windows_batch_cli(cli_path: str) -> None:
+        """Refuse to execute a .bat/.cmd script as the CLI on Windows.
+
+        Windows has no shebang mechanism: CreateProcess runs batch scripts
+        by silently rewriting the spawn into a 'cmd.exe /c' invocation, and
+        cmd.exe re-parses the whole command line at execution time.
+        subprocess.list2cmdline quotes arguments for the MSVCRT argv rules
+        only, not for cmd.exe, so cmd.exe metacharacters inside an argument
+        value -- for example a session title passed to --resume -- reach
+        cmd.exe unescaped and can execute injected commands. Reliable
+        escaping for cmd.exe does not exist (%VAR% expands even inside
+        double quotes), so spawning a batch script with runtime-provided
+        arguments cannot be made safe. Refusing is the same remediation
+        Node.js shipped for this vulnerability class (CVE-2024-27980,
+        "BatBadBut").
+
+        In practice this refuses npm's claude.cmd shim, which
+        shutil.which("claude") resolves when no bundled claude.exe is
+        present (for example sdist installs). The alternatives in the
+        error message avoid cmd.exe entirely.
+        """
+        if platform.system() != "Windows":
+            return
+        # Deliberately NOT pathlib: PureWindowsPath and PurePosixPath parse
+        # several of the cases below differently (".cmd" has suffix ".cmd"
+        # on POSIX but "" on Windows), and the tests run on POSIX CI while
+        # the code runs on Windows. Plain string logic behaves identically
+        # on both.
+        #
+        # Win32 full-path normalization collapses "." and ".." components
+        # and repeated separators lexically, before any filesystem access,
+        # so "claude.cmd\\.", "claude.cmd\\\\." and "claude.cmd\\x\\.." all
+        # resolve to claude.cmd. Do the same before taking the final
+        # component (Windows accepts both separators). The ".." check runs
+        # first: a dots-and-spaces test would also swallow it.
+        components: list[str] = []
+        for component in cli_path.replace("\\", "/").split("/"):
+            if component == "..":
+                if components:
+                    components.pop()
+                continue
+            if component.rstrip(". ") == "":
+                # Empty components (repeated or trailing separators), ".",
+                # and dots/spaces-only components all disappear under
+                # Win32 normalization or cannot be opened; none can make
+                # the path denote a different file.
+                continue
+            components.append(component)
+        name = components[-1] if components else ""
+        # A drive-relative path ("C:claude.cmd") has no separator after the
+        # drive, so the drive prefix is still part of this component; drop
+        # it so any colon below can only be an NTFS alternate-data-stream
+        # separator.
+        if len(name) >= 2 and name[1] == ":" and name[0].isalpha():
+            name = name[2:]
+        # Win32 finds the extension with a last-dot scan over the WHOLE
+        # component, stream spec included -- "claude:evil.cmd" has extension
+        # ".cmd" -- while an NTFS stream spec also opens its base file --
+        # "claude.cmd:stream" opens claude.cmd. Cover both directions by
+        # refusing when ANY colon-separated segment carries a batch
+        # extension; colons cannot appear in real file names, so no
+        # legitimate path is over-refused. Trailing dots and spaces, which
+        # Windows strips at path resolution, are stripped per segment (the
+        # same normalization Rust's CVE-2024-24576 fix applies), and a bare
+        # ".cmd" counts as a batch extension (as Win32 PathFindExtension
+        # treats it, and pathlib does not).
+        if not any(
+            segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
+            for segment in name.split(":")
+        ):
+            return
+        raise CLIConnectionError(
+            f"Refusing to execute batch script {cli_path!r}: Windows runs "
+            ".bat/.cmd files via cmd.exe, which can execute commands "
+            "injected through CLI arguments, and no reliable escaping for "
+            "cmd.exe exists. Use a native claude executable instead: "
+            "install Claude Code natively "
+            "(irm https://claude.ai/install.ps1 | iex), point "
+            "ClaudeAgentOptions(cli_path=...) at a claude.exe, or install "
+            "the claude-agent-sdk wheel for a platform that bundles "
+            "claude.exe (e.g. Windows x64)."
+        )
+
+    @staticmethod
+    def _reject_windows_cmd_metacharacters(option_name: str, value: str) -> None:
+        """Defense in depth for Windows: reject cmd.exe metacharacters.
+
+        With batch-script spawning refused (_reject_windows_batch_cli),
+        these characters are harmless: list2cmdline quotes correctly for
+        native executables. They are rejected anyway so that resume /
+        session_id values, which applications commonly take from external
+        input, stay inert even if a cmd.exe hop is ever reintroduced
+        between the SDK and the CLI. No format is imposed beyond this
+        (resume values may be arbitrary session titles, not only UUIDs),
+        and POSIX behavior is unchanged.
+        """
+        if platform.system() != "Windows":
+            return
+        bad = sorted({c for c in value if c in _CMD_EXE_METACHARACTERS or c in "\r\n"})
+        if bad:
+            raise ValueError(
+                f"{option_name} value {value!r} contains characters that "
+                f"are unsafe to pass on a Windows command line: {bad!r}"
+            )
 
     def _build_settings_value(self) -> str | None:
         """Build settings value, merging sandbox settings if provided.
@@ -355,9 +469,13 @@ class SubprocessCLITransport(Transport):
         # a separate CLI flag -- letting an untrusted value inject arbitrary
         # flags. The equals form always binds the value to the flag.
         if self._options.resume:
+            self._reject_windows_cmd_metacharacters("resume", self._options.resume)
             cmd.append(f"--resume={self._options.resume}")
 
         if self._options.session_id:
+            self._reject_windows_cmd_metacharacters(
+                "session_id", self._options.session_id
+            )
             cmd.append(f"--session-id={self._options.session_id}")
 
         # Handle settings and sandbox: merge sandbox into settings if both are provided
@@ -431,6 +549,14 @@ class SubprocessCLITransport(Transport):
             if value is None:
                 # Boolean flag without value
                 cmd.append(f"--{flag}")
+            elif str(value).startswith("-"):
+                # In the two-token form, a dash-leading value is not bound
+                # to its flag when the CLI declares the option with an
+                # optional value -- it parses as a separate flag instead
+                # (the same injection the --resume change above closes).
+                # The equals form always binds. Mirrors the equivalent
+                # guard in the TypeScript SDK.
+                cmd.append(f"--{flag}={value}")
             else:
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
@@ -482,6 +608,10 @@ class SubprocessCLITransport(Transport):
 
         if self._cli_path is None:
             self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
+
+        # Validate the resolved CLI before anything is spawned with it --
+        # this guards the version probe below as well as the main spawn.
+        self._reject_windows_batch_cli(self._cli_path)
 
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()

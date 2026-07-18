@@ -1678,6 +1678,57 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--tools" not in cmd
 
+    def test_build_command_skills_all_with_explicit_tools_injects_skill(self):
+        """skills='all' + explicit tools list → --tools contains Skill and --allowedTools has Skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=["Bash"], skills="all"),
+        )
+        cmd = transport._build_command()
+
+        # --tools must include both the user-supplied tool and the injected Skill
+        assert "--tools" in cmd
+        tools_val = cmd[cmd.index("--tools") + 1]
+        assert "Bash" in tools_val.split(",")
+        assert "Skill" in tools_val.split(",")
+
+        # --allowedTools must also carry Skill (from _apply_skills_defaults)
+        assert "--allowedTools" in cmd
+        allowed_val = cmd[cmd.index("--allowedTools") + 1]
+        assert "Skill" in allowed_val.split(",")
+
+    def test_build_command_skills_all_without_explicit_tools_no_tools_flag(self):
+        """skills='all' + no explicit tools → --tools is absent, --allowedTools still has Skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+
+        # No explicit tools list was given, so --tools should not appear
+        assert "--tools" not in cmd
+
+        # --allowedTools must carry Skill
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+
+    def test_build_command_skills_named_with_explicit_tools_injects_skill(self):
+        """skills=['myskill'] + explicit tools list → --tools contains Skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=["Bash"], skills=["myskill"]),
+        )
+        cmd = transport._build_command()
+
+        assert "--tools" in cmd
+        tools_val = cmd[cmd.index("--tools") + 1]
+        assert "Bash" in tools_val.split(",")
+        assert "Skill" in tools_val.split(",")
+
+        # --allowedTools carries the named pattern
+        assert "--allowedTools" in cmd
+        assert "Skill(myskill)" in cmd[cmd.index("--allowedTools") + 1]
+
     def test_concurrent_writes_are_serialized(self):
         """Test that concurrent write() calls are serialized by the lock.
 

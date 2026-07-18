@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 
+# Valid values for the ``effort`` option.  Validated in ``_build_command`` so
+# callers receive a clear ValueError before a subprocess is ever spawned.
+_VALID_EFFORT_VALUES: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
+
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
 # prevents orphaned `claude` processes from leaking when callers crash or exit
@@ -302,10 +306,15 @@ class SubprocessCLITransport(Transport):
         if self._options.tools is not None:
             tools = self._options.tools
             if isinstance(tools, list):
-                if len(tools) == 0:
+                tools_list = list(tools)
+                # When skills are enabled, ensure the Skill runner is in the base
+                # tool set so it isn't shadowed by an explicit --tools override.
+                if self._options.skills is not None and "Skill" not in tools_list:
+                    tools_list.append("Skill")
+                if len(tools_list) == 0:
                     cmd.extend(["--tools", ""])
                 else:
-                    cmd.extend(["--tools", ",".join(tools)])
+                    cmd.extend(["--tools", ",".join(tools_list)])
             else:
                 # Preset object - 'claude_code' preset maps to 'default'
                 cmd.extend(["--tools", "default"])
@@ -456,7 +465,15 @@ class SubprocessCLITransport(Transport):
             )
 
         if self._options.effort is not None:
-            cmd.extend(["--effort", self._options.effort])
+            if (
+                isinstance(self._options.effort, str)
+                and self._options.effort not in _VALID_EFFORT_VALUES
+            ):
+                raise ValueError(
+                    f"Invalid effort value {self._options.effort!r}. "
+                    f"Valid values: {', '.join(sorted(_VALID_EFFORT_VALUES))}"
+                )
+            cmd.extend(["--effort", str(self._options.effort)])
 
         # Extract schema from output_format structure if provided
         # Expected: {"type": "json_schema", "schema": {...}}

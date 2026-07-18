@@ -166,6 +166,42 @@ class TestSubprocessCLITransport:
         assert "--effort" in cmd
         assert cmd[cmd.index("--effort") + 1] == "xhigh"
 
+    def test_build_command_with_effort_max(self):
+        """Test that valid effort value 'max' passes through to CLI args."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="max"),
+        )
+
+        cmd = transport._build_command()
+        assert "--effort" in cmd
+        assert cmd[cmd.index("--effort") + 1] == "max"
+
+    def test_build_command_with_invalid_effort_raises(self):
+        """Test that an invalid effort value raises ValueError before subprocess spawn."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="ultra"),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(ValueError, match="Invalid effort"):
+            transport._build_command()
+
+    def test_build_command_invalid_effort_message_lists_valid_values(self):
+        """Test that the ValueError message lists all valid effort values."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="bogus"),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            transport._build_command()
+
+        msg = str(exc_info.value)
+        assert "bogus" in msg
+        for valid in ("low", "medium", "high", "xhigh", "max"):
+            assert valid in msg
+
     def test_build_command_with_system_prompt_string(self):
         """Test building CLI command with system prompt as string."""
         transport = SubprocessCLITransport(

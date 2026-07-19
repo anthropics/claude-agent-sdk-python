@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -29,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+
+# Linux caps a single argv element (MAX_ARG_STRLEN) at 32 * PAGE_SIZE, which is
+# 131072 bytes (including the trailing NUL) on the common 4 KiB page size. A
+# ``--system-prompt`` value at or above this makes execve() fail with E2BIG
+# ("Argument list too long") before the CLI ever starts, so oversized prompts
+# are written to a temp file and passed via ``--system-prompt-file`` instead
+# (see issue #1096). The threshold is a fixed conservative value: systems with
+# larger pages allow more, and spilling to a file early is harmless.
+_MAX_SYSTEM_PROMPT_ARG_BYTES = 131072
 
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
@@ -138,6 +148,8 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        # Temp file backing an oversized --system-prompt-file, removed in close().
+        self._system_prompt_tmp: Path | None = None
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -279,6 +291,43 @@ class SubprocessCLITransport(Transport):
 
         return allowed_tools, setting_sources
 
+    def _remove_system_prompt_tmp(self) -> None:
+        """Remove the temp file backing ``--system-prompt-file``, if any."""
+        if self._system_prompt_tmp is not None:
+            with suppress(OSError):
+                self._system_prompt_tmp.unlink()
+            self._system_prompt_tmp = None
+
+    def _write_system_prompt_file(self, system_prompt: str) -> str:
+        """Write an oversized system prompt to a temp file and return its path.
+
+        Passing a very large ``--system-prompt`` value directly overflows the
+        per-argument OS limit and aborts the CLI before startup (issue #1096).
+        The file is removed in :meth:`close`.
+        """
+        # _build_command() may run more than once; drop the previous temp file
+        # so it cannot leak.
+        self._remove_system_prompt_tmp()
+        # NamedTemporaryFile owns the fd, so it cannot leak even if opening or
+        # writing fails; delete=False because the CLI reads it after we return.
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="claude-system-prompt-",
+                suffix=".txt",
+                delete=False,
+            ) as tmp:
+                tmp.write(system_prompt)
+        except BaseException:
+            if tmp is not None:
+                with suppress(OSError):
+                    Path(tmp.name).unlink()
+            raise
+        self._system_prompt_tmp = Path(tmp.name)
+        return tmp.name
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         if self._cli_path is None:
@@ -288,7 +337,20 @@ class SubprocessCLITransport(Transport):
         if self._options.system_prompt is None:
             cmd.extend(["--system-prompt", ""])
         elif isinstance(self._options.system_prompt, str):
-            cmd.extend(["--system-prompt", self._options.system_prompt])
+            system_prompt = self._options.system_prompt
+            # Measure the same bytes subprocess hands to execve(): argv elements
+            # are encoded with the filesystem encoding, not necessarily UTF-8.
+            if len(os.fsencode(system_prompt)) >= _MAX_SYSTEM_PROMPT_ARG_BYTES:
+                # Too large to pass as a single argv element (see #1096); hand it
+                # to the CLI as a file via the already-supported flag instead.
+                cmd.extend(
+                    [
+                        "--system-prompt-file",
+                        self._write_system_prompt_file(system_prompt),
+                    ]
+                )
+            else:
+                cmd.extend(["--system-prompt", system_prompt])
         else:
             sp = self._options.system_prompt
             if sp.get("type") == "file":
@@ -654,6 +716,11 @@ class SubprocessCLITransport(Transport):
         atexit reaper instead of dropping it. Making the escalation robust to a
         foreign `CancelledError` is a follow-up.
         """
+        # Remove the temp file backing an oversized --system-prompt-file, if we
+        # created one. Runs regardless of process state so a failed connect()
+        # does not leak it (see #1096).
+        self._remove_system_prompt_tmp()
+
         if not self._process:
             self._ready = False
             return

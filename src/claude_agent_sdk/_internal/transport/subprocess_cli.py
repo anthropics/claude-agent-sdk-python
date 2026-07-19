@@ -162,6 +162,10 @@ class SubprocessCLITransport(Transport):
             Path.home() / ".npm-global/bin/claude",
             Path("/usr/local/bin/claude"),
             Path.home() / ".local/bin/claude",
+            # The native Windows installer's target; Path.exists() is a
+            # literal stat with no PATHEXT resolution, so the extensionless
+            # entry above can never match a native install on Windows.
+            Path.home() / ".local/bin/claude.exe",
             Path.home() / "node_modules/.bin/claude",
             Path.home() / ".yarn/bin/claude",
             Path.home() / ".claude/local/claude",
@@ -252,12 +256,20 @@ class SubprocessCLITransport(Transport):
         for component in cli_path.replace("\\", "/").split("/"):
             if component.rstrip(". ") == "":
                 # A dots-and-spaces-only (or empty) component never names a
-                # different file: it is a parent reference when it starts
-                # with ".." (the trailing dots and spaces trim away), and it
+                # different file: it is a parent reference only when its
+                # leading dot-run is exactly ".." (the trailing dots and
+                # spaces trim away, so ".. " and ".. ." are ".."), and it
                 # disappears otherwise -- repeated or trailing separators,
-                # "." and other dot/space runs collapse under Win32
-                # normalization or cannot be opened.
-                if component.startswith("..") and components:
+                # ".", and 3+-dot runs ("...", "....") collapse under Win32
+                # normalization or cannot be opened. Win32 does not treat a
+                # run of three or more dots as a parent reference, so
+                # popping on those would let "claude.cmd\\..." through as its
+                # parent directory.
+                if (
+                    component.startswith("..")
+                    and (len(component) == 2 or component[2] != ".")
+                    and components
+                ):
                     components.pop()
                 continue
             components.append(component)

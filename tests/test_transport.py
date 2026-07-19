@@ -2351,6 +2351,8 @@ class TestWindowsBatchScriptRefusal:
             "C:\\tools\\claude.cmd\\\\.",
             "C:/tools/claude.cmd//x/..",
             "C:\\tools\\claude.cmd\\",
+            "C:\\tools\\claude.cmd\\...",
+            "C:\\tools\\claude.cmd\\....",
             "C:\\tools\\claude:evil.cmd",
             "C:\\tools\\claude.exe:evil.cmd",
             ":claude.cmd",
@@ -2462,6 +2464,31 @@ class TestWindowsBatchScriptRefusal:
             "  npm install -g @anthropic-ai/claude-code\n"
         )
         assert "install.ps1" not in message
+
+    def test_fallback_locations_find_native_windows_exe(self):
+        # The native installer writes ~/.local/bin/claude.exe; Path.exists()
+        # does no PATHEXT resolution, so the fallback list must probe the
+        # .exe name explicitly for a stale-PATH process to find it.
+        from pathlib import Path
+
+        native_exe = Path.home() / ".local/bin/claude.exe"
+
+        def _exists(path: Path) -> bool:
+            return path == native_exe
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        with (
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                return_value=None,
+            ),
+            patch("pathlib.Path.exists", new=_exists),
+            patch("pathlib.Path.is_file", new=_exists),
+        ):
+            assert transport._find_cli() == str(native_exe)
 
 
 class TestExtraArgsValueBinding:

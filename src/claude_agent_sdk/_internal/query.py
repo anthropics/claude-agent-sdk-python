@@ -398,6 +398,7 @@ class Query:
                     ],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    agent_type=permission_request.get("agent_type"),
                     blocked_path=permission_request.get("blocked_path"),
                     decision_reason=permission_request.get("decision_reason"),
                     title=permission_request.get("title"),

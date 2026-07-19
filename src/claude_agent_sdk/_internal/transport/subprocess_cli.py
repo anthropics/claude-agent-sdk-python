@@ -171,6 +171,20 @@ class SubprocessCLITransport(Transport):
             if path.exists() and path.is_file():
                 return str(path)
 
+        if platform.system() == "Windows":
+            # npm's Windows install is a claude.cmd shim, which connect()
+            # refuses (_reject_windows_batch_cli), so do not recommend it.
+            raise CLINotFoundError(
+                "Claude Code not found. Install the native claude.exe with "
+                "(PowerShell):\n"
+                "  irm https://claude.ai/install.ps1 | iex\n"
+                "\nOr install the claude-agent-sdk wheel for a platform that "
+                "bundles claude.exe (e.g. Windows x64), or provide the path to "
+                "a claude.exe via ClaudeAgentOptions:\n"
+                "  ClaudeAgentOptions(cli_path='C:\\\\path\\\\to\\\\claude.exe')\n"
+                "\n(npm install -g @anthropic-ai/claude-code produces a claude.cmd "
+                "shim, which this SDK refuses to run on Windows.)"
+            )
         raise CLINotFoundError(
             "Claude Code not found. Install with:\n"
             "  npm install -g @anthropic-ai/claude-code\n"
@@ -229,19 +243,22 @@ class SubprocessCLITransport(Transport):
         # and repeated separators lexically, before any filesystem access,
         # so "claude.cmd\\.", "claude.cmd\\\\." and "claude.cmd\\x\\.." all
         # resolve to claude.cmd. Do the same before taking the final
-        # component (Windows accepts both separators). The ".." check runs
-        # first: a dots-and-spaces test would also swallow it.
+        # component (Windows accepts both separators). Components are
+        # classified on their trimmed form: Win32 strips trailing dots and
+        # spaces from a segment first, so ".. " and ".. ." are ".." (parent)
+        # and pop the previous component -- classifying the raw segment
+        # would only drop them and let "claude.cmd\\x\\.. " through as "x".
         components: list[str] = []
         for component in cli_path.replace("\\", "/").split("/"):
-            if component == "..":
-                if components:
-                    components.pop()
-                continue
             if component.rstrip(". ") == "":
-                # Empty components (repeated or trailing separators), ".",
-                # and dots/spaces-only components all disappear under
-                # Win32 normalization or cannot be opened; none can make
-                # the path denote a different file.
+                # A dots-and-spaces-only (or empty) component never names a
+                # different file: it is a parent reference when it starts
+                # with ".." (the trailing dots and spaces trim away), and it
+                # disappears otherwise -- repeated or trailing separators,
+                # "." and other dot/space runs collapse under Win32
+                # normalization or cannot be opened.
+                if component.startswith("..") and components:
+                    components.pop()
                 continue
             components.append(component)
         name = components[-1] if components else ""

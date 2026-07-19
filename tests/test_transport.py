@@ -2346,6 +2346,8 @@ class TestWindowsBatchScriptRefusal:
             "\\\\server\\share\\claude.cmd",
             "C:\\tools\\claude.cmd\\.",
             "C:\\tools\\claude.cmd\\x\\..",
+            "C:\\tools\\claude.cmd\\x\\.. ",
+            "C:\\tools\\claude.cmd\\x\\.. .",
             "C:\\tools\\claude.cmd\\\\.",
             "C:/tools/claude.cmd//x/..",
             "C:\\tools\\claude.cmd\\",
@@ -2424,6 +2426,42 @@ class TestWindowsBatchScriptRefusal:
     def test_guard_is_a_no_op_off_windows(self):
         with patch(self._PLATFORM, return_value="Linux"):
             SubprocessCLITransport._reject_windows_batch_cli("/odd/claude.cmd")
+
+    def _not_found_message(self, system: str) -> str:
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        with (
+            patch(self._PLATFORM, return_value=system),
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                return_value=None,
+            ),
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(CLINotFoundError) as exc_info,
+        ):
+            transport._find_cli()
+        return str(exc_info.value)
+
+    def test_not_found_message_on_windows_recommends_native_exe(self):
+        # The npm route yields a claude.cmd shim that connect() refuses, so
+        # the Windows message must lead with the native claude.exe install.
+        message = self._not_found_message("Windows")
+        assert "install.ps1" in message
+        assert "claude.exe" in message
+        assert message.index("install.ps1") < message.index("npm")
+        assert "refuses" in message
+
+    def test_not_found_message_off_windows_is_unchanged(self):
+        message = self._not_found_message("Linux")
+        assert message.startswith(
+            "Claude Code not found. Install with:\n"
+            "  npm install -g @anthropic-ai/claude-code\n"
+        )
+        assert "install.ps1" not in message
 
 
 class TestExtraArgsValueBinding:

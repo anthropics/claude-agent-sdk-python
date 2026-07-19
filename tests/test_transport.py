@@ -4,12 +4,16 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
 
-from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk._internal.transport.subprocess_cli import (
+    _MAX_INLINE_SYSTEM_PROMPT_BYTES,
+    SubprocessCLITransport,
+)
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
@@ -224,6 +228,62 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" not in cmd
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
+
+    def test_build_command_large_system_prompt_string_uses_file(self):
+        """A very large string system prompt is passed via a temp file.
+
+        A single argv entry at/above the kernel's per-arg limit makes exec()
+        fail with "Argument list too long" before the CLI runs (issue #1096),
+        so an oversized --system-prompt must be routed through
+        --system-prompt-file instead.
+        """
+        large_prompt = "x" * (_MAX_INLINE_SYSTEM_PROMPT_BYTES + 1)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=large_prompt),
+        )
+        try:
+            cmd = transport._build_command()
+
+            # The prompt itself is never placed on the command line.
+            assert "--system-prompt" not in cmd
+            assert large_prompt not in cmd
+            assert "--system-prompt-file" in cmd
+
+            file_path = Path(cmd[cmd.index("--system-prompt-file") + 1])
+            assert file_path.read_text(encoding="utf-8") == large_prompt
+        finally:
+            transport._cleanup_temp_files()
+
+    def test_build_command_system_prompt_just_under_limit_stays_inline(self):
+        """A string prompt below the limit is still passed inline."""
+        prompt = "x" * (_MAX_INLINE_SYSTEM_PROMPT_BYTES - 1)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=prompt),
+        )
+        cmd = transport._build_command()
+
+        assert "--system-prompt-file" not in cmd
+        assert "--system-prompt" in cmd
+        assert cmd[cmd.index("--system-prompt") + 1] == prompt
+        assert transport._temp_files == []
+
+    def test_cleanup_temp_files_removes_prompt_file(self):
+        """close()/cleanup removes any prompt file materialized on disk."""
+        large_prompt = "x" * (_MAX_INLINE_SYSTEM_PROMPT_BYTES + 1)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(system_prompt=large_prompt),
+        )
+        transport._build_command()
+        created = list(transport._temp_files)
+        assert created and all(p.exists() for p in created)
+
+        transport._cleanup_temp_files()
+
+        assert transport._temp_files == []
+        assert all(not p.exists() for p in created)
 
     def test_build_command_with_options(self):
         """Test building CLI command with options."""

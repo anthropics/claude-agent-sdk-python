@@ -690,9 +690,11 @@ class Query:
                                 item_type,
                             )
 
-                    response_data = {"content": content}
+                    response_data: dict[str, Any] = {"content": content}
                     if hasattr(result.root, "isError") and result.root.isError:
-                        response_data["isError"] = True  # type: ignore[assignment]
+                        response_data["isError"] = True
+                    if getattr(result.root, "meta", None):
+                        response_data["_meta"] = result.root.meta
 
                     return {
                         "jsonrpc": "2.0",

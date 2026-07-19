@@ -125,6 +125,46 @@ class TestMessageParser:
         assert message.content[0].content == "File not found"
         assert message.content[0].is_error is True
 
+    def test_parse_user_message_with_tool_result_meta(self):
+        """Test that _meta on a tool_result block is exposed as handler-only data."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool_meta",
+                        "content": "Recalled 3 observations",
+                        "_meta": {"observation_ids": ["obs_1", "obs_2", "obs_3"]},
+                    }
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert isinstance(message.content[0], ToolResultBlock)
+        assert message.content[0].meta == {
+            "observation_ids": ["obs_1", "obs_2", "obs_3"]
+        }
+
+    def test_parse_user_message_with_tool_result_no_meta(self):
+        """Test that meta defaults to None when the block has no _meta key."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool_789",
+                        "content": "File contents here",
+                    }
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message.content[0], ToolResultBlock)
+        assert message.content[0].meta is None
+
     def test_parse_user_message_with_mixed_content(self):
         """Test parsing a user message with mixed content blocks."""
         data = {

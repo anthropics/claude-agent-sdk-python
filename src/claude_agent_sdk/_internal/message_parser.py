@@ -111,6 +111,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                         tool_use_id=block["tool_use_id"],
                                         content=block.get("content"),
                                         is_error=block.get("is_error"),
+                                        meta=block.get("_meta"),
                                     )
                                 )
                     return UserMessage(
@@ -171,6 +172,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     tool_use_id=block["tool_use_id"],
                                     content=block.get("content"),
                                     is_error=block.get("is_error"),
+                                    meta=block.get("_meta"),
                                 )
                             )
                         case "server_tool_use":

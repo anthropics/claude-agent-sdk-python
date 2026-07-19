@@ -13,6 +13,7 @@ from ..types import (
     Message,
     _warn_if_can_use_tool_shadowed,
 )
+from ._trace_helpers import inject_trace_into_message
 from .message_parser import parse_message
 from .query import Query
 from .session_resume import (
@@ -217,6 +218,7 @@ class InternalClient:
                     "message": {"role": "user", "content": prompt},
                     "parent_tool_use_id": None,
                 }
+                inject_trace_into_message(user_message)
                 await chosen_transport.write(json.dumps(user_message) + "\n")
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):

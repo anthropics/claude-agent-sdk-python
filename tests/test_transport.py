@@ -2406,6 +2406,13 @@ class TestWindowsBatchScriptRefusal:
             "C:\\tools\\claude:evil.cmd",
             "C:\\tools\\claude.exe:evil.cmd",
             ":claude.cmd",
+            # A middle dots/spaces-only component is a literal name on Win32
+            # (trailing-dot trimming applies to the final segment only), so
+            # a following ".." pops that literal and lands on claude.cmd.
+            "C:\\tools\\claude.cmd\\...\\..",
+            "C:\\tools\\claude.cmd\\. .\\..",
+            "C:\\tools\\claude.cmd\\ \\..",
+            "C:\\tools\\claude.cmd\\.. \\..",
         ],
     )
     def test_suffix_tricks_are_refused(self, cli_path: str):
@@ -2533,6 +2540,7 @@ class TestWindowsBatchScriptRefusal:
 
         transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
         with (
+            patch(self._PLATFORM, return_value="Windows"),
             patch.object(
                 SubprocessCLITransport, "_find_bundled_cli", return_value=None
             ),
@@ -2544,6 +2552,51 @@ class TestWindowsBatchScriptRefusal:
             patch("pathlib.Path.is_file", new=_exists),
         ):
             assert transport._find_cli() == str(native_exe)
+
+    def test_windows_fallback_skips_posix_shaped_probes(self):
+        # Shim-only Windows machine that also has an extensionless
+        # ~/.local/bin/claude artifact (WSL / git-bash script) and a
+        # C:\usr\local\bin\claude planted on the current drive: the Windows
+        # fallback must probe only the native ~/.local/bin/claude.exe, so
+        # discovery still hands connect() the shim and the batch-script
+        # refusal fires (0 spawns) instead of spawning either artifact.
+        from pathlib import Path
+
+        native_exe = Path.home() / ".local/bin/claude.exe"
+
+        def _exists(path: Path) -> bool:
+            return path != native_exe
+
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+
+            def _which(name: str) -> str | None:
+                return shim if name == "claude" else None
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", new=_exists),
+                patch("pathlib.Path.is_file", new=_exists),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
 
 
 class TestExtraArgsValueBinding:

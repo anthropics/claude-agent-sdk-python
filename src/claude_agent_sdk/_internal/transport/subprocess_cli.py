@@ -171,18 +171,27 @@ class SubprocessCLITransport(Transport):
                 return exe
             shim = cli
 
-        locations = [
-            Path.home() / ".npm-global/bin/claude",
-            Path("/usr/local/bin/claude"),
-            Path.home() / ".local/bin/claude",
-            # The native Windows installer's target; Path.exists() is a
-            # literal stat with no PATHEXT resolution, so the extensionless
-            # entry above can never match a native install on Windows.
-            Path.home() / ".local/bin/claude.exe",
-            Path.home() / "node_modules/.bin/claude",
-            Path.home() / ".yarn/bin/claude",
-            Path.home() / ".claude/local/claude",
-        ]
+        if platform.system() == "Windows":
+            # Only the native installer's claude.exe. Path.exists() does
+            # no PATHEXT resolution, so the .exe name must be probed
+            # explicitly. The POSIX-shaped entries below are deliberately
+            # not probed on Windows: an extensionless match (a WSL / git-bash
+            # script artifact at ~/.local/bin/claude) would preempt the
+            # explanatory batch-script refusal with an opaque spawn
+            # failure, and a rooted-but-driveless "/usr/local/bin/claude"
+            # resolves against the current drive (C:\usr\local\bin\...),
+            # a location another local user can create -- a
+            # binary-planting probe.
+            locations = [Path.home() / ".local/bin/claude.exe"]
+        else:
+            locations = [
+                Path.home() / ".npm-global/bin/claude",
+                Path("/usr/local/bin/claude"),
+                Path.home() / ".local/bin/claude",
+                Path.home() / "node_modules/.bin/claude",
+                Path.home() / ".yarn/bin/claude",
+                Path.home() / ".claude/local/claude",
+            ]
 
         for path in locations:
             if path.exists() and path.is_file():
@@ -247,57 +256,37 @@ class SubprocessCLITransport(Transport):
         # the code runs on Windows. Plain string logic behaves identically
         # on both.
         #
-        # Win32 full-path normalization collapses "." and ".." components
-        # and repeated separators lexically, before any filesystem access,
-        # so "claude.cmd\\.", "claude.cmd\\\\." and "claude.cmd\\x\\.." all
-        # resolve to claude.cmd. Do the same before taking the final
-        # component (Windows accepts both separators). Components are
-        # classified on their trimmed form: Win32 strips trailing dots and
-        # spaces from a segment first, so ".. " and ".. ." are ".." (parent)
-        # and pop the previous component -- classifying the raw segment
-        # would only drop them and let "claude.cmd\\x\\.. " through as "x".
-        components: list[str] = []
-        for component in cli_path.replace("\\", "/").split("/"):
-            if component.rstrip(". ") == "":
-                # A dots-and-spaces-only (or empty) component never names a
-                # different file: it is a parent reference only when its
-                # leading dot-run is exactly ".." (the trailing dots and
-                # spaces trim away, so ".. " and ".. ." are ".."), and it
-                # disappears otherwise -- repeated or trailing separators,
-                # ".", and 3+-dot runs ("...", "....") collapse under Win32
-                # normalization or cannot be opened. Win32 does not treat a
-                # run of three or more dots as a parent reference, so
-                # popping on those would let "claude.cmd\\..." through as its
-                # parent directory.
-                if (
-                    component.startswith("..")
-                    and (len(component) == 2 or component[2] != ".")
-                    and components
-                ):
-                    components.pop()
-                continue
-            components.append(component)
-        name = components[-1] if components else ""
-        # A drive-relative path ("C:claude.cmd") has no separator after the
-        # drive, so the drive prefix is still part of this component; drop
-        # it so any colon below can only be an NTFS alternate-data-stream
-        # separator.
-        if len(name) >= 2 and name[1] == ":" and name[0].isalpha():
-            name = name[2:]
-        # Win32 finds the extension with a last-dot scan over the WHOLE
-        # component, stream spec included -- "claude:evil.cmd" has extension
-        # ".cmd" -- while an NTFS stream spec also opens its base file --
-        # "claude.cmd:stream" opens claude.cmd. Cover both directions by
-        # refusing when ANY colon-separated segment carries a batch
-        # extension; colons cannot appear in real file names, so no
-        # legitimate path is over-refused. Trailing dots and spaces, which
-        # Windows strips at path resolution, are stripped per segment (the
-        # same normalization Rust's CVE-2024-24576 fix applies), and a bare
+        # Classify EVERY path component, not only the final one. Win32 opens
+        # a path after lexical normalization -- "." / ".." collapsing,
+        # repeated separators, and position-dependent trailing dot/space
+        # trimming (a middle ".. " or "..." stays a literal name while a
+        # final one trims to ".." or vanishes) -- and any attempt to
+        # re-derive the effective final component here is a race against
+        # that ruleset: get one rule slightly wrong and a spelling such as
+        # "claude.cmd\\...\\.." resolves to claude.cmd on Windows while the
+        # simulation lands on some other name. Refusing whenever ANY
+        # component carries a batch extension closes that whole class
+        # outright, because every normalization trick still has to spell
+        # the .bat/.cmd component somewhere in the string. It costs
+        # nothing legitimate: no real claude.exe lives beneath a directory
+        # named like a batch file.
+        #
+        # Within a component, Win32 finds the extension with a last-dot
+        # scan over the WHOLE component, stream spec included --
+        # "claude:evil.cmd" has extension ".cmd" -- while an NTFS stream
+        # spec also opens its base file -- "claude.cmd:stream" opens
+        # claude.cmd -- and a drive prefix ("C:claude.cmd") rides in the
+        # same component. Splitting each component on ":" covers all of
+        # these: colons cannot appear in real file names, so no legitimate
+        # segment is over-refused. Trailing dots and spaces, which Windows
+        # strips at path resolution, are stripped per segment (the same
+        # normalization Rust's CVE-2024-24576 fix applies), and a bare
         # ".cmd" counts as a batch extension (as Win32 PathFindExtension
         # treats it, and pathlib does not).
         return any(
             segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
-            for segment in name.split(":")
+            for component in cli_path.replace("\\", "/").split("/")
+            for segment in component.split(":")
         )
 
     @staticmethod

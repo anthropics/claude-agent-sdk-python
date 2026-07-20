@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.124
+
+### Bug Fixes
+
+- **Refused batch script CLI spawning on Windows**: Blocked spawning `.bat`/`.cmd` CLI scripts (including npm's `claude.cmd` shim) on Windows to prevent command injection via cmd.exe metacharacter re-parsing (BatBadBut / CVE-2024-27980 class). Windows users relying on the npm shim should switch to the native installer, an explicit `claude.exe` path, or a platform wheel that bundles the CLI (#1127)
+- **Windows cmd.exe metacharacter rejection**: `resume` and `session_id` values containing cmd.exe metacharacters (`& | < > ^ % ! "`) or newlines now raise `ValueError` on Windows, preventing injection even if a cmd.exe hop is reintroduced. POSIX behavior is unchanged (#1127)
+- **Dash-prefixed `extra_args` value binding**: `extra_args` now uses `--flag=value` form when the value starts with `-`, preventing a dash-leading value from being misinterpreted as a separate CLI flag (#1127)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.216
+
 ## 0.2.123
 
 ### Internal/Other Changes

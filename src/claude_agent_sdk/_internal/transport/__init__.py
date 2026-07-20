@@ -83,5 +83,13 @@ class Transport(ABC):
         """End the input stream (close stdin for process transports)."""
         pass
 
+    async def wait(self) -> int | None:
+        """Wait for transport process to exit.
+
+        Returns:
+            Process exit code, or None if transport has no subprocess.
+        """
+        return None
+
 
 __all__ = ["Transport"]

@@ -175,7 +175,7 @@ class TestStringPromptWithSdkMcpServers:
             server = _make_greet_server()
             mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
 
-            call_order = []
+            call_order: list[tuple[str, ...]] = []
             original_write = mock_transport.write
 
             async def tracking_write(data):
@@ -316,7 +316,7 @@ class TestStringPromptWithSdkMcpServers:
         async def _test():
             mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
 
-            call_order = []
+            call_order: list[tuple[str, ...]] = []
 
             async def tracking_write(data):
                 call_order.append(("write", data))
@@ -371,7 +371,7 @@ class TestAsyncIterablePromptWithSdkMcpServers:
             server = _make_greet_server()
             mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
 
-            call_order = []
+            call_order: list[tuple[str, ...]] = []
             original_write = mock_transport.write
 
             async def tracking_write(data):
@@ -1240,3 +1240,75 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestStructuredConcurrency:
+    """Tests for structured concurrency in query() (Issue #1136)."""
+
+    @pytest.mark.anyio
+    async def test_async_iterable_exception_propagates_fast_without_timeout(self):
+        mock_transport = AsyncMock()
+        mock_transport.is_ready.return_value = True
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.wait = AsyncMock(return_value=0)
+
+        async def faulty_prompt():
+            yield {"type": "user", "message": "hi"}
+            raise ValueError("AsyncIterable prompt iteration failed")
+
+        async def mock_read_messages():
+            await anyio.sleep(10)
+            if False:
+                yield {}
+
+        mock_transport.read_messages = mock_read_messages
+
+        # Fixes SIM117 and prevents the initialization timeout
+        with (
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(Exception) as exc_info,
+        ):
+            async for _ in query(prompt=faulty_prompt(), transport=mock_transport):
+                pass
+
+        assert "AsyncIterable prompt iteration failed" in repr(exc_info.value)
+
+    @pytest.mark.anyio
+    async def test_subprocess_crash_propagates_fast_without_timeout(self):
+        """When the transport subprocess crashes (wait() resolves non-zero), query()
+
+        must fail fast and propagate ProcessError without hanging on stdout.
+        """
+        mock_transport = AsyncMock()
+        mock_transport.is_ready.return_value = True
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.wait = AsyncMock(return_value=1)
+
+        async def hanging_read_messages():
+            await anyio.sleep(10)
+            if False:
+                yield {}
+
+        mock_transport.read_messages = hanging_read_messages
+
+        # Fixes SIM117 and prevents the initialization timeout
+        with (
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(Exception) as exc_info,
+        ):
+            async for _ in query(prompt="test prompt", transport=mock_transport):
+                pass
+
+        assert "1" in str(exc_info.value) or "exited" in str(exc_info.value)

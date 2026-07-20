@@ -832,15 +832,12 @@ class Query:
         If SDK MCP servers or hooks are present, waits for the first result
         before closing stdin to allow bidirectional control protocol communication.
         """
-        try:
-            async for message in stream:
-                if self._closed:
-                    break
-                await self.transport.write(json.dumps(message) + "\n")
+        async for message in stream:
+            if self._closed:
+                break
+            await self.transport.write(json.dumps(message) + "\n")
 
-            await self.wait_for_result_and_end_input()
-        except Exception as e:
-            logger.debug(f"Error streaming input: {e}")
+        await self.wait_for_result_and_end_input()
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""

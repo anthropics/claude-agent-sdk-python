@@ -2328,16 +2328,95 @@ class TestWindowsBatchScriptRefusal:
     def test_native_exe_is_preferred_over_shadowing_npm_shim(self):
         # Dual-install machine: npm's %APPDATA%\npm precedes the native
         # installer's %USERPROFILE%\.local\bin on PATH, so which("claude")
-        # resolves the claude.cmd shim (directory-major PATH walk, and
-        # PATHEXT tries .CMD before .EXE within a directory). Discovery must
-        # find the shadowed native claude.exe via which("claude.exe") so
-        # connect() proceeds instead of refusing.
+        # resolves the claude.cmd shim -- shutil.which walks PATH
+        # directory-major, so the earlier npm directory wins (within one
+        # directory the default PATHEXT would prefer .EXE over .CMD; the
+        # shadowing comes purely from directory order). Discovery must find
+        # the shadowed native claude.exe via which("claude.exe") so connect()
+        # proceeds instead of refusing.
         async def _test():
             shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
             native = "C:\\Users\\u\\.local\\bin\\claude.exe"
 
             def _which(name: str) -> str | None:
                 return {"claude": shim, "claude.exe": native}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == native
+
+        anyio.run(_test)
+
+    def test_claude_exe_probe_result_is_vetted(self):
+        # Python 3.12+ shutil.which appends PATHEXT extensions even to a
+        # name that already carries one, so which("claude.exe") can hand
+        # back a stray "claude.exe.cmd". Discovery must not accept that as
+        # the rescued native exe: it falls through to the fallback location
+        # and, with none there, returns the original npm shim so connect()
+        # refuses naming the shim its remediation message is written for.
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+            junk = "C:\\tools\\claude.exe.cmd"
+
+            def _which(name: str) -> str | None:
+                return {"claude": shim, "claude.exe": junk}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match=r"npm\\\\claude\.CMD"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_extensionless_which_hit_still_prefers_native_exe(self):
+        # Python 3.12+ shutil.which also probes the bare name, so an
+        # extensionless git-bash / WSL wrapper script named "claude" in an
+        # early PATH directory shadows a native claude.exe installed in a
+        # later one. CreateProcess cannot run that script (WinError 193),
+        # so discovery must run the same native-exe rescue instead of
+        # committing to the wrapper.
+        async def _test():
+            wrapper = "C:\\Users\\u\\bin\\claude"
+            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
+
+            def _which(name: str) -> str | None:
+                return {"claude": wrapper, "claude.exe": native}.get(name)
 
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()

@@ -2289,8 +2289,18 @@ class TestWindowsBatchScriptRefusal:
     _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
 
     def test_npm_cmd_shim_from_which_is_refused(self):
+        # Shim-only machine: which("claude") resolves npm's claude.cmd and
+        # no native claude.exe is discoverable (which("claude.exe") -> None,
+        # no .exe in the fallback locations). Discovery must still hand the
+        # shim to connect() so the batch-script refusal fires -- the .exe
+        # preference is additive and never lets a shim-only machine spawn.
         async def _test():
             from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+
+            def _which(name: str) -> str | None:
+                return shim if name == "claude" else None
 
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
@@ -2303,14 +2313,54 @@ class TestWindowsBatchScriptRefusal:
                 ),
                 patch(
                     "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    return_value="C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD",
+                    side_effect=_which,
                 ),
+                patch("pathlib.Path.exists", return_value=False),
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
                 pytest.raises(CLIConnectionError, match="batch script"),
             ):
                 await transport.connect()
 
             assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_native_exe_is_preferred_over_shadowing_npm_shim(self):
+        # Dual-install machine: npm's %APPDATA%\npm precedes the native
+        # installer's %USERPROFILE%\.local\bin on PATH, so which("claude")
+        # resolves the claude.cmd shim (directory-major PATH walk, and
+        # PATHEXT tries .CMD before .EXE within a directory). Discovery must
+        # find the shadowed native claude.exe via which("claude.exe") so
+        # connect() proceeds instead of refusing.
+        async def _test():
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
+
+            def _which(name: str) -> str | None:
+                return {"claude": shim, "claude.exe": native}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == native
 
         anyio.run(_test)
 
@@ -2414,12 +2464,17 @@ class TestWindowsBatchScriptRefusal:
                 patch(
                     "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
                     return_value="/usr/local/bin/claude",
-                ),
+                ) as mock_which,
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
             ):
                 mock_open.side_effect = [version_process, main_process]
                 await transport.connect()
 
+            # POSIX discovery uses the which("claude") result directly: the
+            # native-exe preference is a Windows-only branch, so there is no
+            # claude.exe probe here.
+            assert mock_which.call_count == 1
+            assert mock_which.call_args.args == ("claude",)
             assert mock_open.call_count == 2
             assert mock_open.call_args_list[1].args[0][0] == "/usr/local/bin/claude"
 

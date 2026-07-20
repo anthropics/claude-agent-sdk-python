@@ -155,8 +155,21 @@ class SubprocessCLITransport(Transport):
             return bundled_cli
 
         # Fall back to system-wide search
+        shim: str | None = None
         if cli := shutil.which("claude"):
-            return cli
+            if not self._is_windows_batch_cli(cli):
+                return cli
+            # Windows resolved a .bat/.cmd shim (npm's claude.cmd), which
+            # connect() refuses to spawn. shutil.which walks PATH
+            # directory-major, and within a directory PATHEXT tries .CMD
+            # before .EXE, so an npm shim early on PATH shadows a native
+            # claude.exe installed in a later directory. Prefer any
+            # discoverable native executable, and keep the shim only as the
+            # last resort so a shim-only machine still gets the explanatory
+            # batch-script refusal from connect().
+            if exe := shutil.which("claude.exe"):
+                return exe
+            shim = cli
 
         locations = [
             Path.home() / ".npm-global/bin/claude",
@@ -174,6 +187,12 @@ class SubprocessCLITransport(Transport):
         for path in locations:
             if path.exists() and path.is_file():
                 return str(path)
+
+        if shim is not None:
+            # No native executable was discoverable anywhere: return the
+            # shim so connect() raises the batch-script refusal (with its
+            # remediation) rather than a bare not-found error.
+            return shim
 
         if platform.system() == "Windows":
             # npm's Windows install is a claude.cmd shim, which connect()
@@ -214,29 +233,14 @@ class SubprocessCLITransport(Transport):
         return None
 
     @staticmethod
-    def _reject_windows_batch_cli(cli_path: str) -> None:
-        """Refuse to execute a .bat/.cmd script as the CLI on Windows.
+    def _is_windows_batch_cli(cli_path: str) -> bool:
+        """Whether cli_path names a .bat/.cmd batch script on Windows.
 
-        Windows has no shebang mechanism: CreateProcess runs batch scripts
-        by silently rewriting the spawn into a 'cmd.exe /c' invocation, and
-        cmd.exe re-parses the whole command line at execution time.
-        subprocess.list2cmdline quotes arguments for the MSVCRT argv rules
-        only, not for cmd.exe, so cmd.exe metacharacters inside an argument
-        value -- for example a session title passed to --resume -- reach
-        cmd.exe unescaped and can execute injected commands. Reliable
-        escaping for cmd.exe does not exist (%VAR% expands even inside
-        double quotes), so spawning a batch script with runtime-provided
-        arguments cannot be made safe. Refusing is the same remediation
-        Node.js shipped for this vulnerability class (CVE-2024-27980,
-        "BatBadBut").
-
-        In practice this refuses npm's claude.cmd shim, which
-        shutil.which("claude") resolves when no bundled claude.exe is
-        present (for example sdist installs). The alternatives in the
-        error message avoid cmd.exe entirely.
+        Always False off Windows. See _reject_windows_batch_cli for why
+        spawning such a script is refused.
         """
         if platform.system() != "Windows":
-            return
+            return False
         # Deliberately NOT pathlib: PureWindowsPath and PurePosixPath parse
         # several of the cases below differently (".cmd" has suffix ".cmd"
         # on POSIX but "" on Windows), and the tests run on POSIX CI while
@@ -291,10 +295,34 @@ class SubprocessCLITransport(Transport):
         # same normalization Rust's CVE-2024-24576 fix applies), and a bare
         # ".cmd" counts as a batch extension (as Win32 PathFindExtension
         # treats it, and pathlib does not).
-        if not any(
+        return any(
             segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
             for segment in name.split(":")
-        ):
+        )
+
+    @staticmethod
+    def _reject_windows_batch_cli(cli_path: str) -> None:
+        """Refuse to execute a .bat/.cmd script as the CLI on Windows.
+
+        Windows has no shebang mechanism: CreateProcess runs batch scripts
+        by silently rewriting the spawn into a 'cmd.exe /c' invocation, and
+        cmd.exe re-parses the whole command line at execution time.
+        subprocess.list2cmdline quotes arguments for the MSVCRT argv rules
+        only, not for cmd.exe, so cmd.exe metacharacters inside an argument
+        value -- for example a session title passed to --resume -- reach
+        cmd.exe unescaped and can execute injected commands. Reliable
+        escaping for cmd.exe does not exist (%VAR% expands even inside
+        double quotes), so spawning a batch script with runtime-provided
+        arguments cannot be made safe. Refusing is the same remediation
+        Node.js shipped for this vulnerability class (CVE-2024-27980,
+        "BatBadBut").
+
+        In practice this refuses npm's claude.cmd shim, which _find_cli
+        returns only when no native claude.exe is discoverable (for
+        example sdist installs on a machine with just the npm shim). The
+        alternatives in the error message avoid cmd.exe entirely.
+        """
+        if not SubprocessCLITransport._is_windows_batch_cli(cli_path):
             return
         raise CLIConnectionError(
             f"Refusing to execute batch script {cli_path!r}: Windows runs "

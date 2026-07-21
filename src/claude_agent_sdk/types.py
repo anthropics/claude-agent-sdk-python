@@ -1221,6 +1221,15 @@ class ResultMessage:
     # Emitted by the CLI since v2.1.110. Safe to log (no message content).
     api_error_status: int | None = None
     uuid: str | None = None
+    terminal_reason: str | None = None
+    """Why the query loop terminated (e.g. ``"completed"``, ``"max_turns"``,
+    ``"aborted_streaming"``). A value of ``"aborted_streaming"`` or
+    ``"aborted_tools"`` indicates the turn was cancelled (via
+    :meth:`ClaudeSDKClient.interrupt` or an ``interrupt`` control request).
+    ``None`` when the CLI did not report a terminal reason (older CLI
+    versions, or a result that bypassed the query loop such as a local
+    slash command). Mirrors the TypeScript SDK's
+    ``SDKResultMessage.terminal_reason``."""
 
 
 @dataclass

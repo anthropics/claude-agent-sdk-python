@@ -834,6 +834,38 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
 
+    def test_parse_result_message_with_terminal_reason(self):
+        """Test parsing a result message with terminal_reason field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "result": "",
+            "terminal_reason": "aborted_tools",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason == "aborted_tools"
+
+    def test_parse_result_message_missing_terminal_reason_is_none(self):
+        """A result message without terminal_reason parses to None."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason is None
+
     def test_parse_rate_limit_event(self):
         """Test parsing a rate_limit_event into a typed RateLimitEvent."""
         data = {

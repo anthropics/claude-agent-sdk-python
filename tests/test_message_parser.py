@@ -902,6 +902,43 @@ class TestMessageParser:
         with pytest.raises(MessageParseError):
             parse_message({"type": role, "message": message})
 
+    @pytest.mark.parametrize("role", ["user", "assistant"])
+    @pytest.mark.parametrize("bad_message", ["hi", ["oops"], None, 123])
+    def test_non_dict_message_raises_documented_error(
+        self, role: str, bad_message: object
+    ) -> None:
+        """A non-dict 'message' raises MessageParseError, never a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message({"type": role, "message": bad_message})
+
+    def test_non_dict_rate_limit_info_raises_documented_error(self) -> None:
+        """A non-dict 'rate_limit_info' raises MessageParseError, not a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message(
+                {
+                    "type": "rate_limit_event",
+                    "rate_limit_info": "oops",
+                    "uuid": "u",
+                    "session_id": "s",
+                }
+            )
+
+    def test_non_dict_deferred_tool_use_raises_documented_error(self) -> None:
+        """A non-dict 'deferred_tool_use' raises MessageParseError, not a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1,
+                    "duration_api_ms": 1,
+                    "is_error": False,
+                    "num_turns": 1,
+                    "session_id": "s",
+                    "deferred_tool_use": "oops",
+                }
+            )
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

@@ -83,9 +83,16 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 parent_tool_use_id = data.get("parent_tool_use_id")
                 tool_use_result = data.get("tool_use_result")
                 uuid = data.get("uuid")
-                if isinstance(data["message"]["content"], list):
+                user_message = data["message"]
+                if not isinstance(user_message, dict):
+                    raise MessageParseError(
+                        f"Invalid user message (expected dict, got "
+                        f"{type(user_message).__name__})",
+                        data,
+                    )
+                if isinstance(user_message["content"], list):
                     user_content_blocks: list[ContentBlock] = []
-                    for block in data["message"]["content"]:
+                    for block in user_message["content"]:
                         if not isinstance(block, dict):
                             raise MessageParseError(
                                 f"Invalid content block (expected dict, got "
@@ -120,7 +127,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         tool_use_result=tool_use_result,
                     )
                 return UserMessage(
-                    content=data["message"]["content"],
+                    content=user_message["content"],
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
@@ -132,7 +139,14 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "assistant":
             try:
-                raw_content = data["message"]["content"]
+                assistant_message = data["message"]
+                if not isinstance(assistant_message, dict):
+                    raise MessageParseError(
+                        f"Invalid assistant message (expected dict, got "
+                        f"{type(assistant_message).__name__})",
+                        data,
+                    )
+                raw_content = assistant_message["content"]
                 if not isinstance(raw_content, list):
                     raise MessageParseError(
                         f"Invalid assistant content (expected list, got "
@@ -191,12 +205,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
                 return AssistantMessage(
                     content=content_blocks,
-                    model=data["message"]["model"],
+                    model=assistant_message["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
-                    usage=data["message"].get("usage"),
-                    message_id=data["message"].get("id"),
-                    stop_reason=data["message"].get("stop_reason"),
+                    usage=assistant_message.get("usage"),
+                    message_id=assistant_message.get("id"),
+                    stop_reason=assistant_message.get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
                 )
@@ -290,6 +304,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         case "result":
             try:
                 deferred = data.get("deferred_tool_use")
+                if deferred is not None and not isinstance(deferred, dict):
+                    raise MessageParseError(
+                        f"Invalid deferred_tool_use (expected dict, got "
+                        f"{type(deferred).__name__})",
+                        data,
+                    )
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -336,6 +356,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         case "rate_limit_event":
             try:
                 info = data["rate_limit_info"]
+                if not isinstance(info, dict):
+                    raise MessageParseError(
+                        f"Invalid rate_limit_info (expected dict, got "
+                        f"{type(info).__name__})",
+                        data,
+                    )
                 return RateLimitEvent(
                     rate_limit_info=RateLimitInfo(
                         status=info["status"],

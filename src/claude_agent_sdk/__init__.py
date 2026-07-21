@@ -402,10 +402,15 @@ def create_sdk_mcp_server(
         # Pre-compute tool schemas once at creation time
         def _build_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
             if isinstance(tool_def.input_schema, dict):
-                if (
-                    "type" in tool_def.input_schema
-                    and "properties" in tool_def.input_schema
-                    and isinstance(tool_def.input_schema["type"], str)
+                # A pre-built JSON Schema is identified by a string-valued
+                # "type" (e.g. "object"/"array"). "properties" is optional in
+                # JSON Schema (open objects, arrays, and non-object schemas
+                # legitimately omit it), so it must not be required here.
+                # A {name: type} param mapping never matches: its values are
+                # Python types, so isinstance(input_schema["type"], str) is
+                # False even for a param literally named "type".
+                if "type" in tool_def.input_schema and isinstance(
+                    tool_def.input_schema["type"], str
                 ):
                     return tool_def.input_schema
                 properties = {}

@@ -128,7 +128,7 @@ async def _append_jsonl_file_in_batches(
     """Stream-read a JSONL file line-by-line, parsing each line and flushing to
     ``store.append()`` in batches of ``batch_size`` entries (or
     ``MAX_PENDING_BYTES`` of line text, whichever comes first). Skips blank
-    lines."""
+    lines and corrupt/truncated lines."""
     batch: list[SessionStoreEntry] = []
     nbytes = 0
     with file_path.open(encoding="utf-8") as f:
@@ -136,7 +136,14 @@ async def _append_jsonl_file_in_batches(
             line = line.rstrip("\n")
             if not line:
                 continue
-            batch.append(json.loads(line))
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                # Match the read path (_parse_transcript_entries): a
+                # partially-written final line — the normal outcome when the
+                # CLI is killed mid-append — is skipped, not raised.
+                continue
+            batch.append(entry)
             nbytes += len(line)
             if len(batch) >= batch_size or nbytes >= MAX_PENDING_BYTES:
                 await store.append(key, batch)

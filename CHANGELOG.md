@@ -100,6 +100,7 @@
 
 ### Bug Fixes
 
+- **List-form `system_prompt` validation**: Fast-failed invalid list-form `system_prompt` values with a clear `ValueError` at construction instead of a delayed transport-time crash.
 - **Zombie CLI subprocess prevention**: Shielded subprocess cleanup from asyncio cancellation so `SIGTERM`/`SIGKILL` teardown always runs, preventing orphaned `claude` child processes when the parent task is cancelled (#1082)
 - **Silent whitespace loss on large NDJSON lines**: Fixed the NDJSON parser silently dropping whitespace when a single line exceeded the 64 KiB stream buffer, which could corrupt tool output or assistant message content (#1083)
 - **TypeError on non-dict message content**: Fixed an uncaught `TypeError` when the CLI emits a message whose `content` field is a plain string or other non-dict value instead of the expected list of content blocks (#1058)

@@ -1757,6 +1757,11 @@ class ClaudeAgentOptions:
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
       prompt with appended instructions.
+
+    A list of Anthropic content blocks (the Messages API ``system`` list form)
+    is not accepted: the bundled CLI forwards the system prompt as plain text,
+    so per-block ``cache_control`` cannot pass through it. Passing a list
+    raises ``ValueError`` at construction rather than failing later.
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
@@ -2090,6 +2095,19 @@ class ClaudeAgentOptions:
     ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
     header.
     """
+
+    def __post_init__(self) -> None:
+        if isinstance(self.system_prompt, list):
+            raise ValueError(
+                "system_prompt does not accept a list of content blocks. The "
+                "bundled Claude Code CLI forwards the system prompt as plain "
+                "text only, so per-block cache_control cannot be sent through "
+                "it; carrying the list form to the Messages API requires a "
+                "CLI-side flag that does not exist yet. Concatenate the blocks "
+                "into a single string (this merges the layers into one cache "
+                "prefix, losing layer-independent prompt caching), or pass a "
+                "preset/file system prompt instead."
+            )
 
 
 # SDK Control Protocol

@@ -598,7 +598,13 @@ def _parse_fork_transcript(
     transcript: list[dict[str, Any]] = []
     content_replacements: list[Any] = []
 
-    for line in content.decode("utf-8", errors="replace").splitlines():
+    # Split on "\n" only (not str.splitlines()) to match the read path,
+    # _parse_transcript_entries. splitlines() additionally breaks on U+2028,
+    # U+2029 and U+0085, which are valid *unescaped* inside a JSON string and
+    # are emitted raw by the CLI's JSON.stringify. Splitting on them would
+    # fragment an otherwise-valid JSONL line into pieces that each fail
+    # json.loads, silently dropping that message from the fork.
+    for line in content.decode("utf-8", errors="replace").split("\n"):
         line = line.strip()
         if not line:
             continue

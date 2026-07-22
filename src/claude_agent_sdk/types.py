@@ -194,6 +194,30 @@ class PermissionUpdate:
         )
 
 
+# Governance hook types
+class GovernanceDecision(TypedDict, total=False):
+    """Decision returned by a governance hook for a pending tool call.
+
+    Fields:
+        allowed: Whether the tool call is permitted to proceed. Required.
+        reason: Optional human-readable explanation for the decision. When the
+            tool call is blocked (``allowed=False``) this message is forwarded
+            to the model as a rejection notice.
+        modified_input: If provided and ``allowed=True``, the tool executes with
+            this dict instead of the original input. Ignored when ``allowed=False``.
+    """
+
+    allowed: Required[bool]
+    reason: str
+    modified_input: dict[str, Any]
+
+
+GovernanceHook = Callable[
+    [str, dict[str, Any], "ToolPermissionContext"],
+    "GovernanceDecision | Awaitable[GovernanceDecision]",
+]
+
+
 # Tool callback types
 @dataclass
 class ToolPermissionContext:
@@ -1348,6 +1372,29 @@ class HookEventMessage(SystemMessage):
     uuid: str | None = None
 
 
+@dataclass
+class SubagentTokenUsageEvent:
+    """Token usage event emitted mid-stream per subagent during execution."""
+
+    input_tokens: int
+    output_tokens: int
+    session_id: str
+    uuid: str
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    agent_id: str | None = None
+    timestamp: str | None = None
+
+
+@dataclass
+class BackgroundTaskLateCompletionEvent:
+    """Synthetic SDK event emitted when a background task completes after turn boundary."""
+
+    task_id: str
+    status: str
+    source_message: "TaskNotificationMessage | TaskUpdatedMessage"
+
+
 Message = (
     UserMessage
     | AssistantMessage
@@ -1355,6 +1402,8 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | SubagentTokenUsageEvent
+    | BackgroundTaskLateCompletionEvent
 )
 
 
@@ -1944,6 +1993,30 @@ class ClaudeAgentOptions:
     hook returning an *allow* decision also skips this callback.
     """
 
+    governance_hook: "GovernanceHook | None" = None
+    """Policy-as-code hook that authorizes or blocks every tool call before execution.
+
+    Called before ``can_use_tool`` for **every** pending tool call, regardless of
+    permission rules or ``allowed_tools``. Receives the tool name, input dict, and
+    a :class:`ToolPermissionContext` and must return a :class:`GovernanceDecision`.
+
+    - ``allowed=True`` — the tool call proceeds (optionally with ``modified_input``).
+    - ``allowed=False`` — the tool call is blocked; the model receives ``reason`` as
+      a rejection message.
+    - ``modified_input`` — when ``allowed=True`` and this field is set, the tool
+      executes with this dict instead of the original input.
+
+    Both synchronous and asynchronous callables are accepted::
+
+        def my_policy(tool_name, tool_input, ctx):
+            if tool_name == "Bash" and "rm" in tool_input.get("command", ""):
+                return GovernanceDecision(allowed=False, reason="rm commands are blocked")
+            return GovernanceDecision(allowed=True)
+
+    When ``governance_hook`` is set without ``can_use_tool``, a default pass-through
+    ``can_use_tool`` is installed automatically so the hook fires for every tool call.
+    """
+
     hooks: dict[HookEvent, list[HookMatcher]] | None = None
     """Hook callbacks for responding to various events during execution.
 
@@ -2124,6 +2197,60 @@ class ClaudeAgentOptions:
     ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
     header.
     """
+
+    on_compaction_start: "Callable[[CompactionEvent], Awaitable[None]] | None" = None
+    """Async callback invoked just before context compaction begins."""
+
+    on_compaction_end: "Callable[[CompactionEvent], Awaitable[None]] | None" = None
+    """Async callback invoked just after context compaction completes."""
+
+    on_context_window_threshold: "Callable[[ContextWindowThresholdEvent], Awaitable[None]] | None" = None
+    """Async callback invoked when context window usage exceeds the configured threshold."""
+
+    context_window_threshold_pct: float = 0.8
+    """Fraction (0.0-1.0) at which on_context_window_threshold fires. Default 0.8."""
+
+    context_window_size: int | None = None
+    """Model maximum context window size in tokens. Required for threshold tracking."""
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle event types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompactionEvent:
+    """Event passed to on_compaction_start and on_compaction_end callbacks.
+
+    Attributes:
+        trigger: Why compaction was triggered: "auto" or "manual".
+        custom_instructions: Custom compaction instructions if any.
+        session_id: Session identifier.
+        raw: Raw data dict from the CLI PreCompact hook payload.
+    """
+
+    trigger: str
+    session_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    custom_instructions: str | None = None
+
+
+@dataclass
+class ContextWindowThresholdEvent:
+    """Event passed to on_context_window_threshold callback.
+
+    Attributes:
+        pct_used: Fraction of context window used (0.0-1.0).
+        tokens_used: Total tokens currently filling the context window.
+        session_id: Session identifier.
+        raw_usage: Raw usage dict from the AssistantMessage.
+    """
+
+    pct_used: float
+    tokens_used: int
+    session_id: str | None = None
+    raw_usage: dict[str, Any] = field(default_factory=dict)
 
 
 # SDK Control Protocol

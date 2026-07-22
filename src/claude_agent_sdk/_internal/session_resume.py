@@ -168,6 +168,11 @@ async def materialize_resume_session(
         # authenticate. Missing files are fine (API-key auth, etc.).
         _copy_auth_files(tmp_base, options.env)
 
+        # Carry the caller's skills/ and per-project memory/ across the same
+        # boundary (symlinked, best-effort) so the resumed subprocess can
+        # invoke skills and load/persist memory. See _link_skills_and_memory.
+        _link_skills_and_memory(tmp_base, options.env)
+
         # Materialize subagent transcripts if the store can enumerate them.
         if _store_implements(store, "list_subkeys"):
             await _materialize_subkeys(
@@ -364,6 +369,56 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
         else Path.home() / ".claude.json"
     )
     _copy_if_present(claude_json_src, tmp_base / ".claude.json")
+
+
+def _link_skills_and_memory(tmp_base: Path, opt_env: dict[str, str]) -> None:
+    """Symlink the caller's ``skills/`` and per-project ``memory/`` into ``tmp_base``.
+
+    The subprocess runs with ``CLAUDE_CONFIG_DIR=tmp_base``. Without these
+    links a store-backed resume is silently skill-less and memory-less:
+
+    - Skills may still be *listed* (the registry is assembled from setting
+      sources), but invocation resolution walks the config dir — so invoking
+      any user skill fails with "Unknown skill" (listing-source !=
+      resolution-source).
+    - The per-project ``memory/`` (MEMORY.md and entries) never auto-loads,
+      and any memory writes land in the temp dir and are deleted on cleanup.
+
+    Symlinks rather than copies, deliberately:
+
+    - skills resolve live from the caller's store (no per-resume copy cost);
+    - memory WRITES persist back to the caller's real per-project store
+      instead of being lost when the temp dir is removed;
+    - ``shutil.rmtree`` removes directory symlinks without descending, so
+      cleanup cannot touch the linked stores.
+
+    Best-effort: where symlink creation is unavailable (e.g. Windows without
+    symlink privilege), the resume proceeds without skills/memory — exactly
+    the prior behavior. Source resolution mirrors ``_copy_auth_files``.
+    """
+    caller_config_dir = opt_env.get("CLAUDE_CONFIG_DIR") or os.environ.get(
+        "CLAUDE_CONFIG_DIR"
+    )
+    source = Path(caller_config_dir) if caller_config_dir else Path.home() / ".claude"
+
+    src_skills = source / "skills"
+    dst_skills = tmp_base / "skills"
+    if src_skills.is_dir() and not (dst_skills.exists() or dst_skills.is_symlink()):
+        with suppress(OSError):
+            dst_skills.symlink_to(src_skills, target_is_directory=True)
+
+    # materialize_resume_session created exactly the resumed project's dir
+    # under projects/; link each project's memory back to the caller's store.
+    projects = tmp_base / "projects"
+    if projects.is_dir():
+        for proj in projects.iterdir():
+            if not proj.is_dir():
+                continue
+            src_mem = source / "projects" / proj.name / "memory"
+            dst_mem = proj / "memory"
+            if src_mem.is_dir() and not (dst_mem.exists() or dst_mem.is_symlink()):
+                with suppress(OSError):
+                    dst_mem.symlink_to(src_mem, target_is_directory=True)
 
 
 def _write_redacted_credentials(creds_json: str | None, dst: Path) -> None:

@@ -843,11 +843,29 @@ class Query:
         completion can arrive as either frame (not every terminal task emits
         a notification), so both are handled; ``discard`` keeps the pair
         idempotent.
+
+        ``background_tasks_changed`` carries an authoritative snapshot of the
+        running background tasks (``{"tasks": [{"task_id": ...}, ...]}``) and is
+        applied as a set-replacement. This self-heals a missed ``task_started``
+        or terminal frame (dropped lines, older CLIs with different terminal
+        statuses): tracking drift can then only *delay* the stdin close (bounded
+        by the reader's ``finally``), never wedge it open or close it early
+        (see #1088).
         """
+        subtype = message.get("subtype")
+        if subtype == "background_tasks_changed":
+            tasks = message.get("tasks")
+            if isinstance(tasks, list):
+                self._inflight_tasks = {
+                    task["task_id"]
+                    for task in tasks
+                    if isinstance(task, dict) and task.get("task_id")
+                }
+            return
+
         task_id = message.get("task_id")
         if not task_id:
             return
-        subtype = message.get("subtype")
         if subtype == "task_started":
             self._inflight_tasks.add(task_id)
         elif subtype == "task_notification":

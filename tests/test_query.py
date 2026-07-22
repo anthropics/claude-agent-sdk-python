@@ -387,6 +387,15 @@ _TASK_UPDATED_TERMINAL = {
     "patch": {"status": "completed"},
 }
 
+_BACKGROUND_TASKS_CHANGED = {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": [
+        {"task_id": "task-1", "task_type": "local_agent"},
+        {"task_id": "task-2", "task_type": "local_agent"},
+    ],
+}
+
 
 def _make_result(uid):
     return dict(_ASSISTANT_AND_RESULT[1], uuid=uid)
@@ -508,6 +517,64 @@ class TestStdinStaysOpenWithInflightTasks:
         # Frames without a task_id are ignored.
         q._track_task_lifecycle({"subtype": "task_started"})
         assert q._inflight_tasks == set()
+
+    def test_track_task_lifecycle_background_snapshot(self):
+        """background_tasks_changed replaces the in-flight set, self-healing
+        missed start/terminal frames (#1088)."""
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        # The snapshot is authoritative: adopt exactly the listed tasks, even
+        # with no prior task_started frames for them.
+        q._track_task_lifecycle(dict(_BACKGROUND_TASKS_CHANGED))
+        assert q._inflight_tasks == {"task-1", "task-2"}
+
+        # A later snapshot with a task gone clears it even if its terminal
+        # frame was missed — the drift-healing this frame exists for.
+        q._track_task_lifecycle(
+            {
+                "type": "system",
+                "subtype": "background_tasks_changed",
+                "tasks": [{"task_id": "task-2"}],
+            }
+        )
+        assert q._inflight_tasks == {"task-2"}
+
+        # An empty snapshot means every background task is done.
+        q._track_task_lifecycle(
+            {"type": "system", "subtype": "background_tasks_changed", "tasks": []}
+        )
+        assert q._inflight_tasks == set()
+
+        # A malformed frame (missing / non-list tasks) must not wipe live
+        # tracking — better to delay the close than to close early.
+        q._inflight_tasks = {"task-9"}
+        q._track_task_lifecycle(
+            {"type": "system", "subtype": "background_tasks_changed"}
+        )
+        assert q._inflight_tasks == {"task-9"}
+        q._track_task_lifecycle(
+            {"type": "system", "subtype": "background_tasks_changed", "tasks": None}
+        )
+        assert q._inflight_tasks == {"task-9"}
+        # A truthy-but-non-list tasks value is ignored too (guards the
+        # isinstance(tasks, list) check against a regression to ``if tasks:``).
+        q._track_task_lifecycle(
+            {"type": "system", "subtype": "background_tasks_changed", "tasks": {}}
+        )
+        assert q._inflight_tasks == {"task-9"}
+
+        # Non-dict entries and entries without a task_id are skipped, not added.
+        q._inflight_tasks = set()
+        q._track_task_lifecycle(
+            {
+                "type": "system",
+                "subtype": "background_tasks_changed",
+                "tasks": [123, {"task_type": "local_agent"}, {"task_id": "task-3"}],
+            }
+        )
+        assert q._inflight_tasks == {"task-3"}
 
 
 class TestAsyncIterablePromptWithSdkMcpServers:

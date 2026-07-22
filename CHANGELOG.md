@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.126
+
+### New Features
+
+- **`terminal_reason` on ResultMessage**: `ResultMessage.terminal_reason` now surfaces why the query loop ended (`"completed"`, `"max_turns"`, `"aborted_streaming"`, `"aborted_tools"`, etc.). A value of `"aborted_streaming"` or `"aborted_tools"` means the turn was cancelled via `ClaudeSDKClient.interrupt()`. Mirrors the TypeScript SDK's `SDKResultMessage.terminal_reason` (#1142)
+- **Typed `model_usage` on ResultMessage**: `ResultMessage.model_usage` is now typed as `dict[str, ModelUsage]` instead of `dict[str, Any]`, with a new `ModelUsage` TypedDict that mirrors the TypeScript SDK's shape. Includes optional `canonicalModel` and `provider` fields for stable model identification across provider-specific aliases (#1143)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.218
+
 ## 0.2.125
 
 ### Internal/Other Changes

@@ -360,6 +360,317 @@ class TestStringPromptWithSdkMcpServers:
         anyio.run(_test)
 
 
+_TASK_STARTED = {
+    "type": "system",
+    "subtype": "task_started",
+    "task_id": "task-1",
+    "task_type": "local_agent",
+    "description": "background subagent",
+    "uuid": "uuid-ts1",
+    "session_id": "test",
+}
+
+# A backgrounded shell (dev server, `tail -f`) is reported through the same
+# frames but can run indefinitely, so it must never defer the stdin close.
+_SHELL_TASK_STARTED = {
+    "type": "system",
+    "subtype": "task_started",
+    "task_id": "shell-1",
+    "task_type": "local_bash",
+    "description": "npm run dev",
+    "uuid": "uuid-ts2",
+    "session_id": "test",
+}
+
+_TASK_NOTIFICATION = {
+    "type": "system",
+    "subtype": "task_notification",
+    "task_id": "task-1",
+    "status": "completed",
+    "output_file": "/tmp/task-1.output",
+    "summary": "done",
+    "uuid": "uuid-tn1",
+    "session_id": "test",
+}
+
+_TASK_UPDATED_TERMINAL = {
+    "type": "system",
+    "subtype": "task_updated",
+    "task_id": "task-1",
+    "patch": {"status": "completed"},
+}
+
+_BACKGROUND_TASKS_CHANGED = {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": [
+        {"task_id": "task-1", "task_type": "local_agent"},
+        {"task_id": "task-2", "task_type": "local_agent"},
+    ],
+}
+
+
+def _make_result(uid):
+    return dict(_ASSISTANT_AND_RESULT[1], uuid=uid)
+
+
+class TestStdinStaysOpenWithInflightTasks:
+    """A result frame with tasks in flight must not close stdin (#1088).
+
+    Background tasks keep running past the turn's result frame and still
+    need stdin for hook/SDK-MCP control responses. Closing it there fails
+    those responses with "Stream closed" and silently disables hooks.
+    """
+
+    @pytest.mark.parametrize(
+        "drain_frame",
+        [_TASK_NOTIFICATION, _TASK_UPDATED_TERMINAL],
+        ids=["task_notification", "task_updated_terminal_patch"],
+    )
+    def test_result_with_inflight_task_keeps_stdin_open(self, drain_frame):
+        """stdin stays open across an intermediate result, then closes on the
+        first result that arrives with no tasks in flight."""
+
+        async def _test():
+            server = _make_greet_server()
+            end_input_calls = []
+
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def tracking_end_input():
+                end_input_calls.append(True)
+
+            mock_transport.end_input = tracking_end_input
+
+            open_after_intermediate_result = None
+            closed_after_final_result = None
+
+            async def mock_receive():
+                nonlocal open_after_intermediate_result, closed_after_final_result
+                yield dict(_ASSISTANT_AND_RESULT[0])
+                yield dict(_TASK_STARTED)
+                yield _make_result("uuid-r1")
+                # Let the stdin-closing waiter run if the first-result event
+                # (incorrectly) fired for the intermediate result.
+                for _ in range(20):
+                    await anyio.sleep(0)
+                open_after_intermediate_result = not end_input_calls
+                yield dict(drain_frame)
+                yield _make_result("uuid-r2")
+                # Now the waiter should wake and close stdin before the
+                # stream ends (i.e. not merely via the reader's finally).
+                for _ in range(20):
+                    await anyio.sleep(0)
+                closed_after_final_result = bool(end_input_calls)
+
+            mock_transport.read_messages = mock_receive
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                messages = []
+                async for msg in query(
+                    prompt="Hello",
+                    options=ClaudeAgentOptions(mcp_servers={"greeter": server}),
+                ):
+                    messages.append(msg)
+
+            assert open_after_intermediate_result is True
+            assert closed_after_final_result is True
+            results = [m for m in messages if isinstance(m, ResultMessage)]
+            assert len(results) == 2
+
+        anyio.run(_test)
+
+    def test_track_task_lifecycle_unit(self):
+        """_track_task_lifecycle adds on start and clears only on terminal."""
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        q._track_task_lifecycle(dict(_TASK_STARTED))
+        assert q._inflight_tasks == {"task-1"}
+
+        # Non-terminal patch does not clear the task.
+        q._track_task_lifecycle(
+            {
+                "subtype": "task_updated",
+                "task_id": "task-1",
+                "patch": {"status": "running"},
+            }
+        )
+        assert q._inflight_tasks == {"task-1"}
+
+        # Patch without a dict payload is ignored.
+        q._track_task_lifecycle(
+            {"subtype": "task_updated", "task_id": "task-1", "patch": None}
+        )
+        assert q._inflight_tasks == {"task-1"}
+
+        # Terminal patch clears it.
+        q._track_task_lifecycle(dict(_TASK_UPDATED_TERMINAL))
+        assert q._inflight_tasks == set()
+
+        # Draining an unknown/already-cleared task is a no-op, not an error.
+        q._track_task_lifecycle(dict(_TASK_NOTIFICATION))
+        assert q._inflight_tasks == set()
+
+        # Frames without a task_id are ignored.
+        q._track_task_lifecycle({"subtype": "task_started"})
+        assert q._inflight_tasks == set()
+
+    def test_shell_and_monitor_tasks_never_defer_the_close(self):
+        """Only delegated agent work defers the stdin close.
+
+        A backgrounded shell can run forever, and the CLI only exits on stdin
+        EOF, so tracking one would withhold the close permanently rather than
+        briefly — the reader's ``finally`` never runs either (#1088).
+        """
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        q._track_task_lifecycle(dict(_SHELL_TASK_STARTED))
+        assert q._inflight_tasks == set()
+
+        for task_type in ("monitor_mcp", "monitor_ws", "in_process_teammate"):
+            q._track_task_lifecycle(
+                {
+                    "subtype": "task_started",
+                    "task_id": f"{task_type}-1",
+                    "task_type": task_type,
+                }
+            )
+        assert q._inflight_tasks == set()
+
+        # A start frame with no task_type at all is not assumed to be an agent.
+        q._track_task_lifecycle({"subtype": "task_started", "task_id": "unknown-1"})
+        assert q._inflight_tasks == set()
+
+        # Agent work still defers, alongside the ignored shell.
+        q._track_task_lifecycle(dict(_TASK_STARTED))
+        assert q._inflight_tasks == {"task-1"}
+
+    def test_background_snapshot_does_not_touch_the_ledger(self):
+        """background_tasks_changed is ignored in both directions (#1088).
+
+        It reports the live *background* set, but a subagent is registered in
+        the foreground and only flips to backgrounded later without a second
+        ``task_started`` — so a tracked agent that is still running can be
+        absent from the snapshot entirely.
+        """
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        # It cannot add: the snapshot spans every background task type and
+        # cannot distinguish an observer agent, whose bookends are suppressed.
+        q._track_task_lifecycle(dict(_BACKGROUND_TASKS_CHANGED))
+        assert q._inflight_tasks == set()
+
+        # Nor can it remove. A foreground subagent is tracked from its
+        # task_started but appears in no snapshot; narrowing against one would
+        # drop it, and when it is later auto-backgrounded no second
+        # task_started re-adds it — so the result frame would close stdin while
+        # it is still running, which is exactly the bug being fixed.
+        q._track_task_lifecycle(dict(_TASK_STARTED))
+        q._track_task_lifecycle(
+            {
+                "type": "system",
+                "subtype": "background_tasks_changed",
+                "tasks": [{"task_id": "shell-1", "task_type": "local_bash"}],
+            }
+        )
+        assert q._inflight_tasks == {"task-1"}
+
+        # Not even an empty snapshot clears it; only a terminal frame does.
+        q._track_task_lifecycle(
+            {"type": "system", "subtype": "background_tasks_changed", "tasks": []}
+        )
+        assert q._inflight_tasks == {"task-1"}
+
+        q._track_task_lifecycle(dict(_TASK_NOTIFICATION))
+        assert q._inflight_tasks == set()
+
+    def test_never_ending_shell_does_not_wedge_stdin_open(self):
+        """A backgrounded shell that never finishes must not hang the query.
+
+        Unlike the other streams in this file, this transport does not end on
+        its own: it models the real contract the stdin close depends on — the
+        CLI's stdout does not reach EOF until its stdin does. A tracked task
+        that never reaches a terminal status therefore cannot be rescued by
+        the reader's ``finally``, because that only runs once the process
+        exits (#1088).
+        """
+
+        async def _test():
+            server = _make_greet_server()
+            stdin_closed = anyio.Event()
+
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def end_input():
+                stdin_closed.set()
+
+            mock_transport.end_input = end_input
+
+            async def mock_receive():
+                yield dict(_ASSISTANT_AND_RESULT[0])
+                yield dict(_SHELL_TASK_STARTED)
+                yield {
+                    "type": "system",
+                    "subtype": "background_tasks_changed",
+                    "tasks": [{"task_id": "shell-1", "task_type": "local_bash"}],
+                }
+                yield _make_result("uuid-r1")
+                # The shell never exits, so no terminal frame ever arrives and
+                # the snapshot keeps listing it. Park until stdin closes.
+                await stdin_closed.wait()
+
+            mock_transport.read_messages = mock_receive
+
+            completed = False
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                with anyio.move_on_after(10):
+                    async for _ in query(
+                        prompt="start the dev server",
+                        options=ClaudeAgentOptions(mcp_servers={"greeter": server}),
+                    ):
+                        pass
+                    completed = True
+
+            assert stdin_closed.is_set(), "stdin was never closed"
+            assert completed, "query() did not terminate"
+
+        anyio.run(_test)
+
+
 class TestAsyncIterablePromptWithSdkMcpServers:
     """Test that AsyncIterable prompts keep stdin open for SDK MCP servers."""
 

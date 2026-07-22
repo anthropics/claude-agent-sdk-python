@@ -17,6 +17,7 @@ from mcp.types import (
 
 from .._errors import ProcessError
 from ..types import (
+    TERMINAL_TASK_STATUSES,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -37,6 +38,22 @@ if TYPE_CHECKING:
     from .transcript_mirror_batcher import TranscriptMirrorBatcher
 
 logger = logging.getLogger(__name__)
+
+# Task types whose completion runs a follow-up turn, and which therefore may
+# still need the control channel after the turn's result frame.
+#
+# This mirrors the set the CLI itself holds a result back for, which is
+# narrower than its notion of "delegated agent work". The types left out are
+# left out on purpose, and none of them is merely an oversight:
+#   - background shells and monitors run indefinitely by design, so deferring
+#     the close on one withholds it forever rather than briefly;
+#   - teammates are long-lived too — their status stays running for their whole
+#     lifetime, so they never settle the ledger;
+#   - remote agents can be long-running monitors the CLI likewise refuses to
+#     wait on.
+# Anything added here must be a type that reliably reaches a terminal status,
+# or it will hang the query (see Query._track_task_lifecycle).
+DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
 
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
@@ -128,8 +145,17 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Track first result for proper stream closure with SDK MCP servers
+        # Set when a run-ending result arrives (a result frame with no tasks
+        # in flight) so the stdin-closing waiter can wake; see #1088 and
+        # _inflight_tasks below. Named for history — it once tracked the
+        # literal first result.
         self._first_result_event = anyio.Event()
+        # Task IDs of started-but-not-finished tasks. A result frame only ends
+        # one turn, not the run: background tasks keep running past it and
+        # still need stdin for hook/SDK-MCP control responses (see #1088), so
+        # a result that arrives while this set is non-empty must not close
+        # stdin.
+        self._inflight_tasks: set[str] = set()
         # Set to the result's error text when the most recent message is a
         # result with is_error=True. Used to replace the generic "exit code 1"
         # ProcessError with the structured error the CLI already reported.
@@ -293,6 +319,11 @@ class Query:
                         )
                     continue
 
+                # Track task lifecycle frames so results can tell "one turn
+                # ended" apart from "the run is done" (see #1088).
+                if msg_type == "system":
+                    self._track_task_lifecycle(message)
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     # Flush pending transcript mirror entries before yielding
@@ -300,7 +331,21 @@ class Query:
                     # SessionStore being up to date for this turn.
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
-                    self._first_result_event.set()
+                    if self._inflight_tasks:
+                        # One turn ended, but background tasks are still
+                        # running and may need hook/SDK-MCP control responses
+                        # over stdin. Closing it now silently disables hooks
+                        # and fails SDK-MCP calls with "Stream closed"
+                        # (#1088). Each task completion wakes the parent for
+                        # a follow-up turn, so a later result frame arrives
+                        # with no tasks in flight and closes stdin then.
+                        logger.debug(
+                            "Result received with %d task(s) in flight; "
+                            "keeping stdin open",
+                            len(self._inflight_tasks),
+                        )
+                    else:
+                        self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
                         self._last_error_result_text = "; ".join(errors) or str(
@@ -806,19 +851,80 @@ class Query:
             }
         )
 
+    def _track_task_lifecycle(self, message: dict[str, Any]) -> None:
+        """Track in-flight tasks from ``system`` task lifecycle frames.
+
+        ``task_started`` marks a task in flight; ``task_notification`` or a
+        ``task_updated`` patch with a terminal status clears it. Terminal
+        completion can arrive as either frame (not every terminal task emits
+        a notification), so both are handled; ``discard`` keeps the pair
+        idempotent.
+
+        This is a mitigation, not a complete answer to #1088. An empty set
+        means "nothing we know of is running", which is not the same as "the
+        run is over": a task that settles *before* the turn's result frame
+        leaves the set empty at that result, so stdin closes even though the
+        completion may still wake the parent for a continuation turn. No
+        ledger can close that gap, because the ledger cannot distinguish a
+        settled task whose continuation is pending from no work at all — that
+        needs a run-boundary signal from the CLI rather than an inference from
+        task bookkeeping. What this does fix is the common ordering, where the
+        task outlives the turn that spawned it.
+
+        Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
+        background *shell* — ``Bash(run_in_background=True)`` on a dev server or
+        ``tail -f`` — is also reported through these frames, but it may never
+        reach a terminal status, and the CLI in stream-json mode only exits on
+        stdin EOF. Tracking one would therefore withhold the close forever
+        rather than briefly: no terminal frame, no process exit, so not even the
+        reader's ``finally`` runs. Agent tasks are the ones whose completion
+        wakes the parent for the follow-up turn this relies on; shells and
+        monitors are bounded by the CLI's own post-close cleanup instead.
+
+        ``background_tasks_changed`` is deliberately *not* consumed, in either
+        direction. Its payload is the live *background* set, while a subagent is
+        registered in the foreground and only flips to backgrounded later,
+        without a second ``task_started``. So the snapshot omits tracked work
+        that is still running: narrowing against it would drop an agent that
+        goes on to outlive its turn, which is the very close-too-early bug this
+        method exists to prevent. Widening from it is no better — the snapshot
+        spans every background task type and carries nothing marking an
+        observer agent, whose start and terminal frames are both suppressed, so
+        it could admit an id no later frame ever clears. The lifecycle frames
+        are the only self-consistent source here (see #1088).
+        """
+        subtype = message.get("subtype")
+        task_id = message.get("task_id")
+        if not task_id:
+            return
+        if subtype == "task_started":
+            if message.get("task_type") in DEFERRING_TASK_TYPES:
+                self._inflight_tasks.add(task_id)
+        elif subtype == "task_notification":
+            self._inflight_tasks.discard(task_id)
+        elif subtype == "task_updated":
+            patch = message.get("patch")
+            status = patch.get("status") if isinstance(patch, dict) else None
+            if status in TERMINAL_TASK_STATUSES:
+                self._inflight_tasks.discard(task_id)
+
     async def wait_for_result_and_end_input(self) -> None:
-        """Wait for the first result (if needed) then close stdin.
+        """Wait for a run-ending result (if needed) then close stdin.
 
         If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives. The control protocol
-        requires stdin to remain open for the entire conversation, so no
-        timeout is applied. The event is guaranteed to fire: either when the
-        result message arrives, or in _read_messages' finally block if the
-        process exits early.
+        keeps stdin open until a result arrives with no tasks in flight. A
+        result frame ends one turn, not necessarily the run: background tasks
+        keep running past it and still need stdin for hook/SDK-MCP control
+        responses (see #1088). The control protocol requires stdin to remain
+        open for the entire conversation, so no timeout is applied. The event
+        is guaranteed to fire: either when a result message arrives with no
+        in-flight tasks (every task completion wakes the parent for a
+        follow-up turn, which ends in such a result), or in _read_messages'
+        finally block if the process exits early.
         """
         if self.sdk_mcp_servers or self.hooks:
             logger.debug(
-                "Waiting for first result before closing stdin "
+                "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)})"
             )

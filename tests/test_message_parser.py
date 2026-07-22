@@ -280,6 +280,53 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_assistant_message_with_thinking_missing_signature(self):
+        """Thinking blocks without a signature parse instead of raising.
+
+        Some Anthropic-compatible backends emit unsigned thinking blocks; the
+        parser must not crash with MessageParseError on a missing signature.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Reasoning without a signature...",
+                    },
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert isinstance(message.content[0], ThinkingBlock)
+        assert message.content[0].thinking == "Reasoning without a signature..."
+        assert message.content[0].signature == ""
+
+    def test_parse_user_message_with_thinking(self):
+        """Thinking blocks replayed inside a user message are preserved."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Replayed reasoning...",
+                        "signature": "sig-123",
+                    },
+                    {"type": "text", "text": "Follow-up"},
+                ],
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert isinstance(message.content, list)
+        assert isinstance(message.content[0], ThinkingBlock)
+        assert message.content[0].thinking == "Replayed reasoning..."
+        assert message.content[0].signature == "sig-123"
+        assert isinstance(message.content[1], TextBlock)
+
     def test_parse_assistant_message_with_server_tool_use(self):
         """server_tool_use blocks (e.g. advisor, web_search) are preserved.
 

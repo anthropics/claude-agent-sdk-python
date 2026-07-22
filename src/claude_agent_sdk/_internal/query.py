@@ -39,6 +39,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Task types whose completion runs a follow-up turn, and which therefore may
+# still need the control channel after the turn's result frame.
+#
+# This mirrors the set the CLI itself holds a result back for, which is
+# narrower than its notion of "delegated agent work". The types left out are
+# left out on purpose, and none of them is merely an oversight:
+#   - background shells and monitors run indefinitely by design, so deferring
+#     the close on one withholds it forever rather than briefly;
+#   - teammates are long-lived too — their status stays running for their whole
+#     lifetime, so they never settle the ledger;
+#   - remote agents can be long-running monitors the CLI likewise refuses to
+#     wait on.
+# Anything added here must be a type that reliably reaches a terminal status,
+# or it will hang the query (see Query._track_task_lifecycle).
+DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     """Convert Python-safe field names to CLI-expected field names.
@@ -844,30 +860,46 @@ class Query:
         a notification), so both are handled; ``discard`` keeps the pair
         idempotent.
 
-        ``background_tasks_changed`` carries an authoritative snapshot of the
-        running background tasks (``{"tasks": [{"task_id": ...}, ...]}``) and is
-        applied as a set-replacement. This self-heals a missed ``task_started``
-        or terminal frame (dropped lines, older CLIs with different terminal
-        statuses): tracking drift can then only *delay* the stdin close (bounded
-        by the reader's ``finally``), never wedge it open or close it early
-        (see #1088).
+        This is a mitigation, not a complete answer to #1088. An empty set
+        means "nothing we know of is running", which is not the same as "the
+        run is over": a task that settles *before* the turn's result frame
+        leaves the set empty at that result, so stdin closes even though the
+        completion may still wake the parent for a continuation turn. No
+        ledger can close that gap, because the ledger cannot distinguish a
+        settled task whose continuation is pending from no work at all — that
+        needs a run-boundary signal from the CLI rather than an inference from
+        task bookkeeping. What this does fix is the common ordering, where the
+        task outlives the turn that spawned it.
+
+        Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
+        background *shell* — ``Bash(run_in_background=True)`` on a dev server or
+        ``tail -f`` — is also reported through these frames, but it may never
+        reach a terminal status, and the CLI in stream-json mode only exits on
+        stdin EOF. Tracking one would therefore withhold the close forever
+        rather than briefly: no terminal frame, no process exit, so not even the
+        reader's ``finally`` runs. Agent tasks are the ones whose completion
+        wakes the parent for the follow-up turn this relies on; shells and
+        monitors are bounded by the CLI's own post-close cleanup instead.
+
+        ``background_tasks_changed`` is deliberately *not* consumed, in either
+        direction. Its payload is the live *background* set, while a subagent is
+        registered in the foreground and only flips to backgrounded later,
+        without a second ``task_started``. So the snapshot omits tracked work
+        that is still running: narrowing against it would drop an agent that
+        goes on to outlive its turn, which is the very close-too-early bug this
+        method exists to prevent. Widening from it is no better — the snapshot
+        spans every background task type and carries nothing marking an
+        observer agent, whose start and terminal frames are both suppressed, so
+        it could admit an id no later frame ever clears. The lifecycle frames
+        are the only self-consistent source here (see #1088).
         """
         subtype = message.get("subtype")
-        if subtype == "background_tasks_changed":
-            tasks = message.get("tasks")
-            if isinstance(tasks, list):
-                self._inflight_tasks = {
-                    task["task_id"]
-                    for task in tasks
-                    if isinstance(task, dict) and task.get("task_id")
-                }
-            return
-
         task_id = message.get("task_id")
         if not task_id:
             return
         if subtype == "task_started":
-            self._inflight_tasks.add(task_id)
+            if message.get("task_type") in DEFERRING_TASK_TYPES:
+                self._inflight_tasks.add(task_id)
         elif subtype == "task_notification":
             self._inflight_tasks.discard(task_id)
         elif subtype == "task_updated":

@@ -817,6 +817,99 @@ class TestQueryTrioBackend:
         self._run_buffered_drain_after_close("trio")
 
 
+class TestErrorResultText:
+    """Regression tests for #1031: misleading error text when errors[] is empty."""
+
+    def _run_query_with_result_message(self, result_message: dict) -> "Query":
+        """Run a Query against a transport that yields the given result message
+        and return the Query instance so callers can inspect _last_error_result_text."""
+
+        async def _run():
+            mock_transport = _make_mock_transport(
+                messages=[
+                    {
+                        "type": "result",
+                        **result_message,
+                    }
+                ]
+            )
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            await q.start()
+            async for _ in q.receive_messages():
+                pass
+            return q
+
+        return anyio.run(_run)
+
+    def test_empty_errors_and_success_subtype_gives_unknown_error(self):
+        """When is_error=True, errors=[], subtype='success', the error text
+        must not be 'success' — it should fall back to 'unknown error'."""
+        q = self._run_query_with_result_message(
+            {
+                "subtype": "success",
+                "is_error": True,
+                "errors": [],
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "num_turns": 1,
+                "session_id": "test",
+                "total_cost_usd": 0.001,
+            }
+        )
+        assert q._last_error_result_text is not None
+        assert q._last_error_result_text != "success"
+        assert q._last_error_result_text == "unknown error"
+
+    def test_empty_errors_with_meaningful_subtype_uses_subtype(self):
+        """When is_error=True, errors=[], subtype is not 'success', the subtype
+        should be used as the fallback error text."""
+        q = self._run_query_with_result_message(
+            {
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "errors": [],
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "num_turns": 1,
+                "session_id": "test",
+                "total_cost_usd": 0.001,
+            }
+        )
+        assert q._last_error_result_text == "error_during_execution"
+
+    def test_non_empty_errors_list_uses_errors(self):
+        """When is_error=True and errors is non-empty, those errors are joined
+        and used as the error text regardless of subtype."""
+        q = self._run_query_with_result_message(
+            {
+                "subtype": "success",
+                "is_error": True,
+                "errors": ["something went wrong", "details here"],
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "num_turns": 1,
+                "session_id": "test",
+                "total_cost_usd": 0.001,
+            }
+        )
+        assert q._last_error_result_text == "something went wrong; details here"
+
+    def test_no_error_clears_last_error_result_text(self):
+        """When is_error=False (success result), _last_error_result_text is None."""
+        q = self._run_query_with_result_message(
+            {
+                "subtype": "success",
+                "is_error": False,
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "num_turns": 1,
+                "session_id": "test",
+                "total_cost_usd": 0.001,
+            }
+        )
+        assert q._last_error_result_text is None
+
+
 class TestControlCancelRequest:
     """Tests for control_cancel_request handling (issue #739).
 

@@ -893,7 +893,8 @@ class Query:
             task.cancel()
         if self._read_task is not None and not self._read_task.done():
             self._read_task.cancel()
-            await self._read_task.wait()
+            with anyio.CancelScope(shield=True), suppress(Exception):
+                await self._read_task.wait()
         self._read_task = None
         # The read task's finally closed the send side; repeat here for the
         # case where start() was never called. Do NOT close the receive

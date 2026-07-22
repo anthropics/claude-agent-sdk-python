@@ -806,6 +806,31 @@ class Query:
             }
         )
 
+    async def set_trace_context(self) -> None:
+        """Update the CLI's trace context from the ambient OTel span.
+
+        Best-effort: no-op if opentelemetry-api is not installed or there's no
+        active span. This lets the CLI stamp outbound MCP/tool calls under the
+        caller's current trace when ``CLAUDE_CODE_PROPAGATE_TRACEPARENT=1``,
+        rather than the spawn-time trace that was frozen at ``connect()``.
+        """
+        try:
+            from opentelemetry import propagate
+
+            carrier: dict[str, str] = {}
+            propagate.inject(carrier)
+            if "traceparent" not in carrier:
+                return
+            request: dict[str, Any] = {
+                "subtype": "set_trace_context",
+                "traceparent": carrier["traceparent"],
+            }
+            if "tracestate" in carrier:
+                request["tracestate"] = carrier["tracestate"]
+            await self._send_control_request(request)
+        except Exception:  # noqa: BLE001 - best-effort tracing must never break query()
+            logger.debug("set_trace_context control request failed", exc_info=True)
+
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the first result (if needed) then close stdin.
 
@@ -832,10 +857,13 @@ class Query:
         If SDK MCP servers or hooks are present, waits for the first result
         before closing stdin to allow bidirectional control protocol communication.
         """
+        from ._trace_helpers import inject_trace_into_message
+
         try:
             async for message in stream:
                 if self._closed:
                     break
+                inject_trace_into_message(message)
                 await self.transport.write(json.dumps(message) + "\n")
 
             await self.wait_for_result_and_end_input()

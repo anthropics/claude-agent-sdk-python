@@ -297,6 +297,8 @@ class ClaudeSDKClient:
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
+        from ._internal._trace_helpers import inject_trace_into_message
+
         # Handle string prompts
         if isinstance(prompt, str):
             message = {
@@ -305,6 +307,7 @@ class ClaudeSDKClient:
                 "parent_tool_use_id": None,
                 "session_id": session_id,
             }
+            inject_trace_into_message(message)
             await self._transport.write(json.dumps(message) + "\n")
         else:
             # Handle AsyncIterable prompts - stream them
@@ -312,6 +315,7 @@ class ClaudeSDKClient:
                 # Ensure session_id is set on each message
                 if "session_id" not in msg:
                     msg["session_id"] = session_id
+                inject_trace_into_message(msg)
                 await self._transport.write(json.dumps(msg) + "\n")
 
     async def interrupt(self) -> None:

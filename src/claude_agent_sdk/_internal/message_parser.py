@@ -314,6 +314,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     errors=data.get("errors"),
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
+                    terminal_reason=data.get("terminal_reason"),
                 )
             except KeyError as e:
                 raise MessageParseError(

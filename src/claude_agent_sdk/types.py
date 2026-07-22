@@ -1901,10 +1901,35 @@ class ClaudeAgentOptions:
     """
 
     env: dict[str, str] = field(default_factory=dict)
-    """Environment variables to pass to the Claude Code subprocess.
+    """Additional environment variables to pass to the Claude Code subprocess.
 
-    SDK consumers can identify their app/library in the User-Agent header by
-    setting ``CLAUDE_AGENT_SDK_CLIENT_APP`` (e.g. ``"my-app/1.0.0"``).
+    These are **merged on top of** the parent process environment: the
+    subprocess inherits every variable from the calling process (except
+    ``CLAUDECODE``, which is stripped to prevent the CLI from thinking it is
+    running inside another Claude Code instance), and the values in ``env``
+    override or extend that inherited set.
+
+    Two SDK-managed variables are always set and cannot be overridden by
+    ``env``:
+
+    - ``CLAUDE_CODE_ENTRYPOINT`` is set to ``"sdk-py"`` by default; however,
+      values in ``env`` *can* override it (they are applied after the
+      default).
+    - ``CLAUDE_AGENT_SDK_VERSION`` is always stamped with the running SDK
+      version and cannot be overridden (it is applied last).
+
+    Example — pass an API key and tag requests with your app name::
+
+        options = ClaudeAgentOptions(
+            env={
+                "ANTHROPIC_API_KEY": "sk-ant-...",
+                "CLAUDE_AGENT_SDK_CLIENT_APP": "my-app/1.0.0",
+            }
+        )
+
+    ``CLAUDE_AGENT_SDK_CLIENT_APP`` is included in the ``User-Agent`` header
+    sent to the Anthropic API, which is useful for identifying your
+    application in usage logs.
     """
 
     extra_args: dict[str, str | None] = field(default_factory=dict)

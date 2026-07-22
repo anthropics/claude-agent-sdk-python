@@ -826,6 +826,9 @@ class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 
     Currently only local plugins are supported via the 'local' type.
+    MCP servers bundled with an enabled plugin start automatically, but their
+    tools still follow the standard MCP permission flow. Loading a plugin does
+    not auto-approve its tools.
     """
 
     type: Literal["local"]
@@ -2031,8 +2034,10 @@ class ClaudeAgentOptions:
     plugins: list[SdkPluginConfig] = field(default_factory=list)
     """Load plugins for this session.
 
-    Plugins provide custom commands, agents, skills, and hooks that extend
-    Claude Code's capabilities. Currently only local plugins are supported.
+    Plugins provide custom commands, agents, skills, hooks, and MCP servers that
+    extend Claude Code's capabilities. Currently only local plugins are
+    supported. Plugin MCP tools do not bypass ``allowed_tools``,
+    ``disallowed_tools``, ``permission_mode``, ``can_use_tool``, or hooks.
     """
 
     max_thinking_tokens: int | None = None

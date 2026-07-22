@@ -1763,6 +1763,7 @@ class ClaudeAgentOptions:
     tools: list[str] | ToolsPreset | None = None
     """Specify the base set of available built-in tools.
 
+    - ``None`` — All built-in tools. Equivalent to omitting the ``--tools`` flag.
     - ``list[str]`` — Specific tool names (e.g. ``["Bash", "Read", "Edit"]``).
     - ``[]`` (empty list) — Disable all built-in tools.
     - ``{"type": "preset", "preset": "claude_code"}`` — Use all default Claude Code tools.

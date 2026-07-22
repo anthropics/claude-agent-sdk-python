@@ -648,6 +648,161 @@ class TestClaudeSDKClientStreaming:
         with pytest.raises(CLIConnectionError, match="Not connected"):
             await client.stop_task("task-abc123")
 
+    async def _find_control_request(self, mock_transport, subtype):
+        """Return the parsed request dict for the first control request of subtype."""
+        for call in mock_transport.write.call_args_list:
+            try:
+                msg = json.loads(call[0][0].strip())
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            req = msg.get("request", {})
+            if msg.get("type") == "control_request" and req.get("subtype") == subtype:
+                return req
+        return None
+
+    @pytest.mark.anyio
+    async def test_set_effort(self):
+        """Test set_effort forwards effortLevel via apply_flag_settings."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_effort("high")
+
+            req = await self._find_control_request(
+                mock_transport, "apply_flag_settings"
+            )
+            assert req is not None, "apply_flag_settings control request not found"
+            assert req.get("settings") == {"effortLevel": "high"}
+
+    @pytest.mark.anyio
+    async def test_set_effort_none_clears(self):
+        """Test set_effort(None) clears effortLevel from the flag layer."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_effort(None)
+
+            req = await self._find_control_request(
+                mock_transport, "apply_flag_settings"
+            )
+            assert req is not None
+            assert req.get("settings") == {"effortLevel": None}
+
+    @pytest.mark.anyio
+    async def test_set_effort_not_connected(self):
+        """Test set_effort when not connected raises error."""
+
+        client = ClaudeSDKClient()
+        with pytest.raises(CLIConnectionError, match="Not connected"):
+            await client.set_effort("high")
+
+    @pytest.mark.anyio
+    async def test_set_max_thinking_tokens_omits_display(self):
+        """Test set_max_thinking_tokens omits thinking_display when not passed."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_max_thinking_tokens(8000)
+
+            req = await self._find_control_request(
+                mock_transport, "set_max_thinking_tokens"
+            )
+            assert req is not None, "set_max_thinking_tokens control request not found"
+            assert req.get("max_thinking_tokens") == 8000
+            assert "thinking_display" not in req
+
+    @pytest.mark.anyio
+    async def test_set_max_thinking_tokens_explicit_none_display(self):
+        """Test set_max_thinking_tokens sends thinking_display null when passed None."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_max_thinking_tokens(None, None)
+
+            req = await self._find_control_request(
+                mock_transport, "set_max_thinking_tokens"
+            )
+            assert req is not None
+            assert req.get("max_thinking_tokens") is None
+            assert "thinking_display" in req
+            assert req["thinking_display"] is None
+
+    @pytest.mark.anyio
+    async def test_set_max_thinking_tokens_display_value(self):
+        """Test set_max_thinking_tokens forwards an explicit thinking_display value."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_max_thinking_tokens(4096, "summarized")
+
+            req = await self._find_control_request(
+                mock_transport, "set_max_thinking_tokens"
+            )
+            assert req is not None
+            assert req.get("max_thinking_tokens") == 4096
+            assert req.get("thinking_display") == "summarized"
+
+    @pytest.mark.anyio
+    async def test_set_max_thinking_tokens_not_connected(self):
+        """Test set_max_thinking_tokens when not connected raises error."""
+
+        client = ClaudeSDKClient()
+        with pytest.raises(CLIConnectionError, match="Not connected"):
+            await client.set_max_thinking_tokens(8000)
+
+    @pytest.mark.anyio
+    async def test_apply_flag_settings(self):
+        """Test apply_flag_settings forwards the settings dict verbatim."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            settings = {"effortLevel": "xhigh", "fastMode": True}
+            async with ClaudeSDKClient() as client:
+                await client.apply_flag_settings(settings)
+
+            req = await self._find_control_request(
+                mock_transport, "apply_flag_settings"
+            )
+            assert req is not None, "apply_flag_settings control request not found"
+            assert req.get("settings") == settings
+
+    @pytest.mark.anyio
+    async def test_apply_flag_settings_not_connected(self):
+        """Test apply_flag_settings when not connected raises error."""
+
+        client = ClaudeSDKClient()
+        with pytest.raises(CLIConnectionError, match="Not connected"):
+            await client.apply_flag_settings({"effortLevel": "high"})
+
     @pytest.mark.anyio
     async def test_get_mcp_status(self):
         """Test get_mcp_status returns McpStatusResponse shape."""

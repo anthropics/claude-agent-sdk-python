@@ -17,6 +17,7 @@ from mcp.types import (
 
 from .._errors import ProcessError
 from ..types import (
+    _OMIT,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -25,7 +26,9 @@ from ..types import (
     SDKControlRequest,
     SDKControlResponse,
     SDKHookCallbackRequest,
+    ThinkingDisplay,
     ToolPermissionContext,
+    _Omitted,
 )
 from ._task_compat import TaskHandle, spawn_detached
 from .transport import Transport
@@ -747,6 +750,33 @@ class Query:
             {
                 "subtype": "set_model",
                 "model": model,
+            }
+        )
+
+    async def set_max_thinking_tokens(
+        self,
+        max_thinking_tokens: int | None,
+        thinking_display: ThinkingDisplay | None | _Omitted = _OMIT,
+    ) -> None:
+        """Change the maximum thinking-token budget.
+
+        .. deprecated::
+           Use the ``thinking`` option in ``ClaudeAgentOptions`` instead.
+        """
+        request: dict[str, Any] = {
+            "subtype": "set_max_thinking_tokens",
+            "max_thinking_tokens": max_thinking_tokens,
+        }
+        if thinking_display is not _OMIT:
+            request["thinking_display"] = thinking_display
+        await self._send_control_request(request)
+
+    async def apply_flag_settings(self, settings: dict[str, Any]) -> None:
+        """Merge settings into the flag-settings layer for subsequent turns."""
+        await self._send_control_request(
+            {
+                "subtype": "apply_flag_settings",
+                "settings": settings,
             }
         )
 

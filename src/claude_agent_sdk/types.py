@@ -34,6 +34,13 @@ SettingSource = Literal["user", "project", "local"]
 EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
+class _Omitted:
+    """Sentinel distinguishing an omitted argument from an explicit ``None``."""
+
+
+_OMIT = _Omitted()
+
+
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
 
@@ -2162,6 +2169,22 @@ class SDKControlStopTaskRequest(TypedDict):
     task_id: str
 
 
+class SDKControlSetModelRequest(TypedDict):
+    subtype: Literal["set_model"]
+    model: str | None
+
+
+class SDKControlSetMaxThinkingTokensRequest(TypedDict):
+    subtype: Literal["set_max_thinking_tokens"]
+    max_thinking_tokens: int | None
+    thinking_display: NotRequired[ThinkingDisplay | None]
+
+
+class SDKControlApplyFlagSettingsRequest(TypedDict):
+    subtype: Literal["apply_flag_settings"]
+    settings: dict[str, Any]
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -2176,6 +2199,9 @@ class SDKControlRequest(TypedDict):
         | SDKControlMcpReconnectRequest
         | SDKControlMcpToggleRequest
         | SDKControlStopTaskRequest
+        | SDKControlSetModelRequest
+        | SDKControlSetMaxThinkingTokensRequest
+        | SDKControlApplyFlagSettingsRequest
     )
 
 

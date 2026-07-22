@@ -1006,19 +1006,29 @@ class SubprocessCLITransport(Transport):
         if data is not None:
             yield data
 
-        # Check process completion and handle errors
+        # Check process completion and handle both clean and error exits.
+        # Explicitly handling clean exit (returncode==0) ensures read_messages
+        # unblocks promptly when the CLI terminates, triggering proper teardown
+        # in the caller regardless of exit status.
         try:
             returncode = await self._process.wait()
         except Exception:
             returncode = -1
 
-        # Use exit code for error detection
-        if returncode is not None and returncode != 0:
-            self._exit_error = ProcessError(
-                f"Command failed with exit code {returncode}",
-                exit_code=returncode,
-                stderr="Check stderr output for details",
-            )
+        # Raise ProcessError for any process termination to signal the caller
+        if returncode is not None:
+            if returncode == 0:
+                self._exit_error = ProcessError(
+                    "CLI process exited",
+                    exit_code=returncode,
+                    stderr=None,
+                )
+            else:
+                self._exit_error = ProcessError(
+                    f"Command failed with exit code {returncode}",
+                    exit_code=returncode,
+                    stderr="Check stderr output for details",
+                )
             raise self._exit_error
 
     async def _check_claude_version(self) -> None:

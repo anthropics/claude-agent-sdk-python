@@ -31,7 +31,13 @@ jobs:
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
+        # Passed through the environment rather than interpolated into the
+        # command text: a "${{ }}" expansion is spliced in before bash ever
+        # sees the line, so a crafted `version` input would become shell.
+        # "$VERSION" is expanded by bash, as one word, and cannot be.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python scripts/build_wheel.py --version "$VERSION" --skip-sdist --clean
         shell: bash
 
       - uses: actions/upload-artifact@v4

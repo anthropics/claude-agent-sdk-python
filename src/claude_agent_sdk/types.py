@@ -1786,7 +1786,10 @@ class ClaudeAgentOptions:
     system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
     """System prompt configuration.
 
-    - ``str`` — Use a custom system prompt.
+    - ``str`` — Use a custom system prompt. For very large prompts on Linux,
+      prefer the file form to avoid the kernel's per-argument size limit.
+    - ``{"type": "file", "path": "/path/to/prompt.txt"}`` — Read a custom
+      system prompt from a file.
     - ``{"type": "preset", "preset": "claude_code"}`` — Use Claude Code's default
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default

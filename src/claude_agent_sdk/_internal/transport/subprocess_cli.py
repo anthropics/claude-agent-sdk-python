@@ -15,6 +15,7 @@ from subprocess import PIPE
 from typing import Any, cast
 
 import anyio
+import anyio.to_thread
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
@@ -622,7 +623,7 @@ class SubprocessCLITransport(Transport):
                 cmd.append(f"--{flag}={value}")
             else:
                 # Flag with value
-                cmd.extend([f"--{flag}", str(value)])
+                cmd.extend([f"--{flag}", value])
 
         # Resolve thinking config -> --thinking / --max-thinking-tokens
         # `thinking` takes precedence over the deprecated `max_thinking_tokens`
@@ -1020,6 +1021,16 @@ class SubprocessCLITransport(Transport):
                 stderr="Check stderr output for details",
             )
             raise self._exit_error
+
+    async def wait(self) -> int | None:
+        """Wait for the transport process to exit.
+
+        Returns:
+            Process exit code, or None if transport has no subprocess.
+        """
+        if self._process is not None:
+            return await self._process.wait()
+        return None
 
     async def _check_claude_version(self) -> None:
         """Check Claude Code version and warn if below minimum."""

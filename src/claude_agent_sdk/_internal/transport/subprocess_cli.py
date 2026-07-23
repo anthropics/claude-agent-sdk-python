@@ -664,8 +664,16 @@ class SubprocessCLITransport(Transport):
 
         return cmd
 
-    async def connect(self) -> None:
-        """Start subprocess."""
+    async def connect(self, early_data: str | None = None) -> None:
+        """Start subprocess.
+
+        Args:
+            early_data: Optional JSON message to write to the process's stdin
+                immediately after startup. This ensures data is available in
+                the pipe buffer before the CLI enters its main read loop,
+                reducing race conditions (e.g. for hook registration before
+                deferred tool replay on resume).
+        """
         if self._process:
             return
 
@@ -757,6 +765,14 @@ class SubprocessCLITransport(Transport):
                 self._stdin_stream = TextSendStream(self._process.stdin)
 
             self._ready = True
+
+            # Write early data immediately after the process starts.
+            # This puts the message in the pipe buffer before the CLI enters
+            # its main read loop, which is critical for operations like hook
+            # registration that must happen before deferred tool replay on
+            # session resume (see #993).
+            if early_data is not None and self._stdin_stream is not None:
+                await self._stdin_stream.send(early_data)
 
         except FileNotFoundError as e:
             # Check if the error comes from the working directory or the CLI

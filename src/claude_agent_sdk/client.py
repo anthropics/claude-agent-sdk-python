@@ -192,7 +192,13 @@ class ClaudeSDKClient:
                 prompt=actual_prompt,
                 options=options,
             )
-        await self._transport.connect()
+
+        # --- Pre-compute all Query parameters BEFORE connect() ---
+        # This eliminates the window between subprocess startup and hook
+        # registration. On session resume the CLI replays deferred tools
+        # during startup; if hooks aren't registered by then the deferred
+        # tool executes without calling the resumed PreToolUse callback.
+        # See https://github.com/anthropics/claude-agent-sdk-python/issues/993
 
         # Extract SDK MCP servers from options
         sdk_mcp_servers = {}
@@ -225,14 +231,20 @@ class ClaudeSDKClient:
                 for name, agent_def in self.options.agents.items()
             }
 
-        # Create Query to handle control protocol
+        # Convert hooks once (registers callback IDs into hook_callbacks dict)
+        hooks = (
+            self._convert_hooks_to_internal_format(self.options.hooks)
+            if self.options.hooks
+            else None
+        )
+
+        # Create Query BEFORE connect so no work remains between
+        # the subprocess starting and hooks being registered.
         self._query = Query(
             transport=self._transport,
             is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
             can_use_tool=self.options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(self.options.hooks)
-            if self.options.hooks
-            else None,
+            hooks=hooks,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
@@ -240,6 +252,7 @@ class ClaudeSDKClient:
             skills=self.options.skills,
         )
 
+        # Session store setup (attribute-only, no subprocess dependency)
         if self.options.session_store is not None:
             q = self._query
 
@@ -256,7 +269,15 @@ class ClaudeSDKClient:
                 )
             )
 
-        # Start reading messages and initialize
+        # Connect (starts the CLI subprocess)
+        await self._transport.connect()
+
+        # Start reading messages and register hooks IMMEDIATELY.
+        # This is the earliest possible point to send the initialize
+        # request (with hook callback IDs) to the CLI. On session
+        # resume the CLI may replay deferred tools during startup;
+        # sending hooks before any other stdin message ensures the
+        # PreToolUse callback is available when the tool is replayed.
         await self._query.start()
         await self._query.initialize()
 

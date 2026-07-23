@@ -1097,6 +1097,46 @@ print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_ap
             # Clean up
             Path(test_script).unlink()
 
+    @pytest.mark.anyio
+    async def test_query_does_not_mutate_caller_messages(self):
+        """query() must not inject session_id into the caller's message dicts.
+
+        Mutating them would make a reused message iterable send a stale
+        session_id on the next query() call, silently ignoring the new one.
+        """
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            # Caller-owned, reusable message templates (no session_id set).
+            messages = [{"type": "user", "message": {"role": "user", "content": "hi"}}]
+
+            async def stream():
+                for msg in messages:
+                    yield msg
+
+            async with ClaudeSDKClient() as client:
+                await client.query(stream(), session_id="session-A")
+                # The caller's dict must be untouched.
+                assert "session_id" not in messages[0]
+
+                await client.query(stream(), session_id="session-B")
+
+            sent_session_ids = []
+            for call in mock_transport.write.call_args_list:
+                try:
+                    sent = json.loads(call[0][0].strip())
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if sent.get("type") == "user":
+                    sent_session_ids.append(sent.get("session_id"))
+
+            # Each call honors its own session_id argument on reuse.
+            assert sent_session_ids == ["session-A", "session-B"]
+
 
 class TestClaudeSDKClientEdgeCases:
     """Test edge cases and error scenarios."""

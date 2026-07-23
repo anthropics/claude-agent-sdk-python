@@ -309,9 +309,13 @@ class ClaudeSDKClient:
         else:
             # Handle AsyncIterable prompts - stream them
             async for msg in prompt:
-                # Ensure session_id is set on each message
+                # Ensure session_id is set on each message without mutating the
+                # caller's dict. Mutating it would make a reused message
+                # iterable ignore a changed session_id on a later query() call
+                # (the "session_id" key would already be present from the first
+                # call), silently sending the stale id.
                 if "session_id" not in msg:
-                    msg["session_id"] = session_id
+                    msg = {**msg, "session_id": session_id}
                 await self._transport.write(json.dumps(msg) + "\n")
 
     async def interrupt(self) -> None:

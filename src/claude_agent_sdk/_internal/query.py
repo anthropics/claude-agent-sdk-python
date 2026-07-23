@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import CLIConnectionError, ProcessError
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -407,6 +407,22 @@ class Query:
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
+            # Same for in-flight outgoing control requests. The bulk-fail loop
+            # above only runs for `except Exception`; a caller-initiated
+            # close()/disconnect() cancels the read task, and the cancelled
+            # exception (a BaseException) skips that branch. Signaling here
+            # covers every exit path, so an interrupt() in flight when the
+            # transport closes fails fast instead of waiting out the full
+            # timeout for a control_response that can never arrive. Requests the
+            # except branch already resolved keep their richer error, and a
+            # response read just before EOF keeps its result. event.set() never
+            # awaits, so this loop is safe under cancellation.
+            for request_id, event in list(self.pending_control_responses.items()):
+                if request_id not in self.pending_control_results:
+                    self.pending_control_results[request_id] = CLIConnectionError(
+                        "Control request interrupted by transport close or process exit"
+                    )
+                    event.set()
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.

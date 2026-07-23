@@ -351,10 +351,12 @@ def create_sdk_mcp_server(
         ...     tools=[add, multiply]
         ... )
         >>>
-        >>> # Use with Claude
+        >>> # Use with Claude. SDK MCP tools are named
+        >>> # mcp__{server_key}__{tool_name}, where server_key is the
+        >>> # key used in mcp_servers ("calc" here):
         >>> options = ClaudeAgentOptions(
         ...     mcp_servers={"calc": calculator},
-        ...     allowed_tools=["add", "multiply"]
+        ...     allowed_tools=["mcp__calc__add", "mcp__calc__multiply"]
         ... )
 
         Server with application state access:

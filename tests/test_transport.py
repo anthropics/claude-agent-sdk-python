@@ -250,6 +250,26 @@ class TestSubprocessCLITransport:
         assert "--max-turns" in cmd
         assert "5" in cmd
 
+    def test_build_command_max_turns_zero(self):
+        """max_turns=0 is a caller-supplied value and must be forwarded.
+
+        None is the "unset" sentinel; 0 is an explicit cap and should reach the
+        CLI like the other numeric options (max_budget_usd, task_budget,
+        max_thinking_tokens all forward 0 via ``is not None``).
+        """
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(max_turns=0),
+        )
+
+        cmd = transport._build_command()
+        assert "--max-turns" in cmd
+        assert cmd[cmd.index("--max-turns") + 1] == "0"
+
+        # None still means "unset" — no flag emitted.
+        transport_unset = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--max-turns" not in transport_unset._build_command()
+
     def test_build_command_with_dont_ask_permission_mode(self):
         """Test building CLI command with dontAsk permission mode."""
         transport = SubprocessCLITransport(

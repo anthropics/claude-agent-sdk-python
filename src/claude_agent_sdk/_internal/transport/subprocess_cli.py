@@ -494,7 +494,7 @@ class SubprocessCLITransport(Transport):
         if effective_allowed_tools:
             cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])
 
-        if self._options.max_turns:
+        if self._options.max_turns is not None:
             cmd.extend(["--max-turns", str(self._options.max_turns)])
 
         if self._options.max_budget_usd is not None:

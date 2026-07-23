@@ -297,6 +297,33 @@ If you're contributing to this project, run the initial setup script to install 
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
 
+### Setting Up Your Environment
+
+Install the package with its development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+### Running Lint, Typecheck, and Tests
+
+```bash
+# Lint (auto-fix) and format
+python -m ruff check src/ tests/ --fix
+python -m ruff format src/ tests/
+
+# Typecheck
+python -m mypy src/
+
+# Run all tests
+python -m pytest tests/
+
+# Run a specific test file
+python -m pytest tests/test_client.py
+```
+
+These are the same checks the CI workflow and pre-push hook run.
+
 ### Building Wheels Locally
 
 To build wheels with the bundled Claude Code CLI:

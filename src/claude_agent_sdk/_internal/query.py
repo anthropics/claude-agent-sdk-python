@@ -946,7 +946,22 @@ class Query:
 
             await self.wait_for_result_and_end_input()
         except Exception as e:
-            logger.debug(f"Error streaming input: {e}")
+            if self._closed:
+                # Teardown noise: close() interrupted an in-flight write.
+                logger.debug(f"Error streaming input: {e}")
+                return
+            logger.error(f"Error streaming input: {e}")
+            # Close stdin so the CLI can wind down instead of waiting for
+            # input that will never come.
+            with suppress(Exception):
+                await self.transport.end_input()
+            # Surface the failure to consumers; otherwise receive_messages()
+            # blocks forever on turns the CLI will never run.
+            # If the read task already tore the stream down, its error wins.
+            with suppress(anyio.ClosedResourceError):
+                await self._message_send.send(
+                    {"type": "error", "error": f"Error streaming input: {e}"}
+                )
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""

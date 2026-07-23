@@ -212,6 +212,10 @@ class ToolPermissionContext:
     field-ordering compatibility, so callers do not need to handle ``None``."""
     agent_id: str | None = None
     """If running within the context of a sub-agent, the sub-agent's ID."""
+    agent_type: str | None = None
+    """Agent type name (e.g. "general-purpose", "code-reviewer"). Present
+    inside a sub-agent (alongside agent_id), or on the main thread of a
+    session started with --agent (without agent_id)."""
     blocked_path: str | None = None
     """The file path that triggered the permission request, if applicable.
     For example, when a Bash command tries to access a path outside allowed directories."""
@@ -2143,6 +2147,7 @@ class SDKControlPermissionRequest(TypedDict):
     description: NotRequired[str]
     tool_use_id: str
     agent_id: NotRequired[str]
+    agent_type: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):

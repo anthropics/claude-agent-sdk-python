@@ -302,6 +302,83 @@ class TestToolPermissionCallbacks:
         assert received_context.agent_id is None
 
     @pytest.mark.anyio
+    async def test_permission_callback_receives_agent_type(self):
+        """Test that agent_type is passed through to the context, alongside agent_id."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-agenttype",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01AGENTTYPE",
+                "agent_id": "agent-456",
+                "agent_type": "code-reviewer",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.agent_id == "agent-456"
+        assert received_context.agent_type == "code-reviewer"
+
+    @pytest.mark.anyio
+    async def test_permission_callback_missing_agent_type(self):
+        """Test that agent_type defaults to None when not sent."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-noagenttype",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "TestTool",
+                "input": {},
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_01XYZ789",
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert received_context is not None
+        assert received_context.agent_type is None
+
+    @pytest.mark.anyio
     async def test_permission_callback_receives_decision_reason(self):
         """Test that decision_reason and permission-display fields are forwarded
         to the context (TS SDK parity, #816)."""

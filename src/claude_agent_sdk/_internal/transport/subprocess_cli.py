@@ -55,6 +55,88 @@ def _kill_active_children() -> None:
 atexit.register(_kill_active_children)
 
 
+# Parentheses and commas are delimiters to the --allowedTools tokenizer;
+# control characters (C0, DEL, C1) never appear in a skill directory name.
+_SKILL_NAME_INVALID_CHARS = re.compile(r"[(),\x00-\x1f\x7f-\x9f]")
+
+# Every surrogate in a Python str is unpaired by construction: a well-formed
+# astral character is a single code point, not a pair.
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def _reject_bare_string_skills(skills: object) -> None:
+    """Reject a string in place of a list, which would iterate as characters."""
+    if isinstance(skills, str) and skills != "all":
+        raise TypeError(
+            "ClaudeAgentOptions.skills must be a list of skill names or"
+            f' "all", got the string {skills!r}. Did you mean [{skills!r}]?'
+        )
+
+
+def _validate_skill_name(name: str) -> None:
+    """Reject skill names that cannot ride safely in a ``Skill(name)`` rule.
+
+    Names from ``options.skills`` are formatted into the ``--allowedTools``
+    value, which the CLI splits into rules on commas and spaces outside
+    parentheses. That tokenizer does not honor escape sequences -- escaping
+    exists only in the per-rule grammar, applied after splitting -- so a
+    name carrying a delimiter cannot be passed through reliably: what it
+    tokenizes into depends on what surrounds it.
+
+    Names that tokenize cleanly but can never match the listed skill are
+    rejected too, so a dead rule fails loudly here instead of silently
+    granting nothing. Each check below states its own reason.
+    """
+    if not isinstance(name, str):
+        raise TypeError(
+            f"Skill names must be strings, got {type(name).__name__}: {name!r}"
+        )
+    if not name.strip():
+        raise ValueError("Skill names must be non-empty strings")
+    if _SURROGATE_RE.search(name):
+        raise ValueError(
+            f"Invalid skill name {name!r}: contains a surrogate code point,"
+            " which can never match a skill the CLI discovered."
+        )
+    if name != name.strip():
+        raise ValueError(
+            f"Invalid skill name {name!r}: leading or trailing whitespace"
+            " can never match — the Skill tool trims the invoked name."
+        )
+    if _SKILL_NAME_INVALID_CHARS.search(name):
+        raise ValueError(
+            f"Invalid skill name {name!r}: parentheses, commas, and control"
+            " characters are not allowed. Names match the skill's directory"
+            " name, or 'plugin:skill' for plugin-qualified skills."
+        )
+    if name == "*":
+        raise ValueError(
+            "Invalid skill name '*': use skills=\"all\" to enable every skill."
+        )
+    if name.endswith(":*") or name.endswith(" *"):
+        raise ValueError(
+            f"Invalid skill name {name!r}: wildcard-suffix names are not"
+            " allowed; list each skill by its exact name."
+        )
+    if name.startswith("/"):
+        raise ValueError(
+            f"Invalid skill name {name!r}: skill names may not start with"
+            " '/'. The skills option takes the canonical name, not the"
+            " slash-command form."
+        )
+    if "\\\\" in name:
+        raise ValueError(
+            f"Invalid skill name {name!r}: consecutive backslashes are not"
+            " allowed — the per-rule parser collapses them, so the rule"
+            " would name a different skill."
+        )
+    if name.endswith("\\"):
+        raise ValueError(
+            f"Invalid skill name {name!r}: names may not end with an"
+            " unpaired backslash."
+        )
+
+
 class _LineFramer:
     """Reassembles complete lines from a stream that yields arbitrary chunks.
 
@@ -429,6 +511,9 @@ class SubprocessCLITransport(Transport):
         unset so the CLI discovers installed skills without the caller having
         to wire up both options manually. ``None`` is a no-op.
 
+        Each listed skill name is validated before being formatted into a
+        rule; see :func:`_validate_skill_name`.
+
         Does not mutate the original options object.
         """
         allowed_tools: list[str] = list(self._options.allowed_tools)
@@ -441,12 +526,14 @@ class SubprocessCLITransport(Transport):
         skills = self._options.skills
         if skills is None:
             return allowed_tools, setting_sources
+        _reject_bare_string_skills(skills)
 
         if skills == "all":
             if "Skill" not in allowed_tools:
                 allowed_tools.append("Skill")
         else:
             for name in skills:
+                _validate_skill_name(name)
                 pattern = f"Skill({name})"
                 if pattern not in allowed_tools:
                     allowed_tools.append(pattern)

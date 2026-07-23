@@ -667,6 +667,209 @@ class TestSubprocessCLITransport:
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
 
     @pytest.mark.parametrize(
+        "hostile_name",
+        [
+            # Names containing rule-syntax delimiters cannot be represented
+            # as a single Skill(name) entry and must be rejected, never
+            # formatted into the --allowedTools value.
+            "x),Bash(*",
+            "safe),Bash,Skill(dummy",
+            "name,with,commas",
+            "unbalanced(",
+            "unbalanced)",
+            "()",
+        ],
+    )
+    def test_build_command_skills_rejects_rule_syntax_delimiters(
+        self, hostile_name: str
+    ):
+        """Skill names containing rule-syntax delimiters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "hostile_name",
+        ["with\nnewline", "with\ttab", "nul\x00byte", "del\x7fchar"],
+    )
+    def test_build_command_skills_rejects_control_characters(self, hostile_name: str):
+        """Skill names containing control characters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("empty_name", ["", " ", "  \t "])
+    def test_build_command_skills_rejects_empty_names(self, empty_name: str):
+        """Empty or whitespace-only skill names raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[empty_name]),
+        )
+        with pytest.raises(ValueError, match="non-empty"):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_non_string_names(self):
+        """Non-string entries in the skills list raise TypeError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[42]),  # type: ignore[list-item]
+        )
+        with pytest.raises(TypeError, match="must be strings"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "wildcard_name",
+        ["pdf:*", "my skill *", ":*"],
+    )
+    def test_build_command_skills_rejects_wildcard_suffix_names(
+        self, wildcard_name: str
+    ):
+        """Wildcard-suffix skill names raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[wildcard_name]),
+        )
+        with pytest.raises(ValueError, match="wildcard-suffix"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("skills", ["pdf", "pdf-tools", "ALL"])
+    def test_build_command_skills_rejects_a_bare_string(self, skills: str):
+        """A string is iterable, so skills="pdf" would build Skill(p),Skill(d),..."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills),  # type: ignore[arg-type]
+        )
+        with pytest.raises(TypeError, match="must be a list of skill names"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "skills",
+        [("pdf",), {"pdf"}, (n for n in ["pdf"])],
+        ids=["tuple", "set", "generator"],
+    )
+    def test_build_command_skills_rejects_non_list_iterables(self, skills):
+        """These build Skill(name) rules but are dropped from initialize, so the
+        session skill filter is never installed."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills),  # type: ignore[arg-type]
+        )
+        with pytest.raises(TypeError, match="must be a list of skill names"):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_bare_wildcard(self):
+        """A literal '*' name raises, pointing to the skills="all" option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["*"]),
+        )
+        with pytest.raises(ValueError, match='use skills="all"'):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_unpaired_trailing_backslash(self):
+        """A name ending in a single trailing backslash raises ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["name\\"]),
+        )
+        with pytest.raises(ValueError, match="unpaired backslash"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["name\\\\", "name\\\\\\", "mid\\\\dle"])
+    def test_build_command_skills_rejects_consecutive_backslashes(
+        self, hostile_name: str
+    ):
+        """Consecutive backslashes collapse at parse time, renaming the skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="consecutive backslashes"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["\ufeffpdf", "pdf\ufeff"])
+    def test_build_command_skills_rejects_byte_order_marks(self, hostile_name: str):
+        """The CLI trims U+FEFF as whitespace; Python's str.strip() does not."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", [" pdf", "pdf ", "\tpdf", " pdf "])
+    def test_build_command_skills_rejects_surrounding_whitespace(
+        self, hostile_name: str
+    ):
+        """A padded rule can never match: the Skill tool trims before matching."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="whitespace"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["/pdf", "/myplugin:pdf"])
+    def test_build_command_skills_rejects_leading_slash(self, hostile_name: str):
+        """The session allowlist matches verbatim, so '/pdf' hides every skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="may not start with"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["lone\ud800surrogate", "\udc00leading"])
+    def test_build_command_skills_rejects_surrogate_code_points(
+        self, hostile_name: str
+    ):
+        """No CLI-discovered skill name contains a surrogate code point."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="surrogate"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["nel\u0085end", "csi\u009bend"])
+    def test_build_command_skills_rejects_c1_control_characters(
+        self, hostile_name: str
+    ):
+        """Names containing C1 control characters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "benign_name",
+        [
+            "pdf-tools",
+            "my_skill.v2",
+            "myplugin:pdf",
+            "skill with spaces",
+            "dir\\sub",
+            "日本語スキル",
+        ],
+    )
+    def test_build_command_skills_accepts_ordinary_names(self, benign_name: str):
+        """Ordinary names -- plugin-qualified, spaced, non-ASCII -- still work."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[benign_name]),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == f"Skill({benign_name})"
+
+    @pytest.mark.parametrize(
         ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
         [
             # (1) default: no auto-config

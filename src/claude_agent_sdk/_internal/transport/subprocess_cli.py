@@ -62,20 +62,29 @@ atexit.register(_kill_active_children)
 
 # Parentheses and commas are delimiters to the --allowedTools tokenizer;
 # control characters (C0, DEL, C1) never appear in a skill directory name.
-_SKILL_NAME_INVALID_CHARS = re.compile(r"[(),\x00-\x1f\x7f-\x9f]")
+# U+FEFF is here rather than with the whitespace check below because the
+# CLI trims it as whitespace and Python's str.strip() does not.
+_SKILL_NAME_INVALID_CHARS = re.compile(r"[(),\x00-\x1f\x7f-\x9f\ufeff]")
 
 # Every surrogate in a Python str is unpaired by construction: a well-formed
 # astral character is a single code point, not a pair.
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 
-def _reject_bare_string_skills(skills: object) -> None:
-    """Reject a string in place of a list, which would iterate as characters."""
-    if isinstance(skills, str) and skills != _SKILLS_ALL:
-        raise TypeError(
-            "ClaudeAgentOptions.skills must be a list of skill names or"
-            f' "all", got the string {skills!r}. Did you mean [{skills!r}]?'
-        )
+def _reject_non_list_skills(skills: object) -> None:
+    """Reject values other than a list or "all".
+
+    A string iterates as characters, and any other iterable builds rules
+    here but is dropped from the initialize request, which installs no
+    skill filter at all.
+    """
+    if isinstance(skills, list) or skills == _SKILLS_ALL:
+        return
+    suggestion = f" Did you mean [{skills!r}]?" if isinstance(skills, str) else ""
+    raise TypeError(
+        "ClaudeAgentOptions.skills must be a list of skill names or"
+        f' "all", got {skills!r}.{suggestion}'
+    )
 
 
 def _validate_skill_name(name: str) -> None:
@@ -110,9 +119,10 @@ def _validate_skill_name(name: str) -> None:
         )
     if _SKILL_NAME_INVALID_CHARS.search(name):
         raise ValueError(
-            f"Invalid skill name {name!r}: parentheses, commas, and control"
-            " characters are not allowed. Names match the skill's directory"
-            " name, or 'plugin:skill' for plugin-qualified skills."
+            f"Invalid skill name {name!r}: parentheses, commas, control"
+            " characters, and byte-order marks are not allowed. Names match"
+            " the skill's directory name, or 'plugin:skill' for"
+            " plugin-qualified skills."
         )
     if name == "*":
         raise ValueError(
@@ -531,7 +541,7 @@ class SubprocessCLITransport(Transport):
         skills = self._options.skills
         if skills is None:
             return allowed_tools, setting_sources
-        _reject_bare_string_skills(skills)
+        _reject_non_list_skills(skills)
 
         if skills == _SKILLS_ALL:
             if "Skill" not in allowed_tools:

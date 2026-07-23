@@ -748,6 +748,21 @@ class TestSubprocessCLITransport:
         with pytest.raises(TypeError, match="must be a list of skill names"):
             transport._build_command()
 
+    @pytest.mark.parametrize(
+        "skills",
+        [("pdf",), {"pdf"}, (n for n in ["pdf"])],
+        ids=["tuple", "set", "generator"],
+    )
+    def test_build_command_skills_rejects_non_list_iterables(self, skills):
+        """These build Skill(name) rules but are dropped from initialize, so the
+        session skill filter is never installed."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills),  # type: ignore[arg-type]
+        )
+        with pytest.raises(TypeError, match="must be a list of skill names"):
+            transport._build_command()
+
     def test_build_command_skills_rejects_bare_wildcard(self):
         """A literal '*' name raises, pointing to the skills="all" option."""
         transport = SubprocessCLITransport(
@@ -776,6 +791,16 @@ class TestSubprocessCLITransport:
             options=make_options(skills=[hostile_name]),
         )
         with pytest.raises(ValueError, match="consecutive backslashes"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["\ufeffpdf", "pdf\ufeff"])
+    def test_build_command_skills_rejects_byte_order_marks(self, hostile_name: str):
+        """The CLI trims U+FEFF as whitespace; Python's str.strip() does not."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
             transport._build_command()
 
     @pytest.mark.parametrize("hostile_name", [" pdf", "pdf ", "\tpdf", " pdf "])

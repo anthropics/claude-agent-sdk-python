@@ -21,7 +21,12 @@ from anyio.streams.text import TextReceiveStream, TextSendStream
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
-from ...types import ClaudeAgentOptions, SystemPromptFile, SystemPromptPreset
+from ...types import (
+    _SKILLS_ALL,
+    ClaudeAgentOptions,
+    SystemPromptFile,
+    SystemPromptPreset,
+)
 from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
 
@@ -66,7 +71,7 @@ _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 def _reject_bare_string_skills(skills: object) -> None:
     """Reject a string in place of a list, which would iterate as characters."""
-    if isinstance(skills, str) and skills != "all":
+    if isinstance(skills, str) and skills != _SKILLS_ALL:
         raise TypeError(
             "ClaudeAgentOptions.skills must be a list of skill names or"
             f' "all", got the string {skills!r}. Did you mean [{skills!r}]?'
@@ -528,7 +533,7 @@ class SubprocessCLITransport(Transport):
             return allowed_tools, setting_sources
         _reject_bare_string_skills(skills)
 
-        if skills == "all":
+        if skills == _SKILLS_ALL:
             if "Skill" not in allowed_tools:
                 allowed_tools.append("Skill")
         else:

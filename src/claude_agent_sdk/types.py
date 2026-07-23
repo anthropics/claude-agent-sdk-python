@@ -949,6 +949,9 @@ class ToolResultBlock:
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+    meta: dict[str, Any] | None = None
+    """MCP ``_meta`` payload from the tool result, for handler-only data that
+    should not enter model context (e.g. record IDs, pagination cursors)."""
 
 
 ServerToolName = Literal[

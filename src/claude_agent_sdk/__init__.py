@@ -517,8 +517,11 @@ def create_sdk_mcp_server(
                             item_type,
                         )
 
+            meta = result.get("_meta")
             return CallToolResult(
-                content=content, isError=result.get("is_error", False)
+                content=content,
+                isError=result.get("is_error", False),
+                **({"_meta": meta} if meta is not None else {}),
             )
 
     # Return SDK server configuration

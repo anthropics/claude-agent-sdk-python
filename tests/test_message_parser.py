@@ -10,6 +10,7 @@ from claude_agent_sdk.types import (
     DeferredToolUse,
     HookEventMessage,
     RateLimitEvent,
+    RawContentBlock,
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
@@ -1275,3 +1276,48 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    def test_parse_assistant_message_with_unknown_content_block(self):
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "code_execution_result",
+                        "output": "42",
+                        "status": "success",
+                    }
+                ],
+                "model": "claude-opus-4-6",
+            },
+        }
+
+        message = parse_message(data)
+
+        assert isinstance(message, AssistantMessage)
+        assert isinstance(message.content[0], RawContentBlock)
+        assert message.content[0].type == "code_execution_result"
+        assert message.content[0].data["output"] == "42"
+
+    def test_parse_user_message_with_unknown_content_block(self):
+        data = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "file_id": "file_abc",
+                        "filename": "data.csv",
+                    }
+                ],
+            },
+        }
+
+        message = parse_message(data)
+
+        assert isinstance(message, UserMessage)
+        assert isinstance(message.content, list)
+        assert isinstance(message.content[0], RawContentBlock)
+        assert message.content[0].type == "file"
+        assert message.content[0].data["file_id"] == "file_abc"

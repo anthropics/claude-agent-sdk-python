@@ -17,6 +17,7 @@ from typing import Any, cast
 import anyio
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
+from ._utils import sanitize_tool_use_ids
 
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
@@ -597,7 +598,8 @@ class SubprocessCLITransport(Transport):
         # No --agents CLI flag needed
 
         if effective_setting_sources is not None:
-            cmd.append(f"--setting-sources={','.join(effective_setting_sources)}")
+            sources_str = ",".join(effective_setting_sources)
+            cmd.append(f"--setting-sources={sources_str}")
 
         # Add plugin directories
         if self._options.plugins:
@@ -755,6 +757,12 @@ class SubprocessCLITransport(Transport):
             # Setup stdin for streaming (always used now)
             if self._process.stdin:
                 self._stdin_stream = TextSendStream(self._process.stdin)
+
+            # === FIX FOR ISSUE: Sanitize tool_use IDs during session resume ===
+            # The resumed conversation history (which may contain old/invalid tool_use.id values)
+            # is passed via the initial prompt when resume/continue_conversation is used.
+            if (self._options.resume or self._options.continue_conversation) and isinstance(self._prompt, list):
+                sanitize_tool_use_ids(self._prompt)
 
             self._ready = True
 
@@ -922,8 +930,17 @@ class SubprocessCLITransport(Transport):
 
     async def write(self, data: str) -> None:
         """Write raw data to the transport."""
+        # useful for resumed sessions where history is streamed
+        if (self._options.resume or self._options.continue_conversation) and "tool_use" in data:
+            try:
+                payload = json.loads(data)
+                if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
+                    sanitize_tool_use_ids(payload["messages"])
+                    data = json.dumps(payload)  # re-serialize with fixed IDs
+            except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
+                pass  
+
         async with self._write_lock:
-            # All checks inside lock to prevent TOCTOU races with close()/end_input()
             if not self._ready or not self._stdin_stream:
                 raise CLIConnectionError("ProcessTransport is not ready for writing")
 
@@ -945,7 +962,6 @@ class SubprocessCLITransport(Transport):
                     f"Failed to write to process stdin: {e}"
                 )
                 raise self._exit_error from e
-
     async def end_input(self) -> None:
         """End the input stream (close stdin)."""
         async with self._write_lock:

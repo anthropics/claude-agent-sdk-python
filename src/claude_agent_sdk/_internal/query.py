@@ -234,9 +234,9 @@ class Query:
             request["agents"] = self._agents
         if self._exclude_dynamic_sections is not None:
             request["excludeDynamicSections"] = self._exclude_dynamic_sections
-        # 'all' and omitted are equivalent at the wire level (no filter), so
-        # only send the field when it's an explicit list.
-        if isinstance(self._skills, list):
+        # Send skills when set to a list (explicit allowlist) or 'all'
+        # (triggers Skill tool injection in the CLI transport).
+        if self._skills is not None:
             request["skills"] = self._skills
 
         # Use longer timeout for initialize since MCP servers may take time to start

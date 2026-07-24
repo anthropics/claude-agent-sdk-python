@@ -2081,6 +2081,17 @@ class ClaudeAgentOptions:
     ``{"type": "json_schema", "schema": {"type": "object", "properties": {...}}}``.
     """
 
+    tool_aliases: dict[str, str] | None = None
+    """Map built-in tool names to MCP tool names.
+
+    When set, Claude calls the specified MCP tool in place of the named
+    built-in. For example, ``{"Bash": "mcp__workspace__bash"}`` routes every
+    ``Bash`` call through the ``mcp__workspace__bash`` MCP tool instead.
+
+    Sent via the initialization message at session start (not a CLI flag).
+    Matches the TypeScript SDK's ``toolAliases`` option.
+    """
+
     enable_file_checkpointing: bool = False
     """Enable file checkpointing to track file changes during the session.
 
@@ -2149,6 +2160,7 @@ class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
+    toolAliases: NotRequired[dict[str, str]]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

@@ -183,6 +183,7 @@ class InternalClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=configured_options.skills,
+            tool_aliases=configured_options.tool_aliases,
         )
 
         if configured_options.session_store is not None:

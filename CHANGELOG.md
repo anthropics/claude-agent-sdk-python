@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.127
+
+### Bug Fixes
+
+- **Fixed premature stdin closure when background tasks are in flight**: `query()` no longer closes stdin on the first `result` frame when background tasks (e.g. `run_in_background: true` subagents) are still running. Previously, closing stdin too early caused SDK-MCP tool calls from background tasks to fail with `"Stream closed"` and silently bypassed PreToolUse hooks. Stdin now stays open until all in-flight tasks complete and the final result frame arrives (#1103)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.219
+
 ## 0.2.126
 
 ### New Features

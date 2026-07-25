@@ -1,0 +1,21 @@
+name: Stripe integration security
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prevent-stripe-secret-leaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject committed Stripe credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '(sk|rk)_(live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}' -- ':!*.lock' ':!stripe-security.yml'; then exit 1; fi
+      - name: ClearGlass Stripe contract
+        run: |
+          echo 'Account acct_1TG2qt65MGeeiD4K; use encrypted STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_ALLOWED_PRICE_IDS, STRIPE_SUCCESS_URL, STRIPE_CANCEL_URL. Require hosted Checkout, server-side prices, verified raw-body webhooks, and idempotency.'

@@ -184,6 +184,15 @@ options = ClaudeAgentOptions(
 )
 ```
 
+By default, the SDK uses only the MCP servers supplied through `mcp_servers`.
+It does not implicitly load project `.mcp.json`, user/global settings, or
+plugin-provided MCP servers. Applications that intentionally rely on Claude
+Code's ambient MCP discovery can restore that behavior explicitly:
+
+```python
+options = ClaudeAgentOptions(strict_mcp_config=False)
+```
+
 ### Hooks
 
 A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).

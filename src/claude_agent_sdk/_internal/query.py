@@ -922,7 +922,7 @@ class Query:
         follow-up turn, which ends in such a result), or in _read_messages'
         finally block if the process exits early.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        if self.sdk_mcp_servers or self.hooks or self.can_use_tool:
             logger.debug(
                 "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "

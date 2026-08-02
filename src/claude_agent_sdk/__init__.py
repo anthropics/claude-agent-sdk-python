@@ -384,9 +384,12 @@ def create_sdk_mcp_server(
     from mcp.server import Server
     from mcp.types import (
         AudioContent,
+        CallToolRequestParams,
         CallToolResult,
         EmbeddedResource,
         ImageContent,
+        ListToolsResult,
+        PaginatedRequestParams,
         ResourceLink,
         TextContent,
         Tool,
@@ -446,14 +449,10 @@ def create_sdk_mcp_server(
             for tool_def in tools
         ]
 
-        # Register list_tools handler to expose available tools
-        @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
         async def list_tools() -> list[Tool]:
             """Return the list of available tools."""
             return cached_tool_list
 
-        # Register call_tool handler to execute tools
-        @server.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             """Execute a tool by name with given arguments."""
             if name not in tool_map:
@@ -477,11 +476,15 @@ def create_sdk_mcp_server(
                     if item_type == "text":
                         content.append(TextContent(type="text", text=item["text"]))
                     elif item_type == "image":
+                        # Built from the wire names: MCP SDK v2 renamed the
+                        # field to mime_type and kept mimeType as its alias.
                         content.append(
-                            ImageContent(
-                                type="image",
-                                data=item["data"],
-                                mimeType=item["mimeType"],
+                            ImageContent.model_validate(
+                                {
+                                    "type": "image",
+                                    "data": item["data"],
+                                    "mimeType": item["mimeType"],
+                                }
                             )
                         )
                     elif item_type == "resource_link":
@@ -517,8 +520,40 @@ def create_sdk_mcp_server(
                             item_type,
                         )
 
-            return CallToolResult(
-                content=content, isError=result.get("is_error", False)
+            return CallToolResult.model_validate(
+                {"content": content, "isError": result.get("is_error", False)}
+            )
+
+        # Register the handlers. MCP SDK v1 uses decorators; v2 registers by
+        # method name and passes a request context plus parsed params. Only one
+        # of the two APIs exists on any given install, so go through Any.
+        registry: Any = server
+        if hasattr(server, "list_tools"):
+            registry.list_tools()(list_tools)
+            registry.call_tool()(call_tool)
+        else:
+
+            async def on_list_tools(ctx: Any, params: Any) -> Any:
+                return ListToolsResult(tools=await list_tools())
+
+            async def on_call_tool(ctx: Any, params: Any) -> Any:
+                # v1's call_tool decorator reports handler exceptions as an
+                # error result rather than a protocol error; keep that here.
+                try:
+                    return await call_tool(params.name, params.arguments or {})
+                except Exception as e:
+                    return CallToolResult.model_validate(
+                        {
+                            "content": [TextContent(type="text", text=str(e))],
+                            "isError": True,
+                        }
+                    )
+
+            registry.add_request_handler(
+                "tools/list", PaginatedRequestParams, on_list_tools
+            )
+            registry.add_request_handler(
+                "tools/call", CallToolRequestParams, on_call_tool
             )
 
     # Return SDK server configuration

@@ -23,6 +23,16 @@ from claude_agent_sdk import (
 from claude_agent_sdk import (
     _typeddict_to_json_schema as typeddict_to_json_schema,
 )
+from claude_agent_sdk._internal.query import _call_sdk_mcp_handler
+
+
+def wire(model: Any) -> dict[str, Any]:
+    """Dump an MCP model under its wire names.
+
+    MCP SDK v2 renamed the model fields to snake_case and kept the camelCase
+    wire names as aliases, so assertions go through the aliases.
+    """
+    return model.model_dump(by_alias=True, exclude_none=True)
 
 
 @pytest.mark.anyio
@@ -58,24 +68,18 @@ async def test_sdk_mcp_server_handlers():
     # Import the request types to check handlers
     from mcp.types import CallToolRequest, ListToolsRequest
 
-    # Verify handlers are registered
-    assert ListToolsRequest in server.request_handlers
-    assert CallToolRequest in server.request_handlers
-
-    # Test list_tools handler - the decorator wraps our function
-    list_handler = server.request_handlers[ListToolsRequest]
+    # Test list_tools handler
     request = ListToolsRequest(method="tools/list")
-    response = await list_handler(request)
-    # Response is ServerResult with nested ListToolsResult
-    assert len(response.root.tools) == 2
+    response = await _call_sdk_mcp_handler(server, request)
+    assert response is not None
+    assert len(response.tools) == 2
 
     # Check tool definitions
-    tool_names = [t.name for t in response.root.tools]
+    tool_names = [t.name for t in response.tools]
     assert "greet_user" in tool_names
     assert "add_numbers" in tool_names
 
     # Test call_tool handler
-    call_handler = server.request_handlers[CallToolRequest]
 
     # Call greet_user - CallToolRequest wraps the call
     from mcp.types import CallToolRequestParams
@@ -84,9 +88,8 @@ async def test_sdk_mcp_server_handlers():
         method="tools/call",
         params=CallToolRequestParams(name="greet_user", arguments={"name": "Alice"}),
     )
-    result = await call_handler(greet_request)
-    # Response is ServerResult with nested CallToolResult
-    assert result.root.content[0].text == "Hello, Alice!"
+    result = await _call_sdk_mcp_handler(server, greet_request)
+    assert result.content[0].text == "Hello, Alice!"
     assert len(tool_executions) == 1
     assert tool_executions[0]["name"] == "greet_user"
     assert tool_executions[0]["args"]["name"] == "Alice"
@@ -96,12 +99,57 @@ async def test_sdk_mcp_server_handlers():
         method="tools/call",
         params=CallToolRequestParams(name="add_numbers", arguments={"a": 5, "b": 3}),
     )
-    result = await call_handler(add_request)
-    assert "8" in result.root.content[0].text
+    result = await _call_sdk_mcp_handler(server, add_request)
+    assert "8" in result.content[0].text
     assert len(tool_executions) == 2
     assert tool_executions[1]["name"] == "add_numbers"
     assert tool_executions[1]["args"]["a"] == 5
     assert tool_executions[1]["args"]["b"] == 3
+
+
+@pytest.mark.anyio
+async def test_jsonrpc_bridge_round_trip():
+    """The bridge lists and calls a tool on whichever MCP SDK is installed.
+
+    v1 and v2 register and dispatch handlers differently and v2 renamed the
+    model fields to snake_case, so this exercises both ends on the wire.
+    """
+    from claude_agent_sdk._internal.query import Query
+
+    @tool("echo", "Echo text", {"text": str})
+    async def echo(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": args["text"]}]}
+
+    server_config = create_sdk_mcp_server(name="demo", tools=[echo])
+
+    query_instance = Query.__new__(Query)
+    query_instance.sdk_mcp_servers = {"demo": server_config["instance"]}
+
+    listed = await query_instance._handle_sdk_mcp_request(
+        "demo", {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    )
+    assert listed["result"]["tools"] == [
+        {
+            "name": "echo",
+            "description": "Echo text",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        }
+    ]
+
+    called = await query_instance._handle_sdk_mcp_request(
+        "demo",
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "echo", "arguments": {"text": "hi"}},
+        },
+    )
+    assert called["result"] == {"content": [{"type": "text", "text": "hi"}]}
 
 
 @pytest.mark.anyio
@@ -139,20 +187,16 @@ async def test_error_handling():
     server_config = create_sdk_mcp_server(name="error-test", tools=[fail_tool])
 
     server = server_config["instance"]
-    from mcp.types import CallToolRequest
-
-    call_handler = server.request_handlers[CallToolRequest]
-
     # The handler should return an error result, not raise
-    from mcp.types import CallToolRequestParams
+    from mcp.types import CallToolRequest, CallToolRequestParams
 
     fail_request = CallToolRequest(
         method="tools/call", params=CallToolRequestParams(name="fail", arguments={})
     )
-    result = await call_handler(fail_request)
+    result = await _call_sdk_mcp_handler(server, fail_request)
     # MCP SDK catches exceptions and returns error results
-    assert result.root.isError
-    assert "Expected error" in str(result.root.content[0].text)
+    assert wire(result)["isError"]
+    assert "Expected error" in str(result.content[0].text)
 
 
 @pytest.mark.anyio
@@ -170,25 +214,24 @@ async def test_is_error_flag_propagated():
 
     server_config = create_sdk_mcp_server(name="error-flag-test", tools=[divide])
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     # Test error case — is_error: True should be propagated
     error_request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="divide", arguments={"a": 1, "b": 0}),
     )
-    result = await call_handler(error_request)
-    assert result.root.isError is True
-    assert result.root.content[0].text == "Division by zero"
+    result = await _call_sdk_mcp_handler(server, error_request)
+    assert wire(result)["isError"] is True
+    assert result.content[0].text == "Division by zero"
 
     # Test success case — is_error should default to False
     success_request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="divide", arguments={"a": 6, "b": 3}),
     )
-    result = await call_handler(success_request)
-    assert result.root.isError is not True
-    assert "2.0" in result.root.content[0].text
+    result = await _call_sdk_mcp_handler(server, success_request)
+    assert wire(result).get("isError") is not True
+    assert "2.0" in result.content[0].text
 
 
 @pytest.mark.anyio
@@ -236,7 +279,10 @@ async def test_server_creation():
     from mcp.types import ListToolsRequest
 
     # When no tools are provided, the handlers are not registered
-    assert ListToolsRequest not in instance.request_handlers
+    assert (
+        await _call_sdk_mcp_handler(instance, ListToolsRequest(method="tools/list"))
+        is None
+    )
 
 
 @pytest.mark.anyio
@@ -278,8 +324,6 @@ async def test_image_content_support():
     # Get the server instance
     server = server_config["instance"]
 
-    call_handler = server.request_handlers[CallToolRequest]
-
     # Call the chart generation tool
     chart_request = CallToolRequest(
         method="tools/call",
@@ -287,21 +331,21 @@ async def test_image_content_support():
             name="generate_chart", arguments={"title": "Sales Report"}
         ),
     )
-    result = await call_handler(chart_request)
+    result = await _call_sdk_mcp_handler(server, chart_request)
 
     # Verify the result contains both text and image content
-    assert len(result.root.content) == 2
+    assert len(result.content) == 2
 
     # Check text content
-    text_content = result.root.content[0]
+    text_content = result.content[0]
     assert text_content.type == "text"
     assert text_content.text == "Generated chart: Sales Report"
 
     # Check image content
-    image_content = result.root.content[1]
+    image_content = result.content[1]
     assert image_content.type == "image"
     assert image_content.data == png_data
-    assert image_content.mimeType == "image/png"
+    assert wire(image_content)["mimeType"] == "image/png"
 
     # Verify the tool was executed correctly
     assert len(tool_executions) == 1
@@ -345,13 +389,12 @@ async def test_tool_annotations():
         return {"content": [{"type": "text", "text": args["x"]}]}
 
     # Verify annotations stored on SdkMcpTool
-    assert read_data.annotations is not None
-    assert read_data.annotations.readOnlyHint is True
-    assert delete_item.annotations is not None
-    assert delete_item.annotations.destructiveHint is True
-    assert delete_item.annotations.idempotentHint is True
-    assert search.annotations is not None
-    assert search.annotations.openWorldHint is True
+    assert wire(read_data.annotations) == {"readOnlyHint": True}
+    assert wire(delete_item.annotations) == {
+        "destructiveHint": True,
+        "idempotentHint": True,
+    }
+    assert wire(search.annotations) == {"openWorldHint": True}
     assert no_annotations.annotations is None
 
     # Verify annotations flow through list_tools handler
@@ -363,19 +406,18 @@ async def test_tool_annotations():
 
     from mcp.types import ListToolsRequest
 
-    list_handler = server.request_handlers[ListToolsRequest]
     request = ListToolsRequest(method="tools/list")
-    response = await list_handler(request)
+    response = await _call_sdk_mcp_handler(server, request)
 
-    tools_by_name = {t.name: t for t in response.root.tools}
+    assert response is not None
+    tools_by_name = {t.name: t for t in response.tools}
 
-    assert tools_by_name["read_data"].annotations is not None
-    assert tools_by_name["read_data"].annotations.readOnlyHint is True
-    assert tools_by_name["delete_item"].annotations is not None
-    assert tools_by_name["delete_item"].annotations.destructiveHint is True
-    assert tools_by_name["delete_item"].annotations.idempotentHint is True
-    assert tools_by_name["search"].annotations is not None
-    assert tools_by_name["search"].annotations.openWorldHint is True
+    assert wire(tools_by_name["read_data"].annotations) == {"readOnlyHint": True}
+    assert wire(tools_by_name["delete_item"].annotations) == {
+        "destructiveHint": True,
+        "idempotentHint": True,
+    }
+    assert wire(tools_by_name["search"].annotations) == {"openWorldHint": True}
     assert tools_by_name["no_annotations"].annotations is None
 
 
@@ -424,6 +466,11 @@ async def test_tool_annotations_in_jsonrpc():
     assert "annotations" not in tools_by_name["plain_tool"]
 
 
+@pytest.mark.skipif(
+    ToolAnnotations.model_config.get("extra") != "allow",
+    reason="MCP SDK v2 ToolAnnotations drops unknown fields, so maxResultSizeChars "
+    "cannot be carried on annotations",
+)
 def test_max_result_size_chars_annotation_flows_to_cli():
     """maxResultSizeChars annotation reaches the CLI via the tools/list JSONRPC response.
 
@@ -514,7 +561,6 @@ async def test_resource_link_content_converted_to_text():
         name="resource-link-test", tools=[get_resource]
     )
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     request = CallToolRequest(
         method="tools/call",
@@ -523,13 +569,13 @@ async def test_resource_link_content_converted_to_text():
             arguments={"url": "https://example.com/doc.pdf"},
         ),
     )
-    result = await call_handler(request)
+    result = await _call_sdk_mcp_handler(server, request)
 
-    assert len(result.root.content) == 1
-    assert result.root.content[0].type == "text"
-    assert "My Document" in result.root.content[0].text
-    assert "https://example.com/doc.pdf" in result.root.content[0].text
-    assert "A test document" in result.root.content[0].text
+    assert len(result.content) == 1
+    assert result.content[0].type == "text"
+    assert "My Document" in result.content[0].text
+    assert "https://example.com/doc.pdf" in result.content[0].text
+    assert "A test document" in result.content[0].text
 
 
 @pytest.mark.anyio
@@ -555,17 +601,16 @@ async def test_embedded_resource_text_content_converted():
         name="embedded-resource-test", tools=[get_embedded]
     )
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="get_embedded", arguments={}),
     )
-    result = await call_handler(request)
+    result = await _call_sdk_mcp_handler(server, request)
 
-    assert len(result.root.content) == 1
-    assert result.root.content[0].type == "text"
-    assert result.root.content[0].text == "File contents here"
+    assert len(result.content) == 1
+    assert result.content[0].type == "text"
+    assert result.content[0].text == "File contents here"
 
 
 @pytest.mark.anyio
@@ -593,16 +638,15 @@ async def test_binary_embedded_resource_skipped_with_warning(
         name="binary-resource-test", tools=[get_binary]
     )
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="get_binary", arguments={}),
     )
     with caplog.at_level(logging.WARNING):
-        result = await call_handler(request)
+        result = await _call_sdk_mcp_handler(server, request)
 
-    assert len(result.root.content) == 0
+    assert len(result.content) == 0
     assert "Binary embedded resource" in caplog.text
 
 
@@ -622,16 +666,15 @@ async def test_unknown_content_type_skipped_with_warning(
 
     server_config = create_sdk_mcp_server(name="unknown-type-test", tools=[get_unknown])
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="get_unknown", arguments={}),
     )
     with caplog.at_level(logging.WARNING):
-        result = await call_handler(request)
+        result = await _call_sdk_mcp_handler(server, request)
 
-    assert len(result.root.content) == 0
+    assert len(result.content) == 0
     assert "Unsupported content type" in caplog.text
     assert "custom_widget" in caplog.text
 
@@ -658,20 +701,19 @@ async def test_mixed_content_types_with_resource_link():
 
     server_config = create_sdk_mcp_server(name="mixed-content-test", tools=[get_mixed])
     server = server_config["instance"]
-    call_handler = server.request_handlers[CallToolRequest]
 
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="get_mixed", arguments={}),
     )
-    result = await call_handler(request)
+    result = await _call_sdk_mcp_handler(server, request)
 
-    assert len(result.root.content) == 3
-    assert result.root.content[0].type == "text"
-    assert result.root.content[0].text == "Here is the document:"
-    assert result.root.content[1].type == "image"
-    assert result.root.content[2].type == "text"
-    assert "Report" in result.root.content[2].text
+    assert len(result.content) == 3
+    assert result.content[0].type == "text"
+    assert result.content[0].text == "Here is the document:"
+    assert result.content[1].type == "image"
+    assert result.content[2].type == "text"
+    assert "Report" in result.content[2].text
 
 
 @pytest.mark.anyio
@@ -998,13 +1040,12 @@ class TestTypedDictMcpIntegration:
 
         server_config = create_sdk_mcp_server(name="typeddict-test", tools=[search])
         server = server_config["instance"]
-        list_handler = server.request_handlers[ListToolsRequest]
         request = ListToolsRequest(method="tools/list")
-        response = await list_handler(request)
+        response = await _call_sdk_mcp_handler(server, request)
 
-        tools = response.root.tools
+        tools = response.tools
         assert len(tools) == 1
-        schema = tools[0].inputSchema
+        schema = wire(tools[0])["inputSchema"]
         assert schema["type"] == "object"
         assert schema["properties"]["query"] == {"type": "string"}
         assert schema["properties"]["max_results"] == {"type": "integer"}
@@ -1027,14 +1068,13 @@ class TestTypedDictMcpIntegration:
             name="typeddict-call-test", tools=[multiply]
         )
         server = server_config["instance"]
-        call_handler = server.request_handlers[CallToolRequest]
 
         request = CallToolRequest(
             method="tools/call",
             params=CallToolRequestParams(name="multiply", arguments={"a": 6, "b": 7}),
         )
-        result = await call_handler(request)
-        assert "42" in result.root.content[0].text
+        result = await _call_sdk_mcp_handler(server, request)
+        assert "42" in result.content[0].text
 
     @pytest.mark.anyio
     async def test_dict_schema_still_works(self) -> None:
@@ -1044,11 +1084,10 @@ class TestTypedDictMcpIntegration:
 
         server_config = create_sdk_mcp_server(name="dict-schema-test", tools=[echo])
         server = server_config["instance"]
-        list_handler = server.request_handlers[ListToolsRequest]
         request = ListToolsRequest(method="tools/list")
-        response = await list_handler(request)
+        response = await _call_sdk_mcp_handler(server, request)
 
-        schema = response.root.tools[0].inputSchema
+        schema = wire(response.tools[0])["inputSchema"]
         assert schema["type"] == "object"
         assert schema["properties"]["message"] == {"type": "string"}
         assert schema["required"] == ["message"]
@@ -1070,11 +1109,10 @@ class TestTypedDictMcpIntegration:
 
         server_config = create_sdk_mcp_server(name="passthrough-test", tools=[validate])
         server = server_config["instance"]
-        list_handler = server.request_handlers[ListToolsRequest]
         request = ListToolsRequest(method="tools/list")
-        response = await list_handler(request)
+        response = await _call_sdk_mcp_handler(server, request)
 
-        schema = response.root.tools[0].inputSchema
+        schema = wire(response.tools[0])["inputSchema"]
         assert schema == json_schema
 
     @pytest.mark.anyio
@@ -1085,9 +1123,8 @@ class TestTypedDictMcpIntegration:
 
         server_config = create_sdk_mcp_server(name="cache-test", tools=[cached])
         server = server_config["instance"]
-        list_handler = server.request_handlers[ListToolsRequest]
         request = ListToolsRequest(method="tools/list")
 
-        response1 = await list_handler(request)
-        response2 = await list_handler(request)
-        assert response1.root.tools == response2.root.tools
+        response1 = await _call_sdk_mcp_handler(server, request)
+        response2 = await _call_sdk_mcp_handler(server, request)
+        assert response1.tools == response2.tools

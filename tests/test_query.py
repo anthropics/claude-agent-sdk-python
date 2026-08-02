@@ -1344,6 +1344,35 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_process_error_after_api_error_result_reports_http_status(self):
+        """A failed API call arrives as is_error=True with subtype "success"
+        and an empty errors[] (#1156). Falling back to the subtype would
+        report the failure as "success"; use api_error_status instead."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success", errors=[], api_error_status=400
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: API error \(HTTP 400\)",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
     def test_process_error_after_error_result_joins_multiple_errors(self):
         async def _test():
             transport = self._make_transport_then_raise(

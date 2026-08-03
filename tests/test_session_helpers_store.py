@@ -194,6 +194,42 @@ class TestListSessionsFromStore:
         assert len(page2) == 3
         assert {s.session_id for s in page2}.issubset(set(valid_sids))
 
+    async def test_slow_path_filters_invalid_ids_before_load_and_pagination(
+        self,
+    ) -> None:
+        """Malformed adapter rows are ignored before they can trigger a load
+        or take the newest slot in a limited page."""
+
+        class InvalidListingStore(InMemorySessionStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key):  # type: ignore[override]
+                raise NotImplementedError
+
+            async def list_sessions(self, project_key):  # type: ignore[override]
+                valid = await super().list_sessions(project_key)
+                newest = max(e["mtime"] for e in valid) + 1
+                return [
+                    {"session_id": "not-a-uuid", "mtime": newest + 1},
+                    {"session_id": 123, "mtime": newest},
+                    *valid,
+                ]
+
+            async def load(self, key):  # type: ignore[override]
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = InvalidListingStore()
+        valid_sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, valid_sid, n=1)
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=1)
+
+        assert [session.session_id for session in page] == [valid_sid]
+        assert store.load_calls == [valid_sid]
+
     async def test_does_not_mutate_adapter_returned_list(self) -> None:
         """Parity with TS: sorting must not mutate the list object returned
         by store.list_sessions() (adapters may return internal state)."""

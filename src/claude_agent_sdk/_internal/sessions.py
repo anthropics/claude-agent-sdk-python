@@ -1522,6 +1522,19 @@ async def _load_store_entries_as_jsonl(
     return _entries_to_jsonl(entries)
 
 
+def _has_valid_store_session_id(entry: Any) -> bool:
+    """Return whether an adapter listing row contains a valid session UUID.
+
+    SessionStore adapters may expose externally populated or stale index rows.
+    Filter those rows at the SDK boundary, matching filesystem discovery and
+    preventing unusable IDs from consuming load or pagination slots.
+    """
+    if not isinstance(entry, dict):
+        return False
+    session_id = entry.get("session_id")
+    return isinstance(session_id, str) and _validate_uuid(session_id) is not None
+
+
 async def _derive_infos_via_load(
     session_store: SessionStore,
     listing: list[Any],
@@ -1639,6 +1652,7 @@ async def list_sessions_from_store(
         except NotImplementedError:
             pass
         else:
+            summaries = [s for s in summaries if _has_valid_store_session_id(s)]
             # Build a unified slot list. Fresh summaries (mtime >= the
             # session's current mtime from list_sessions) get their info up
             # front; sessions present in list_sessions() but missing OR with a
@@ -1649,7 +1663,11 @@ async def list_sessions_from_store(
             # already determined) so they don't consume offset/limit positions,
             # matching the disk and slow-path filter-then-paginate semantics.
             if has_list_sessions:
-                listing = list(await session_store.list_sessions(project_key))
+                listing = [
+                    e
+                    for e in await session_store.list_sessions(project_key)
+                    if _has_valid_store_session_id(e)
+                ]
                 known_mtimes = {e["session_id"]: e["mtime"] for e in listing}
             else:
                 listing = []
@@ -1721,7 +1739,11 @@ async def list_sessions_from_store(
             "least one of those methods."
         )
     # Copy — store.list_sessions() may return a reference to internal state.
-    listing = list(await session_store.list_sessions(project_key))
+    listing = [
+        e
+        for e in await session_store.list_sessions(project_key)
+        if _has_valid_store_session_id(e)
+    ]
     # Derive a real summary per session by loading its entries and reusing
     # the filesystem path's lite-parse. Filtering (sidechain/empty drop)
     # happens before pagination so ``limit``/``offset`` index the same

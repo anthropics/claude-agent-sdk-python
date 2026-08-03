@@ -137,7 +137,7 @@ async def _append_jsonl_file_in_batches(
             if not line:
                 continue
             batch.append(json.loads(line))
-            nbytes += len(line)
+            nbytes += len(line.encode("utf-8"))
             if len(batch) >= batch_size or nbytes >= MAX_PENDING_BYTES:
                 await store.append(key, batch)
                 batch = []

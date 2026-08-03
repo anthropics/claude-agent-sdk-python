@@ -133,9 +133,6 @@ class InternalClient:
                 options=configured_options,
             )
 
-        # Connect transport
-        await chosen_transport.connect()
-
         # Extract SDK MCP servers from configured options
         sdk_mcp_servers = {}
         if configured_options.mcp_servers and isinstance(
@@ -201,6 +198,10 @@ class InternalClient:
             )
 
         try:
+            # Query owns the transport before connect() can spawn or partially
+            # initialize resources, so its finally block covers connect failures.
+            await chosen_transport.connect()
+
             # Start reading messages
             await query.start()
 

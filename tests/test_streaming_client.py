@@ -1121,24 +1121,79 @@ class TestClaudeSDKClientEdgeCases:
 
     @pytest.mark.anyio
     async def test_double_connect(self):
-        """Test connecting twice."""
+        """Connecting twice closes the first transport before replacing it."""
 
         with patch(
             "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
         ) as mock_transport_class:
             # Create a new mock transport for each call
+            first_transport = create_mock_transport()
+            second_transport = create_mock_transport()
+            lifecycle: list[str] = []
+
+            async def track_first_close() -> None:
+                lifecycle.append("first.close")
+
+            async def track_second_connect() -> None:
+                lifecycle.append("second.connect")
+
+            first_transport.close.side_effect = track_first_close
+            second_transport.connect.side_effect = track_second_connect
             mock_transport_class.side_effect = [
-                create_mock_transport(),
-                create_mock_transport(),
+                first_transport,
+                second_transport,
             ]
 
             client = ClaudeSDKClient()
             await client.connect()
-            # Second connect should create new transport
             await client.connect()
 
-            # Should have been called twice
             assert mock_transport_class.call_count == 2
+            first_transport.close.assert_awaited_once()
+            second_transport.close.assert_not_awaited()
+            assert lifecycle == ["first.close", "second.connect"]
+
+            await client.disconnect()
+            second_transport.close.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_connect_failure_closes_partially_connected_transport(self):
+        """A transport that raises from connect remains owned and is closed."""
+        mock_transport = create_mock_transport()
+        mock_transport.connect = AsyncMock(side_effect=OSError("partial connect"))
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport",
+            return_value=mock_transport,
+        ):
+            client = ClaudeSDKClient()
+            with pytest.raises(OSError, match="partial connect"):
+                await client.connect()
+
+        mock_transport.close.assert_awaited_once()
+        assert client._query is None
+        assert client._transport is None
+
+    @pytest.mark.anyio
+    async def test_configuration_failure_happens_before_transport_connect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Setup errors cannot leak a transport because it is not connected yet."""
+        monkeypatch.setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "not-an-integer")
+        mock_transport = create_mock_transport()
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport",
+            return_value=mock_transport,
+        ):
+            client = ClaudeSDKClient()
+            with pytest.raises(ValueError, match="invalid literal"):
+                await client.connect()
+
+        mock_transport.connect.assert_not_awaited()
+        mock_transport.close.assert_not_awaited()
+        assert client._query is None
+        assert client._transport is None
 
     @pytest.mark.anyio
     async def test_disconnect_without_connect(self):

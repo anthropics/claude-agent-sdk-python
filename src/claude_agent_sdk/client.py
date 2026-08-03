@@ -102,6 +102,11 @@ class ClaudeSDKClient:
     ) -> None:
         """Connect to Claude with a prompt or message stream."""
 
+        # Preserve reconnect behavior without abandoning the existing Query,
+        # transport, or materialized session directory.
+        if self._query is not None or self._transport is not None:
+            await self.disconnect()
+
         from ._internal.session_resume import materialize_resume_session
         from ._internal.session_store_validation import validate_session_store_options
 
@@ -192,7 +197,6 @@ class ClaudeSDKClient:
                 prompt=actual_prompt,
                 options=options,
             )
-        await self._transport.connect()
 
         # Extract SDK MCP servers from options
         sdk_mcp_servers = {}
@@ -255,6 +259,10 @@ class ClaudeSDKClient:
                     flush_mode=self.options.session_store_flush,
                 )
             )
+
+        # Query owns the transport before connect() can spawn or partially
+        # initialize resources, so every failure path closes it via disconnect().
+        await self._transport.connect()
 
         # Start reading messages and initialize
         await self._query.start()

@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     tool,
 )
 from claude_agent_sdk._errors import ProcessError
+from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -154,6 +155,43 @@ _MCP_CONTROL_REQUESTS = [
         },
     },
 ]
+
+
+@pytest.mark.anyio
+async def test_process_query_connect_failure_closes_transport() -> None:
+    """The one-shot client closes a transport that fails during connect."""
+    mock_transport = _make_mock_transport(messages=[])
+    mock_transport.connect = AsyncMock(side_effect=OSError("partial connect"))
+
+    with pytest.raises(OSError, match="partial connect"):
+        async for _ in InternalClient().process_query(
+            prompt="hello",
+            options=ClaudeAgentOptions(),
+            transport=mock_transport,
+        ):
+            pass  # pragma: no cover
+
+    mock_transport.close.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_process_query_configures_before_transport_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One-shot setup errors happen before the transport acquires resources."""
+    monkeypatch.setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "not-an-integer")
+    mock_transport = _make_mock_transport(messages=[])
+
+    with pytest.raises(ValueError, match="invalid literal"):
+        async for _ in InternalClient().process_query(
+            prompt="hello",
+            options=ClaudeAgentOptions(),
+            transport=mock_transport,
+        ):
+            pass  # pragma: no cover
+
+    mock_transport.connect.assert_not_awaited()
+    mock_transport.close.assert_not_awaited()
 
 
 def _make_greet_server():

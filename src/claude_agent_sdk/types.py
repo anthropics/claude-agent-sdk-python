@@ -5,7 +5,7 @@ import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeAlias
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, Required, TypedDict
@@ -31,6 +31,9 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
+
+# The ClaudeAgentOptions.skills value meaning "every discovered skill".
+_SKILLS_ALL: Final = "all"
 EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
@@ -1745,7 +1748,7 @@ def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
     # allowed_tools, so it shadows the callback just like a hand-written entry.
     # skills=[names] appends Skill(name) specifiers, which do not.
     allowed_tools = options.allowed_tools
-    if options.skills == "all" and "Skill" not in allowed_tools:
+    if options.skills == _SKILLS_ALL and "Skill" not in allowed_tools:
         allowed_tools = [*allowed_tools, "Skill"]
     message = _get_can_use_tool_shadowed_warning(options.permission_mode, allowed_tools)
     if message is not None:
@@ -2009,6 +2012,8 @@ class ClaudeAgentOptions:
     - ``"all"``: enable every discovered skill.
     - ``list[str]``: enable only the listed skills. Names match the SKILL.md
       ``name`` / directory name, or ``plugin:skill`` for plugin-qualified skills.
+      Names must be exact: wildcards, delimiters, and surrounding whitespace
+      raise at ``connect()``.
 
     This is a **context filter**, not a sandbox: unlisted skills are hidden
     from the model's listing and rejected by the Skill tool, but their files

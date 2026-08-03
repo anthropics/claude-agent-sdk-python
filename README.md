@@ -87,7 +87,15 @@ options = ClaudeAgentOptions(
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
 Code. See [src/claude_agent_sdk/client.py](src/claude_agent_sdk/client.py).
 
-Unlike `query()`, `ClaudeSDKClient` additionally enables **custom tools** and **hooks**, both of which can be defined as Python functions.
+Both `query()` and `ClaudeSDKClient` support **custom tools** and **hooks**
+defined as Python functions through `ClaudeAgentOptions`. With `query()`, an
+async prompt iterable is sent concurrently with response processing; its input
+and output can interleave within that single call. A `can_use_tool` callback
+requires this async-iterable prompt form.
+
+Choose `ClaudeSDKClient` when you need explicit connection management,
+response-driven follow-up calls, interrupts, or a long-running interactive
+session.
 
 ### Custom Tools (as In-Process SDK MCP Servers)
 

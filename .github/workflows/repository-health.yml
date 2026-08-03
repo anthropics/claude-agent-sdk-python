@@ -1,0 +1,14 @@
+name: Repository Health
+
+on:
+  pull_request:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ClearGlasslabs/ClearCast/.github/workflows/repository-health.yml@90a3d5495e88057ae2bc662fcee1140fe173ffae

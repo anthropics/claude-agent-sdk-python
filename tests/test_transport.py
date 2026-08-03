@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 
+from claude_agent_sdk._internal.transport import subprocess_cli
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk.types import ClaudeAgentOptions
 
@@ -2110,6 +2111,84 @@ class TestSubprocessCLITransport:
                 mock_logger.warning.assert_not_called()
 
         anyio.run(_test)
+
+    @pytest.mark.anyio
+    async def test_version_probe_escalates_to_kill_and_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A probe that ignores SIGTERM cannot hang connection indefinitely."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        version_process = MagicMock()
+        version_process.stdout = MagicMock()
+        version_process.stdout.receive = AsyncMock(
+            return_value=b"99.99.99 (Claude Code)"
+        )
+        version_process.returncode = None
+        version_process.terminate = MagicMock()
+        version_process.kill = MagicMock()
+
+        async def hanging_wait() -> None:
+            await anyio.sleep_forever()
+
+        version_process.wait = AsyncMock(side_effect=hanging_wait)
+        monkeypatch.setattr(subprocess_cli, "_VERSION_TERMINATE_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(subprocess_cli, "_VERSION_KILL_TIMEOUT_SECONDS", 0.01)
+
+        try:
+            with (
+                patch("anyio.open_process", return_value=version_process),
+                anyio.fail_after(0.5),
+            ):
+                await transport._check_claude_version()
+
+            version_process.terminate.assert_called_once()
+            version_process.kill.assert_called_once()
+            assert version_process.wait.await_count == 2
+            assert version_process in subprocess_cli._ACTIVE_CHILDREN
+        finally:
+            subprocess_cli._ACTIVE_CHILDREN.discard(version_process)
+
+    @pytest.mark.anyio
+    async def test_version_probe_does_not_kill_after_graceful_termination(
+        self,
+    ) -> None:
+        """A probe reaped after SIGTERM does not receive an unnecessary kill."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        version_process = MagicMock()
+        version_process.stdout = MagicMock()
+        version_process.stdout.receive = AsyncMock(
+            return_value=b"99.99.99 (Claude Code)"
+        )
+        version_process.returncode = 0
+        version_process.terminate = MagicMock()
+        version_process.kill = MagicMock()
+        version_process.wait = AsyncMock(return_value=0)
+
+        with patch("anyio.open_process", return_value=version_process):
+            await transport._check_claude_version()
+
+        version_process.terminate.assert_called_once()
+        version_process.wait.assert_awaited_once()
+        version_process.kill.assert_not_called()
+        assert version_process not in subprocess_cli._ACTIVE_CHILDREN
+
+    @pytest.mark.anyio
+    async def test_version_probe_cleanup_is_shielded_from_cancellation(self) -> None:
+        """Enclosing anyio cancellation cannot skip probe termination/reaping."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        version_process = MagicMock()
+        version_process.returncode = 0
+        version_process.terminate = MagicMock()
+        version_process.kill = MagicMock()
+        version_process.wait = AsyncMock(return_value=0)
+
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await transport._close_version_process(version_process)
+
+        version_process.terminate.assert_called_once()
+        version_process.wait.assert_awaited_once()
+        version_process.kill.assert_not_called()
 
     def test_stderr_callback_raise_does_not_terminate_loop(self) -> None:
         """Regression for issue #929: a raise from ``options.stderr`` must not

@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+_VERSION_CHECK_TIMEOUT_SECONDS = 2
+_VERSION_TERMINATE_TIMEOUT_SECONDS = 1
+_VERSION_KILL_TIMEOUT_SECONDS = 1
 
 # cmd.exe metacharacters (plus the quote character cmd.exe uses to toggle
 # its quoting state, and "!", which expands like "%" when delayed expansion
@@ -1022,17 +1025,22 @@ class SubprocessCLITransport(Transport):
             raise self._exit_error
 
     async def _check_claude_version(self) -> None:
-        """Check Claude Code version and warn if below minimum."""
+        """Check Claude Code version and warn if below minimum.
+
+        The probe and both shutdown stages are bounded so a broken executable
+        cannot block transport connection indefinitely.
+        """
         if self._cli_path is None:
             raise CLINotFoundError("CLI path not resolved. Call connect() first.")
-        version_process = None
+        version_process: Process | None = None
         try:
-            with anyio.fail_after(2):  # 2 second timeout
+            with anyio.fail_after(_VERSION_CHECK_TIMEOUT_SECONDS):
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
                     stdout=PIPE,
                     stderr=PIPE,
                 )
+                _ACTIVE_CHILDREN.add(version_process)
 
                 if version_process.stdout:
                     stdout_bytes = await version_process.stdout.receive()
@@ -1056,13 +1064,46 @@ class SubprocessCLITransport(Transport):
                                 MINIMUM_CLAUDE_CODE_VERSION,
                             )
         except Exception:
-            pass
+            logger.debug("Unable to check Claude Code version", exc_info=True)
         finally:
-            if version_process:
-                with suppress(Exception):
-                    version_process.terminate()
-                with suppress(Exception):
+            if version_process is not None:
+                await self._close_version_process(version_process)
+
+    async def _close_version_process(self, version_process: Process) -> None:
+        """Terminate and reap the version probe within a fixed time budget."""
+        with anyio.CancelScope(shield=True):
+            try:
+                version_process.terminate()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                logger.debug("Failed to terminate version probe", exc_info=True)
+
+            try:
+                with anyio.fail_after(_VERSION_TERMINATE_TIMEOUT_SECONDS):
                     await version_process.wait()
+            except TimeoutError:
+                try:
+                    version_process.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    logger.debug("Failed to kill version probe", exc_info=True)
+
+                try:
+                    with anyio.fail_after(_VERSION_KILL_TIMEOUT_SECONDS):
+                        await version_process.wait()
+                except TimeoutError:
+                    logger.debug("Timed out reaping killed version probe")
+                except Exception:
+                    logger.debug("Failed to reap killed version probe", exc_info=True)
+            except Exception:
+                logger.debug("Failed to reap terminated version probe", exc_info=True)
+            finally:
+                # Keep an unreaped process tracked so the atexit handler still
+                # gets a chance to signal it rather than silently forgetting it.
+                if version_process.returncode is not None:
+                    _ACTIVE_CHILDREN.discard(version_process)
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

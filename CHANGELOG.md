@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.129
+
+### Breaking Changes
+
+- **Skill name validation in `ClaudeAgentOptions.skills`**: Skill names containing parentheses, commas, control characters, wildcards (`*`, `:*`), leading `/`, surrounding whitespace, or surrogate code points now raise `ValueError` at connect time. `skills=["plugin:*"]` and `skills=["*"]` should be replaced with `skills="all"` or a `Skill(...)` rule in `allowed_tools`. Names with leading whitespace or `/` previously built rules that could never match (silently disabling the skill) and now raise explicitly (#1145)
+
+### Bug Fixes
+
+- **Validated skill names to prevent `--allowedTools` injection**: Skill names from `ClaudeAgentOptions(skills=[...])` were passed unchecked into the CLI's `--allowedTools` value, which splits on commas and spaces. A crafted name could inject extra permission rules. The transport now validates each name and rejects delimiter-carrying or malformed values (#1145)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.221
+
 ## 0.2.128
 
 ### Internal/Other Changes

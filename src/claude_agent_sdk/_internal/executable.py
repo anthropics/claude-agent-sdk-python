@@ -110,6 +110,11 @@ class ExecutableNotFoundError(FileNotFoundError):
         )
         self.name = name
 
+    def __reduce__(self) -> tuple[type[ExecutableNotFoundError], tuple[str]]:
+        # OSError pickles as cls(*args) == cls(errno, strerror, filename),
+        # which this one-argument constructor would reject.
+        return (type(self), (self.name,))
+
 
 def _is_windows() -> bool:
     # os.name rather than sys.platform so mypy does not narrow either branch

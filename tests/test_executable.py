@@ -13,6 +13,7 @@ test_executable_invariant.py.
 from __future__ import annotations
 
 import os
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -368,6 +369,10 @@ class TestRequireResolveRun:
         assert exc_info.value.name == "tool"
         assert exc_info.value.filename == "tool"
         assert "never the current directory" in str(exc_info.value)
+        # Survives pickling (multiprocessing, xdist) despite OSError's
+        # three-argument reconstruction protocol.
+        clone = pickle.loads(pickle.dumps(exc_info.value))
+        assert isinstance(clone, ExecutableNotFoundError) and clone.name == "tool"
 
     def test_resolve_argv_replaces_only_the_program(self, layout: Path) -> None:
         argv = resolve_argv(

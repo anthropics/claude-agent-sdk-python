@@ -1275,3 +1275,99 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    # -- timestamp field tests (issue #258) --
+
+    def test_parse_user_message_with_timestamp(self):
+        """User messages preserve the timestamp field from JSONL data."""
+        data = {
+            "type": "user",
+            "timestamp": "2025-07-15T10:30:00.000Z",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.timestamp == "2025-07-15T10:30:00.000Z"
+
+    def test_parse_user_message_without_timestamp(self):
+        """User messages default timestamp to None when absent."""
+        data = {
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert message.timestamp is None
+
+    def test_parse_assistant_message_with_timestamp(self):
+        """Assistant messages preserve the timestamp field from JSONL data."""
+        data = {
+            "type": "assistant",
+            "timestamp": "2025-07-15T10:30:05.123Z",
+            "message": {
+                "content": [{"type": "text", "text": "Hi there"}],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.timestamp == "2025-07-15T10:30:05.123Z"
+
+    def test_parse_assistant_message_without_timestamp(self):
+        """Assistant messages default timestamp to None when absent."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hi"}],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.timestamp is None
+
+    def test_parse_system_message_with_timestamp(self):
+        """System messages preserve the timestamp field from JSONL data."""
+        data = {
+            "type": "system",
+            "subtype": "start",
+            "timestamp": "2025-07-15T10:29:59.000Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, SystemMessage)
+        assert message.timestamp == "2025-07-15T10:29:59.000Z"
+
+    def test_parse_system_message_without_timestamp(self):
+        """System messages default timestamp to None when absent."""
+        data = {"type": "system", "subtype": "start"}
+        message = parse_message(data)
+        assert isinstance(message, SystemMessage)
+        assert message.timestamp is None
+
+    def test_parse_task_started_message_with_timestamp(self):
+        """TaskStartedMessage (SystemMessage subclass) preserves timestamp."""
+        data = {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-abc",
+            "description": "Working",
+            "uuid": "uuid-1",
+            "session_id": "session-1",
+            "timestamp": "2025-07-15T10:31:00.000Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskStartedMessage)
+        assert message.timestamp == "2025-07-15T10:31:00.000Z"
+
+    def test_parse_task_updated_message_with_timestamp(self):
+        """TaskUpdatedMessage preserves timestamp."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": "completed"},
+            "timestamp": "2025-07-15T10:32:00.000Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.timestamp == "2025-07-15T10:32:00.000Z"

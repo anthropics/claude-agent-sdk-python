@@ -84,7 +84,7 @@ import os
 import posixpath
 import re
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -277,8 +277,14 @@ def resolve_argv(
     """``argv`` with ``argv[0]`` replaced by its :func:`require_executable` result.
 
     The remaining arguments are passed through untouched (G1 concerns the
-    program only).
+    program only). Use this in front of the async spawn APIs
+    (``anyio.open_process``), which are deliberately not wrapped here.
     """
+    if isinstance(argv, (str, bytes)):
+        # A ``str`` is a ``Sequence[str]`` to the type checker; iterating it
+        # would "resolve" its first character. Shell command lines are not
+        # supported.
+        raise TypeError("argv must be a sequence of program arguments, not a string")
     if not argv:
         raise ValueError("argv must name a program to run")
     program, *args = (os.fspath(arg) for arg in argv)
@@ -299,8 +305,24 @@ def run(
     :class:`ExecutableNotFoundError` before anything is spawned. ``shell``
     and ``executable`` are refused because either would hand program lookup
     back to a shell or to the OS.
+
+    ``argv[0]`` is resolved against the ``PATH`` the child will see, as
+    ``subprocess.run`` itself would search on POSIX: the one in
+    ``kwargs["env"]`` when the caller passes an environment that carries one,
+    else this process's. Either way only its absolute entries count (G2), and
+    an ``env`` without any ``PATH`` falls back to this process's ``PATH`` --
+    never to ``os.defpath``, which is what CPython would quietly search.
     """
     for unsupported in ("shell", "executable"):
         if kwargs.get(unsupported):
             raise TypeError(f"run() does not support the {unsupported!r} argument")
-    return subprocess.run(resolve_argv(argv), **kwargs)
+    resolved = resolve_argv(argv, path=_search_path_in(kwargs.get("env")))
+    return subprocess.run(resolved, **kwargs)
+
+
+def _search_path_in(env: object) -> str | None:
+    """The ``PATH`` inside a caller-supplied child environment, if it carries one."""
+    if not isinstance(env, Mapping):
+        return None
+    value = env.get("PATH")
+    return value if isinstance(value, str) else None

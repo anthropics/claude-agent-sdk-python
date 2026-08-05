@@ -12,6 +12,7 @@ test_executable_invariant.py.
 
 from __future__ import annotations
 
+import copy
 import os
 import pickle
 import subprocess
@@ -369,10 +370,18 @@ class TestRequireResolveRun:
         assert exc_info.value.name == "tool"
         assert exc_info.value.filename == "tool"
         assert "never the current directory" in str(exc_info.value)
-        # Survives pickling (multiprocessing, xdist) despite OSError's
-        # three-argument reconstruction protocol.
-        clone = pickle.loads(pickle.dumps(exc_info.value))
-        assert isinstance(clone, ExecutableNotFoundError) and clone.name == "tool"
+
+    def test_executable_not_found_error_survives_pickling(self) -> None:
+        """Raised inside a ``ProcessPoolExecutor`` worker it must cross the
+        process boundary intact (``OSError.__reduce__`` alone would replay
+        three arguments into the one-argument constructor)."""
+        err = ExecutableNotFoundError("rg")
+        # Round-trips an object created right here -- no untrusted pickle data.
+        for clone in (pickle.loads(pickle.dumps(err)), copy.copy(err)):
+            assert isinstance(clone, ExecutableNotFoundError)
+            assert clone.name == "rg" and clone.filename == "rg"
+            assert clone.errno == err.errno
+            assert str(clone) == str(err)
 
     def test_resolve_argv_replaces_only_the_program(self, layout: Path) -> None:
         argv = resolve_argv(
@@ -385,6 +394,14 @@ class TestRequireResolveRun:
         ]
         with pytest.raises(ValueError):
             resolve_argv([], path=str(layout / "bin"))
+        with pytest.raises(ExecutableNotFoundError):
+            resolve_argv(["tool"], path=".")
+        # A shell-style string is a ``Sequence[str]`` to the type checker, but
+        # never an argv: refuse it rather than "resolve" its first character.
+        with pytest.raises(TypeError, match="not a string"):
+            resolve_argv("tool --flag", path=str(layout / "bin"))
+        with pytest.raises(TypeError, match="not a string"):
+            run("tool --flag", capture_output=True)
 
     def test_run_resolves_then_spawns(self, layout: Path) -> None:
         # sys.executable is absolute, so this is the G4 pass-through.
@@ -404,6 +421,30 @@ class TestRequireResolveRun:
         result = run(["tool", "x"], capture_output=True, text=True)
         assert result.stdout.strip() == "from-bin:x"
         assert result.args[0] == str(layout / "bin" / "tool")
+
+    @posix_only
+    def test_run_resolves_against_the_path_the_child_will_see(
+        self, layout: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Like ``subprocess.run`` on POSIX, an explicit ``env`` carrying a
+        ``PATH`` is the search path -- still subject to the
+        absolute-entries-only rule."""
+        hello = _make_executable(
+            layout / "bin" / "hello", '#!/bin/sh\necho "from-bin $0"\n'
+        )
+        monkeypatch.setenv("PATH", "")
+        child_env = {"PATH": _join(".", str(layout / "bin"))}
+        result = run(["hello"], env=child_env, capture_output=True, text=True)
+        assert result.stdout == f"from-bin {hello}\n"
+        with pytest.raises(ExecutableNotFoundError):
+            run(["hello"], env={"PATH": "."}, capture_output=True)
+        # No PATH in the child env: fall back to this process's (empty here)
+        # -- never os.defpath.
+        with pytest.raises(ExecutableNotFoundError):
+            run(["hello"], env={"UNRELATED": "1"}, capture_output=True)
+        monkeypatch.setenv("PATH", str(layout / "bin"))
+        result = run(["hello"], env={"UNRELATED": "1"}, capture_output=True, text=True)
+        assert result.returncode == 0
 
     def test_run_never_spawns_a_plant(
         self, layout: Path, monkeypatch: pytest.MonkeyPatch

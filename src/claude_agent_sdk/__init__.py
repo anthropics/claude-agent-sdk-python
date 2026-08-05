@@ -51,6 +51,7 @@ from ._internal.sessions import (
     list_subagents,
     list_subagents_from_store,
 )
+from ._internal.tracing import disable_tracing, enable_tracing
 from ._internal.transport import Transport
 from ._version import __version__
 from .client import ClaudeSDKClient
@@ -528,6 +529,8 @@ def create_sdk_mcp_server(
 __all__ = [
     # Main exports
     "query",
+    "enable_tracing",
+    "disable_tracing",
     "__version__",
     # Transport
     "Transport",

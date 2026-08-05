@@ -4,6 +4,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -14,6 +15,7 @@ from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
 _ABSENT = object()  # sentinel for "field not sent on the wire"
+_FIND_EXECUTABLE = "claude_agent_sdk._internal.transport.subprocess_cli.find_executable"
 
 
 def make_options(**kwargs: object) -> ClaudeAgentOptions:
@@ -38,10 +40,7 @@ class TestSubprocessCLITransport:
             assert transport._cli_path is None
 
             with (
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    return_value=None,
-                ),
+                patch(_FIND_EXECUTABLE, return_value=None),
                 patch("pathlib.Path.exists", return_value=False),
                 pytest.raises(CLINotFoundError) as exc_info,
             ):
@@ -2491,20 +2490,38 @@ class TestWindowsBatchScriptRefusal:
 
     _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
 
-    def test_npm_cmd_shim_from_which_is_refused(self):
-        # Shim-only machine: which("claude") resolves npm's claude.cmd and
-        # no native claude.exe is discoverable (which("claude.exe") -> None,
-        # no .exe in the fallback locations). Discovery must still hand the
-        # shim to connect() so the batch-script refusal fires -- the .exe
-        # preference is additive and never lets a shim-only machine spawn.
+    @staticmethod
+    def _fake_find_executable(native: str | None = None, shim: str | None = None):
+        """A find_executable stand-in for a Windows PATH: ``native`` is what
+        the default (.exe/.com) lookup yields, ``shim`` what the .cmd/.bat
+        detection probe yields."""
+        from claude_agent_sdk._internal.executable import WINDOWS_NATIVE_EXTENSIONS
+
+        def _find(
+            name: str,
+            *,
+            windows_extensions: tuple[str, ...] = WINDOWS_NATIVE_EXTENSIONS,
+        ) -> str | None:
+            assert name == "claude"
+            if tuple(windows_extensions) == WINDOWS_NATIVE_EXTENSIONS:
+                return native
+            assert set(windows_extensions) == {".cmd", ".bat"}
+            return shim
+
+        return _find
+
+    def test_npm_cmd_shim_is_detected_and_refused(self):
+        # Shim-only machine: no native claude.exe is discoverable (not on
+        # PATH, not in the fallback location); only npm's claude.cmd is on
+        # PATH. find_executable never returns the shim as something to run,
+        # so discovery probes for it explicitly and hands it to connect()
+        # purely so the batch-script refusal -- with its remediation --
+        # fires instead of a bare not-found error. Nothing is spawned.
         async def _test():
             from claude_agent_sdk._errors import CLIConnectionError
 
             shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
 
-            def _which(name: str) -> str | None:
-                return shim if name == "claude" else None
-
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
             )
@@ -2514,89 +2531,7 @@ class TestWindowsBatchScriptRefusal:
                 patch.object(
                     SubprocessCLITransport, "_find_bundled_cli", return_value=None
                 ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-                pytest.raises(CLIConnectionError, match="batch script"),
-            ):
-                await transport.connect()
-
-            assert mock_open.call_count == 0
-
-        anyio.run(_test)
-
-    def test_native_exe_is_preferred_over_shadowing_npm_shim(self):
-        # Dual-install machine: npm's %APPDATA%\npm precedes the native
-        # installer's %USERPROFILE%\.local\bin on PATH, so which("claude")
-        # resolves the claude.cmd shim -- shutil.which walks PATH
-        # directory-major, so the earlier npm directory wins (within one
-        # directory the default PATHEXT would prefer .EXE over .CMD; the
-        # shadowing comes purely from directory order). Discovery must find
-        # the shadowed native claude.exe via which("claude.exe") so connect()
-        # proceeds instead of refusing.
-        async def _test():
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
-
-            def _which(name: str) -> str | None:
-                return {"claude": shim, "claude.exe": native}.get(name)
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-            version_process, main_process = _mock_connect_processes()
-
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-            ):
-                mock_open.side_effect = [version_process, main_process]
-                await transport.connect()
-
-            assert mock_open.call_count == 2
-            assert mock_open.call_args_list[1].args[0][0] == native
-
-        anyio.run(_test)
-
-    def test_claude_exe_probe_result_is_vetted(self):
-        # Python 3.12+ shutil.which appends PATHEXT extensions even to a
-        # name that already carries one, so which("claude.exe") can hand
-        # back a stray "claude.exe.cmd". Discovery must not accept that as
-        # the rescued native exe: it falls through to the fallback location
-        # and, with none there, returns the original npm shim so connect()
-        # refuses naming the shim its remediation message is written for.
-        async def _test():
-            from claude_agent_sdk._errors import CLIConnectionError
-
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-            junk = "C:\\tools\\claude.exe.cmd"
-
-            def _which(name: str) -> str | None:
-                return {"claude": shim, "claude.exe": junk}.get(name)
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
+                patch(_FIND_EXECUTABLE, new=self._fake_find_executable(shim=shim)),
                 patch("pathlib.Path.exists", return_value=False),
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
                 pytest.raises(CLIConnectionError, match=r"npm\\\\claude\.CMD"),
@@ -2607,19 +2542,17 @@ class TestWindowsBatchScriptRefusal:
 
         anyio.run(_test)
 
-    def test_extensionless_which_hit_still_prefers_native_exe(self):
-        # Python 3.12+ shutil.which also probes the bare name, so an
-        # extensionless git-bash / WSL wrapper script named "claude" in an
-        # early PATH directory shadows a native claude.exe installed in a
-        # later one. CreateProcess cannot run that script (WinError 193),
-        # so discovery must run the same native-exe rescue instead of
-        # committing to the wrapper.
+    def test_native_exe_wins_over_npm_shim(self):
+        # Dual-install machine: npm's %APPDATA%\npm (claude.cmd) precedes the
+        # native installer's %USERPROFILE%\.local\bin (claude.exe) on PATH.
+        # shutil.which walks PATH directory-major with PATHEXT and used to
+        # return the shim from the earlier directory; find_executable only
+        # considers claude.exe / claude.com (see test_executable.py, W3), so
+        # discovery gets the native executable directly, never consults the
+        # shim probe, and connect() proceeds instead of refusing.
         async def _test():
-            wrapper = "C:\\Users\\u\\bin\\claude"
             native = "C:\\Users\\u\\.local\\bin\\claude.exe"
-
-            def _which(name: str) -> str | None:
-                return {"claude": wrapper, "claude.exe": native}.get(name)
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
 
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
@@ -2632,16 +2565,20 @@ class TestWindowsBatchScriptRefusal:
                     SubprocessCLITransport, "_find_bundled_cli", return_value=None
                 ),
                 patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
+                    _FIND_EXECUTABLE,
+                    side_effect=self._fake_find_executable(native=native, shim=shim),
+                ) as mock_find,
                 patch("pathlib.Path.exists", return_value=False),
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
             ):
                 mock_open.side_effect = [version_process, main_process]
                 await transport.connect()
 
+            # The default (native-only) lookup, and no shim probe after it.
+            assert [c.args for c in mock_find.call_args_list] == [("claude",)]
+            assert [c.kwargs for c in mock_find.call_args_list] == [{}]
             assert mock_open.call_count == 2
+            assert mock_open.call_args_list[0].args[0][0] == native
             assert mock_open.call_args_list[1].args[0][0] == native
 
         anyio.run(_test)
@@ -2751,19 +2688,18 @@ class TestWindowsBatchScriptRefusal:
                     SubprocessCLITransport, "_find_bundled_cli", return_value=None
                 ),
                 patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    return_value="/usr/local/bin/claude",
-                ) as mock_which,
+                    _FIND_EXECUTABLE, return_value="/usr/local/bin/claude"
+                ) as mock_find,
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
             ):
                 mock_open.side_effect = [version_process, main_process]
                 await transport.connect()
 
-            # POSIX discovery uses the which("claude") result directly: the
-            # native-exe preference is a Windows-only branch, so there is no
-            # claude.exe probe here.
-            assert mock_which.call_count == 1
-            assert mock_which.call_args.args == ("claude",)
+            # POSIX discovery uses the find_executable("claude") result
+            # directly: the .cmd shim probe is a Windows-only branch.
+            assert mock_find.call_count == 1
+            assert mock_find.call_args.args == ("claude",)
+            assert mock_find.call_args.kwargs == {}
             assert mock_open.call_count == 2
             assert mock_open.call_args_list[1].args[0][0] == "/usr/local/bin/claude"
 
@@ -2782,10 +2718,7 @@ class TestWindowsBatchScriptRefusal:
             patch.object(
                 SubprocessCLITransport, "_find_bundled_cli", return_value=None
             ),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
+            patch(_FIND_EXECUTABLE, return_value=None),
             patch("pathlib.Path.exists", return_value=False),
             pytest.raises(CLINotFoundError) as exc_info,
         ):
@@ -2826,10 +2759,7 @@ class TestWindowsBatchScriptRefusal:
             patch.object(
                 SubprocessCLITransport, "_find_bundled_cli", return_value=None
             ),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
+            patch(_FIND_EXECUTABLE, return_value=None),
             patch("pathlib.Path.exists", new=_exists),
             patch("pathlib.Path.is_file", new=_exists),
         ):
@@ -2854,9 +2784,6 @@ class TestWindowsBatchScriptRefusal:
 
             shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
 
-            def _which(name: str) -> str | None:
-                return shim if name == "claude" else None
-
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
             )
@@ -2865,10 +2792,7 @@ class TestWindowsBatchScriptRefusal:
                 patch.object(
                     SubprocessCLITransport, "_find_bundled_cli", return_value=None
                 ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
+                patch(_FIND_EXECUTABLE, new=self._fake_find_executable(shim=shim)),
                 patch("pathlib.Path.exists", new=_exists),
                 patch("pathlib.Path.is_file", new=_exists),
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
@@ -2877,6 +2801,148 @@ class TestWindowsBatchScriptRefusal:
                 await transport.connect()
 
             assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+
+class TestCLIDiscoveryNeverUsesTheWorkingDirectory:
+    """Regression tests for HackerOne #3888880 against the real filesystem.
+
+    A ``claude`` / ``claude.exe`` / ``claude.cmd`` planted in the directory
+    the application runs from (a cloned repository, an extracted archive)
+    must never be what the transport spawns -- not through discovery, not
+    through ``"."`` / empty / relative PATH entries, and not through a bare
+    ``cli_path="claude"``. find_executable is NOT mocked here; see
+    test_executable.py for its own vectors and _internal/executable.py for
+    the guarantees (G1-G4) these tests lean on.
+    """
+
+    _CLI = "claude.exe" if os.name == "nt" else "claude"
+    _MARKER = "planted-cli-was-executed"
+
+    @pytest.fixture
+    def plant(self, tmp_path, monkeypatch):
+        """chdir into a directory full of planted CLIs; PATH reaches it every
+        way except through an absolute entry."""
+        plant = tmp_path / "plant"
+        (plant / "sub").mkdir(parents=True)
+        for name in ("claude", "claude.exe", "claude.cmd", "sub/claude"):
+            planted = plant / name
+            # If anything ever runs the POSIX plant, it leaves a marker.
+            planted.write_text(f"#!/bin/sh\ntouch '{plant / self._MARKER}'\n")
+            planted.chmod(0o755)
+        monkeypatch.chdir(plant)
+        monkeypatch.setenv("PATH", os.pathsep.join(["", ".", "sub"]))
+        return plant
+
+    @pytest.fixture
+    def real_bin(self, tmp_path):
+        real_bin = tmp_path / "bin"
+        real_bin.mkdir()
+        for name in ("claude", "claude.exe"):
+            (real_bin / name).write_text("#!/bin/sh\nexit 0\n")
+            (real_bin / name).chmod(0o755)
+        return real_bin
+
+    @staticmethod
+    def _no_bundled_or_fallback_cli():
+        # Path.exists -> False hides the bundled binary and the well-known
+        # fallback locations (which may exist on a developer machine);
+        # find_executable itself does not go through Path.exists.
+        return (
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch("pathlib.Path.exists", return_value=False),
+        )
+
+    def test_planted_cli_is_not_discovered(self, plant, real_bin, monkeypatch):
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        no_bundled, no_fallback = self._no_bundled_or_fallback_cli()
+        with no_bundled, no_fallback:
+            with pytest.raises(CLINotFoundError):
+                transport._find_cli()
+
+            # A real install later on PATH is found straight past the plant.
+            monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(real_bin)]))
+            assert transport._find_cli() == str(real_bin / self._CLI)
+
+    def test_connect_never_spawns_the_plant(self, plant):
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            no_bundled, no_fallback = self._no_bundled_or_fallback_cli()
+            with (
+                no_bundled,
+                no_fallback,
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLINotFoundError),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+            assert not (plant / self._MARKER).exists()
+
+        anyio.run(_test)
+
+    def test_bare_cli_path_is_looked_up_on_path_not_in_cwd(
+        self, plant, real_bin, monkeypatch
+    ):
+        # options.cli_path="claude" used to reach the OS as a bare name, and
+        # Windows resolves that against the current directory first.
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        async def _refused():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions(cli_path="claude")
+            )
+            with (
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLINotFoundError, match="not found on PATH"),
+            ):
+                await transport.connect()
+            assert mock_open.call_count == 0
+
+        anyio.run(_refused)
+
+        monkeypatch.setenv("PATH", os.pathsep.join([".", str(real_bin)]))
+
+        async def _resolved():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions(cli_path="claude")
+            )
+            version_process, main_process = _mock_connect_processes()
+            with patch("anyio.open_process", new_callable=AsyncMock) as mock_open:
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+            spawned = [c.args[0][0] for c in mock_open.call_args_list]
+            assert spawned == [str(real_bin / self._CLI)] * 2
+
+        anyio.run(_resolved)
+        assert not (plant / self._MARKER).exists()
+
+    def test_relative_cli_path_is_settled_to_one_absolute_path(self, plant):
+        # An explicit relative path is the caller's decision (G4) and keeps
+        # pointing where it pointed -- but it is made absolute once, up
+        # front, so the version probe and the main spawn run the same file
+        # and the OS is never handed anything to resolve.
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions(cli_path="./my-claude")
+            )
+            version_process, main_process = _mock_connect_processes()
+            with patch("anyio.open_process", new_callable=AsyncMock) as mock_open:
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            spawned = [c.args[0][0] for c in mock_open.call_args_list]
+            assert spawned == [str(plant / "my-claude")] * 2
+            assert Path(spawned[0]).is_absolute()
 
         anyio.run(_test)
 

@@ -6,7 +6,6 @@ import logging
 import os
 import platform
 import re
-import shutil
 import signal
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
@@ -28,6 +27,7 @@ from ...types import (
     SystemPromptPreset,
 )
 from .._task_compat import TaskHandle, spawn_detached
+from ..executable import find_executable
 from . import Transport
 
 logger = logging.getLogger(__name__)
@@ -245,34 +245,33 @@ class SubprocessCLITransport(Transport):
         self._write_lock: anyio.Lock = anyio.Lock()
 
     def _find_cli(self) -> str:
-        """Find Claude Code CLI binary."""
+        """Find Claude Code CLI binary.
+
+        Every path this returns is absolute: the bundled binary sits next
+        to this package, PATH hits come from find_executable (absolute PATH
+        entries only, never the current directory -- see
+        _internal/executable.py), and the fallback locations are anchored
+        at the home directory or the filesystem root.
+        """
         # First, check for bundled CLI
         bundled_cli = self._find_bundled_cli()
         if bundled_cli:
             return bundled_cli
 
-        # Fall back to system-wide search
-        which_hit: str | None = None
-        if cli := shutil.which("claude"):
-            if platform.system() != "Windows" or self._is_windows_native_exe(cli):
-                return cli
-            # Windows resolved something CreateProcess cannot run directly
-            # as the CLI: npm's claude.cmd shim (which connect() refuses to
-            # spawn) or an extensionless wrapper script from a git-bash /
-            # WSL setup (which fails at spawn with WinError 193). shutil.which
-            # walks PATH directory-major, so such an entry in an early PATH
-            # directory shadows a native claude.exe installed in a later
-            # one (within one directory the default PATHEXT would prefer
-            # .EXE, so the shadowing is purely the directory order). Prefer
-            # any discoverable native executable, and keep this hit only as
-            # the last resort so a shim-only machine still gets the
-            # explanatory batch-script refusal from connect(). The claude.exe
-            # probe is vetted too: PATHEXT resolution can append an
-            # extension and hand back "claude.exe.cmd".
-            exe = shutil.which("claude.exe")
-            if exe and self._is_windows_native_exe(exe):
-                return exe
-            which_hit = cli
+        # Fall back to a PATH search -- find_executable, not shutil.which:
+        # only absolute PATH entries are searched and never the current
+        # directory (shutil.which puts it first on Windows, so a claude.exe
+        # planted in whatever directory the application happens to run from
+        # used to win), and on Windows only a native claude.exe / claude.com
+        # is ever returned. That also settles what shutil.which needed a
+        # preference dance for: it walks PATH directory-major with PATHEXT,
+        # so npm's claude.cmd shim (which connect() refuses to spawn) or an
+        # extensionless git-bash / WSL wrapper script (which fails at spawn
+        # with WinError 193) in an early PATH directory shadowed a native
+        # claude.exe installed in a later one. Neither is a candidate now,
+        # so the native executable is found wherever it sits on PATH.
+        if cli := find_executable("claude"):
+            return cli
 
         if platform.system() == "Windows":
             # Only the native installer's claude.exe. Path.exists() does
@@ -300,14 +299,19 @@ class SubprocessCLITransport(Transport):
             if path.exists() and path.is_file():
                 return str(path)
 
-        if which_hit is not None:
-            # No native executable was discoverable anywhere: return the
-            # original which() hit so connect() raises the batch-script
-            # refusal (with its remediation) for a shim, or the spawn error
-            # for a wrapper script, rather than a bare not-found error.
-            return which_hit
-
         if platform.system() == "Windows":
+            # No native executable was discoverable anywhere. Look for npm's
+            # claude.cmd shim purely to *detect* it -- the extension
+            # allow-list makes it findable here, nothing runs it -- and
+            # return it so connect() raises the batch-script refusal (with
+            # its remediation) for a shim-only machine rather than a bare
+            # not-found error. An extensionless wrapper script is never
+            # returned any more: that machine now gets the not-found error
+            # below, with the native install instructions, instead of an
+            # opaque WinError 193 at spawn.
+            shim = find_executable("claude", windows_extensions=(".cmd", ".bat"))
+            if shim is not None:
+                return shim
             # npm's Windows install is a claude.cmd shim, which connect()
             # refuses (_reject_windows_batch_cli), so do not recommend it.
             raise CLINotFoundError(
@@ -345,15 +349,45 @@ class SubprocessCLITransport(Transport):
 
         return None
 
-    @staticmethod
-    def _is_windows_native_exe(cli_path: str) -> bool:
-        """Whether cli_path's final component names an image CreateProcess
-        runs directly (.exe / .com), used only to decide which discovery
-        result to prefer. It is not a security gate: every returned path
-        still passes _reject_windows_batch_cli in connect().
+    def _settle_cli_path(self) -> str:
+        """Return the absolute CLI path connect() will spawn.
+
+        Nothing downstream hands the OS a name to look up (G1 in
+        _internal/executable.py): discovery (_find_cli) only ever yields
+        absolute paths, and an explicit options.cli_path is settled here.
+        A value with a directory part is the caller's decision (G4): it is
+        made absolute against the current working directory -- once, up
+        front, so the version probe and the main spawn are guaranteed to
+        run the same file -- and nothing is searched; a file that is not
+        there still surfaces as CLINotFoundError from connect(). A bare
+        command name ("claude") used to be handed to the OS to look up,
+        and Windows looks in the current directory first; it now goes
+        through find_executable like discovery does.
         """
-        name = cli_path.replace("\\", "/").rsplit("/", 1)[-1]
-        return name.rstrip(". ").lower().endswith((".exe", ".com"))
+        if self._cli_path is None:
+            return self._find_cli()
+        cli_path = self._cli_path
+        # Classify the caller's own spelling before it is made absolute:
+        # _is_windows_batch_cli deliberately judges every component as
+        # written rather than re-deriving an effective final one (see
+        # there). connect() vets the settled path again.
+        self._reject_windows_batch_cli(cli_path)
+        if self._is_explicit_cli_path(cli_path):
+            return str(Path(cli_path).absolute())
+        if found := find_executable(cli_path):
+            return found
+        raise CLINotFoundError(f"Claude Code not found on PATH: {cli_path}")
+
+    @staticmethod
+    def _is_explicit_cli_path(cli_path: str) -> bool:
+        """Whether an options.cli_path value spells out a location (the
+        caller's decision, G4) rather than a bare command name to look up
+        on PATH. Plain string logic keyed off platform.system(), like
+        _is_windows_batch_cli, so the Windows rule -- either slash, or a
+        drive colon -- is exercised on POSIX CI too.
+        """
+        separators = "/\\:" if platform.system() == "Windows" else "/"
+        return any(sep in cli_path for sep in separators)
 
     @staticmethod
     def _is_windows_batch_cli(cli_path: str) -> bool:
@@ -771,8 +805,9 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
-        if self._cli_path is None:
-            self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
+        # Absolute from here on: both spawns below (version probe and main
+        # process) hand the OS this exact path, never a name to search for.
+        self._cli_path = await anyio.to_thread.run_sync(self._settle_cli_path)
 
         # Validate the resolved CLI before anything is spawned with it --
         # this guards the version probe below as well as the main spawn.
@@ -832,6 +867,7 @@ class SubprocessCLITransport(Transport):
             # Pipe stderr only when the caller registered a callback.
             stderr_dest = PIPE if self._options.stderr is not None else None
 
+            # cmd[0] is the absolute path settled in connect() (G1).
             self._process = await anyio.open_process(
                 cmd,
                 stdin=PIPE,
@@ -1130,6 +1166,7 @@ class SubprocessCLITransport(Transport):
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
+                # self._cli_path is the absolute path settled in connect() (G1).
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
                     stdout=PIPE,

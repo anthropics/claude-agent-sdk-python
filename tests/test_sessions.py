@@ -1872,3 +1872,52 @@ class TestGetSubagentMessages:
         (subagents_dir / "agent-empty.jsonl").write_text("")
 
         assert get_subagent_messages(sid, "empty", directory=project_path) == []
+
+
+class TestWorktreeLookupNeverRunsAPlantedGit:
+    """``_get_worktree_paths`` shells out to git. The git it runs must come
+    from an absolute PATH entry -- never a ``git`` / ``git.exe`` sitting in
+    the project directory being listed or in the process's working
+    directory (HackerOne #3888880's bug class; G1/G2 in
+    _internal/executable.py)."""
+
+    _MARKER = "planted-git-was-executed"
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for name in ("git", "git.exe"):
+            planted = repo / name
+            planted.write_text(f"#!/bin/sh\ntouch '{repo / self._MARKER}'\n")
+            planted.chmod(0o755)
+        monkeypatch.chdir(repo)
+        # Every way of reaching the plant except an absolute entry.
+        monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(Path("..", "repo"))]))
+        return repo
+
+    def test_planted_git_is_not_run(self, repo: Path) -> None:
+        from claude_agent_sdk._internal.sessions import _get_worktree_paths
+
+        # No git on any absolute PATH entry: "git unavailable" -> [] as before.
+        assert _get_worktree_paths(str(repo)) == []
+        assert not (repo / self._MARKER).exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="runs a shebang script as git")
+    def test_git_from_an_absolute_path_entry_is_used(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_agent_sdk._internal.sessions import _get_worktree_paths
+
+        real_bin = tmp_path / "bin"
+        real_bin.mkdir()
+        fake_git = real_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            'printf "worktree /work/main\\nHEAD abc\\n\\nworktree /work/wt\\n"\n'
+        )
+        fake_git.chmod(0o755)
+        monkeypatch.setenv("PATH", os.pathsep.join([".", "", str(real_bin)]))
+
+        assert _get_worktree_paths(str(repo)) == ["/work/main", "/work/wt"]
+        assert not (repo / self._MARKER).exists()

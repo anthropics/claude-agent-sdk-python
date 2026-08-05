@@ -1333,3 +1333,26 @@ def test_materialized_resume_dataclass() -> None:
         cleanup=noop,
     )
     assert m.config_dir == Path("/tmp/x")
+
+
+# ---------------------------------------------------------------------------
+# Keychain read uses the system `security` binary by absolute path
+# ---------------------------------------------------------------------------
+
+
+def test_keychain_read_runs_usr_bin_security_by_absolute_path() -> None:
+    """The macOS Keychain fallback must hand the OS an absolute program path
+    (G1 in _internal/executable.py), never the bare name ``security`` for it
+    to look up on PATH / in the working directory."""
+    from claude_agent_sdk._internal import session_resume
+
+    completed = Mock(returncode=0, stdout='{"claudeAiOauth": {}}\n')
+    with (
+        patch.object(session_resume.platform, "system", return_value="Darwin"),
+        patch.object(session_resume.subprocess, "run", return_value=completed) as run,
+    ):
+        assert session_resume._read_keychain_credentials() == '{"claudeAiOauth": {}}'
+
+    argv = run.call_args.args[0]
+    assert argv[0] == "/usr/bin/security"
+    assert argv[1] == "find-generic-password"

@@ -1275,3 +1275,110 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+
+class TestStructuredOutputUnwrapping:
+    """Regression tests for StructuredOutput tool wrapping (issue #502).
+
+    The StructuredOutput tool non-deterministically wraps user data in an
+    extra ``{"output": <data>}`` envelope, causing downstream schema
+    validation to fail.
+    """
+
+    _RESULT_BASE: dict = {
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1000,
+        "duration_api_ms": 500,
+        "is_error": False,
+        "num_turns": 1,
+        "session_id": "session_so",
+    }
+
+    def test_structured_output_passthrough_when_not_wrapped(self):
+        """Normal structured output (no wrapping) is returned as-is."""
+        expected = {"actions": [{"type": "click", "target": "#btn"}]}
+        data = {**self._RESULT_BASE, "structured_output": expected}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == expected
+
+    def test_structured_output_unwraps_output_envelope(self):
+        """Wrapped ``{"output": <data>}`` is unwrapped transparently."""
+        inner = {"actions": [{"type": "click", "target": "#btn"}]}
+        data = {**self._RESULT_BASE, "structured_output": {"output": inner}}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == inner
+
+    def test_structured_output_recovered_from_result_text_wrapped(self):
+        """When structured_output is None, recover from result text with wrapper."""
+        import json
+
+        inner = {"actions": [{"type": "scroll", "direction": "down"}]}
+        data = {
+            **self._RESULT_BASE,
+            "structured_output": None,
+            "result": json.dumps({"output": inner}),
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == inner
+
+    def test_structured_output_recovered_from_result_text_unwrapped(self):
+        """When structured_output is None, recover plain JSON from result text."""
+        import json
+
+        expected = {"summary": "All tests passed", "score": 100}
+        data = {
+            **self._RESULT_BASE,
+            "structured_output": None,
+            "result": json.dumps(expected),
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == expected
+
+    def test_structured_output_none_with_non_json_result(self):
+        """structured_output stays None when result is plain text (not JSON)."""
+        data = {
+            **self._RESULT_BASE,
+            "structured_output": None,
+            "result": "Just a plain text result",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output is None
+
+    def test_structured_output_none_with_no_result(self):
+        """structured_output stays None when both it and result are absent."""
+        data = {**self._RESULT_BASE, "structured_output": None}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output is None
+
+    def test_structured_output_multi_key_dict_not_unwrapped(self):
+        """A dict with 'output' plus other keys is NOT unwrapped."""
+        expected = {"output": {"data": 1}, "metadata": {"version": 2}}
+        data = {**self._RESULT_BASE, "structured_output": expected}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == expected
+
+    def test_structured_output_scalar_passthrough(self):
+        """Non-dict structured_output (e.g. a list) passes through unchanged."""
+        expected = [1, 2, 3]
+        data = {**self._RESULT_BASE, "structured_output": expected}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.structured_output == expected
+
+    def test_structured_output_nested_output_key(self):
+        """Only the top-level single-key ``output`` wrapper is stripped."""
+        inner = {"output": {"deeply": "nested"}}
+        data = {**self._RESULT_BASE, "structured_output": {"output": inner}}
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        # One layer of wrapping removed; the inner dict (which also has an
+        # "output" key among others) is preserved as-is.
+        assert message.structured_output == inner

@@ -1,5 +1,6 @@
 """Message parser for Claude Code SDK responses."""
 
+import json
 import logging
 from typing import Any
 
@@ -30,6 +31,49 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap_structured_output(
+    raw: Any, result_text: str | None
+) -> Any:
+    """Normalize the structured output returned by the CLI.
+
+    The StructuredOutput tool non-deterministically wraps user data in an
+    extra ``{"output": <data>}`` envelope.  When this happens the CLI's own
+    schema validation fails and it either:
+
+    * returns the wrapped dict as ``structured_output``, or
+    * sets ``structured_output`` to ``None`` while the raw JSON (still
+      wrapped) appears in the ``result`` text field.
+
+    This helper detects both cases and returns the unwrapped payload so
+    callers always see the data they expect.
+
+    See https://github.com/anthropics/claude-code/issues/502
+    """
+    # Case 1: structured_output is present but wrapped in {"output": ...}
+    if isinstance(raw, dict) and list(raw.keys()) == ["output"]:
+        logger.debug("Unwrapping structured_output envelope")
+        return raw["output"]
+
+    # Case 2: structured_output is None — try to recover from the result
+    # text field which may contain the wrapped JSON string.
+    if raw is None and isinstance(result_text, str) and result_text.strip():
+        try:
+            parsed = json.loads(result_text)
+        except (json.JSONDecodeError, ValueError):
+            return raw
+        if isinstance(parsed, dict) and list(parsed.keys()) == ["output"]:
+            logger.debug(
+                "Recovered structured_output from result text (unwrapped envelope)"
+            )
+            return parsed["output"]
+        # The result text contained valid JSON without the wrapper — it may
+        # be the intended structured output that the CLI failed to propagate.
+        if isinstance(parsed, dict):
+            return parsed
+
+    return raw
 
 
 def parse_message(data: dict[str, Any]) -> Message | None:
@@ -290,6 +334,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         case "result":
             try:
                 deferred = data.get("deferred_tool_use")
+                result_text = data.get("result")
+                structured_output = _unwrap_structured_output(
+                    data.get("structured_output"), result_text
+                )
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -300,8 +348,8 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data.get("stop_reason"),
                     total_cost_usd=data.get("total_cost_usd"),
                     usage=data.get("usage"),
-                    result=data.get("result"),
-                    structured_output=data.get("structured_output"),
+                    result=result_text,
+                    structured_output=structured_output,
                     model_usage=data.get("modelUsage"),
                     permission_denials=data.get("permission_denials"),
                     deferred_tool_use=DeferredToolUse(

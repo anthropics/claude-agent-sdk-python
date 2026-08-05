@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import ProcessError, ResultError
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -161,6 +161,9 @@ class Query:
         # ProcessError with the structured error the CLI already reported.
         # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
         self._last_error_result_text: str | None = None
+        # Structured fields from that same result event, so the raised error
+        # can expose them rather than only the formatted message.
+        self._last_error_result_meta: dict[str, Any] | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -348,11 +351,24 @@ class Query:
                         self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
+                        subtype = str(message.get("subtype", "") or "")
+                        # `errors` is often empty when the loop itself completed
+                        # but the final turn was an API error; the prose lives in
+                        # `result`. Prefer it over `subtype`, which in that case
+                        # reads "success" and contradicts the error being raised.
+                        self._last_error_result_text = (
+                            "; ".join(errors)
+                            or str(message.get("result") or "")
+                            or (subtype if subtype.startswith("error") else "")
+                            or "unknown error"
                         )
+                        self._last_error_result_meta = {
+                            "subtype": message.get("subtype"),
+                            "errors": errors,
+                        }
                     else:
                         self._last_error_result_text = None
+                        self._last_error_result_meta = None
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -362,6 +378,7 @@ class Query:
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
                     self._last_error_result_text = None
+                    self._last_error_result_meta = None
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -395,7 +412,15 @@ class Query:
                 error_text = str(e)
                 logger.error(f"Fatal error in message reader: {e}")
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            error_frame: dict[str, Any] = {"type": "error", "error": error_text}
+            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+                meta = self._last_error_result_meta or {}
+                error_frame["result_error"] = {
+                    "subtype": meta.get("subtype"),
+                    "errors": meta.get("errors") or [],
+                    "exit_code": e.exit_code,
+                }
+            await self._message_send.send(error_frame)
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -955,7 +980,18 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
-                raise Exception(message.get("error", "Unknown error"))
+                error_text = message.get("error", "Unknown error")
+                result_error = message.get("result_error")
+                if result_error is not None:
+                    # A terminal result with is_error: raise a typed error so
+                    # callers can catch ClaudeSDKError instead of bare Exception.
+                    raise ResultError(
+                        error_text,
+                        subtype=result_error.get("subtype"),
+                        errors=result_error.get("errors"),
+                        exit_code=result_error.get("exit_code"),
+                    )
+                raise Exception(error_text)
 
             yield message
 

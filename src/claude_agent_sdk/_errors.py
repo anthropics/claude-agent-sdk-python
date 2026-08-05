@@ -54,3 +54,23 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+
+class ResultError(ClaudeSDKError):
+    """Raised when the CLI reports a terminal result with ``is_error``.
+
+    Carries the structured fields from the result event so callers can branch on
+    them instead of parsing the message text.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        subtype: str | None = None,
+        errors: list[str] | None = None,
+        exit_code: int | None = None,
+    ):
+        self.subtype = subtype
+        self.errors = errors or []
+        self.exit_code = exit_code
+        super().__init__(message)

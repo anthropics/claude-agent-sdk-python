@@ -268,3 +268,62 @@ class TestProjectKeyForDirectory:
         portable_suffix = _simple_hash(long_dir)
         assert key.endswith("-" + portable_suffix)
         assert len(key) > MAX_SANITIZED_LENGTH
+
+
+# ----------------------------------------------------------------------
+# Key components must stay structurally distinct (delimiter adversarial)
+# ----------------------------------------------------------------------
+#
+# The store used to join components into one "project_key/session_id/subpath"
+# string, so any component containing the separator could alias another key.
+# These pin the aliasing pairs rather than the encoding, so they hold for any
+# internal representation that keeps the three components distinct.
+
+
+@pytest.mark.anyio
+async def test_slash_in_project_key_does_not_alias_a_subpath_key() -> None:
+    store = InMemorySessionStore()
+    nested_project: SessionKey = {"project_key": "a/b", "session_id": "c"}
+    subpath_key: SessionKey = {"project_key": "a", "session_id": "b", "subpath": "c"}
+
+    await store.append(nested_project, [{"which": "nested_project"}])
+    await store.append(subpath_key, [{"which": "subpath"}])
+
+    assert await store.load(nested_project) == [{"which": "nested_project"}]
+    assert await store.load(subpath_key) == [{"which": "subpath"}]
+
+
+@pytest.mark.anyio
+async def test_slash_in_session_id_survives_a_sibling_cascade_delete() -> None:
+    """A cascade delete must not reach a session that merely encodes alike.
+
+    `{"session_id": "x/y"}` and `{"session_id": "x", "subpath": "y"}` used to
+    share an encoding, so deleting session `x` also destroyed session `x/y`.
+    """
+    store = InMemorySessionStore()
+    nested_session: SessionKey = {"project_key": "t", "session_id": "x/y"}
+    subpath_key: SessionKey = {"project_key": "t", "session_id": "x", "subpath": "y"}
+
+    await store.append(nested_session, [{"keep": True}])
+    await store.append(subpath_key, [{"cascaded": True}])
+
+    await store.delete({"project_key": "t", "session_id": "x"})
+
+    assert await store.load(nested_session) == [{"keep": True}]
+    assert await store.load(subpath_key) is None
+
+
+@pytest.mark.anyio
+async def test_listings_report_components_verbatim() -> None:
+    """Listings are derived from the components, not re-parsed out of a string."""
+    store = InMemorySessionStore()
+    nested_session: SessionKey = {"project_key": "t", "session_id": "x/y"}
+    await store.append(nested_session, [{"a": 1}])
+    await store.append({**nested_session, "subpath": "agents/1"}, [{"b": 2}])
+
+    sessions = await store.list_sessions("t")
+    assert [entry["session_id"] for entry in sessions] == ["x/y"]
+    assert store.size == 1
+
+    subkeys = await store.list_subkeys({"project_key": "t", "session_id": "x/y"})
+    assert subkeys == ["agents/1"]

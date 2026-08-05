@@ -24,25 +24,30 @@ __all__ = [
 ]
 
 
-def _key_to_string(key: SessionKey) -> str:
-    parts = [key["project_key"], key["session_id"]]
-    subpath = key.get("subpath")
-    if subpath:
-        parts.append(subpath)
-    return "/".join(parts)
+# Structural key: the three components stay separate fields rather than being
+# joined into one string. Joining with "/" made distinct logical keys collide
+# whenever a component contained the delimiter, e.g. {"project_key": "a/b",
+# "session_id": "c"} and {"project_key": "a", "session_id": "b",
+# "subpath": "c"} both encoded to "a/b/c" and shared one entry.
+_StoreKey = tuple[str, str, str | None]
+
+
+def _store_key(key: SessionKey) -> _StoreKey:
+    return (key["project_key"], key["session_id"], key.get("subpath") or None)
 
 
 class InMemorySessionStore(SessionStore):
     """In-memory :class:`SessionStore` implementation for testing and development.
 
-    Stores entries in a ``dict`` keyed by a composite ``project_key/session_id``
-    string (with an optional ``/subpath`` suffix). Not suitable for production —
-    data is lost when the process exits.
+    Stores entries in a ``dict`` keyed by a
+    ``(project_key, session_id, subpath | None)`` tuple, so components that
+    contain the path separator cannot collide with each other. Not suitable for
+    production — data is lost when the process exits.
     """
 
     def __init__(self) -> None:
-        self._store: dict[str, list[SessionStoreEntry]] = {}
-        self._mtimes: dict[str, int] = {}
+        self._store: dict[_StoreKey, list[SessionStoreEntry]] = {}
+        self._mtimes: dict[_StoreKey, int] = {}
         self._summaries: dict[tuple[str, str], SessionSummaryEntry] = {}
         self._last_mtime = 0
 
@@ -62,7 +67,7 @@ class InMemorySessionStore(SessionStore):
         return now_ms
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
-        k = _key_to_string(key)
+        k = _store_key(key)
         self._store.setdefault(k, []).extend(entries)
         now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
@@ -81,20 +86,18 @@ class InMemorySessionStore(SessionStore):
         self._mtimes[k] = now_ms
 
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
-        entries = self._store.get(_key_to_string(key))
+        entries = self._store.get(_store_key(key))
         return None if entries is None else list(entries)
 
     async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
         results: list[SessionStoreListEntry] = []
-        prefix = project_key + "/"
         for k in self._store:
-            if k.startswith(prefix):
-                rest = k[len(prefix) :]
-                # Only include main transcripts (no subpath, so no second '/')
-                if "/" not in rest:
-                    results.append(
-                        {"session_id": rest, "mtime": self._mtimes.get(k, 0)}
-                    )
+            store_project_key, session_id, subpath = k
+            # Main transcripts only, so entries carrying a subpath are skipped.
+            if store_project_key == project_key and subpath is None:
+                results.append(
+                    {"session_id": session_id, "mtime": self._mtimes.get(k, 0)}
+                )
         return results
 
     async def list_session_summaries(
@@ -103,7 +106,7 @@ class InMemorySessionStore(SessionStore):
         return [s for (pk, _), s in self._summaries.items() if pk == project_key]
 
     async def delete(self, key: SessionKey) -> None:
-        k = _key_to_string(key)
+        k = _store_key(key)
         self._store.pop(k, None)
         self._mtimes.pop(k, None)
         # Deleting the main transcript cascades to its subkeys (subagent
@@ -111,14 +114,25 @@ class InMemorySessionStore(SessionStore):
         # with an explicit subpath removes only that one entry.
         if key.get("subpath") is None:
             self._summaries.pop((key["project_key"], key["session_id"]), None)
-            prefix = f"{key['project_key']}/{key['session_id']}/"
-            for store_key in [sk for sk in self._store if sk.startswith(prefix)]:
+            project_key, session_id = key["project_key"], key["session_id"]
+            cascaded = [
+                sk
+                for sk in self._store
+                if sk[0] == project_key and sk[1] == session_id and sk[2] is not None
+            ]
+            for store_key in cascaded:
                 self._store.pop(store_key, None)
                 self._mtimes.pop(store_key, None)
 
     async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]:
-        prefix = f"{key['project_key']}/{key['session_id']}/"
-        return [k[len(prefix) :] for k in self._store if k.startswith(prefix)]
+        project_key, session_id = key["project_key"], key["session_id"]
+        return [
+            subpath
+            for (store_project_key, store_session_id, subpath) in self._store
+            if store_project_key == project_key
+            and store_session_id == session_id
+            and subpath is not None
+        ]
 
     # ------------------------------------------------------------------
     # Test helpers
@@ -126,17 +140,12 @@ class InMemorySessionStore(SessionStore):
 
     def get_entries(self, key: SessionKey) -> list[SessionStoreEntry]:
         """Test helper — get all entries for a key (empty list if absent)."""
-        return list(self._store.get(_key_to_string(key), []))
+        return list(self._store.get(_store_key(key), []))
 
     @property
     def size(self) -> int:
         """Test helper — number of stored sessions (main transcripts only)."""
-        count = 0
-        for k in self._store:
-            first_slash = k.find("/")
-            if first_slash != -1 and "/" not in k[first_slash + 1 :]:
-                count += 1
-        return count
+        return sum(1 for (_, _, subpath) in self._store if subpath is None)
 
     def clear(self) -> None:
         """Test helper — clear all stored data."""

@@ -2462,6 +2462,47 @@ class TestAtexitChildCleanup:
         anyio.run(_test)
 
 
+class TestNoDefaultCurrentDirectoryInExePath:
+    """D1: importing the transport sets NoDefaultCurrentDirectoryInExePath on
+    Windows -- defense in depth for anything downstream that still lets the
+    OS search for a bare command name. Not the fix (see
+    TestCLIDiscoveryNeverUsesTheWorkingDirectory for that)."""
+
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+    _VAR = "NoDefaultCurrentDirectoryInExePath"
+
+    def test_set_on_windows(self, monkeypatch):
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.delenv(self._VAR, raising=False)
+        with patch(self._PLATFORM, return_value="Windows"):
+            subprocess_cli._disable_cwd_executable_search()
+        assert os.environ[self._VAR] == "1"
+
+    def test_existing_value_is_left_alone(self, monkeypatch):
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.setenv(self._VAR, "already-set")
+        with patch(self._PLATFORM, return_value="Windows"):
+            subprocess_cli._disable_cwd_executable_search()
+        assert os.environ[self._VAR] == "already-set"
+
+    def test_not_touched_off_windows(self, monkeypatch):
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        monkeypatch.delenv(self._VAR, raising=False)
+        with patch(self._PLATFORM, return_value="Linux"):
+            subprocess_cli._disable_cwd_executable_search()
+        assert self._VAR not in os.environ
+
+    @pytest.mark.skipif(os.name != "nt", reason="checks the real import side effect")
+    def test_import_side_effect_on_a_real_windows_host(self):
+        import claude_agent_sdk
+
+        assert claude_agent_sdk.__version__  # importing the package is the point
+        assert self._VAR in os.environ
+
+
 def _mock_connect_processes() -> tuple[MagicMock, MagicMock]:
     """Build the (version probe, main process) mocks connect() awaits."""
     version_process = MagicMock()

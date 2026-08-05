@@ -59,6 +59,31 @@ def _kill_active_children() -> None:
 
 atexit.register(_kill_active_children)
 
+# Its mere presence in the environment makes CreateProcess (and shutil.which
+# on Python >= 3.12) stop searching the current directory for bare command
+# names; Windows ignores the value.
+_NO_CWD_IN_EXE_SEARCH = "NoDefaultCurrentDirectoryInExePath"
+
+
+def _disable_cwd_executable_search() -> None:
+    """D1 -- defense in depth, Windows only; NOT the fix.
+
+    The fix is that this SDK never asks the OS to search for a program at
+    all (G1-G4 in _internal/executable.py). This additionally sets
+    NoDefaultCurrentDirectoryInExePath process-wide, mirroring the
+    TypeScript Agent SDK, which does the same at import, so that anything
+    downstream of the SDK that still performs an OS-level bare-name lookup
+    -- the CLI's own children included, since they inherit it -- skips the
+    current directory too. Older Pythons' shutil.which ignores it, which is
+    exactly why it cannot be the fix. setdefault: a value the application
+    chose itself is left alone.
+    """
+    if platform.system() == "Windows":
+        os.environ.setdefault(_NO_CWD_IN_EXE_SEARCH, "1")
+
+
+_disable_cwd_executable_search()
+
 
 # Parentheses and commas are delimiters to the --allowedTools tokenizer;
 # control characters (C0, DEL, C1) never appear in a skill directory name.

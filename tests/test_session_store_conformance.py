@@ -134,6 +134,97 @@ class TestInMemorySessionStore:
         loaded.append({"n": 999})
         assert await store.load(_KEY) == [{"n": 1}]
 
+    @pytest.mark.anyio
+    async def test_slash_in_project_key_no_collision(self) -> None:
+        """Keys with '/' in project_key must not collide with different sessions.
+
+        Regression test for #1168: the old ``/``-joined string encoding
+        mapped both of these to ``"a/b/c"``.
+        """
+        store = InMemorySessionStore()
+        key_ab_c: SessionKey = {"project_key": "a/b", "session_id": "c"}
+        key_a_bc: SessionKey = {"project_key": "a", "session_id": "b/c"}
+        await store.append(key_ab_c, [{"from": "ab-c"}])
+        await store.append(key_a_bc, [{"from": "a-bc"}])
+
+        assert await store.load(key_ab_c) == [{"from": "ab-c"}]
+        assert await store.load(key_a_bc) == [{"from": "a-bc"}]
+        assert store.size == 2
+
+    @pytest.mark.anyio
+    async def test_slash_in_session_id_no_collision(self) -> None:
+        """Keys with '/' in session_id must not collide with subpath keys."""
+        store = InMemorySessionStore()
+        # session_id contains '/' — should not be confused with a subpath
+        key_with_slash: SessionKey = {
+            "project_key": "proj",
+            "session_id": "sub/agent-1",
+        }
+        key_with_subpath: SessionKey = {
+            "project_key": "proj",
+            "session_id": "sub",
+            "subpath": "agent-1",
+        }
+        await store.append(key_with_slash, [{"from": "slash-id"}])
+        await store.append(key_with_subpath, [{"from": "subpath"}])
+
+        assert await store.load(key_with_slash) == [{"from": "slash-id"}]
+        assert await store.load(key_with_subpath) == [{"from": "subpath"}]
+
+    @pytest.mark.anyio
+    async def test_list_sessions_with_slash_in_project_key(self) -> None:
+        """list_sessions correctly filters when project_key contains '/'."""
+        store = InMemorySessionStore()
+        await store.append({"project_key": "a/b", "session_id": "s1"}, [{"n": 1}])
+        await store.append({"project_key": "a", "session_id": "b"}, [{"n": 2}])
+
+        sessions_ab = await store.list_sessions("a/b")
+        assert len(sessions_ab) == 1
+        assert sessions_ab[0]["session_id"] == "s1"
+
+        sessions_a = await store.list_sessions("a")
+        assert len(sessions_a) == 1
+        assert sessions_a[0]["session_id"] == "b"
+
+    @pytest.mark.anyio
+    async def test_delete_with_slash_in_keys_no_cross_cascade(self) -> None:
+        """Deleting a session must not cascade to unrelated sessions whose
+        old string encoding shared a prefix."""
+        store = InMemorySessionStore()
+        key_ab_c: SessionKey = {"project_key": "a/b", "session_id": "c"}
+        key_a_bc: SessionKey = {"project_key": "a", "session_id": "b/c"}
+        await store.append(key_ab_c, [{"from": "ab-c"}])
+        await store.append(key_a_bc, [{"from": "a-bc"}])
+
+        await store.delete(key_ab_c)
+        assert await store.load(key_ab_c) is None
+        # The other key must survive — it's a completely different session.
+        assert await store.load(key_a_bc) == [{"from": "a-bc"}]
+
+    @pytest.mark.anyio
+    async def test_list_subkeys_with_slash_in_components(self) -> None:
+        """list_subkeys must not confuse slashes in key components with subpaths."""
+        store = InMemorySessionStore()
+        key: SessionKey = {"project_key": "a/b", "session_id": "c"}
+        sub: SessionKey = {**key, "subpath": "agents/x"}
+        await store.append(key, [{"n": 1}])
+        await store.append(sub, [{"n": 2}])
+
+        subkeys = await store.list_subkeys(key)
+        assert subkeys == ["agents/x"]
+
+    @pytest.mark.anyio
+    async def test_size_with_slash_in_keys(self) -> None:
+        """size must correctly count main transcripts even with '/' in components."""
+        store = InMemorySessionStore()
+        await store.append({"project_key": "a/b", "session_id": "c"}, [{"n": 1}])
+        await store.append({"project_key": "a", "session_id": "b/c"}, [{"n": 2}])
+        await store.append(
+            {"project_key": "a/b", "session_id": "c", "subpath": "sub"}, [{"n": 3}]
+        )
+        # Two main transcripts + one subpath entry = size 2
+        assert store.size == 2
+
 
 # ---------------------------------------------------------------------------
 # Options validation

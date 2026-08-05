@@ -297,6 +297,15 @@ If you're contributing to this project, run the initial setup script to install 
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
 
+### Spawning External Programs
+
+SDK code never launches a helper program by bare name. Do not pass `"git"`, `"claude"` or any other bare command name to `subprocess`, `anyio.open_process` or another process API, and do not use `shutil.which`: on Windows both search the current working directory, so a binary planted in whatever directory the application happens to run from (a cloned repository, an extracted archive) would be executed instead of the installed one (CWE-427). Instead:
+
+- resolve the program with `find_executable()` / `require_executable()` from [`src/claude_agent_sdk/_internal/executable.py`](src/claude_agent_sdk/_internal/executable.py), which search only the absolute entries of `PATH` (never the current directory) and on Windows return only native `.exe`/`.com` images, then spawn the absolute path they return; or
+- run it synchronously with `executable.run([...], **subprocess_kwargs)`, which does both.
+
+An absolute path the SDK constructs itself (the bundled CLI, `/usr/bin/security`) is fine as-is. The module docstring spells out the guarantees (G1-G5, D1), which are shared with the other Anthropic SDKs. CI enforces the rule: ruff bans `shutil.which` (rule `TID251`, configured in the `banned-api` table in `pyproject.toml`), and `tests/test_executable_invariant.py` fails if any process-spawning call under `src/` names its program with a bare or relative literal.
+
 ### Building Wheels Locally
 
 To build wheels with the bundled Claude Code CLI:

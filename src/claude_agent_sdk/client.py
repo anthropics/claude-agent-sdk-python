@@ -4,10 +4,13 @@ import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import Transport
 from ._errors import CLIConnectionError
+
+if TYPE_CHECKING:
+    from ._internal.session_resume import MaterializedResume
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
@@ -17,6 +20,7 @@ from .types import (
     Message,
     PermissionMode,
     ResultMessage,
+    _warn_if_can_use_tool_shadowed,
 )
 
 
@@ -73,6 +77,7 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+        self._materialized: MaterializedResume | None = None
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -97,8 +102,8 @@ class ClaudeSDKClient:
     ) -> None:
         """Connect to Claude with a prompt or message stream."""
 
-        from ._internal.query import Query
-        from ._internal.transport.subprocess_cli import SubprocessCLITransport
+        from ._internal.session_resume import materialize_resume_session
+        from ._internal.session_store_validation import validate_session_store_options
 
         # Auto-connect with empty async iterable if no prompt is provided
         async def _empty_stream() -> AsyncIterator[dict[str, Any]]:
@@ -111,6 +116,46 @@ class ClaudeSDKClient:
         # String prompts are sent via transport.write() below, so the transport
         # only needs an AsyncIterable (or an empty stream for None/str cases).
         actual_prompt = prompt if isinstance(prompt, AsyncIterable) else _empty_stream()
+
+        # Fail fast on invalid session_store option combinations before
+        # spawning the subprocess.
+        validate_session_store_options(self.options)
+
+        # resume/continue + session_store: load the session from the store
+        # into a temp CLAUDE_CONFIG_DIR for the subprocess to resume from.
+        # When materialized, override resume/continue/env on a copy of options
+        # so the subprocess points at the temp dir; when None, fall through
+        # to normal handling (fresh session or local-disk resume). Skipped
+        # when a custom transport was supplied — the materialized options
+        # never reach a pre-constructed transport, so loading the store and
+        # writing .credentials.json to a temp dir would be wasted work.
+        self._materialized = (
+            await materialize_resume_session(self.options)
+            if self._custom_transport is None
+            else None
+        )
+        try:
+            await self._connect_inner(prompt, actual_prompt)
+        except BaseException:
+            # If connect fails after the subprocess has spawned (e.g. at
+            # query.initialize()), close the subprocess/read task *before*
+            # removing the temp CLAUDE_CONFIG_DIR it points at. disconnect()
+            # already orders close() → cleanup() and is None-safe for
+            # pre-spawn failures, so reuse it here.
+            await self.disconnect()
+            raise
+
+    async def _connect_inner(
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]] | None,
+        actual_prompt: AsyncIterable[dict[str, Any]],
+    ) -> None:
+        from ._internal.query import Query
+        from ._internal.session_resume import (
+            apply_materialized_options,
+            build_mirror_batcher,
+        )
+        from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         if self.options.can_use_tool:
@@ -128,10 +173,16 @@ class ClaudeSDKClient:
                     "Please use one or the other."
                 )
 
+            # Advisory: warn if other options shadow the callback
+            _warn_if_can_use_tool_shadowed(self.options)
+
             # Automatically set permission_prompt_tool_name to "stdio" for control protocol
             options = replace(self.options, permission_prompt_tool_name="stdio")
         else:
             options = self.options
+
+        if self._materialized is not None:
+            options = apply_materialized_options(options, self._materialized)
 
         # Use provided custom transport or create subprocess transport
         if self._custom_transport:
@@ -186,7 +237,24 @@ class ClaudeSDKClient:
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            skills=self.options.skills,
         )
+
+        if self.options.session_store is not None:
+            q = self._query
+
+            async def _on_mirror_error(key: Any, error: str) -> None:
+                q.report_mirror_error(key, error)
+
+            self._query.set_transcript_mirror_batcher(
+                build_mirror_batcher(
+                    store=self.options.session_store,
+                    materialized=self._materialized,
+                    env=self.options.env,
+                    on_error=_on_mirror_error,
+                    flush_mode=self.options.session_store_flush,
+                )
+            )
 
         # Start reading messages and initialize
         await self._query.start()
@@ -261,8 +329,8 @@ class ClaudeSDKClient:
                 - 'acceptEdits': Auto-accept file edits
                 - 'plan': Plan-only mode (no tool execution)
                 - 'bypassPermissions': Allow all tools (use with caution)
-                - 'dontAsk': Allow all tools without prompting
-                - 'auto': Automatically determine permission mode
+                - 'dontAsk': Deny anything not pre-approved by allow rules
+                - 'auto': A model classifier approves or denies each tool call
 
         Example:
             ```python
@@ -545,8 +613,12 @@ class ClaudeSDKClient:
         """Disconnect from Claude."""
         if self._query:
             await self._query.close()
+            self._query.close_receive_stream()
             self._query = None
         self._transport = None
+        if self._materialized is not None:
+            await self._materialized.cleanup()
+            self._materialized = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

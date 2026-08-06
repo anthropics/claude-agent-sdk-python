@@ -50,12 +50,12 @@ jobs:
 
       - name: Run ruff
         run: |
-          ruff check src/ tests/
-          ruff format --check src/ tests/
+          ruff check src/ tests/ scripts/
+          ruff format --check src/ tests/ scripts/
 
       - name: Run mypy
         run: |
-          mypy src/
+          mypy src/ scripts/
 
   get-previous-tag:
     runs-on: ubuntu-latest
@@ -76,6 +76,8 @@ jobs:
     needs: [test, lint, get-previous-tag]
     permissions:
       contents: write
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
     uses: ./.github/workflows/build-and-publish.yml
     with:
       version: ${{ github.event.inputs.version }}

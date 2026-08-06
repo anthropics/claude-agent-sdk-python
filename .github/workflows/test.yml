@@ -31,16 +31,21 @@ jobs:
           python -m pytest tests/ -v --cov=claude_agent_sdk --cov-report=xml
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0 (sha-pinned)
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
 
   test-e2e:
-    # Skip on forks since they don't have access to secrets
+    # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ matrix.os }}
     needs: test # Run after unit tests pass
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access
+      # token (workload identity federation)
+      id-token: write
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -55,6 +60,12 @@ jobs:
 
       - name: Install Claude Code (Linux/macOS)
         if: runner.os == 'Linux' || runner.os == 'macOS'
+        # `shell: bash` runs with -eo pipefail. Without pipefail the pipeline
+        # takes its status from `bash`, which exits 0 on an empty script, so a
+        # failed `curl` shows up later as a confusing "claude: not found" in a
+        # different step. With it, the step that actually broke is the one that
+        # fails.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -75,17 +86,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Set up Claude API auth (workload identity federation)
+        uses: ./.github/actions/setup-claude-auth
+
+      # CI's fresh checkout is an untrusted workspace, so Claude Code drops
+      # the project-scoped permissions.allow grants in this repo's committed
+      # .claude/settings.json and warns on stderr about it. Record the trust a
+      # developer grants via the trust dialog once, so runs launched from the
+      # checkout exercise the real trusted-workspace settings path. Only
+      # affects CLI runs whose cwd is inside the checkout (some e2e tests
+      # deliberately use a temp cwd). See scripts/trust_workspace.py.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
+
       - name: Run end-to-end tests with real API
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
         run: |
           python -m pytest e2e-tests/ -v -m e2e
 
   test-e2e-docker:
-    # Skip on forks since they don't have access to secrets
+    # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: test # Run after unit tests pass
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access
+      # token (workload identity federation)
+      id-token: write
     # Run e2e tests in Docker to catch container-specific issues like #406
 
     steps:
@@ -94,18 +125,35 @@ jobs:
       - name: Build Docker test image
         run: docker build -f Dockerfile.test -t claude-sdk-test .
 
+      - name: Set up Claude API auth (workload identity federation)
+        uses: ./.github/actions/setup-claude-auth
+
       - name: Run e2e tests in Docker
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        # Bind-mount the identity token file so the background refresher on
+        # the host keeps the in-container copy fresh too
         run: |
-          docker run --rm -e ANTHROPIC_API_KEY \
+          docker run --rm \
+            -e ANTHROPIC_FEDERATION_RULE_ID \
+            -e ANTHROPIC_ORGANIZATION_ID \
+            -e ANTHROPIC_SERVICE_ACCOUNT_ID \
+            -e ANTHROPIC_IDENTITY_TOKEN_FILE=/run/claude-identity-token \
+            -v "$ANTHROPIC_IDENTITY_TOKEN_FILE:/run/claude-identity-token:ro" \
             claude-sdk-test python -m pytest e2e-tests/ -v -m e2e
 
   test-examples:
-    # Skip on forks since they don't have access to secrets
+    # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: test-e2e # Run after e2e tests
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access
+      # token (workload identity federation)
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +165,8 @@ jobs:
 
       - name: Install Claude Code (Linux)
         if: runner.os == 'Linux'
+        # `shell: bash` runs with -eo pipefail; see the note in the test job.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -137,10 +187,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Set up Claude API auth (workload identity federation)
+        uses: ./.github/actions/setup-claude-auth
+
+      # Same as in test-e2e: trust the fresh checkout so Claude Code honors the
+      # project-scoped grants in this repo's committed .claude/settings.json.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
+
       - name: Run example scripts (Linux)
         if: runner.os == 'Linux'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
@@ -151,7 +211,9 @@ jobs:
       - name: Run example scripts (Windows)
         if: runner.os == 'Windows'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py

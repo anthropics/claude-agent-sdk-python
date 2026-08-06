@@ -1,8 +1,6 @@
 """End-to-end tests for agents and setting sources with real Claude API calls."""
 
-import asyncio
 import json
-import sys
 import tempfile
 from pathlib import Path
 
@@ -40,7 +38,7 @@ def generate_large_agents(
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_agent_definition():
     """Test that custom agent definitions work in streaming mode."""
     options = ClaudeAgentOptions(
@@ -72,7 +70,7 @@ async def test_agent_definition():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_agent_definition_with_query_function():
     """Test that custom agent definitions work with the query() function.
 
@@ -106,7 +104,7 @@ async def test_agent_definition_with_query_function():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_large_agents_with_query_function():
     """Test large agent definitions (260KB+) work with query() function.
 
@@ -140,7 +138,7 @@ async def test_large_agents_with_query_function():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_filesystem_agent_loading():
     """Test that filesystem-based agents load via setting_sources and produce full response.
 
@@ -154,7 +152,9 @@ async def test_filesystem_agent_loading():
     The bug in #406 causes the iterator to complete after only the
     init SystemMessage, never yielding AssistantMessage or ResultMessage.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with a filesystem agent
         project_dir = Path(tmpdir)
         agents_dir = project_dir / ".claude" / "agents"
@@ -207,16 +207,14 @@ You are a simple test agent. When asked a question, provide a brief, helpful ans
                 )
                 break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_setting_sources_default():
     """Test that default (no setting_sources) lets CLI load all settings normally."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with local settings
         project_dir = Path(tmpdir)
         claude_dir = project_dir / ".claude"
@@ -245,16 +243,14 @@ async def test_setting_sources_default():
                     )
                     break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_setting_sources_user_only():
     """Test that setting_sources=['user'] excludes project settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with a slash command
         project_dir = Path(tmpdir)
         commands_dir = project_dir / ".claude" / "commands"
@@ -289,16 +285,14 @@ This is a test command.
                     )
                     break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_setting_sources_project_included():
     """Test that setting_sources=['user', 'project'] includes project settings."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # ignore_cleanup_errors: on Windows the CLI subprocess (cwd=tmpdir) may
+    # still hold a handle when __exit__ tries to rmdir; cleanup is best-effort.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         # Create a temporary project with local settings
         project_dir = Path(tmpdir)
         claude_dir = project_dir / ".claude"
@@ -327,13 +321,9 @@ async def test_setting_sources_project_included():
                     )
                     break
 
-        # On Windows, wait for file handles to be released before cleanup
-        if sys.platform == "win32":
-            await asyncio.sleep(0.5)
-
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_large_agent_definitions_via_initialize():
     """Test that large agent definitions (250KB+) are sent via initialize request.
 

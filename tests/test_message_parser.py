@@ -5,13 +5,19 @@ import pytest
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
+    TERMINAL_TASK_STATUSES,
     AssistantMessage,
+    DeferredToolUse,
+    HookEventMessage,
     RateLimitEvent,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -274,6 +280,93 @@ class TestMessageParser:
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
 
+    def test_parse_assistant_message_with_server_tool_use(self):
+        """server_tool_use blocks (e.g. advisor, web_search) are preserved.
+
+        Previously these were dropped, leaving an empty content list on
+        messages that only contained a server tool call.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_01ABC",
+                        "name": "advisor",
+                        "input": {},
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], ServerToolUseBlock)
+        assert message.content[0].id == "srvtoolu_01ABC"
+        assert message.content[0].name == "advisor"
+        assert message.content[0].input == {}
+
+    def test_parse_assistant_message_with_server_tool_result(self):
+        """Server-side tool result blocks (e.g. advisor) surface with their raw content dict.
+
+        `content` is passed through as a dict since its shape is tool-specific
+        (advisor emits advisor_result / advisor_redacted_result /
+        advisor_tool_result_error; other server tools use different shapes).
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_result",
+                            "text": "Consider edge cases around empty input.",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 1
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.tool_use_id == "srvtoolu_01ABC"
+        assert result_block.content == {
+            "type": "advisor_result",
+            "text": "Consider edge cases around empty input.",
+        }
+
+    def test_parse_assistant_message_with_redacted_advisor_result(self):
+        """External API users get advisor output as an encrypted blob in the content dict."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvtoolu_01ABC",
+                        "content": {
+                            "type": "advisor_redacted_result",
+                            "encrypted_content": "EuYDCioIDhgC...",
+                        },
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        result_block = message.content[0]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.content["type"] == "advisor_redacted_result"
+        assert result_block.content["encrypted_content"] == "EuYDCioIDhgC..."
+
     def test_parse_assistant_message_with_usage(self):
         """Per-turn usage is preserved on AssistantMessage.
 
@@ -442,6 +535,155 @@ class TestMessageParser:
         assert message.usage is None
         assert message.tool_use_id is None
 
+    def test_parse_task_updated_message_terminal(self):
+        """task_updated with a terminal patch.status yields a TaskUpdatedMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+            "uuid": "uuid-4",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "task-abc"
+        assert message.patch == {"status": "completed", "end_time": 1780405729183}
+        assert message.status == "completed"
+        assert message.uuid == "uuid-4"
+        assert message.session_id == "session-1"
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_minimal(self):
+        """task_updated with only task_id and patch (no uuid/session_id) still parses.
+
+        Mirrors the observed CLI shape where terminal completion arrives as a
+        bare task_updated patch — parsing must never raise on a lifecycle event.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "b1m21w89v",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "b1m21w89v"
+        assert message.status == "completed"
+        assert message.uuid is None
+        assert message.session_id is None
+
+    @pytest.mark.parametrize("status", ["pending", "running", "paused"])
+    def test_parse_task_updated_message_non_terminal_statuses(self, status):
+        """Non-terminal task_updated statuses parse and are not treated as done."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": status},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == status
+        assert message.status not in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_no_patch(self):
+        """task_updated with no patch parses with an empty patch and status None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    def test_parse_task_updated_message_patch_without_status(self):
+        """A patch lacking 'status' is preserved verbatim; status is None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {"end_time": 1780405729183}
+        assert message.status is None
+
+    @pytest.mark.parametrize("patch", ["completed", ["completed"], 42, None])
+    def test_parse_task_updated_message_non_dict_patch(self, patch):
+        """A non-dict (or missing) patch never raises; patch falls back to {}."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": patch,
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    @pytest.mark.parametrize("status", ["completed", "failed", "killed"])
+    def test_parse_task_updated_message_terminal_statuses(self, status):
+        """Every terminal task_updated patch.status is surfaced as terminal.
+
+        ``task_updated`` reports the raw ``killed`` (not the ``stopped`` form
+        the CLI maps to on ``task_notification``).
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": status},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == status
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_killed_is_terminal(self):
+        """A task stopped via TaskStop reports status='killed' and is terminal.
+
+        In some kill paths no task_notification is emitted, so this task_updated
+        patch is the only terminal signal — it must clear a tracked active id.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "bs2r8eew4",
+            "patch": {"status": "killed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == "killed"
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_task_updated_backward_compat_isinstance(self):
+        """Backward-compat: TaskUpdatedMessage is still a SystemMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t1",
+            "patch": {"status": "failed"},
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert isinstance(message, SystemMessage)
+        # Base class fields still populated for legacy code paths.
+        assert message.subtype == "task_updated"
+        assert message.data == data
+        # match-case against SystemMessage still works.
+        matched = False
+        match message:
+            case SystemMessage():
+                matched = True
+        assert matched
+
     def test_task_message_backward_compat_isinstance(self):
         """Backward-compat: typed task messages are still SystemMessage instances."""
         started_data = {
@@ -512,6 +754,7 @@ class TestMessageParser:
         assert not isinstance(message, TaskStartedMessage)
         assert not isinstance(message, TaskProgressMessage)
         assert not isinstance(message, TaskNotificationMessage)
+        assert not isinstance(message, TaskUpdatedMessage)
         assert message.subtype == "some_future_subtype"
         assert message.data == data
 
@@ -591,6 +834,38 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
 
+    def test_parse_result_message_with_terminal_reason(self):
+        """Test parsing a result message with terminal_reason field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "result": "",
+            "terminal_reason": "aborted_tools",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason == "aborted_tools"
+
+    def test_parse_result_message_missing_terminal_reason_is_none(self):
+        """A result message without terminal_reason parses to None."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason is None
+
     def test_parse_rate_limit_event(self):
         """Test parsing a rate_limit_event into a typed RateLimitEvent."""
         data = {
@@ -642,6 +917,22 @@ class TestMessageParser:
         with pytest.raises(MessageParseError) as exc_info:
             parse_message({"type": "assistant"})
         assert "Missing required field in assistant message" in str(exc_info.value)
+
+    def test_parse_assistant_string_content_raises(self):
+        """Assistant content as a bare string raises MessageParseError, not a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message(
+                {"type": "assistant", "message": {"model": "m", "content": "hi"}}
+            )
+
+    @pytest.mark.parametrize("role", ["assistant", "user"])
+    def test_non_dict_content_block_raises_documented_error(self, role: str) -> None:
+        """A non-dict block raises MessageParseError, never a raw TypeError."""
+        message: dict[str, object] = {"content": ["oops"]}
+        if role == "assistant":
+            message["model"] = "m"
+        with pytest.raises(MessageParseError):
+            parse_message({"type": role, "message": message})
 
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
@@ -825,8 +1116,33 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.model_usage is None
         assert message.permission_denials is None
+        assert message.deferred_tool_use is None
         assert message.errors is None
+        assert message.api_error_status is None
         assert message.uuid is None
+
+    def test_parse_result_message_with_deferred_tool_use(self):
+        """ResultMessage parses deferred_tool_use into a DeferredToolUse."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1200,
+            "duration_api_ms": 900,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "deferred_tool_use": {
+                "id": "toolu_01abc",
+                "name": "Bash",
+                "input": {"command": "rm -rf /tmp/scratch"},
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert isinstance(message.deferred_tool_use, DeferredToolUse)
+        assert message.deferred_tool_use.id == "toolu_01abc"
+        assert message.deferred_tool_use.name == "Bash"
+        assert message.deferred_tool_use.input == {"command": "rm -rf /tmp/scratch"}
 
     def test_parse_result_message_with_errors(self):
         """Test that ResultMessage preserves the errors field from error results.
@@ -859,6 +1175,30 @@ class TestMessageParser:
         assert message.subtype == "error_during_execution"
         assert message.uuid == "err-uuid-789"
 
+    def test_parse_result_message_with_api_error_status(self):
+        """ResultMessage surfaces api_error_status for failed API calls.
+
+        The CLI (v2.1.110+) emits api_error_status: number | null on the final
+        result message — the HTTP status of the failing API call when
+        is_error=True and subtype="success". This is the only safe-to-log
+        signal for classifying API failures (e.g. 429 vs 529).
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1500,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "session_overload",
+            "api_error_status": 529,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.api_error_status == 529
+        assert message.is_error is True
+        assert message.subtype == "success"
+
     def test_parse_result_message_success_no_errors(self):
         """Test that a successful result message has no errors field."""
         data = {
@@ -875,3 +1215,63 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.errors is None
         assert message.result == "Task completed successfully"
+
+    def test_parse_hook_event_message(self):
+        """Hook started events (system/hook_started) parse into HookEventMessage."""
+        data = {
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_event": "PreToolUse",
+            "hook_name": "PreToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-456",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
+        assert message.hook_event_name == "PreToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-456"
+        assert message.data == data
+
+    def test_parse_hook_event_message_response(self):
+        """Hook response events (system/hook_response) parse into HookEventMessage."""
+        data = {
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_event": "PostToolUse",
+            "hook_name": "PostToolUse",
+            "session_id": "sess-123",
+            "uuid": "uuid-789",
+            "output": "",
+            "exit_code": 0,
+            "outcome": "success",
+        }
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_response"
+        assert message.hook_event_name == "PostToolUse"
+        assert message.session_id == "sess-123"
+        assert message.uuid == "uuid-789"
+        assert message.data["output"] == ""
+        assert message.data["exit_code"] == 0
+        assert message.data["outcome"] == "success"
+
+    def test_parse_hook_event_message_isinstance_system(self):
+        """HookEventMessage is a SystemMessage subclass for backward compat."""
+        data = {"type": "system", "subtype": "hook_started", "hook_event": "PreToolUse"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert isinstance(message, SystemMessage)
+
+    def test_parse_hook_event_message_minimal(self):
+        """Hook events without session_id/uuid/hook_event still parse."""
+        data = {"type": "system", "subtype": "hook_started", "hook_name": "Stop"}
+        message = parse_message(data)
+        assert isinstance(message, HookEventMessage)
+        assert message.subtype == "hook_started"
+        assert message.hook_event_name == "Stop"
+        assert message.session_id is None
+        assert message.uuid is None

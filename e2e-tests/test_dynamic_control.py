@@ -9,7 +9,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_set_permission_mode():
     """Test that permission mode can be changed dynamically during a session."""
 
@@ -40,7 +40,7 @@ async def test_set_permission_mode():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_set_model():
     """Test that model can be changed dynamically during a session."""
 
@@ -74,7 +74,7 @@ async def test_set_model():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_interrupt():
     """Test that interrupt can be sent during a session."""
 

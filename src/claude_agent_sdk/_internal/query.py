@@ -1,12 +1,12 @@
 """Query class for handling bidirectional control protocol."""
 
-import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 from mcp.types import (
@@ -15,22 +15,45 @@ from mcp.types import (
     ListToolsRequest,
 )
 
+from .._errors import ProcessError
 from ..types import (
+    TERMINAL_TASK_STATUSES,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionUpdate,
     SDKControlPermissionRequest,
     SDKControlRequest,
     SDKControlResponse,
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
+from ._task_compat import TaskHandle, spawn_detached
 from .transport import Transport
 
 if TYPE_CHECKING:
     from mcp.server import Server as McpServer
 
+    from ..types import SessionKey
+    from .transcript_mirror_batcher import TranscriptMirrorBatcher
+
 logger = logging.getLogger(__name__)
+
+# Task types whose completion runs a follow-up turn, and which therefore may
+# still need the control channel after the turn's result frame.
+#
+# This mirrors the set the CLI itself holds a result back for, which is
+# narrower than its notion of "delegated agent work". The types left out are
+# left out on purpose, and none of them is merely an oversight:
+#   - background shells and monitors run indefinitely by design, so deferring
+#     the close on one withholds it forever rather than briefly;
+#   - teammates are long-lived too — their status stays running for their whole
+#     lifetime, so they never settle the ledger;
+#   - remote agents can be long-running monitors the CLI likewise refuses to
+#     wait on.
+# Anything added here must be a type that reliably reaches a terminal status,
+# or it will hang the query (see Query._track_task_lifecycle).
+DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
 
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +100,7 @@ class Query:
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
+        skills: list[str] | Literal["all"] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -90,6 +114,8 @@ class Query:
             agents: Optional agent definitions to send via initialize
             exclude_dynamic_sections: Optional preset-prompt flag to send via
                 initialize (see ``SystemPromptPreset``)
+            skills: Optional skill allowlist to send via initialize so the CLI
+                can filter which skills are loaded into the system prompt
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -99,6 +125,7 @@ class Query:
         self.sdk_mcp_servers = sdk_mcp_servers or {}
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
+        self._skills = skills
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -111,15 +138,62 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
-        self._read_task: asyncio.Task[None] | None = None
-        self._child_tasks: set[asyncio.Task[Any]] = set()
-        self._inflight_requests: dict[str, asyncio.Task[Any]] = {}
+        self._read_task: TaskHandle | None = None
+        self._child_tasks: set[TaskHandle] = set()
+        self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Track first result for proper stream closure with SDK MCP servers
+        # Set when a run-ending result arrives (a result frame with no tasks
+        # in flight) so the stdin-closing waiter can wake; see #1088 and
+        # _inflight_tasks below. Named for history — it once tracked the
+        # literal first result.
         self._first_result_event = anyio.Event()
+        # Task IDs of started-but-not-finished tasks. A result frame only ends
+        # one turn, not the run: background tasks keep running past it and
+        # still need stdin for hook/SDK-MCP control responses (see #1088), so
+        # a result that arrives while this set is non-empty must not close
+        # stdin.
+        self._inflight_tasks: set[str] = set()
+        # Set to the result's error text when the most recent message is a
+        # result with is_error=True. Used to replace the generic "exit code 1"
+        # ProcessError with the structured error the CLI already reported.
+        # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
+        self._last_error_result_text: str | None = None
+
+        # SessionStore mirroring (set via set_transcript_mirror_batcher)
+        self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
+
+    def set_transcript_mirror_batcher(self, batcher: "TranscriptMirrorBatcher") -> None:
+        """Attach a batcher that receives ``transcript_mirror`` frames.
+
+        When set, the read loop peels ``transcript_mirror`` frames off stdout
+        (they are not yielded to consumers), enqueues them on the batcher, and
+        flushes before yielding each ``result`` message.
+        """
+        self._transcript_mirror_batcher = batcher
+
+    def report_mirror_error(self, key: "SessionKey | None", error: str) -> None:
+        """Surface a :meth:`SessionStore.append` failure as a system message.
+
+        Called from the batcher's ``on_error``; the dropped batch is not
+        retried (at-most-once delivery), so this is the consumer's only signal.
+        Non-blocking — if the message buffer is full the error is logged and
+        dropped rather than back-pressuring the read loop.
+        """
+        msg: dict[str, Any] = {
+            "type": "system",
+            "subtype": "mirror_error",
+            "error": error,
+            "key": key,
+            "uuid": str(uuid.uuid4()),
+            "session_id": key.get("session_id", "") if key else "",
+        }
+        try:
+            self._message_send.send_nowait(msg)
+        except Exception as e:  # pragma: no cover - buffer-full edge case
+            logger.warning("Dropping mirror_error message (buffer full): %s", e)
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -160,6 +234,10 @@ class Query:
             request["agents"] = self._agents
         if self._exclude_dynamic_sections is not None:
             request["excludeDynamicSections"] = self._exclude_dynamic_sections
+        # 'all' and omitted are equivalent at the wire level (no filter), so
+        # only send the field when it's an explicit list.
+        if isinstance(self._skills, list):
+            request["skills"] = self._skills
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(
@@ -172,13 +250,11 @@ class Query:
     async def start(self) -> None:
         """Start reading messages from transport."""
         if self._read_task is None:
-            loop = asyncio.get_running_loop()
-            self._read_task = loop.create_task(self._read_messages())
+            self._read_task = spawn_detached(self._read_messages())
 
-    def spawn_task(self, coro: Any) -> asyncio.Task[Any]:
+    def spawn_task(self, coro: Any) -> TaskHandle:
         """Spawn a child task that will be cancelled on close()."""
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(coro)
+        task = spawn_detached(coro)
         self._child_tasks.add(task)
         task.add_done_callback(self._child_tasks.discard)
         return task
@@ -189,7 +265,7 @@ class Query:
         task = self.spawn_task(self._handle_control_request(request))
         self._inflight_requests[req_id] = task
 
-        def _done(_t: asyncio.Task[Any]) -> None:
+        def _done(_t: TaskHandle) -> None:
             self._inflight_requests.pop(req_id, None)
 
         task.add_done_callback(_done)
@@ -234,9 +310,58 @@ class Query:
                             inflight.cancel()
                     continue
 
+                elif msg_type == "transcript_mirror":
+                    # SessionStore write path: peel mirror frames off stdout
+                    # and hand to the batcher; do NOT yield to consumers.
+                    if self._transcript_mirror_batcher is not None:
+                        self._transcript_mirror_batcher.enqueue(
+                            message["filePath"], message["entries"]
+                        )
+                    continue
+
+                # Track task lifecycle frames so results can tell "one turn
+                # ended" apart from "the run is done" (see #1088).
+                if msg_type == "system":
+                    self._track_task_lifecycle(message)
+
                 # Track results for proper stream closure
                 if msg_type == "result":
-                    self._first_result_event.set()
+                    # Flush pending transcript mirror entries before yielding
+                    # result so consumers observing the result can rely on the
+                    # SessionStore being up to date for this turn.
+                    if self._transcript_mirror_batcher is not None:
+                        await self._transcript_mirror_batcher.flush()
+                    if self._inflight_tasks:
+                        # One turn ended, but background tasks are still
+                        # running and may need hook/SDK-MCP control responses
+                        # over stdin. Closing it now silently disables hooks
+                        # and fails SDK-MCP calls with "Stream closed"
+                        # (#1088). Each task completion wakes the parent for
+                        # a follow-up turn, so a later result frame arrives
+                        # with no tasks in flight and closes stdin then.
+                        logger.debug(
+                            "Result received with %d task(s) in flight; "
+                            "keeping stdin open",
+                            len(self._inflight_tasks),
+                        )
+                    else:
+                        self._first_result_event.set()
+                    if message.get("is_error"):
+                        errors = message.get("errors") or []
+                        self._last_error_result_text = "; ".join(errors) or str(
+                            message.get("subtype", "unknown error")
+                        )
+                    else:
+                        self._last_error_result_text = None
+                elif not (
+                    msg_type == "system"
+                    and message.get("subtype") == "session_state_changed"
+                ):
+                    # Anything other than the post-turn session_state_changed
+                    # marker means the conversation moved on; a ProcessError
+                    # now is a fresh crash, not the expected exit from a prior
+                    # error result. Mirrors the TypeScript SDK's reset logic.
+                    self._last_error_result_text = None
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -246,20 +371,51 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            logger.error(f"Fatal error in message reader: {e}")
             # Signal all pending control requests so they fail fast instead of timing out
             for request_id, event in list(self.pending_control_responses.items()):
                 if request_id not in self.pending_control_results:
                     self.pending_control_results[request_id] = e
                     event.set()
+            # When the CLI emits a result with is_error=True (e.g.
+            # error_max_turns, error_during_execution) it then exits non-zero
+            # on purpose, for shell-script consumers. The trailing ProcessError
+            # carries no information beyond "exit code 1" — replace it with the
+            # structured error the CLI already reported so the exception is
+            # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
+            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+                error_text = (
+                    f"Claude Code returned an error result: "
+                    f"{self._last_error_result_text}"
+                )
+                logger.debug(
+                    "Replacing ProcessError (exit code %s) with result error text",
+                    e.exit_code,
+                )
+            else:
+                error_text = str(e)
+                logger.error(f"Fatal error in message reader: {e}")
             # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": str(e)})
+            await self._message_send.send({"type": "error", "error": error_text})
         finally:
+            # Flush any remaining transcript mirror entries before closing so
+            # an early stdout EOF or transport error doesn't drop entries
+            # batched this turn. flush() never raises. Shielded so the await
+            # still runs when this finally is reached via cancellation.
+            if self._transcript_mirror_batcher is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._transcript_mirror_batcher.flush()
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
-            # Always signal end of stream
-            await self._message_send.send({"type": "end"})
+            # Always signal end of stream. send_nowait: trio's level-triggered
+            # cancellation would re-raise Cancelled at an await checkpoint
+            # here, dropping the sentinel and leaving receive_messages() hung.
+            # close() is the fallback for the buffer-full case where
+            # send_nowait raises WouldBlock — receivers then exit on
+            # EndOfStream after draining.
+            with suppress(anyio.WouldBlock):
+                self._message_send.send_nowait({"type": "end"})
+            self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
@@ -279,10 +435,19 @@ class Query:
 
                 context = ToolPermissionContext(
                     signal=None,  # TODO: Add abort signal support
-                    suggestions=permission_request.get("permission_suggestions", [])
-                    or [],
+                    suggestions=[
+                        PermissionUpdate.from_dict(s)
+                        for s in (
+                            permission_request.get("permission_suggestions") or []
+                        )
+                    ],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    blocked_path=permission_request.get("blocked_path"),
+                    decision_reason=permission_request.get("decision_reason"),
+                    title=permission_request.get("title"),
+                    display_name=permission_request.get("display_name"),
+                    description=permission_request.get("description"),
                 )
 
                 response = await self.can_use_tool(
@@ -362,7 +527,7 @@ class Query:
             }
             await self.transport.write(json.dumps(success_response) + "\n")
 
-        except asyncio.CancelledError:
+        except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
             # already abandoned this request, so don't write a response.
             raise
@@ -694,19 +859,80 @@ class Query:
             }
         )
 
+    def _track_task_lifecycle(self, message: dict[str, Any]) -> None:
+        """Track in-flight tasks from ``system`` task lifecycle frames.
+
+        ``task_started`` marks a task in flight; ``task_notification`` or a
+        ``task_updated`` patch with a terminal status clears it. Terminal
+        completion can arrive as either frame (not every terminal task emits
+        a notification), so both are handled; ``discard`` keeps the pair
+        idempotent.
+
+        This is a mitigation, not a complete answer to #1088. An empty set
+        means "nothing we know of is running", which is not the same as "the
+        run is over": a task that settles *before* the turn's result frame
+        leaves the set empty at that result, so stdin closes even though the
+        completion may still wake the parent for a continuation turn. No
+        ledger can close that gap, because the ledger cannot distinguish a
+        settled task whose continuation is pending from no work at all — that
+        needs a run-boundary signal from the CLI rather than an inference from
+        task bookkeeping. What this does fix is the common ordering, where the
+        task outlives the turn that spawned it.
+
+        Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
+        background *shell* — ``Bash(run_in_background=True)`` on a dev server or
+        ``tail -f`` — is also reported through these frames, but it may never
+        reach a terminal status, and the CLI in stream-json mode only exits on
+        stdin EOF. Tracking one would therefore withhold the close forever
+        rather than briefly: no terminal frame, no process exit, so not even the
+        reader's ``finally`` runs. Agent tasks are the ones whose completion
+        wakes the parent for the follow-up turn this relies on; shells and
+        monitors are bounded by the CLI's own post-close cleanup instead.
+
+        ``background_tasks_changed`` is deliberately *not* consumed, in either
+        direction. Its payload is the live *background* set, while a subagent is
+        registered in the foreground and only flips to backgrounded later,
+        without a second ``task_started``. So the snapshot omits tracked work
+        that is still running: narrowing against it would drop an agent that
+        goes on to outlive its turn, which is the very close-too-early bug this
+        method exists to prevent. Widening from it is no better — the snapshot
+        spans every background task type and carries nothing marking an
+        observer agent, whose start and terminal frames are both suppressed, so
+        it could admit an id no later frame ever clears. The lifecycle frames
+        are the only self-consistent source here (see #1088).
+        """
+        subtype = message.get("subtype")
+        task_id = message.get("task_id")
+        if not task_id:
+            return
+        if subtype == "task_started":
+            if message.get("task_type") in DEFERRING_TASK_TYPES:
+                self._inflight_tasks.add(task_id)
+        elif subtype == "task_notification":
+            self._inflight_tasks.discard(task_id)
+        elif subtype == "task_updated":
+            patch = message.get("patch")
+            status = patch.get("status") if isinstance(patch, dict) else None
+            if status in TERMINAL_TASK_STATUSES:
+                self._inflight_tasks.discard(task_id)
+
     async def wait_for_result_and_end_input(self) -> None:
-        """Wait for the first result (if needed) then close stdin.
+        """Wait for a run-ending result (if needed) then close stdin.
 
         If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives. The control protocol
-        requires stdin to remain open for the entire conversation, so no
-        timeout is applied. The event is guaranteed to fire: either when the
-        result message arrives, or in _read_messages' finally block if the
-        process exits early.
+        keeps stdin open until a result arrives with no tasks in flight. A
+        result frame ends one turn, not necessarily the run: background tasks
+        keep running past it and still need stdin for hook/SDK-MCP control
+        responses (see #1088). The control protocol requires stdin to remain
+        open for the entire conversation, so no timeout is applied. The event
+        is guaranteed to fire: either when a result message arrives with no
+        in-flight tasks (every task completion wakes the parent for a
+        follow-up turn, which ends in such a result), or in _read_messages'
+        finally block if the process exits early.
         """
         if self.sdk_mcp_servers or self.hooks:
             logger.debug(
-                "Waiting for first result before closing stdin "
+                "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)})"
             )
@@ -742,16 +968,67 @@ class Query:
             yield message
 
     async def close(self) -> None:
-        """Close the query and transport."""
+        """Close the query and transport.
+
+        Shielded: this runs on the cancellation path (``__aexit__`` after a
+        cancelled task), and an unshielded await here would abort before
+        ``transport.close()`` ever ran, leaking the CLI subprocess.
+
+        Unlike ``transport.close()``'s shield, this one is not bounded, and it
+        covers two awaits that can reach user-supplied code:
+
+        - The final mirror flush below, which reaches a user-supplied
+          ``SessionStore``. That flush was already shielded on its own before
+          this scope existed, so nothing here makes it worse.
+        - ``transport.close()``. For a custom ``Transport`` (accepted by
+          ``query(transport=...)`` and ``ClaudeSDKClient(transport=...)``) that
+          is arbitrary user code, and an enclosing anyio cancel scope can no
+          longer interrupt it: a custom ``close()`` that never returns hangs
+          ``disconnect()``.
+          ``Transport.close()`` documents the resulting contract —
+          implementations must bound their own awaits. Bounding it here instead
+          would only abandon a wedged transport half-closed, which is the very
+          leak this shield exists to prevent, so the obligation belongs on the
+          implementation.
+
+        The SDK's own ``SubprocessCLITransport.close()`` bounds every await
+        (~20s worst case).
+        """
+        with anyio.CancelScope(shield=True):
+            await self._close_impl()
+
+    async def _close_impl(self) -> None:
         self._closed = True
+        # Final-flush mirror entries before tearing down so .return()/break
+        # don't drop the current turn when the process exits immediately.
+        if self._transcript_mirror_batcher is not None:
+            await self._transcript_mirror_batcher.close()
         for task in list(self._child_tasks):
             task.cancel()
         if self._read_task is not None and not self._read_task.done():
             self._read_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._read_task
+            await self._read_task.wait()
         self._read_task = None
+        # The read task's finally closed the send side; repeat here for the
+        # case where start() was never called. Do NOT close the receive
+        # side — it belongs to the consumer, and anyio's receive_nowait()
+        # checks _closed before the buffer, so closing it here would make a
+        # non-parked consumer drop buffered messages with
+        # ClosedResourceError. _message_send.close() alone yields
+        # EndOfStream after the buffer drains; the consumer calls
+        # close_receive_stream() once it's done iterating (#859).
+        self._message_send.close()
         await self.transport.close()
+
+    def close_receive_stream(self) -> None:
+        """Close the receive side of the message stream.
+
+        Call once the consumer has finished iterating ``receive_messages()``.
+        ``close()`` leaves this open so a still-draining consumer can read
+        buffered messages; the consumer is responsible for closing it to
+        avoid a ``ResourceWarning`` from anyio's ``__del__``.
+        """
+        self._message_receive.close()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

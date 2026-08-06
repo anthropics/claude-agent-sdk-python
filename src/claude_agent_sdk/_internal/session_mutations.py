@@ -25,11 +25,14 @@ import re
 import shutil
 import unicodedata
 import uuid as uuid_mod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ..types import SessionKey, SessionStore, SessionStoreEntry
+from .session_store_validation import _store_implements
 from .sessions import (
     LITE_READ_BUF_SIZE,
     _canonicalize_path,
@@ -39,6 +42,7 @@ from .sessions import (
     _get_projects_dir,
     _get_worktree_paths,
     _validate_uuid,
+    project_key_for_directory,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,6 +72,10 @@ def rename_session(
         ValueError: If ``session_id`` is not a valid UUID, or if ``title``
             is empty/whitespace-only.
         FileNotFoundError: If the session file cannot be found.
+
+    See Also:
+        :func:`rename_session_via_store` for the :class:`SessionStore`-backed
+        async variant.
 
     Example:
         Rename a session in a specific project::
@@ -131,6 +139,10 @@ def tag_session(
             empty/whitespace-only after sanitization.
         FileNotFoundError: If the session file cannot be found.
 
+    See Also:
+        :func:`tag_session_via_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         Tag a session::
 
@@ -188,6 +200,10 @@ def delete_session(
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session file cannot be found.
+
+    See Also:
+        :func:`delete_session_via_store` for the :class:`SessionStore`-backed
+        async variant.
 
     Example:
         Delete a session::
@@ -257,6 +273,10 @@ def fork_session(
         ValueError: If the session has no messages to fork, or if
             ``up_to_message_id`` is not found in the transcript.
 
+    See Also:
+        :func:`fork_session_via_store` for the :class:`SessionStore`-backed
+        async variant.
+
     Example:
         Fork a session::
 
@@ -289,6 +309,60 @@ def fork_session(
 
     transcript, content_replacements = _parse_fork_transcript(content, session_id)
 
+    def _derive_title() -> str | None:
+        buf_len = len(content)
+        head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
+            "utf-8", errors="replace"
+        )
+        tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
+            "utf-8", errors="replace"
+        )
+        return (
+            _extract_last_json_string_field(tail, "customTitle")
+            or _extract_last_json_string_field(head, "customTitle")
+            or _extract_last_json_string_field(tail, "aiTitle")
+            or _extract_last_json_string_field(head, "aiTitle")
+            or _extract_first_prompt_from_head(head)
+            or None
+        )
+
+    forked_session_id, lines = _build_fork_lines(
+        transcript,
+        content_replacements,
+        session_id,
+        up_to_message_id,
+        title,
+        _derive_title,
+    )
+
+    fork_path = project_dir / f"{forked_session_id}.jsonl"
+    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+    return ForkSessionResult(session_id=forked_session_id)
+
+
+def _build_fork_lines(
+    transcript: list[dict[str, Any]],
+    content_replacements: list[Any],
+    session_id: str,
+    up_to_message_id: str | None,
+    title: str | None,
+    derive_title: Callable[[], str | None],
+) -> tuple[str, list[str]]:
+    """Core fork transform — remap UUIDs and produce serialized JSONL lines.
+
+    Shared by the filesystem and SessionStore-backed paths. Returns
+    ``(forked_session_id, lines)`` where each line is a compact JSON string
+    without a trailing newline.
+
+    ``derive_title`` is invoked only when no explicit ``title`` is given,
+    so the disk path's head/tail byte scan and the store path's entry scan
+    only run when needed.
+    """
     # Filter out sidechains (subagent sessions with separate parentUuid
     # graphs). Keep isMeta entries — they're interleaved in the main chain.
     transcript = [e for e in transcript if not e.get("isSidechain")]
@@ -380,30 +454,19 @@ def fork_session(
                     "type": "content-replacement",
                     "sessionId": forked_session_id,
                     "replacements": content_replacements,
+                    "uuid": str(uuid_mod.uuid4()),
+                    "timestamp": now,
                 },
                 separators=(",", ":"),
             )
         )
 
-    # Derive title: explicit > original customTitle/aiTitle > first prompt.
+    # Derive title: explicit > original customTitle > original aiTitle > first
+    # prompt. Suffix with " (fork)" for derived titles. listSessions reads the
+    # LAST custom-title from the tail, so this entry is what surfaces.
     fork_title = title.strip() if title else None
     if not fork_title:
-        buf_len = len(content)
-        head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
-            "utf-8", errors="replace"
-        )
-        tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
-            "utf-8", errors="replace"
-        )
-        base = (
-            _extract_last_json_string_field(tail, "customTitle")
-            or _extract_last_json_string_field(head, "customTitle")
-            or _extract_last_json_string_field(tail, "aiTitle")
-            or _extract_last_json_string_field(head, "aiTitle")
-            or _extract_first_prompt_from_head(head)
-            or "Forked session"
-        )
-        fork_title = f"{base} (fork)"
+        fork_title = f"{derive_title() or 'Forked session'} (fork)"
 
     lines.append(
         json.dumps(
@@ -411,19 +474,14 @@ def fork_session(
                 "type": "custom-title",
                 "sessionId": forked_session_id,
                 "customTitle": fork_title,
+                "uuid": str(uuid_mod.uuid4()),
+                "timestamp": now,
             },
             separators=(",", ":"),
         )
     )
 
-    fork_path = project_dir / f"{forked_session_id}.jsonl"
-    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-
-    return ForkSessionResult(session_id=forked_session_id)
+    return forked_session_id, lines
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +557,34 @@ def _find_session_file_with_dir(
 
 
 _TRANSCRIPT_TYPES = frozenset({"user", "assistant", "attachment", "system", "progress"})
+
+
+def _derive_title_from_entries(raw: list[Any]) -> str | None:
+    """Mirror the disk path's head/tail title scan over parsed entry objects.
+
+    Precedence matches ``_extract_last_json_string_field`` semantics: last
+    occurrence wins for both ``customTitle`` and ``aiTitle``; ``customTitle``
+    beats ``aiTitle``; first user prompt is the final fallback.
+    """
+    custom: str | None = None
+    ai: str | None = None
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        ct = e.get("customTitle")
+        if isinstance(ct, str) and ct:
+            custom = ct
+        at = e.get("aiTitle")
+        if isinstance(at, str) and at:
+            ai = at
+    if custom:
+        return custom
+    if ai:
+        return ai
+    # First-prompt fallback — reuse the head extractor over a re-serialized
+    # JSONL string so skip-patterns/truncation match the disk path exactly.
+    jsonl = "\n".join(json.dumps(e, separators=(",", ":")) for e in raw) + "\n"
+    return _extract_first_prompt_from_head(jsonl) or None
 
 
 def _parse_fork_transcript(
@@ -669,3 +755,208 @@ def _sanitize_unicode(value: str) -> str:
         if current == previous:
             break
     return current
+
+
+# ---------------------------------------------------------------------------
+# SessionStore-backed implementations
+# ---------------------------------------------------------------------------
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def rename_session_via_store(
+    session_store: SessionStore,
+    session_id: str,
+    title: str,
+    directory: str | None = None,
+) -> None:
+    """Rename a session by appending a custom-title entry to a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`rename_session`.
+
+    Args:
+        session_store: The store to write to.
+        session_id: UUID of the session to rename.
+        title: New session title. Leading/trailing whitespace is stripped.
+            Must be non-empty after stripping.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Raises:
+        ValueError: If ``session_id`` is not a valid UUID, or if ``title``
+            is empty/whitespace-only.
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    stripped = title.strip()
+    if not stripped:
+        raise ValueError("title must be non-empty")
+    project_key = project_key_for_directory(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entry: dict[str, Any] = {
+        "type": "custom-title",
+        "customTitle": stripped,
+        "sessionId": session_id,
+        "uuid": str(uuid_mod.uuid4()),
+        "timestamp": _iso_now(),
+    }
+    # SessionStoreEntry is a structural supertype ({type: str, ...}); the
+    # extra fields are opaque pass-through for adapters.
+    await session_store.append(key, [cast(SessionStoreEntry, entry)])
+
+
+async def tag_session_via_store(
+    session_store: SessionStore,
+    session_id: str,
+    tag: str | None,
+    directory: str | None = None,
+) -> None:
+    """Tag a session by appending a tag entry to a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`tag_session`. Pass ``None`` to
+    clear the tag. Tags are Unicode-sanitized before storing.
+
+    Args:
+        session_store: The store to write to.
+        session_id: UUID of the session to tag.
+        tag: Tag string, or ``None`` to clear.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Raises:
+        ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
+            empty/whitespace-only after sanitization.
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    if tag is not None:
+        sanitized = _sanitize_unicode(tag).strip()
+        if not sanitized:
+            raise ValueError("tag must be non-empty (use None to clear)")
+        tag = sanitized
+    project_key = project_key_for_directory(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    entry: dict[str, Any] = {
+        "type": "tag",
+        "tag": tag if tag is not None else "",
+        "sessionId": session_id,
+        "uuid": str(uuid_mod.uuid4()),
+        "timestamp": _iso_now(),
+    }
+    await session_store.append(key, [cast(SessionStoreEntry, entry)])
+
+
+async def delete_session_via_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
+) -> None:
+    """Delete a session from a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`delete_session`. If the store
+    does not implement :meth:`SessionStore.delete`, deletion is a no-op
+    (appropriate for WORM/append-only backends — matches the
+    :class:`SessionStore` contract).
+
+    Whether subagent transcripts under the session are also removed depends
+    on the store's ``delete({session_id})`` semantics —
+    :class:`InMemorySessionStore` cascades; custom stores may not.
+
+    Args:
+        session_store: The store to delete from.
+        session_id: UUID of the session to delete.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+
+    Raises:
+        ValueError: If ``session_id`` is not a valid UUID.
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    if not _store_implements(session_store, "delete"):
+        return
+    project_key = project_key_for_directory(directory)
+    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    await session_store.delete(key)
+
+
+async def fork_session_via_store(
+    session_store: SessionStore,
+    session_id: str,
+    directory: str | None = None,
+    up_to_message_id: str | None = None,
+    title: str | None = None,
+) -> ForkSessionResult:
+    """Fork a session into a new branch with fresh UUIDs via a :class:`SessionStore`.
+
+    Async, store-backed counterpart to :func:`fork_session`. Runs the fork
+    transform directly over the objects returned by ``session_store.load()`` —
+    no JSONL round-trip. A storage-layer copy (e.g. S3 CopyObject) is NOT
+    sufficient: the transform remaps every UUID, rewrites ``sessionId`` on
+    each entry, and stamps ``forkedFrom``, so the data must pass through
+    this process once.
+
+    Args:
+        session_store: The store to read the source from and write the fork
+            to.
+        session_id: UUID of the source session to fork.
+        directory: Project directory used to compute the ``project_key``.
+            Defaults to the current working directory.
+        up_to_message_id: Slice transcript up to this message UUID
+            (inclusive). If omitted, copies the full transcript.
+        title: Custom title for the fork. If omitted, derives from the
+            original title + " (fork)".
+
+    Returns:
+        ``ForkSessionResult`` with the new session's UUID.
+
+    Raises:
+        ValueError: If ``session_id`` or ``up_to_message_id`` is not a
+            valid UUID, or if the session has no messages to fork.
+        FileNotFoundError: If the source session is not found in the store.
+    """
+    if not _validate_uuid(session_id):
+        raise ValueError(f"Invalid session_id: {session_id}")
+    if up_to_message_id and not _validate_uuid(up_to_message_id):
+        raise ValueError(f"Invalid up_to_message_id: {up_to_message_id}")
+    project_key = project_key_for_directory(directory)
+    src_key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    loaded = await session_store.load(src_key)
+    if not loaded:
+        raise FileNotFoundError(f"Session {session_id} not found")
+
+    # Partition into transcript entries (with uuid) and content-replacement
+    # records, mirroring _parse_fork_transcript for the already-parsed path.
+    # SessionStoreEntry is a minimal structural supertype — widen to a plain
+    # dict for field access.
+    raw: list[dict[str, Any]] = cast("list[dict[str, Any]]", loaded)
+    transcript: list[dict[str, Any]] = []
+    content_replacements: list[Any] = []
+    for entry in raw:
+        entry_type = entry.get("type")
+        if entry_type in _TRANSCRIPT_TYPES and isinstance(entry.get("uuid"), str):
+            transcript.append(entry)
+        elif (
+            entry_type == "content-replacement"
+            and entry.get("sessionId") == session_id
+            and isinstance(entry.get("replacements"), list)
+        ):
+            content_replacements.extend(entry["replacements"])
+
+    forked_session_id, lines = _build_fork_lines(
+        transcript,
+        content_replacements,
+        session_id,
+        up_to_message_id,
+        title,
+        lambda: _derive_title_from_entries(raw),
+    )
+
+    dst_key: SessionKey = {"project_key": project_key, "session_id": forked_session_id}
+    # _build_fork_lines emits compact JSON strings; re-parse to objects so the
+    # store receives the same shape it would from the mirror path. All entries
+    # satisfy the SessionStoreEntry structural supertype ({type: str, ...}).
+    await session_store.append(dst_key, [json.loads(line) for line in lines])
+    return ForkSessionResult(session_id=forked_session_id)

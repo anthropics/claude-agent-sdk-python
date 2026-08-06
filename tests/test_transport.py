@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
+_ABSENT = object()  # sentinel for "field not sent on the wire"
 
 
 def make_options(**kwargs: object) -> ClaudeAgentOptions:
@@ -77,6 +79,70 @@ class TestSubprocessCLITransport:
         assert "--system-prompt" in cmd
         assert cmd[cmd.index("--system-prompt") + 1] == ""
 
+    def test_build_command_include_hook_events(self):
+        """Test that include_hook_events emits the --include-hook-events flag."""
+        transport = SubprocessCLITransport(
+            prompt="Hello", options=make_options(include_hook_events=True)
+        )
+        cmd = transport._build_command()
+        assert "--include-hook-events" in cmd
+
+        transport_off = SubprocessCLITransport(prompt="Hello", options=make_options())
+        cmd_off = transport_off._build_command()
+        assert "--include-hook-events" not in cmd_off
+
+    def test_build_command_strict_mcp_config(self):
+        """Test that --strict-mcp-config is emitted only when enabled."""
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(strict_mcp_config=True)
+        )
+        assert "--strict-mcp-config" in transport._build_command()
+
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--strict-mcp-config" not in transport._build_command()
+
+    def test_build_command_resume_and_session_id(self):
+        """Test that resume and session_id are passed as --flag=value."""
+        session_id = "8f8b1c0e-2b1e-4a3f-9c2d-5e6f7a8b9c0d"
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(resume="abc123", session_id=session_id),
+        )
+        cmd = transport._build_command()
+
+        assert "--resume=abc123" in cmd
+        assert f"--session-id={session_id}" in cmd
+        # Never emitted as two separate argv tokens.
+        assert "--resume" not in cmd
+        assert "--session-id" not in cmd
+        assert "abc123" not in cmd
+        assert session_id not in cmd
+
+    def test_build_command_resume_and_session_id_do_not_inject_flags(self):
+        """Dash-leading values must not become standalone argv flags.
+
+        The CLI declares --resume with an optional value, so in the two-token
+        form (["--resume", value]) a dash-leading value is parsed as a separate
+        flag rather than as the option's value. Applications that route
+        untrusted input into these options would then let an attacker inject
+        arbitrary CLI flags. The --flag=value form binds the value to the flag,
+        and the CLI rejects it as an invalid session ID.
+        """
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(resume="--evil", session_id="-r"),
+        )
+        cmd = transport._build_command()
+
+        assert "--resume=--evil" in cmd
+        assert "--session-id=-r" in cmd
+        # The injected values never appear as standalone argv tokens...
+        assert "--evil" not in cmd
+        assert "-r" not in cmd
+        # ...nor do the bare flags that would let the next token detach.
+        assert "--resume" not in cmd
+        assert "--session-id" not in cmd
+
     def test_cli_path_accepts_pathlib_path(self):
         """Test that cli_path accepts pathlib.Path objects."""
         from pathlib import Path
@@ -89,6 +155,16 @@ class TestSubprocessCLITransport:
 
         # Path object is converted to string, compare with str(path)
         assert transport._cli_path == str(path)
+
+    def test_build_command_with_effort_xhigh(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(effort="xhigh"),
+        )
+
+        cmd = transport._build_command()
+        assert "--effort" in cmd
+        assert cmd[cmd.index("--effort") + 1] == "xhigh"
 
     def test_build_command_with_system_prompt_string(self):
         """Test building CLI command with system prompt as string."""
@@ -257,6 +333,59 @@ class TestSubprocessCLITransport:
         assert cmd[idx : idx + 2] == expected
         assert absent not in cmd
 
+    @pytest.mark.parametrize(
+        ("thinking", "expected_display"),
+        [
+            (
+                {"type": "adaptive", "display": "summarized"},
+                ["--thinking-display", "summarized"],
+            ),
+            (
+                {"type": "enabled", "budget_tokens": 20000, "display": "omitted"},
+                ["--thinking-display", "omitted"],
+            ),
+        ],
+    )
+    def test_build_command_thinking_display_forwarded(self, thinking, expected_display):
+        """`display` in thinking config is forwarded as --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking=thinking),
+        )
+
+        cmd = transport._build_command()
+        idx = cmd.index(expected_display[0])
+        assert cmd[idx : idx + 2] == expected_display
+
+    def test_build_command_thinking_without_display(self):
+        """Omitting `display` leaves --thinking-display off the command."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(thinking={"type": "adaptive"}),
+        )
+
+        cmd = transport._build_command()
+        assert "--thinking-display" not in cmd
+
+    def test_build_command_thinking_display_with_enabled_budget(self):
+        """enabled + display emits both --max-thinking-tokens and --thinking-display."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 20000,
+                    "display": "omitted",
+                }
+            ),
+        )
+
+        cmd = transport._build_command()
+        budget_idx = cmd.index("--max-thinking-tokens")
+        assert cmd[budget_idx : budget_idx + 2] == ["--max-thinking-tokens", "20000"]
+        display_idx = cmd.index("--thinking-display")
+        assert cmd[display_idx : display_idx + 2] == ["--thinking-display", "omitted"]
+
     def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
         """thinking takes precedence over deprecated max_thinking_tokens."""
         transport = SubprocessCLITransport(
@@ -303,8 +432,7 @@ class TestSubprocessCLITransport:
 
         cmd = transport._build_command()
         assert "--continue" in cmd
-        assert "--resume" in cmd
-        assert "session-123" in cmd
+        assert "--resume=session-123" in cmd
 
     def test_session_id(self):
         """Test custom session ID option."""
@@ -314,9 +442,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--session-id" in cmd
-        idx = cmd.index("--session-id")
-        assert cmd[idx + 1] == "550e8400-e29b-41d4-a716-446655440000"
+        assert "--session-id=550e8400-e29b-41d4-a716-446655440000" in cmd
 
     def test_session_id_not_set_by_default(self):
         """Test that --session-id is not passed when session_id is None."""
@@ -326,7 +452,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--session-id" not in cmd
+        assert not any(arg.startswith("--session-id") for arg in cmd)
 
     def test_connect_close(self):
         """Test connect and close lifecycle."""
@@ -453,6 +579,382 @@ class TestSubprocessCLITransport:
         )
         cmd = transport._build_command()
         assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_none_leaves_options_untouched(self):
+        """When skills is None (default), neither allowed_tools nor setting_sources change."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+    def test_build_command_skills_all_enables_skill_tool(self):
+        """skills='all' enables the bare Skill tool and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_empty_list_adds_no_skill_entries(self):
+        """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_named_list_uses_skill_patterns(self):
+        """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["pdf", "docx"]),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+        assert "--setting-sources=user,project" in cmd
+
+    def test_build_command_skills_merges_with_existing_allowed_tools(self):
+        """skills augment (not replace) an existing allowed_tools list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Read", "Write"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Write,Skill(pdf)"
+
+    def test_build_command_skills_preserves_user_setting_sources(self):
+        """When setting_sources is explicitly provided, skills should not override it."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                skills="all",
+                setting_sources=["local"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert "--setting-sources=local" in cmd
+
+    def test_build_command_skills_does_not_mutate_options(self):
+        """Applying skills defaults must not mutate the caller's options object."""
+        options = make_options(allowed_tools=["Read"], skills=["pdf"])
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        transport._build_command()
+        assert options.allowed_tools == ["Read"]
+        assert options.setting_sources is None
+
+    def test_build_command_skills_does_not_duplicate_entries(self):
+        """Injecting Skill entries is idempotent when caller already listed them."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools=["Skill(pdf)"],
+                skills=["pdf"],
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+
+    @pytest.mark.parametrize(
+        "hostile_name",
+        [
+            # Names containing rule-syntax delimiters cannot be represented
+            # as a single Skill(name) entry and must be rejected, never
+            # formatted into the --allowedTools value.
+            "x),Bash(*",
+            "safe),Bash,Skill(dummy",
+            "name,with,commas",
+            "unbalanced(",
+            "unbalanced)",
+            "()",
+        ],
+    )
+    def test_build_command_skills_rejects_rule_syntax_delimiters(
+        self, hostile_name: str
+    ):
+        """Skill names containing rule-syntax delimiters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "hostile_name",
+        ["with\nnewline", "with\ttab", "nul\x00byte", "del\x7fchar"],
+    )
+    def test_build_command_skills_rejects_control_characters(self, hostile_name: str):
+        """Skill names containing control characters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("empty_name", ["", " ", "  \t "])
+    def test_build_command_skills_rejects_empty_names(self, empty_name: str):
+        """Empty or whitespace-only skill names raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[empty_name]),
+        )
+        with pytest.raises(ValueError, match="non-empty"):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_non_string_names(self):
+        """Non-string entries in the skills list raise TypeError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[42]),  # type: ignore[list-item]
+        )
+        with pytest.raises(TypeError, match="must be strings"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "wildcard_name",
+        ["pdf:*", "my skill *", ":*"],
+    )
+    def test_build_command_skills_rejects_wildcard_suffix_names(
+        self, wildcard_name: str
+    ):
+        """Wildcard-suffix skill names raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[wildcard_name]),
+        )
+        with pytest.raises(ValueError, match="wildcard-suffix"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("skills", ["pdf", "pdf-tools", "ALL"])
+    def test_build_command_skills_rejects_a_bare_string(self, skills: str):
+        """A string is iterable, so skills="pdf" would build Skill(p),Skill(d),..."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills),  # type: ignore[arg-type]
+        )
+        with pytest.raises(TypeError, match="must be a list of skill names"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "skills",
+        [("pdf",), {"pdf"}, (n for n in ["pdf"])],
+        ids=["tuple", "set", "generator"],
+    )
+    def test_build_command_skills_rejects_non_list_iterables(self, skills):
+        """These build Skill(name) rules but are dropped from initialize, so the
+        session skill filter is never installed."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills),  # type: ignore[arg-type]
+        )
+        with pytest.raises(TypeError, match="must be a list of skill names"):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_bare_wildcard(self):
+        """A literal '*' name raises, pointing to the skills="all" option."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["*"]),
+        )
+        with pytest.raises(ValueError, match='use skills="all"'):
+            transport._build_command()
+
+    def test_build_command_skills_rejects_unpaired_trailing_backslash(self):
+        """A name ending in a single trailing backslash raises ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["name\\"]),
+        )
+        with pytest.raises(ValueError, match="unpaired backslash"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["name\\\\", "name\\\\\\", "mid\\\\dle"])
+    def test_build_command_skills_rejects_consecutive_backslashes(
+        self, hostile_name: str
+    ):
+        """Consecutive backslashes collapse at parse time, renaming the skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="consecutive backslashes"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["\ufeffpdf", "pdf\ufeff"])
+    def test_build_command_skills_rejects_byte_order_marks(self, hostile_name: str):
+        """The CLI trims U+FEFF as whitespace; Python's str.strip() does not."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", [" pdf", "pdf ", "\tpdf", " pdf "])
+    def test_build_command_skills_rejects_surrounding_whitespace(
+        self, hostile_name: str
+    ):
+        """A padded rule can never match: the Skill tool trims before matching."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="whitespace"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["/pdf", "/myplugin:pdf"])
+    def test_build_command_skills_rejects_leading_slash(self, hostile_name: str):
+        """The session allowlist matches verbatim, so '/pdf' hides every skill."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="may not start with"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["lone\ud800surrogate", "\udc00leading"])
+    def test_build_command_skills_rejects_surrogate_code_points(
+        self, hostile_name: str
+    ):
+        """No CLI-discovered skill name contains a surrogate code point."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="surrogate"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("hostile_name", ["nel\u0085end", "csi\u009bend"])
+    def test_build_command_skills_rejects_c1_control_characters(
+        self, hostile_name: str
+    ):
+        """Names containing C1 control characters raise ValueError."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[hostile_name]),
+        )
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            transport._build_command()
+
+    @pytest.mark.parametrize(
+        "benign_name",
+        [
+            "pdf-tools",
+            "my_skill.v2",
+            "myplugin:pdf",
+            "skill with spaces",
+            "dir\\sub",
+            "日本語スキル",
+        ],
+    )
+    def test_build_command_skills_accepts_ordinary_names(self, benign_name: str):
+        """Ordinary names -- plugin-qualified, spaced, non-ASCII -- still work."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[benign_name]),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == f"Skill({benign_name})"
+
+    @pytest.mark.parametrize(
+        ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
+        [
+            # (1) default: no auto-config
+            (None, {}, None, None, _ABSENT),
+            # (2) old manual way still works (skills=None, user wires it)
+            (
+                None,
+                {
+                    "allowed_tools": ["Skill", "Read"],
+                    "setting_sources": ["user", "project"],
+                },
+                "Skill,Read",
+                "user,project",
+                _ABSENT,
+            ),
+            # (3) "all": bare Skill, default sources, no wire filter
+            ("all", {}, "Skill", "user,project", _ABSENT),
+            # (4) named subset
+            (
+                ["pdf", "docx"],
+                {},
+                "Skill(pdf),Skill(docx)",
+                "user,project",
+                ["pdf", "docx"],
+            ),
+            # (5) subset + explicit setting_sources (user wins)
+            (
+                ["pdf"],
+                {"setting_sources": ["project"]},
+                "Skill(pdf)",
+                "project",
+                ["pdf"],
+            ),
+            # (6) subset merges into existing allowed_tools
+            (
+                ["pdf"],
+                {"allowed_tools": ["Read", "Bash"]},
+                "Read,Bash,Skill(pdf)",
+                "user,project",
+                ["pdf"],
+            ),
+            # (7) empty list = degenerate subset (not "all")
+            ([], {}, None, "user,project", []),
+        ],
+        ids=[
+            "default-none",
+            "old-manual",
+            "all",
+            "subset",
+            "subset+explicit-sources",
+            "subset+merge-tools",
+            "empty-list",
+        ],
+    )
+    def test_skills_option_matrix(
+        self, skills, extra, want_tools, want_sources, want_init_skills
+    ):
+        """Documented behavior table for ClaudeAgentOptions.skills.
+
+        Asserts the full (input) -> (allowedTools, setting_sources,
+        initialize.skills) mapping in one place. See also
+        test_query.py::test_initialize_* for the wire-level half.
+        """
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=skills, **extra),
+        )
+        cmd = transport._build_command()
+
+        if want_tools is None:
+            assert "--allowedTools" not in cmd
+        else:
+            assert cmd[cmd.index("--allowedTools") + 1] == want_tools
+
+        if want_sources is None:
+            assert not any(a.startswith("--setting-sources") for a in cmd)
+        else:
+            assert f"--setting-sources={want_sources}" in cmd
+
+        # Wire-level: what the Query layer would send on initialize.
+        # 'all' and None both omit the field; only an explicit list is sent.
+        if want_init_skills is _ABSENT:
+            assert not isinstance(skills, list)
+        else:
+            assert skills == want_init_skills
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""
@@ -1811,3 +2313,657 @@ class TestSubprocessCLITransport:
                 mock_logger.warning.assert_not_called()
 
         anyio.run(_test)
+
+    def test_stderr_callback_raise_does_not_terminate_loop(self) -> None:
+        """Regression for issue #929: a raise from ``options.stderr`` must not
+        kill the read loop. Previously the outer ``except Exception: pass``
+        caught it, exited the ``async for``, and silently dropped every
+        subsequent stderr line for the rest of the session."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            def stderr_cb(line: str) -> None:
+                received.append(line)
+                if len(received) == 1:
+                    raise RuntimeError("simulated handler failure")
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=stderr_cb)
+            )
+
+            # The stream yields chunks, not lines: one read can carry several
+            # lines, and the last one may have no trailing newline.
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "line 1\nline 2\n"
+                yield "line 3"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            # All three lines must be delivered despite the first raise.
+            assert received == ["line 1", "line 2", "line 3"]
+
+        anyio.run(_test)
+
+    def test_stderr_line_split_across_chunks_is_reassembled(self) -> None:
+        """``options.stderr`` is documented to receive lines, but the stream
+        yields chunks — a long line split at a read boundary must be delivered
+        once, whole, rather than as two fragments with the seam whitespace
+        rstripped off the first."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "a warning that got "
+                yield "split across two reads\nnext line\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            assert received == [
+                "a warning that got split across two reads",
+                "next line",
+            ]
+
+        anyio.run(_test)
+
+    def test_stderr_line_without_newline_is_flushed_at_buffer_limit(self) -> None:
+        """A producer that never emits a newline must not grow the pending
+        buffer without bound: once it passes ``max_buffer_size`` the partial
+        line is flushed to the callback and the buffer resets."""
+
+        async def _test() -> None:
+            received: list[str] = []
+
+            transport = SubprocessCLITransport(
+                prompt="x",
+                options=ClaudeAgentOptions(stderr=received.append, max_buffer_size=10),
+            )
+
+            async def mock_iter() -> AsyncIterator[str]:
+                # 15 chars with no newline in sight, then a normal line.
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "aaaaa"
+                yield "bbb\n"
+
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+            await transport._handle_stderr()
+
+            # Flushed once the 15 chars passed the 10-char limit, rather than
+            # buffering forever waiting for a newline.
+            assert received == ["a" * 15, "bbb"]
+
+        anyio.run(_test)
+
+    def test_stderr_pending_line_is_flushed_when_task_is_cancelled(self) -> None:
+        """close() cancels the stderr task, and cancellation is a BaseException
+        that the reader's `except` clauses don't catch. A diagnostic written
+        without a trailing newline before the CLI stalled must still reach the
+        callback rather than being lost with the buffer."""
+
+        async def _test() -> None:
+            received: list[str] = []
+            started = anyio.Event()
+
+            async def mock_iter() -> AsyncIterator[str]:
+                yield "Error: model overloaded"  # no trailing newline
+                started.set()
+                await anyio.sleep(60)  # the CLI stalls, holding the stream open
+
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+            transport._stderr_stream = mock_iter()  # type: ignore[assignment]
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(transport._handle_stderr)
+                await started.wait()
+                tg.cancel_scope.cancel()
+
+            assert received == ["Error: model overloaded"]
+
+        anyio.run(_test)
+
+
+class TestAtexitChildCleanup:
+    """Tests for the atexit handler that terminates orphaned CLI subprocesses."""
+
+    def test_kill_active_children_terminates_process(self) -> None:
+        import sys
+
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        async def _test() -> None:
+            proc = await anyio.open_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            subprocess_cli._ACTIVE_CHILDREN.add(proc)
+            try:
+                assert proc.returncode is None
+
+                subprocess_cli._kill_active_children()
+
+                assert not subprocess_cli._ACTIVE_CHILDREN
+                with anyio.fail_after(5):
+                    await proc.wait()
+                assert proc.returncode is not None
+            finally:
+                subprocess_cli._ACTIVE_CHILDREN.discard(proc)
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        anyio.run(_test)
+
+
+def _mock_connect_processes() -> tuple[MagicMock, MagicMock]:
+    """Build the (version probe, main process) mocks connect() awaits."""
+    version_process = MagicMock()
+    version_process.stdout = MagicMock()
+    version_process.stdout.receive = AsyncMock(return_value=b"2.0.0 (Claude Code)")
+    version_process.terminate = MagicMock()
+    version_process.wait = AsyncMock()
+
+    main_process = MagicMock()
+    main_process.stdout = MagicMock()
+    main_stdin = MagicMock()
+    main_stdin.aclose = AsyncMock()
+    main_process.stdin = main_stdin
+    main_process.returncode = None
+    return version_process, main_process
+
+
+class TestWindowsBatchScriptRefusal:
+    """connect() must never spawn a .bat/.cmd script on Windows.
+
+    CreateProcess routes batch scripts through cmd.exe /c, and cmd.exe
+    re-parses the whole command line, so every argument value would reach
+    a shell. The refusal happens before the version probe, so no spawn of
+    the script occurs at all.
+    """
+
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+
+    def test_npm_cmd_shim_from_which_is_refused(self):
+        # Shim-only machine: which("claude") resolves npm's claude.cmd and
+        # no native claude.exe is discoverable (which("claude.exe") -> None,
+        # no .exe in the fallback locations). Discovery must still hand the
+        # shim to connect() so the batch-script refusal fires -- the .exe
+        # preference is additive and never lets a shim-only machine spawn.
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+
+            def _which(name: str) -> str | None:
+                return shim if name == "claude" else None
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_native_exe_is_preferred_over_shadowing_npm_shim(self):
+        # Dual-install machine: npm's %APPDATA%\npm precedes the native
+        # installer's %USERPROFILE%\.local\bin on PATH, so which("claude")
+        # resolves the claude.cmd shim -- shutil.which walks PATH
+        # directory-major, so the earlier npm directory wins (within one
+        # directory the default PATHEXT would prefer .EXE over .CMD; the
+        # shadowing comes purely from directory order). Discovery must find
+        # the shadowed native claude.exe via which("claude.exe") so connect()
+        # proceeds instead of refusing.
+        async def _test():
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
+
+            def _which(name: str) -> str | None:
+                return {"claude": shim, "claude.exe": native}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == native
+
+        anyio.run(_test)
+
+    def test_claude_exe_probe_result_is_vetted(self):
+        # Python 3.12+ shutil.which appends PATHEXT extensions even to a
+        # name that already carries one, so which("claude.exe") can hand
+        # back a stray "claude.exe.cmd". Discovery must not accept that as
+        # the rescued native exe: it falls through to the fallback location
+        # and, with none there, returns the original npm shim so connect()
+        # refuses naming the shim its remediation message is written for.
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+            junk = "C:\\tools\\claude.exe.cmd"
+
+            def _which(name: str) -> str | None:
+                return {"claude": shim, "claude.exe": junk}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match=r"npm\\\\claude\.CMD"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_extensionless_which_hit_still_prefers_native_exe(self):
+        # Python 3.12+ shutil.which also probes the bare name, so an
+        # extensionless git-bash / WSL wrapper script named "claude" in an
+        # early PATH directory shadows a native claude.exe installed in a
+        # later one. CreateProcess cannot run that script (WinError 193),
+        # so discovery must run the same native-exe rescue instead of
+        # committing to the wrapper.
+        async def _test():
+            wrapper = "C:\\Users\\u\\bin\\claude"
+            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
+
+            def _which(name: str) -> str | None:
+                return {"claude": wrapper, "claude.exe": native}.get(name)
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", return_value=False),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == native
+
+        anyio.run(_test)
+
+    def test_explicit_bat_cli_path_is_refused(self):
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(cli_path="C:\\tools\\claude.bat"),
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize(
+        "cli_path",
+        [
+            "C:\\tools\\claude.cmd.",
+            "C:\\tools\\claude.CMD ",
+            "C:\\tools\\claude.cmd:stream",
+            "C:\\tools\\.cmd",
+            "C:claude.cmd",
+            "C:/tools/claude.cmd",
+            "\\\\server\\share\\claude.cmd",
+            "C:\\tools\\claude.cmd\\.",
+            "C:\\tools\\claude.cmd\\x\\..",
+            "C:\\tools\\claude.cmd\\x\\.. ",
+            "C:\\tools\\claude.cmd\\x\\.. .",
+            "C:\\tools\\claude.cmd\\\\.",
+            "C:/tools/claude.cmd//x/..",
+            "C:\\tools\\claude.cmd\\",
+            "C:\\tools\\claude.cmd\\...",
+            "C:\\tools\\claude.cmd\\....",
+            "C:\\tools\\claude:evil.cmd",
+            "C:\\tools\\claude.exe:evil.cmd",
+            ":claude.cmd",
+            # A middle dots/spaces-only component is a literal name on Win32
+            # (trailing-dot trimming applies to the final segment only), so
+            # a following ".." pops that literal and lands on claude.cmd.
+            "C:\\tools\\claude.cmd\\...\\..",
+            "C:\\tools\\claude.cmd\\. .\\..",
+            "C:\\tools\\claude.cmd\\ \\..",
+            "C:\\tools\\claude.cmd\\.. \\..",
+        ],
+    )
+    def test_suffix_tricks_are_refused(self, cli_path: str):
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions(cli_path=cli_path)
+            )
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+    def test_native_exe_is_allowed_on_windows(self):
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=ClaudeAgentOptions(
+                    cli_path="C:\\Users\\u\\.local\\bin\\claude.EXE"
+                ),
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            assert mock_open.call_count == 2
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize("system", ["Linux", "Darwin"])
+    def test_posix_platforms_are_unchanged(self, system: str):
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            version_process, main_process = _mock_connect_processes()
+
+            with (
+                patch(self._PLATFORM, return_value=system),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    return_value="/usr/local/bin/claude",
+                ) as mock_which,
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+            ):
+                mock_open.side_effect = [version_process, main_process]
+                await transport.connect()
+
+            # POSIX discovery uses the which("claude") result directly: the
+            # native-exe preference is a Windows-only branch, so there is no
+            # claude.exe probe here.
+            assert mock_which.call_count == 1
+            assert mock_which.call_args.args == ("claude",)
+            assert mock_open.call_count == 2
+            assert mock_open.call_args_list[1].args[0][0] == "/usr/local/bin/claude"
+
+        anyio.run(_test)
+
+    def test_guard_is_a_no_op_off_windows(self):
+        with patch(self._PLATFORM, return_value="Linux"):
+            SubprocessCLITransport._reject_windows_batch_cli("/odd/claude.cmd")
+
+    def _not_found_message(self, system: str) -> str:
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        with (
+            patch(self._PLATFORM, return_value=system),
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                return_value=None,
+            ),
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(CLINotFoundError) as exc_info,
+        ):
+            transport._find_cli()
+        return str(exc_info.value)
+
+    def test_not_found_message_on_windows_recommends_native_exe(self):
+        # The npm route yields a claude.cmd shim that connect() refuses, so
+        # the Windows message must lead with the native claude.exe install.
+        message = self._not_found_message("Windows")
+        assert "install.ps1" in message
+        assert "claude.exe" in message
+        assert message.index("install.ps1") < message.index("npm")
+        assert "refuses" in message
+
+    def test_not_found_message_off_windows_is_unchanged(self):
+        message = self._not_found_message("Linux")
+        assert message.startswith(
+            "Claude Code not found. Install with:\n"
+            "  npm install -g @anthropic-ai/claude-code\n"
+        )
+        assert "install.ps1" not in message
+
+    def test_fallback_locations_find_native_windows_exe(self):
+        # The native installer writes ~/.local/bin/claude.exe; Path.exists()
+        # does no PATHEXT resolution, so the fallback list must probe the
+        # .exe name explicitly for a stale-PATH process to find it.
+        from pathlib import Path
+
+        native_exe = Path.home() / ".local/bin/claude.exe"
+
+        def _exists(path: Path) -> bool:
+            return path == native_exe
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                return_value=None,
+            ),
+            patch("pathlib.Path.exists", new=_exists),
+            patch("pathlib.Path.is_file", new=_exists),
+        ):
+            assert transport._find_cli() == str(native_exe)
+
+    def test_windows_fallback_skips_posix_shaped_probes(self):
+        # Shim-only Windows machine that also has an extensionless
+        # ~/.local/bin/claude artifact (WSL / git-bash script) and a
+        # C:\usr\local\bin\claude planted on the current drive: the Windows
+        # fallback must probe only the native ~/.local/bin/claude.exe, so
+        # discovery still hands connect() the shim and the batch-script
+        # refusal fires (0 spawns) instead of spawning either artifact.
+        from pathlib import Path
+
+        native_exe = Path.home() / ".local/bin/claude.exe"
+
+        def _exists(path: Path) -> bool:
+            return path != native_exe
+
+        async def _test():
+            from claude_agent_sdk._errors import CLIConnectionError
+
+            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
+
+            def _which(name: str) -> str | None:
+                return shim if name == "claude" else None
+
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with (
+                patch(self._PLATFORM, return_value="Windows"),
+                patch.object(
+                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
+                ),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+                    side_effect=_which,
+                ),
+                patch("pathlib.Path.exists", new=_exists),
+                patch("pathlib.Path.is_file", new=_exists),
+                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
+                pytest.raises(CLIConnectionError, match="batch script"),
+            ):
+                await transport.connect()
+
+            assert mock_open.call_count == 0
+
+        anyio.run(_test)
+
+
+class TestExtraArgsValueBinding:
+    """extra_args uses the equals form for dash-leading values so the value
+    binds to its flag instead of parsing as a separate CLI flag."""
+
+    def test_dash_leading_value_uses_equals_form(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(extra_args={"future-flag": "--evil"}),
+        )
+        cmd = transport._build_command()
+        assert "--future-flag=--evil" in cmd
+        assert "--evil" not in cmd
+        assert "--future-flag" not in cmd
+
+    def test_ordinary_value_keeps_two_token_form(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                extra_args={"future-flag": "plain", "bool-flag": None}
+            ),
+        )
+        cmd = transport._build_command()
+        idx = cmd.index("--future-flag")
+        assert cmd[idx + 1] == "plain"
+        assert "--bool-flag" in cmd
+
+
+class TestWindowsCmdMetacharacterRejection:
+    """Defense in depth: resume/session_id reject cmd.exe metacharacters on
+    Windows so those values stay inert even if a cmd.exe hop reappears."""
+
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "x&calc",
+            "x|whoami",
+            "x<in",
+            "x>out",
+            "x^y",
+            "x%PATH%y",
+            "x!VAR!y",
+            'x"y',
+            "x\ny",
+            "x\ry",
+        ],
+    )
+    def test_bad_resume_values_raise_on_windows(self, value: str):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(resume=value)
+        )
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            pytest.raises(ValueError, match="unsafe"),
+        ):
+            transport._build_command()
+
+    def test_bad_session_id_raises_on_windows(self):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(session_id="x&ver")
+        )
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            pytest.raises(ValueError, match="session_id"),
+        ):
+            transport._build_command()
+
+    def test_ordinary_title_is_accepted_on_windows(self):
+        title = "My project - daily notes (v2) #3"
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(resume=title)
+        )
+        with patch(self._PLATFORM, return_value="Windows"):
+            cmd = transport._build_command()
+        assert f"--resume={title}" in cmd
+
+    def test_posix_allows_metacharacters(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(resume="title & % | notes", session_id="a>b"),
+        )
+        with patch(self._PLATFORM, return_value="Linux"):
+            cmd = transport._build_command()
+        assert "--resume=title & % | notes" in cmd
+        assert "--session-id=a>b" in cmd

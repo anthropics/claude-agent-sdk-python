@@ -7,15 +7,21 @@ from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
+    DeferredToolUse,
+    HookEventMessage,
     Message,
+    MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -45,6 +51,28 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             data,
         )
 
+    # Hook events (emitted when ``include_hook_events`` is enabled) arrive as
+    # ``system`` messages with ``subtype`` of ``hook_started`` or
+    # ``hook_response``. Route them to ``HookEventMessage`` before the generic
+    # ``SystemMessage`` handling below.
+    if data.get("type") == "system" and data.get("subtype") in (
+        "hook_started",
+        "hook_response",
+    ):
+        hook_event_name = (
+            data.get("hook_event")
+            or data.get("hook_name")
+            or data.get("hook_event_name")
+            or ""
+        )
+        return HookEventMessage(
+            subtype=data["subtype"],
+            hook_event_name=hook_event_name,
+            data=data,
+            session_id=data.get("session_id"),
+            uuid=data.get("uuid"),
+        )
+
     message_type = data.get("type")
     if not message_type:
         raise MessageParseError("Message missing 'type' field", data)
@@ -58,6 +86,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 if isinstance(data["message"]["content"], list):
                     user_content_blocks: list[ContentBlock] = []
                     for block in data["message"]["content"]:
+                        if not isinstance(block, dict):
+                            raise MessageParseError(
+                                f"Invalid content block (expected dict, got "
+                                f"{type(block).__name__})",
+                                data,
+                            )
                         match block["type"]:
                             case "text":
                                 user_content_blocks.append(
@@ -98,8 +132,21 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "assistant":
             try:
+                raw_content = data["message"]["content"]
+                if not isinstance(raw_content, list):
+                    raise MessageParseError(
+                        f"Invalid assistant content (expected list, got "
+                        f"{type(raw_content).__name__})",
+                        data,
+                    )
                 content_blocks: list[ContentBlock] = []
-                for block in data["message"]["content"]:
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        raise MessageParseError(
+                            f"Invalid content block (expected dict, got "
+                            f"{type(block).__name__})",
+                            data,
+                        )
                     match block["type"]:
                         case "text":
                             content_blocks.append(TextBlock(text=block["text"]))
@@ -124,6 +171,21 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     tool_use_id=block["tool_use_id"],
                                     content=block.get("content"),
                                     is_error=block.get("is_error"),
+                                )
+                            )
+                        case "server_tool_use":
+                            content_blocks.append(
+                                ServerToolUseBlock(
+                                    id=block["id"],
+                                    name=block["name"],
+                                    input=block["input"],
+                                )
+                            )
+                        case "advisor_tool_result":
+                            content_blocks.append(
+                                ServerToolResultBlock(
+                                    tool_use_id=block["tool_use_id"],
+                                    content=block["content"],
                                 )
                             )
 
@@ -183,6 +245,38 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             tool_use_id=data.get("tool_use_id"),
                             usage=data.get("usage"),
                         )
+                    case "task_updated":
+                        # Terminal task completion sometimes arrives only as a
+                        # task_updated patch (no separate task_notification), so
+                        # expose it as a typed lifecycle message rather than a
+                        # generic SystemMessage. Parsed defensively: the patch
+                        # may omit uuid/session_id and parsing must never raise
+                        # on a lifecycle event.
+                        patch = data.get("patch")
+                        if not isinstance(patch, dict):
+                            patch = {}
+                        # Terminal-ness is derived from patch.status; the CLI is
+                        # assumed to set it on terminal transitions. A patch that
+                        # carries only end_time/result/error (no status) is left
+                        # non-terminal (status=None) — the full patch is still
+                        # preserved on .patch for callers that need more.
+                        return TaskUpdatedMessage(
+                            subtype=subtype,
+                            data=data,
+                            task_id=data.get("task_id", ""),
+                            patch=patch,
+                            status=patch.get("status"),
+                            session_id=data.get("session_id"),
+                            uuid=data.get("uuid"),
+                        )
+                    case "mirror_error":
+                        # SDK-synthesized via report_mirror_error — never emitted by the CLI subprocess.
+                        return MirrorErrorMessage(
+                            subtype=subtype,
+                            data=data,
+                            key=data.get("key"),
+                            error=data.get("error", ""),
+                        )
                     case _:
                         return SystemMessage(
                             subtype=subtype,
@@ -195,6 +289,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "result":
             try:
+                deferred = data.get("deferred_tool_use")
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -209,8 +304,17 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     structured_output=data.get("structured_output"),
                     model_usage=data.get("modelUsage"),
                     permission_denials=data.get("permission_denials"),
+                    deferred_tool_use=DeferredToolUse(
+                        id=deferred["id"],
+                        name=deferred["name"],
+                        input=deferred["input"],
+                    )
+                    if deferred
+                    else None,
                     errors=data.get("errors"),
+                    api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
+                    terminal_reason=data.get("terminal_reason"),
                 )
             except KeyError as e:
                 raise MessageParseError(

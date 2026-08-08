@@ -1,0 +1,20 @@
+name: Auto Heal
+on:
+  workflow_run:
+    types: [completed]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  heal:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.name != 'Auto Heal')
+    uses: ClearGlasslabs/workflow-artifacts/.github/workflows/reusable-auto-heal.yml@3b471303b256ad571448d58d9c81a411a828c3c4
+    with:
+      run_id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}

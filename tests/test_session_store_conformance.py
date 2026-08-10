@@ -47,14 +47,14 @@ class TestInMemorySessionStore:
 
         class MinimalStore:
             def __init__(self) -> None:
-                self._data: dict[str, list] = {}
+                self._data: dict[tuple, list] = {}
 
             async def append(self, key: SessionKey, entries: list) -> None:
-                k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
+                k = (key["project_key"], key["session_id"], key.get("subpath") or "")
                 self._data.setdefault(k, []).extend(entries)
 
             async def load(self, key: SessionKey) -> list | None:
-                k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
+                k = (key["project_key"], key["session_id"], key.get("subpath") or "")
                 return self._data.get(k)
 
         await run_session_store_conformance(
@@ -68,14 +68,14 @@ class TestInMemorySessionStore:
 
         class MinimalStore(SessionStore):
             def __init__(self) -> None:
-                self._data: dict[str, list] = {}
+                self._data: dict[tuple, list] = {}
 
             async def append(self, key: SessionKey, entries: list) -> None:
-                k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
+                k = (key["project_key"], key["session_id"], key.get("subpath") or "")
                 self._data.setdefault(k, []).extend(entries)
 
             async def load(self, key: SessionKey) -> list | None:
-                k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
+                k = (key["project_key"], key["session_id"], key.get("subpath") or "")
                 return self._data.get(k)
 
         # No skip_optional passed — auto-probe should detect missing overrides.
@@ -172,19 +172,20 @@ class TestInMemorySessionStore:
         assert await store.load(key_with_subpath) == [{"from": "subpath"}]
 
     @pytest.mark.anyio
-    async def test_list_sessions_with_slash_in_project_key(self) -> None:
-        """list_sessions correctly filters when project_key contains '/'."""
+    async def test_list_sessions_with_colliding_encodings(self) -> None:
+        """Two sessions whose old '/'-joined encodings were identical must
+        both be listed under their respective project_keys.
+
+        Replaces the weaker ``test_list_sessions_with_slash_in_project_key``
+        which passed on the pre-fix implementation because the old prefix
+        logic happened to get that pair right.
+        """
         store = InMemorySessionStore()
         await store.append({"project_key": "a/b", "session_id": "s1"}, [{"n": 1}])
-        await store.append({"project_key": "a", "session_id": "b"}, [{"n": 2}])
+        await store.append({"project_key": "a", "session_id": "b/s1"}, [{"n": 2}])
 
-        sessions_ab = await store.list_sessions("a/b")
-        assert len(sessions_ab) == 1
-        assert sessions_ab[0]["session_id"] == "s1"
-
-        sessions_a = await store.list_sessions("a")
-        assert len(sessions_a) == 1
-        assert sessions_a[0]["session_id"] == "b"
+        assert [s["session_id"] for s in await store.list_sessions("a/b")] == ["s1"]
+        assert [s["session_id"] for s in await store.list_sessions("a")] == ["b/s1"]
 
     @pytest.mark.anyio
     async def test_delete_with_slash_in_keys_no_cross_cascade(self) -> None:

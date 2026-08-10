@@ -1,3 +1,11 @@
+<!-- CLEARGLASS-BRAND:START -->
+<p align="center">
+  <a href="https://www.clearglassinc.com/">
+    <img src="https://raw.githubusercontent.com/ClearGlasslabs/ClearGlassInc./brand-assets/clearglass-seal.jpg" alt="ClearGlass Inc." width="360" />
+  </a>
+</p>
+<!-- CLEARGLASS-BRAND:END -->
+
 # Claude Agent SDK for Python
 
 Python SDK for Claude Agent. See the [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python) for more information.

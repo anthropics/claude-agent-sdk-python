@@ -5,14 +5,27 @@ from typing import get_args
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ConfigChangeHookInput,
     EffortLevel,
+    MessageDisplayHookInput,
+    MessageDisplayHookSpecificOutput,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
+    PostToolBatchHookInput,
+    PostToolBatchHookSpecificOutput,
     ResultMessage,
+    SessionEndHookInput,
+    SetupHookInput,
+    SetupHookSpecificOutput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
+    TaskCompletedHookInput,
+    TeammateIdleHookInput,
+    WorktreeCreateHookInput,
+    WorktreeCreateHookSpecificOutput,
+    WorktreeRemoveHookInput,
 )
 from claude_agent_sdk.types import (
     PermissionRuleValue,
@@ -370,6 +383,129 @@ class TestHookInputTypes:
         }
         assert len(hook_input["permission_suggestions"]) == 1
 
+    def test_session_end_hook_input(self):
+        """Test SessionEndHookInput construction."""
+        hook_input: SessionEndHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionEnd",
+            "reason": "other",
+        }
+        assert hook_input["hook_event_name"] == "SessionEnd"
+        assert hook_input["reason"] == "other"
+
+    def test_setup_hook_input(self):
+        """Test SetupHookInput construction."""
+        hook_input: SetupHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Setup",
+            "trigger": "init",
+        }
+        assert hook_input["hook_event_name"] == "Setup"
+        assert hook_input["trigger"] == "init"
+
+    def test_teammate_idle_hook_input(self):
+        """Test TeammateIdleHookInput construction."""
+        hook_input: TeammateIdleHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "TeammateIdle",
+            "teammate_name": "researcher",
+            "team_name": "session-a1b2c3d4",
+        }
+        assert hook_input["hook_event_name"] == "TeammateIdle"
+        assert hook_input["teammate_name"] == "researcher"
+
+    def test_task_completed_hook_input(self):
+        """Test TaskCompletedHookInput construction with optional fields."""
+        hook_input: TaskCompletedHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "TaskCompleted",
+            "task_id": "task-001",
+            "task_subject": "Implement user authentication",
+            "task_description": "Add login and signup endpoints",
+        }
+        assert hook_input["hook_event_name"] == "TaskCompleted"
+        assert hook_input["task_id"] == "task-001"
+
+    def test_config_change_hook_input(self):
+        """Test ConfigChangeHookInput construction."""
+        hook_input: ConfigChangeHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "ConfigChange",
+            "source": "project_settings",
+            "file_path": "/home/user/.claude/settings.json",
+        }
+        assert hook_input["hook_event_name"] == "ConfigChange"
+        assert hook_input["source"] == "project_settings"
+
+    def test_worktree_create_hook_input(self):
+        """Test WorktreeCreateHookInput construction."""
+        hook_input: WorktreeCreateHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "WorktreeCreate",
+            "name": "feature-auth",
+        }
+        assert hook_input["hook_event_name"] == "WorktreeCreate"
+        assert hook_input["name"] == "feature-auth"
+
+    def test_worktree_remove_hook_input(self):
+        """Test WorktreeRemoveHookInput construction."""
+        hook_input: WorktreeRemoveHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "WorktreeRemove",
+            "worktree_path": "/home/user/.claude/worktrees/feature-auth",
+        }
+        assert hook_input["hook_event_name"] == "WorktreeRemove"
+        assert hook_input["worktree_path"].endswith("feature-auth")
+
+    def test_post_tool_batch_hook_input(self):
+        """Test PostToolBatchHookInput construction."""
+        hook_input: PostToolBatchHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PostToolBatch",
+            "tool_calls": [
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "/a.py"},
+                    "tool_use_id": "toolu_01",
+                }
+            ],
+        }
+        assert hook_input["hook_event_name"] == "PostToolBatch"
+        assert len(hook_input["tool_calls"]) == 1
+
+    def test_message_display_hook_input(self):
+        """Test MessageDisplayHookInput construction."""
+        hook_input: MessageDisplayHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "MessageDisplay",
+            "turn_id": "0c9e6a2f-7d41-4f4e-9a15-3f4f7c2b8d10",
+            "message_id": "5b2a9c8e-1f63-4d8a-b7c4-9e0d2a6f1c3b",
+            "index": 0,
+            "final": False,
+            "delta": "Here is the plan:\n",
+        }
+        assert hook_input["hook_event_name"] == "MessageDisplay"
+        assert hook_input["index"] == 0
+        assert hook_input["final"] is False
+
 
 class TestHookSpecificOutputTypes:
     """Test hook-specific output type definitions."""
@@ -431,6 +567,42 @@ class TestHookSpecificOutputTypes:
             "stderr": "",
             "interrupted": False,
         }
+
+    def test_setup_hook_specific_output(self):
+        """Test SetupHookSpecificOutput construction."""
+        output: SetupHookSpecificOutput = {
+            "hookEventName": "Setup",
+            "additionalContext": "Dependencies installed",
+        }
+        assert output["hookEventName"] == "Setup"
+        assert output["additionalContext"] == "Dependencies installed"
+
+    def test_worktree_create_hook_specific_output(self):
+        """Test WorktreeCreateHookSpecificOutput construction."""
+        output: WorktreeCreateHookSpecificOutput = {
+            "hookEventName": "WorktreeCreate",
+            "worktreePath": "/absolute/path",
+        }
+        assert output["hookEventName"] == "WorktreeCreate"
+        assert output["worktreePath"] == "/absolute/path"
+
+    def test_post_tool_batch_hook_specific_output(self):
+        """Test PostToolBatchHookSpecificOutput construction."""
+        output: PostToolBatchHookSpecificOutput = {
+            "hookEventName": "PostToolBatch",
+            "additionalContext": "Run pytest before completing",
+        }
+        assert output["hookEventName"] == "PostToolBatch"
+        assert output["additionalContext"] == "Run pytest before completing"
+
+    def test_message_display_hook_specific_output(self):
+        """Test MessageDisplayHookSpecificOutput construction."""
+        output: MessageDisplayHookSpecificOutput = {
+            "hookEventName": "MessageDisplay",
+            "displayContent": "Here is the plan:\n",
+        }
+        assert output["hookEventName"] == "MessageDisplay"
+        assert output["displayContent"] == "Here is the plan:\n"
 
 
 class TestMcpServerStatusTypes:

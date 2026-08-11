@@ -118,6 +118,49 @@ class TestSubprocessCLITransport:
         assert "abc123" not in cmd
         assert session_id not in cmd
 
+    def test_build_command_resume_session_at_and_drops_turn(self):
+        """Truncating-resume options are passed as --flag=value."""
+        at = "0d78eb23-2d48-4741-b970-4ed0a3356cce"
+        drops = "ce0a8011-2c8d-40f2-86e5-d6e1b0c041c0"
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(
+                resume="abc123",
+                fork_session=True,
+                resume_session_at=at,
+                resume_drops_turn=drops,
+            ),
+        )
+        cmd = transport._build_command()
+
+        assert f"--resume-session-at={at}" in cmd
+        assert f"--resume-drops-turn={drops}" in cmd
+        assert "--resume-session-at" not in cmd
+        assert "--resume-drops-turn" not in cmd
+        assert at not in cmd
+        assert drops not in cmd
+
+    def test_build_command_resume_drops_turn_omitted_by_default(self):
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(resume="abc123", resume_session_at="x"),
+        )
+        cmd = transport._build_command()
+        assert "--resume-session-at=x" in cmd
+        assert not any(a.startswith("--resume-drops-turn") for a in cmd)
+
+    def test_build_command_empty_resume_drops_turn_is_forwarded(self):
+        """An empty declaration must reach the CLI (which rejects it) rather
+        than being dropped here and silently disarming the guard."""
+        transport = SubprocessCLITransport(
+            prompt="Hello",
+            options=make_options(
+                resume="abc123", resume_session_at="x", resume_drops_turn=""
+            ),
+        )
+        cmd = transport._build_command()
+        assert "--resume-drops-turn=" in cmd
+
     def test_build_command_resume_and_session_id_do_not_inject_flags(self):
         """Dash-leading values must not become standalone argv flags.
 
@@ -2946,6 +2989,18 @@ class TestWindowsCmdMetacharacterRejection:
         with (
             patch(self._PLATFORM, return_value="Windows"),
             pytest.raises(ValueError, match="session_id"),
+        ):
+            transport._build_command()
+
+    @pytest.mark.parametrize("option", ["resume_session_at", "resume_drops_turn"])
+    def test_bad_truncating_resume_values_raise_on_windows(self, option: str):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(resume="abc", **{option: "x&calc"}),
+        )
+        with (
+            patch(self._PLATFORM, return_value="Windows"),
+            pytest.raises(ValueError, match=option),
         ):
             transport._build_command()
 

@@ -1981,6 +1981,44 @@ class ClaudeAgentOptions:
     """When true, resumed sessions fork to a new session ID rather than
     continuing the previous session. Use with ``resume``."""
 
+    resume_session_at: str | None = None
+    """When resuming, only load the conversation up to and including the
+    message with this UUID. Use with ``resume`` (and usually ``fork_session``)
+    to branch from an earlier point in the conversation.
+
+    Accepts any transcript-entry UUID — typically an ``AssistantMessage.uuid``
+    observed live, or a ``SessionMessage.uuid`` from
+    :func:`get_session_messages`. See ``resume_drops_turn`` for guidance on
+    choosing the fork point. For an offline copy truncated at a message
+    (without resuming), see :func:`fork_session`.
+    """
+
+    resume_drops_turn: str | None = None
+    """With ``resume_session_at``: the UUID of the user prompt whose turn this
+    truncating resume intends to discard.
+
+    When set, the CLI validates at load time that every transcript entry after
+    the ``resume_session_at`` point is attributable to that turn, and refuses
+    the resume otherwise — e.g. when the discarded range contains a queued
+    user message or task notification the session absorbed mid-turn that the
+    caller had not yet observed. A refusal surfaces as an exception raised
+    from :func:`query` / :class:`ClaudeSDKClient` (currently a
+    ``ProcessError``) whose message contains
+    ``Resume rejected by --resume-drops-turn:`` — match on that text. Treat it
+    as deterministic: clear the pending fork target and resume plainly rather
+    than retrying the same request. Leave unset to keep the unvalidated
+    truncation behavior.
+
+    Rule of thumb: set ``resume_session_at`` to the *last* transcript entry of
+    the turn you are keeping (whatever its type), and ``resume_drops_turn`` to
+    the prompt UUID of the turn immediately after it (e.g. the next
+    ``SessionMessage`` of ``type == "user"`` from :func:`get_session_messages`,
+    or the ``uuid`` you supplied on a streamed user message). Note that with
+    structured output (``output_format``) or end-turn MCP tools, a kept turn
+    ends on entries *after* its last assistant message, so forking at the
+    assistant UUID is refused by design.
+    """
+
     agents: dict[str, AgentDefinition] | None = None
     """Programmatically define custom subagents invokable via the Agent tool.
 

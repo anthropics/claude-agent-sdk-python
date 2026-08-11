@@ -317,10 +317,13 @@ def _write_jsonl(path: Path, entries: list[Any]) -> None:
 
 
 def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
-    """Copy ``.credentials.json`` (refreshToken redacted) and ``.claude.json``.
+    """Seed ``tmp_base`` with the caller's auth and user config: ``.credentials.json``
+    (refreshToken redacted), ``.claude.json``, and user ``settings.json`` /
+    ``cowork_settings.json`` (plugin declarations stripped).
 
     Source resolution mirrors the CLI:
-    - ``.credentials.json`` lives under the config dir (default ``~/.claude/``)
+    - ``.credentials.json``, ``settings.json`` and ``cowork_settings.json`` live
+      under the config dir (default ``~/.claude/``)
     - ``.claude.json`` lives at ``$CLAUDE_CONFIG_DIR/.claude.json`` when set,
       else ``~/.claude.json`` (NOT ``~/.claude/.claude.json``)
     """
@@ -365,6 +368,54 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
     )
     _copy_if_present(claude_json_src, tmp_base / ".claude.json")
 
+    # User settings carry ``apiKeyHelper`` (a fourth auth mechanism alongside
+    # .credentials.json / Keychain / env) plus env/hooks/permissions. Without
+    # it the resumed subprocess sees no user settings at all, and an
+    # apiKeyHelper-only host fails with "Not logged in". cowork_settings.json
+    # is the alternate filename the CLI reads in cowork-plugins mode. Both pass
+    # through _strip_settings_for_resume so plugin declarations don't
+    # reconcile against the empty tmp_base plugin cache.
+    for name in ("settings.json", "cowork_settings.json"):
+        _copy_if_present(
+            source_config_dir / name, tmp_base / name, _strip_settings_for_resume
+        )
+
+
+# User-settings keys that only misbehave under the redirected CLAUDE_CONFIG_DIR:
+# plugin declarations reconcile against the always-empty tmp_base/plugins cache
+# and would network-install each declared marketplace on every resume.
+_RESUME_SETTINGS_STRIPPED_KEYS = ("enabledPlugins", "extraKnownMarketplaces")
+
+
+def _strip_settings_for_resume(content: bytes) -> bytes:
+    """Drop settings keys that misbehave under a redirected config dir.
+
+    Removes :data:`_RESUME_SETTINGS_STRIPPED_KEYS` and ``env.CLAUDE_CONFIG_DIR``
+    (which would point the subprocess's config reads away from ``tmp_base``).
+    Content that doesn't parse as a JSON object is returned untouched so the
+    subprocess sees exactly what the CLI would have read.
+    """
+    try:
+        # utf-8-sig mirrors the CLI's settings reader: PowerShell writes
+        # settings.json with a UTF-8 BOM, which a plain json.loads rejects.
+        parsed = json.loads(content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return content
+    if not isinstance(parsed, dict):
+        return content
+    stripped = False
+    for key in _RESUME_SETTINGS_STRIPPED_KEYS:
+        if key in parsed:
+            del parsed[key]
+            stripped = True
+    env_block = parsed.get("env")
+    if isinstance(env_block, dict) and "CLAUDE_CONFIG_DIR" in env_block:
+        del env_block["CLAUDE_CONFIG_DIR"]
+        stripped = True
+    if not stripped:
+        return content
+    return json.dumps(parsed, separators=(",", ":")).encode("utf-8")
+
 
 def _write_redacted_credentials(creds_json: str | None, dst: Path) -> None:
     """Write ``creds_json`` with ``claudeAiOauth.refreshToken`` removed.
@@ -392,9 +443,29 @@ def _write_redacted_credentials(creds_json: str | None, dst: Path) -> None:
         dst.chmod(0o600)
 
 
-def _copy_if_present(src: Path, dst: Path) -> None:
-    with suppress(FileNotFoundError):
-        shutil.copyfile(src, dst)
+def _copy_if_present(
+    src: Path, dst: Path, transform: Callable[[bytes], bytes] | None = None
+) -> None:
+    """Copy ``src`` to ``dst`` if it exists, through an optional ``transform``.
+
+    A missing source is skipped silently. Any other OS-level failure (EACCES,
+    EISDIR, ...) is logged and skipped: these files are best-effort enrichment
+    of the temp config dir, so an unreadable one must not abort the resume.
+    """
+    try:
+        if transform is None:
+            shutil.copyfile(src, dst)
+        else:
+            dst.write_bytes(transform(src.read_bytes()))
+            with suppress(OSError):
+                dst.chmod(0o600)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        # Don't leave a truncated dst behind for the subprocess to misparse.
+        with suppress(OSError):
+            dst.unlink(missing_ok=True)
+        logger.debug("[SessionStore] resume: skipping %s (%s)", src, e)
 
 
 def _read_keychain_credentials() -> str | None:

@@ -1023,6 +1023,7 @@ class UserMessage:
     uuid: str | None = None
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -1038,6 +1039,7 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -1046,6 +1048,7 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+    timestamp: str | None = field(default=None, kw_only=True)
 
 
 class TaskUsage(TypedDict):

@@ -67,8 +67,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
         )
         return HookEventMessage(
             subtype=data["subtype"],
-            hook_event_name=hook_event_name,
             data=data,
+            timestamp=data.get("timestamp"),
+            hook_event_name=hook_event_name,
             session_id=data.get("session_id"),
             uuid=data.get("uuid"),
         )
@@ -118,12 +119,14 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         uuid=uuid,
                         parent_tool_use_id=parent_tool_use_id,
                         tool_use_result=tool_use_result,
+                        timestamp=data.get("timestamp"),
                     )
                 return UserMessage(
                     content=data["message"]["content"],
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -199,6 +202,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data["message"].get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -213,6 +217,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return TaskStartedMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                             task_id=data["task_id"],
                             description=data["description"],
                             uuid=data["uuid"],
@@ -224,6 +229,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return TaskProgressMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                             task_id=data["task_id"],
                             description=data["description"],
                             usage=data["usage"],
@@ -236,6 +242,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return TaskNotificationMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                             task_id=data["task_id"],
                             status=data["status"],
                             output_file=data["output_file"],
@@ -263,6 +270,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return TaskUpdatedMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                             task_id=data.get("task_id", ""),
                             patch=patch,
                             status=patch.get("status"),
@@ -274,6 +282,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return MirrorErrorMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                             key=data.get("key"),
                             error=data.get("error", ""),
                         )
@@ -281,6 +290,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         return SystemMessage(
                             subtype=subtype,
                             data=data,
+                            timestamp=data.get("timestamp"),
                         )
             except KeyError as e:
                 raise MessageParseError(

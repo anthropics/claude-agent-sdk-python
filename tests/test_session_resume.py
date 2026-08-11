@@ -270,6 +270,7 @@ class TestHappyPath:
         ).encode()
         (config / "settings.json").write_bytes(settings)
         (config / "cowork_settings.json").write_bytes(settings)
+        (isolated_home / ".claude.json").write_text('{"theme":"dark"}')
 
         m = await self._materialize(cwd, project_key)
 
@@ -278,7 +279,25 @@ class TestHappyPath:
         assert (m.config_dir / "cowork_settings.json").read_bytes() == settings
         if os.name != "nt":
             assert (m.config_dir.stat().st_mode & 0o777) == 0o700
-            assert ((m.config_dir / "settings.json").stat().st_mode & 0o777) == 0o600
+            for name in ("settings.json", "cowork_settings.json", ".claude.json"):
+                assert ((m.config_dir / name).stat().st_mode & 0o777) == 0o600, name
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires os.mkfifo")
+    async def test_fifo_seed_file_is_skipped_not_read(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """A FIFO where settings.json is expected would block a plain open()
+        forever; it must be skipped like any other non-regular file."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        os.mkfifo(config / "settings.json")
+
+        with anyio.fail_after(5):
+            m = await self._materialize(cwd, project_key)
+
+        assert not (m.config_dir / "settings.json").exists()
         await m.cleanup()
 
     @pytest.mark.anyio
@@ -374,18 +393,37 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.anyio
-    async def test_unreadable_user_settings_does_not_abort_resume(
+    async def test_overflow_float_in_settings_falls_back_to_original_bytes(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """``1e999`` is valid JSON that parses to inf; re-serializing after a
+        strip would emit the bare token ``Infinity``, which the CLI rejects.
+        The transform must give up and pass the original bytes through."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        raw = b'{"enabledPlugins": {"p@m": true}, "threshold": 1e999}'
+        (config / "settings.json").write_bytes(raw)
+
+        m = await self._materialize(cwd, project_key)
+
+        assert (m.config_dir / "settings.json").read_bytes() == raw
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_unreadable_seed_files_do_not_abort_resume(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:
         config = isolated_home / ".claude"
         config.mkdir()
-        # A directory where a file is expected → EISDIR/EACCES on read.
+        # A directory where a file is expected → not a regular file / EACCES.
         (config / "settings.json").mkdir()
+        (config / ".credentials.json").mkdir()
         (isolated_home / ".claude.json").mkdir()
 
         m = await self._materialize(cwd, project_key)
 
         assert not (m.config_dir / "settings.json").exists()
+        assert not (m.config_dir / ".credentials.json").exists()
         assert not (m.config_dir / ".claude.json").exists()
         # The transcript itself was still materialized.
         assert (

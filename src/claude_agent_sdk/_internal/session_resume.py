@@ -22,6 +22,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -334,10 +335,8 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
         Path(caller_config_dir) if caller_config_dir else Path.home() / ".claude"
     )
 
-    creds_json: str | None = None
-    creds_path = source_config_dir / ".credentials.json"
-    with suppress(FileNotFoundError):
-        creds_json = creds_path.read_text(encoding="utf-8")
+    creds_bytes = _read_if_present(source_config_dir / ".credentials.json")
+    creds_json = creds_bytes.decode("utf-8") if creds_bytes is not None else None
 
     # macOS default setup keeps OAuth tokens in the Keychain, not a file.
     # Redirecting CLAUDE_CONFIG_DIR changes the Keychain service-name suffix,
@@ -414,7 +413,13 @@ def _strip_settings_for_resume(content: bytes) -> bytes:
         stripped = True
     if not stripped:
         return content
-    return json.dumps(parsed, separators=(",", ":")).encode("utf-8")
+    try:
+        # allow_nan=False: a spec-valid overflow like 1e999 parses to inf, and
+        # re-serializing it as the bare token ``Infinity`` would produce JSON
+        # the CLI rejects. Fall back to the original bytes instead.
+        return json.dumps(parsed, separators=(",", ":"), allow_nan=False).encode()
+    except ValueError:
+        return content
 
 
 def _write_redacted_credentials(creds_json: str | None, dst: Path) -> None:
@@ -443,29 +448,42 @@ def _write_redacted_credentials(creds_json: str | None, dst: Path) -> None:
         dst.chmod(0o600)
 
 
+def _read_if_present(src: Path) -> bytes | None:
+    """Read a regular file, or return ``None``.
+
+    A missing source is skipped silently. Any other reason it can't be read
+    (EACCES, a directory or FIFO where a file was expected, ...) is logged and
+    skipped: these files are best-effort enrichment of the temp config dir, so
+    an unreadable one must not abort -- or, for a FIFO, hang -- the resume.
+    """
+    try:
+        if not stat.S_ISREG(src.stat().st_mode):
+            raise OSError(f"{src} is not a regular file")
+        return src.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        logger.warning("[SessionStore] resume: skipping %s (%s)", src, e)
+        return None
+
+
 def _copy_if_present(
     src: Path, dst: Path, transform: Callable[[bytes], bytes] | None = None
 ) -> None:
-    """Copy ``src`` to ``dst`` if it exists, through an optional ``transform``.
-
-    A missing source is skipped silently. Any other OS-level failure (EACCES,
-    EISDIR, ...) is logged and skipped: these files are best-effort enrichment
-    of the temp config dir, so an unreadable one must not abort the resume.
-    """
+    """Copy ``src`` to ``dst`` (mode 0o600) if it exists, through an optional
+    ``transform``. See :func:`_read_if_present` for the skip policy."""
+    content = _read_if_present(src)
+    if content is None:
+        return
     try:
-        if transform is None:
-            shutil.copyfile(src, dst)
-        else:
-            dst.write_bytes(transform(src.read_bytes()))
-            with suppress(OSError):
-                dst.chmod(0o600)
-    except FileNotFoundError:
-        pass
+        dst.write_bytes(transform(content) if transform else content)
+        with suppress(OSError):
+            dst.chmod(0o600)
     except OSError as e:
         # Don't leave a truncated dst behind for the subprocess to misparse.
         with suppress(OSError):
             dst.unlink(missing_ok=True)
-        logger.debug("[SessionStore] resume: skipping %s (%s)", src, e)
+        logger.warning("[SessionStore] resume: skipping %s (%s)", src, e)
 
 
 def _read_keychain_credentials() -> str | None:

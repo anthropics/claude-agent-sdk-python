@@ -32,6 +32,20 @@ logger = logging.getLogger(__name__)
 # Size of the head/tail buffer for lite metadata reads.
 LITE_READ_BUF_SIZE = 65536
 
+# Field names that metadata records carry. Once a session outgrows the
+# head+tail windows, these records can fall into the dead zone between them
+# and become invisible to the windowed scan (issue #1191). Used to decide when
+# a full-file scan is needed.
+_METADATA_MARKERS = (
+    '"customTitle"',
+    '"aiTitle"',
+    '"summary"',
+    '"lastPrompt"',
+    '"gitBranch"',
+    '{"type":"tag"',
+)
+_METADATA_MARKER_BYTES = tuple(m.encode("utf-8") for m in _METADATA_MARKERS)
+
 # Upper bound on concurrent ``store.load()`` calls issued by
 # ``list_sessions_from_store``. Keeps large project listings from exhausting
 # adapter connection pools or tripping backend rate limits.
@@ -350,6 +364,25 @@ class _LiteSessionFile:
         self.tail = tail
 
 
+def _needs_metadata_full_scan(size: int, tail: str, full: bytes) -> bool:
+    """True when the tail window may be missing metadata records.
+
+    Metadata records (custom titles, tags, summaries) are appended mid-file.
+    Once a session outgrows the head+tail windows they fall into the dead zone
+    between them and become invisible to the windowed scan. A full-file scan
+    is warranted when the file contains a metadata field the tail window does
+    not already expose.
+    """
+    if size <= 2 * LITE_READ_BUF_SIZE:
+        return False
+    return any(
+        marker_bytes in full and marker not in tail
+        for marker, marker_bytes in zip(
+            _METADATA_MARKERS, _METADATA_MARKER_BYTES, strict=True
+        )
+    )
+
+
 def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
     """Opens a session file, stats it, and reads head + tail.
 
@@ -374,6 +407,17 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
                 f.seek(tail_offset)
                 tail_bytes = f.read(LITE_READ_BUF_SIZE)
                 tail = tail_bytes.decode("utf-8", errors="replace")
+
+            # Full-scan-on-miss: a session that outgrew the head+tail windows
+            # may have title/tag records in the dead zone between them (issue
+            # #1191). Only read the whole file when the tail window is missing
+            # metadata the file actually contains, so sessions without any
+            # title/tag records keep the cheap windowed read.
+            if size > 2 * LITE_READ_BUF_SIZE:
+                f.seek(0)
+                full_bytes = f.read()
+                if _needs_metadata_full_scan(size, tail, full_bytes):
+                    tail = full_bytes.decode("utf-8", errors="replace")
 
             return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
     except OSError:
@@ -1464,6 +1508,11 @@ def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
         if size > LITE_READ_BUF_SIZE
         else head
     )
+    # Mirror _read_session_lite's full-scan-on-miss (issue #1191): the whole
+    # JSONL is already in memory, so expose it when metadata may be hiding in
+    # the dead zone between the head and tail windows.
+    if _needs_metadata_full_scan(size, tail, buf):
+        tail = jsonl
     return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
 
 

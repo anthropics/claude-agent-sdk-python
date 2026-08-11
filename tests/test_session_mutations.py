@@ -12,6 +12,7 @@ import pytest
 from claude_agent_sdk import (
     delete_session,
     fork_session,
+    get_session_info,
     list_sessions,
     rename_session,
     tag_session,
@@ -815,3 +816,93 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+
+# ---------------------------------------------------------------------------
+# Regression: metadata survives session growth (issue #1191)
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataSurvivesSessionGrowth:
+    """rename_session()/tag_session() records must stay readable once the
+    session outgrows the head/tail lite-read windows (issue #1191)."""
+
+    def _make_user_line(
+        self, sid: str, cwd: str, text: str, parent_uuid: str | None
+    ) -> tuple[str, str]:
+        """Returns (line, new_uuid) for one user turn matching the CLI format."""
+        this_uuid = str(uuid.uuid4())
+        entry = {
+            "type": "user",
+            "sessionId": sid,
+            "cwd": cwd,
+            "uuid": this_uuid,
+            "parentUuid": parent_uuid,
+            "timestamp": "2026-08-10T12:00:00.000Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        }
+        return json.dumps(entry, separators=(",", ":")) + "\n", this_uuid
+
+    def _grow(
+        self, file_path: Path, nbytes: int, sid: str, cwd: str, parent: str | None
+    ) -> str:
+        """Appends ordinary user turns until nbytes more bytes are written."""
+        written = 0
+        while written < nbytes:
+            line, new_uuid = self._make_user_line(
+                sid, cwd, "... more of the same conversation ...", parent
+            )
+            with file_path.open("a", encoding="utf-8") as f:
+                f.write(line)
+            written += len(line)
+            parent = new_uuid
+        return parent
+
+    def test_title_and_tag_survive_growth(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Regression test for #1191 — records written mid-file are still
+        readable by get_session_info() and inherited by fork_session()."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        session_file = project_dir / f"{sid}.jsonl"
+
+        # 1. Work past the head window so later records land mid-file.
+        line, parent = self._make_user_line(
+            sid,
+            os.path.realpath(project_path),
+            "investigate the flaky import test",
+            None,
+        )
+        session_file.write_text(line, encoding="utf-8")
+        parent = self._grow(
+            session_file, 70_000, sid, os.path.realpath(project_path), parent
+        )
+
+        # 2. Name and tag it through the SDK's own public API.
+        rename_session(sid, "Release checklist", directory=project_path)
+        tag_session(sid, "release", directory=project_path)
+
+        # 3. Push the title/tag records out of the tail window.
+        self._grow(session_file, 70_000, sid, os.path.realpath(project_path), parent)
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.custom_title == "Release checklist"
+        assert info.tag == "release"
+
+        # 4. The metadata must also survive a full listing.
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        match = next(s for s in sessions if s.session_id == sid)
+        assert match.custom_title == "Release checklist"
+        assert match.tag == "release"
+
+        # 5. fork_session() must not bake the wrong title into the fork.
+        forked = fork_session(sid, directory=project_path)
+        forked_info = get_session_info(forked.session_id, directory=project_path)
+        assert forked_info is not None
+        assert forked_info.custom_title == "Release checklist (fork)"

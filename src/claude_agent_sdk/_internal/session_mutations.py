@@ -41,6 +41,7 @@ from .sessions import (
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
+    _needs_metadata_full_scan,
     _validate_uuid,
     project_key_for_directory,
 )
@@ -317,6 +318,14 @@ def fork_session(
         tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
             "utf-8", errors="replace"
         )
+        # Full-scan-on-miss (issue #1191): the head/tail windows can miss a
+        # customTitle written mid-file once the session outgrows them. The
+        # whole file is already in memory, so scan it when metadata may be
+        # hiding in the dead zone.
+        if buf_len > 2 * LITE_READ_BUF_SIZE and _needs_metadata_full_scan(
+            buf_len, tail, content
+        ):
+            tail = content.decode("utf-8", errors="replace")
         return (
             _extract_last_json_string_field(tail, "customTitle")
             or _extract_last_json_string_field(head, "customTitle")

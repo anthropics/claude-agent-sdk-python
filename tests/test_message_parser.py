@@ -56,6 +56,34 @@ class TestMessageParser:
         assert message.uuid == "msg-abc123-def456"
         assert len(message.content) == 1
 
+    def test_parse_user_message_origin(self):
+        """origin is surfaced on user messages, for both content shapes, and
+        passed through with keys this SDK version doesn't model."""
+        peer = {
+            "kind": "peer",
+            "from": "peer-addr",
+            "name": "other-session",
+            "verifiedPeerPid": 4242,
+            "someFutureField": True,
+        }
+        for content in ("hi", [{"type": "text", "text": "hi"}]):
+            message = parse_message(
+                {"type": "user", "message": {"content": content}, "origin": peer}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin == peer
+            assert message.origin is not None and message.origin["kind"] == "peer"
+            assert message.origin["from"] == "peer-addr"
+
+    def test_parse_user_message_origin_absent_or_malformed(self):
+        """No origin, or a non-object / kind-less origin, parses to None."""
+        for extra in ({}, {"origin": None}, {"origin": "human"}, {"origin": {}}):
+            message = parse_message(
+                {"type": "user", "message": {"content": "hi"}, **extra}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin is None, extra
+
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
         data = {
@@ -850,6 +878,36 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, ResultMessage)
         assert message.terminal_reason == "aborted_tools"
+
+    def test_parse_result_message_origin(self):
+        """origin on a result identifies what triggered the turn."""
+        base = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(base)
+        assert isinstance(message, ResultMessage)
+        assert message.origin is None
+
+        message = parse_message({**base, "origin": {"kind": "human"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin == {"kind": "human"}
+
+        for subkind in ("scheduled-trigger", "peer-send-message"):
+            origin = {"kind": "task-notification", "subkind": subkind}
+            message = parse_message({**base, "origin": origin})
+            assert isinstance(message, ResultMessage)
+            assert message.origin == origin
+
+        message = parse_message({**base, "origin": {"kind": "unclassified"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin is not None
+        assert message.origin["kind"] == "unclassified"
 
     def test_parse_result_message_missing_terminal_reason_is_none(self):
         """A result message without terminal_reason parses to None."""

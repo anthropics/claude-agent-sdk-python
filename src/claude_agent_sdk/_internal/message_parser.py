@@ -1,7 +1,7 @@
 """Message parser for Claude Code SDK responses."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from .._errors import MessageParseError
 from ..types import (
@@ -10,6 +10,7 @@ from ..types import (
     DeferredToolUse,
     HookEventMessage,
     Message,
+    MessageOrigin,
     MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
@@ -30,6 +31,19 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_origin(data: dict[str, Any]) -> MessageOrigin | None:
+    """Return ``data["origin"]`` if it is a well-formed origin object.
+
+    Passed through as-is (including keys this SDK version doesn't model) so
+    newer CLI origin kinds/fields stay visible to callers. Anything that is not
+    an object with a string ``kind`` is treated as absent.
+    """
+    origin = data.get("origin")
+    if isinstance(origin, dict) and isinstance(origin.get("kind"), str):
+        return cast(MessageOrigin, origin)
+    return None
 
 
 def parse_message(data: dict[str, Any]) -> Message | None:
@@ -83,6 +97,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 parent_tool_use_id = data.get("parent_tool_use_id")
                 tool_use_result = data.get("tool_use_result")
                 uuid = data.get("uuid")
+                origin = _parse_origin(data)
                 if isinstance(data["message"]["content"], list):
                     user_content_blocks: list[ContentBlock] = []
                     for block in data["message"]["content"]:
@@ -118,12 +133,14 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         uuid=uuid,
                         parent_tool_use_id=parent_tool_use_id,
                         tool_use_result=tool_use_result,
+                        origin=origin,
                     )
                 return UserMessage(
                     content=data["message"]["content"],
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
+                    origin=origin,
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -315,6 +332,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
                     terminal_reason=data.get("terminal_reason"),
+                    origin=_parse_origin(data),
                 )
             except KeyError as e:
                 raise MessageParseError(

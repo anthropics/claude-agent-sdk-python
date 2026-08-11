@@ -244,6 +244,193 @@ class TestHappyPath:
         assert "refreshToken" not in creds["claudeAiOauth"]
         await m.cleanup()
 
+    async def _materialize(
+        self, cwd: Path, project_key: str, **kw: Any
+    ) -> MaterializedResume:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID, **kw)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        return m
+
+    @pytest.mark.anyio
+    async def test_user_settings_materialized(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """settings.json (apiKeyHelper etc.) and cowork_settings.json are seeded
+        into the temp config dir so an apiKeyHelper-only host can still auth."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        settings = json.dumps(
+            {"apiKeyHelper": "/bin/print-key", "env": {"FOO": "bar"}}
+        ).encode()
+        (config / "settings.json").write_bytes(settings)
+        (config / "cowork_settings.json").write_bytes(settings)
+        (isolated_home / ".claude.json").write_text('{"theme":"dark"}')
+
+        m = await self._materialize(cwd, project_key)
+
+        # Nothing to strip → bytes copied through untouched.
+        assert (m.config_dir / "settings.json").read_bytes() == settings
+        assert (m.config_dir / "cowork_settings.json").read_bytes() == settings
+        if os.name != "nt":
+            assert (m.config_dir.stat().st_mode & 0o777) == 0o700
+            for name in ("settings.json", "cowork_settings.json", ".claude.json"):
+                assert ((m.config_dir / name).stat().st_mode & 0o777) == 0o600, name
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires os.mkfifo")
+    async def test_fifo_seed_file_is_skipped_not_read(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """A FIFO where settings.json is expected would block a plain open()
+        forever; it must be skipped like any other non-regular file."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        os.mkfifo(config / "settings.json")
+
+        with anyio.fail_after(5):
+            m = await self._materialize(cwd, project_key)
+
+        assert not (m.config_dir / "settings.json").exists()
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("via", ["options_env", "os_environ"])
+    async def test_user_settings_from_caller_config_dir_env(
+        self,
+        cwd: Path,
+        project_key: str,
+        tmp_path: Path,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        via: str,
+    ) -> None:
+        custom = tmp_path / "custom-config"
+        custom.mkdir()
+        (custom / "settings.json").write_text('{"apiKeyHelper":"/from/env"}')
+        # A ~/.claude/settings.json must NOT win over CLAUDE_CONFIG_DIR.
+        (isolated_home / ".claude").mkdir()
+        (isolated_home / ".claude" / "settings.json").write_text('{"x":1}')
+
+        if via == "options_env":
+            m = await self._materialize(
+                cwd, project_key, env={"CLAUDE_CONFIG_DIR": str(custom)}
+            )
+        else:
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+            m = await self._materialize(cwd, project_key)
+        assert json.loads((m.config_dir / "settings.json").read_text()) == {
+            "apiKeyHelper": "/from/env"
+        }
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_absent_user_settings_writes_nothing(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        m = await self._materialize(cwd, project_key)
+        assert not (m.config_dir / "settings.json").exists()
+        assert not (m.config_dir / "cowork_settings.json").exists()
+        assert not (m.config_dir / ".claude.json").exists()
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_user_settings_strips_plugins_and_config_dir_env(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """Plugin declarations (which would reconcile against the empty temp
+        plugin cache) and env.CLAUDE_CONFIG_DIR (which would redirect config
+        reads away from the temp dir) are dropped; everything else survives.
+        A UTF-8 BOM (PowerShell-written settings) is tolerated."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        original = {
+            "apiKeyHelper": "/bin/print-key",
+            "enabledPlugins": {"p@m": True},
+            "extraKnownMarketplaces": {"m": {"source": "github", "repo": "o/r"}},
+            "env": {"CLAUDE_CONFIG_DIR": "/elsewhere", "KEEP": "1"},
+            "permissions": {"allow": ["Bash(ls)"]},
+        }
+        for name in ("settings.json", "cowork_settings.json"):
+            (config / name).write_bytes(b"\xef\xbb\xbf" + json.dumps(original).encode())
+
+        m = await self._materialize(cwd, project_key)
+
+        for name in ("settings.json", "cowork_settings.json"):
+            copied = json.loads((m.config_dir / name).read_text())
+            assert copied == {
+                "apiKeyHelper": "/bin/print-key",
+                "env": {"KEEP": "1"},
+                "permissions": {"allow": ["Bash(ls)"]},
+            }, name
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_malformed_user_settings_copied_through(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        config = isolated_home / ".claude"
+        config.mkdir()
+        (config / "settings.json").write_bytes(b"{not json")
+        # Valid JSON but not an object, and an object whose ``env`` is not an
+        # object: both are left byte-for-byte as the CLI would have read them.
+        (config / "cowork_settings.json").write_bytes(b'{"env": "nope", "a": 1}')
+        (isolated_home / ".claude.json").write_bytes(b"[1, 2]")
+
+        m = await self._materialize(cwd, project_key)
+
+        assert (m.config_dir / "settings.json").read_bytes() == b"{not json"
+        assert (
+            m.config_dir / "cowork_settings.json"
+        ).read_bytes() == b'{"env": "nope", "a": 1}'
+        assert (m.config_dir / ".claude.json").read_bytes() == b"[1, 2]"
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_overflow_float_in_settings_falls_back_to_original_bytes(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """``1e999`` is valid JSON that parses to inf; re-serializing after a
+        strip would emit the bare token ``Infinity``, which the CLI rejects.
+        The transform must give up and pass the original bytes through."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        raw = b'{"enabledPlugins": {"p@m": true}, "threshold": 1e999}'
+        (config / "settings.json").write_bytes(raw)
+
+        m = await self._materialize(cwd, project_key)
+
+        assert (m.config_dir / "settings.json").read_bytes() == raw
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_unreadable_seed_files_do_not_abort_resume(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        config = isolated_home / ".claude"
+        config.mkdir()
+        # A directory where a file is expected → not a regular file / EACCES.
+        (config / "settings.json").mkdir()
+        (config / ".credentials.json").mkdir()
+        (isolated_home / ".claude.json").mkdir()
+
+        m = await self._materialize(cwd, project_key)
+
+        assert not (m.config_dir / "settings.json").exists()
+        assert not (m.config_dir / ".credentials.json").exists()
+        assert not (m.config_dir / ".claude.json").exists()
+        # The transcript itself was still materialized.
+        assert (
+            m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        ).exists()
+        await m.cleanup()
+
     @pytest.mark.anyio
     async def test_continue_picks_most_recent(
         self, cwd: Path, project_key: str, isolated_home: Path

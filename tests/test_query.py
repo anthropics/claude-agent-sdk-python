@@ -1370,6 +1370,38 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_pending_initialize_gets_result_error_text(self):
+        """An error result emitted during CLI startup (e.g. a refused resume)
+        arrives before the initialize response. The in-flight initialize must
+        fail with the same actionable text, not the bare exit code."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="error_during_execution",
+                        errors=["Resume rejected by --resume-drops-turn: nope"],
+                        num_turns=0,
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ProcessError) as exc_info:
+                await q.initialize()
+            assert (
+                "Claude Code returned an error result: "
+                "Resume rejected by --resume-drops-turn: nope" in str(exc_info.value)
+            )
+            assert exc_info.value.exit_code == 1
+            await q.close()
+
+        anyio.run(_test)
+
     def test_process_error_without_result_keeps_original_message(self):
         async def _test():
             transport = self._make_transport_then_raise(

@@ -446,9 +446,10 @@ class SubprocessCLITransport(Transport):
         With batch-script spawning refused (_reject_windows_batch_cli),
         these characters are harmless: list2cmdline quotes correctly for
         native executables. They are rejected anyway so that resume /
-        session_id values, which applications commonly take from external
-        input, stay inert even if a cmd.exe hop is ever reintroduced
-        between the SDK and the CLI. No format is imposed beyond this
+        session_id / resume_session_at / resume_drops_turn values, which
+        applications commonly take from external input, stay inert even
+        if a cmd.exe hop is ever reintroduced between the SDK and the
+        CLI. No format is imposed beyond this
         (resume values may be arbitrary session titles, not only UUIDs),
         and POSIX behavior is unchanged.
         """
@@ -691,6 +692,23 @@ class SubprocessCLITransport(Transport):
 
         if self._options.fork_session:
             cmd.append("--fork-session")
+
+        # Equals form so the value can never be parsed as a separate flag, even
+        # if the CLI's declaration of these options ever changes.
+        if self._options.resume_session_at:
+            self._reject_windows_cmd_metacharacters(
+                "resume_session_at", self._options.resume_session_at
+            )
+            cmd.append(f"--resume-session-at={self._options.resume_session_at}")
+
+        # `is not None`, not truthiness: an empty string is forwarded so the
+        # CLI rejects it as a malformed declaration instead of the SDK silently
+        # disarming the guard the caller believes is armed.
+        if self._options.resume_drops_turn is not None:
+            self._reject_windows_cmd_metacharacters(
+                "resume_drops_turn", self._options.resume_drops_turn
+            )
+            cmd.append(f"--resume-drops-turn={self._options.resume_drops_turn}")
 
         if self._options.session_store is not None:
             cmd.append("--session-mirror")

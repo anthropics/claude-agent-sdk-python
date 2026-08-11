@@ -371,22 +371,21 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            # Signal all pending control requests so they fail fast instead of timing out
-            for request_id, event in list(self.pending_control_responses.items()):
-                if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = e
-                    event.set()
             # When the CLI emits a result with is_error=True (e.g.
             # error_max_turns, error_during_execution) it then exits non-zero
             # on purpose, for shell-script consumers. The trailing ProcessError
             # carries no information beyond "exit code 1" — replace it with the
             # structured error the CLI already reported so the exception is
             # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
+            pending_error = e
             if isinstance(e, ProcessError) and self._last_error_result_text is not None:
                 error_text = (
                     f"Claude Code returned an error result: "
                     f"{self._last_error_result_text}"
                 )
+                # stderr deliberately not carried over: the transport's value is
+                # a generic placeholder, and the result text is the real cause.
+                pending_error = ProcessError(error_text, exit_code=e.exit_code)
                 logger.debug(
                     "Replacing ProcessError (exit code %s) with result error text",
                     e.exit_code,
@@ -394,6 +393,14 @@ class Query:
             else:
                 error_text = str(e)
                 logger.error(f"Fatal error in message reader: {e}")
+            # Signal all pending control requests so they fail fast instead of
+            # timing out. This includes an `initialize` still in flight when the
+            # CLI reports an error result during startup (e.g. a refused
+            # resume), so that path sees the same actionable text.
+            for request_id, event in list(self.pending_control_responses.items()):
+                if request_id not in self.pending_control_results:
+                    self.pending_control_results[request_id] = pending_error
+                    event.set()
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": error_text})
         finally:

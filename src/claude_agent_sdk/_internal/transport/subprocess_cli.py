@@ -447,8 +447,9 @@ class SubprocessCLITransport(Transport):
         these characters are harmless: list2cmdline quotes correctly for
         native executables. They are rejected anyway so that resume /
         session_id / resume_session_at / resume_drops_turn values, which
-        applications commonly take from external input, stay inert even if a cmd.exe hop is ever reintroduced
-        between the SDK and the CLI. No format is imposed beyond this
+        applications commonly take from external input, stay inert even
+        if a cmd.exe hop is ever reintroduced between the SDK and the
+        CLI. No format is imposed beyond this
         (resume values may be arbitrary session titles, not only UUIDs),
         and POSIX behavior is unchanged.
         """

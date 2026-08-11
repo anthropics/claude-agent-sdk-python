@@ -7,6 +7,7 @@ from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
     AssistantMessage,
+    ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
     RateLimitEvent,
@@ -887,6 +888,28 @@ class TestMessageParser:
         assert message.rate_limit_info.resets_at == 1700000000
         assert message.rate_limit_info.rate_limit_type == "five_hour"
         assert message.rate_limit_info.utilization == 0.91
+
+    def test_parse_conversation_reset(self):
+        """conversation_reset parses into a typed ConversationResetMessage."""
+        data = {
+            "type": "conversation_reset",
+            "new_conversation_id": "d2f4a573-ca99-42a2-bb7a-905b40c908e8",
+            "uuid": "msg-1",
+            "session_id": "66694129-ce74-4ee1-9b0f-994155ac97ba",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ConversationResetMessage)
+        assert message.new_conversation_id == "d2f4a573-ca99-42a2-bb7a-905b40c908e8"
+        assert message.uuid == "msg-1"
+        assert message.session_id == "66694129-ce74-4ee1-9b0f-994155ac97ba"
+
+    def test_parse_conversation_reset_missing_field(self):
+        """conversation_reset without new_conversation_id raises."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(
+                {"type": "conversation_reset", "uuid": "u", "session_id": "s"}
+            )
+        assert "new_conversation_id" in str(exc_info.value)
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""

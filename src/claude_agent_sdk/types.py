@@ -1318,6 +1318,33 @@ class RateLimitEvent:
 
 
 @dataclass
+class ConversationResetMessage:
+    """Emitted when the session's conversation is replaced without ending the
+    connection — e.g. after ``/clear`` or any other flow that discards the
+    transcript mid-session.
+
+    In streaming input mode a single connection can carry many user turns, and
+    a reset clears the conversation history *and* zeroes the running totals
+    reported on subsequent :class:`ResultMessage` objects (e.g.
+    ``total_cost_usd``). If you accumulate those totals across a long-lived
+    session, snapshot them when this message arrives.
+
+    Attributes:
+        new_conversation_id: Opaque identifier for the fresh conversation, for
+            UIs to key an empty transcript on (and discard any cached session
+            title). This is *not* the ``session_id`` of subsequent messages —
+            read that from the next message.
+        uuid: Unique ID of this message.
+        session_id: ID of the session that was reset (the outgoing session;
+            messages after the reset carry a new ``session_id``).
+    """
+
+    new_conversation_id: str
+    uuid: str
+    session_id: str
+
+
+@dataclass
 class HookEventMessage(SystemMessage):
     """Hook event emitted by the CLI when ``include_hook_events`` is enabled.
 
@@ -1358,6 +1385,7 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | ConversationResetMessage
 )
 
 

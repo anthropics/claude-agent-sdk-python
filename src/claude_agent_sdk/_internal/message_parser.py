@@ -7,6 +7,7 @@ from .._errors import MessageParseError
 from ..types import (
     AssistantMessage,
     ContentBlock,
+    ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
     Message,
@@ -354,6 +355,19 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
+                ) from e
+
+        case "conversation_reset":
+            try:
+                return ConversationResetMessage(
+                    new_conversation_id=data["new_conversation_id"],
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in conversation_reset message: {e}",
+                    data,
                 ) from e
 
         case _:

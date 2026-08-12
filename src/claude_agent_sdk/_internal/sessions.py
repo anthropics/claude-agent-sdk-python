@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Size of the head/tail buffer for lite metadata reads.
 LITE_READ_BUF_SIZE = 65536
+# Cap on growing the head to complete an oversized first record, so a
+# pathological file cannot blow up a listing read.
+LITE_HEAD_MAX_SIZE = 16 * LITE_READ_BUF_SIZE
 
 # Upper bound on concurrent ``store.load()`` calls issued by
 # ``list_sessions_from_store``. Keeps large project listings from exhausting
@@ -256,6 +259,25 @@ def _extract_last_json_string_field(text: str, key: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _extract_first_top_level_timestamp(head: str) -> str | None:
+    """First top-level "timestamp" value among the head's complete records.
+
+    A raw text scan can match a nested timestamp inside another record's
+    payload and yield a wrong value, so parse whole lines instead. Lines
+    that fail to parse (including a trailing cut-off fragment) are skipped.
+    """
+    for line in head.splitlines():
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            timestamp = entry.get("timestamp")
+            if isinstance(timestamp, str):
+                return timestamp
+    return None
+
+
 def _extract_first_prompt_from_head(head: str) -> str:
     """Extracts the first meaningful user prompt from a JSONL head chunk.
 
@@ -338,6 +360,15 @@ def _extract_first_prompt_from_head(head: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _lite_head_bytes(buf: bytes) -> bytes:
+    """First-window head of in-memory content, grown (bounded) to complete an
+    oversized first record. Mirrors ``_read_session_lite``'s growth."""
+    if len(buf) > LITE_READ_BUF_SIZE and b"\n" not in buf[:LITE_READ_BUF_SIZE]:
+        newline_at = buf.find(b"\n", LITE_READ_BUF_SIZE, LITE_HEAD_MAX_SIZE)
+        return buf[: newline_at + 1] if newline_at >= 0 else buf[:LITE_HEAD_MAX_SIZE]
+    return buf[:LITE_READ_BUF_SIZE]
+
+
 class _LiteSessionFile:
     """Result of reading a session file's head, tail, mtime and size."""
 
@@ -364,6 +395,16 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
             head_bytes = f.read(LITE_READ_BUF_SIZE)
             if not head_bytes:
                 return None
+
+            # A single record can exceed the window (a pasted log or stack
+            # trace), leaving the head without a single complete line. Grow
+            # the head (bounded) until the first record closes so it is
+            # parsed rather than silently dropped as malformed.
+            if b"\n" not in head_bytes and size > LITE_READ_BUF_SIZE:
+                head_bytes += f.read(LITE_HEAD_MAX_SIZE - LITE_READ_BUF_SIZE)
+                newline_at = head_bytes.find(b"\n", LITE_READ_BUF_SIZE)
+                if newline_at >= 0:
+                    head_bytes = head_bytes[: newline_at + 1]
 
             head = head_bytes.decode("utf-8", errors="replace")
 
@@ -484,7 +525,7 @@ def _parse_session_info_from_lite(
     # with no timestamp field; the first user/assistant record that follows
     # does carry one.
     created_at: int | None = None
-    first_timestamp = _extract_json_string_field(head, "timestamp")
+    first_timestamp = _extract_first_top_level_timestamp(head)
     if first_timestamp:
         try:
             # Python 3.10's fromisoformat doesn't support trailing 'Z'
@@ -1458,7 +1499,7 @@ def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
     """
     buf = jsonl.encode("utf-8")
     size = len(buf)
-    head = buf[:LITE_READ_BUF_SIZE].decode("utf-8", errors="replace")
+    head = _lite_head_bytes(buf).decode("utf-8", errors="replace")
     tail = (
         buf[max(0, size - LITE_READ_BUF_SIZE) :].decode("utf-8", errors="replace")
         if size > LITE_READ_BUF_SIZE

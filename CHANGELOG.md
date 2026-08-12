@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.137
+
+### New Features
+
+- **`ConversationResetMessage` for conversation reset events**: The SDK now surfaces the CLI's `conversation_reset` frame as a `ConversationResetMessage` dataclass, letting applications detect when a `/clear` or other transcript-discarding flow resets the conversation mid-session. Includes `new_conversation_id`, `uuid`, and `session_id` fields. This widens the `Message` union — code that exhaustively matches with `assert_never` will need updating (#1196)
+- **Message origin on `UserMessage` and `ResultMessage`**: New `origin: MessageOrigin | None` field on `UserMessage` and `ResultMessage` surfaces why a turn was initiated — distinguishing application-submitted prompts (`"human"`) from background-task notifications, scheduled triggers, peer messages, and other session-injected turns. New exported types: `MessageOrigin`, `MessageOriginKind`, `TaskNotificationOriginSubkind` (#1199)
+- **`resume_session_at` / `resume_drops_turn` options for truncating resume**: `ClaudeAgentOptions` now supports `resume_session_at` (fork a session at an earlier transcript entry) and `resume_drops_turn` (validate that only entries from a specific turn are discarded). Enables safe rewind-to-before-last-prompt without silently dropping unobserved messages (#1198)
+
+### Bug Fixes
+
+- **Seed `settings.json` into temp config dir on `SessionStore` resume**: Resuming from a `SessionStore` now copies `settings.json` and `cowork_settings.json` into the temporary config directory, preserving `apiKeyHelper` auth, user hooks, env vars, and permissions. Previously, hosts authenticating solely via `apiKeyHelper` would fail with "Not logged in" on resume (#1197)
+- **Improved error messages for failed resume**: When the CLI rejects a resume (e.g. nonexistent session or `resume_drops_turn` guard failure), pending control requests like `initialize()` now receive the actual error text instead of a generic "Command failed with exit code 1" (#1198)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.229
+
 ## 0.2.136
 
 ### Internal/Other Changes

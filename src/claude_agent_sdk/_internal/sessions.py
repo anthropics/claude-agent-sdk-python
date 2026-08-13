@@ -265,8 +265,10 @@ def _extract_first_top_level_timestamp(head: str) -> str | None:
     A raw text scan can match a nested timestamp inside another record's
     payload and yield a wrong value, so parse whole lines instead. Lines
     that fail to parse (including a trailing cut-off fragment) are skipped.
+    Records split on "\n" only: str.splitlines() also breaks on U+2028 and
+    friends, which JSON.stringify emits unescaped inside strings.
     """
-    for line in head.splitlines():
+    for line in head.split("\n"):
         try:
             entry = json.loads(line)
         except (json.JSONDecodeError, ValueError):
@@ -361,9 +363,9 @@ def _extract_first_prompt_from_head(head: str) -> str:
 
 
 def _lite_head_bytes(buf: bytes) -> bytes:
-    """First-window head of in-memory content, grown (bounded) to complete an
-    oversized first record. Mirrors ``_read_session_lite``'s growth."""
-    if len(buf) > LITE_READ_BUF_SIZE and b"\n" not in buf[:LITE_READ_BUF_SIZE]:
+    """First-window head of in-memory content, grown (bounded) to complete a
+    record cut by the window. Mirrors ``_read_session_lite``'s growth."""
+    if len(buf) > LITE_READ_BUF_SIZE and not buf[:LITE_READ_BUF_SIZE].endswith(b"\n"):
         newline_at = buf.find(b"\n", LITE_READ_BUF_SIZE, LITE_HEAD_MAX_SIZE)
         return buf[: newline_at + 1] if newline_at >= 0 else buf[:LITE_HEAD_MAX_SIZE]
     return buf[:LITE_READ_BUF_SIZE]
@@ -397,14 +399,25 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
                 return None
 
             # A single record can exceed the window (a pasted log or stack
-            # trace), leaving the head without a single complete line. Grow
-            # the head (bounded) until the first record closes so it is
-            # parsed rather than silently dropped as malformed.
-            if b"\n" not in head_bytes and size > LITE_READ_BUF_SIZE:
-                head_bytes += f.read(LITE_HEAD_MAX_SIZE - LITE_READ_BUF_SIZE)
-                newline_at = head_bytes.find(b"\n", LITE_READ_BUF_SIZE)
-                if newline_at >= 0:
-                    head_bytes = head_bytes[: newline_at + 1]
+            # trace) and get cut mid-line; the parsers then skip it as
+            # malformed. The CLI writes bookkeeping records first, so the
+            # oversized record is rarely line 1. The trigger is the window
+            # ending mid-record, not the window lacking a newline. Grow the
+            # head (bounded) one chunk at a time until the cut record closes.
+            if size > LITE_READ_BUF_SIZE and not head_bytes.endswith(b"\n"):
+                search_from = len(head_bytes)
+                while len(head_bytes) < LITE_HEAD_MAX_SIZE:
+                    chunk = f.read(
+                        min(LITE_READ_BUF_SIZE, LITE_HEAD_MAX_SIZE - len(head_bytes))
+                    )
+                    if not chunk:
+                        break
+                    head_bytes += chunk
+                    newline_at = head_bytes.find(b"\n", search_from)
+                    if newline_at >= 0:
+                        head_bytes = head_bytes[: newline_at + 1]
+                        break
+                    search_from = len(head_bytes)
 
             head = head_bytes.decode("utf-8", errors="replace")
 

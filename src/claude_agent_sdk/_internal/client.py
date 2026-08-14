@@ -99,13 +99,6 @@ class InternalClient:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
         if options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
-                )
-
             # canUseTool and permission_prompt_tool_name are mutually exclusive
             if options.permission_prompt_tool_name:
                 raise ValueError(

@@ -1,11 +1,11 @@
-"""Tests for query() stdin lifecycle with SDK MCP servers and hooks.
+"""Tests for query() stdin lifecycle with SDK MCP servers, hooks and can_use_tool.
 
 The SDK communicates with the CLI subprocess over stdin/stdout. When SDK MCP
-servers or hooks are configured, the CLI sends control_request messages back
-to the SDK *after* the prompt is written. The SDK must keep stdin open long
-enough to respond to these requests. These tests verify that both the string
-prompt and AsyncIterable prompt paths defer closing stdin until the CLI's
-first result arrives.
+servers, hooks, or a can_use_tool callback are configured, the CLI sends
+control_request messages back to the SDK *after* the prompt is written. The
+SDK must keep stdin open long enough to respond to these requests. These tests
+verify that both the string prompt and AsyncIterable prompt paths defer
+closing stdin until the CLI's run-ending result arrives.
 """
 
 import json
@@ -17,6 +17,7 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    PermissionResultAllow,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -855,6 +856,170 @@ class TestNoTimeoutForHooksAndMcpServers:
             mock_transport.end_input.assert_called_once()
 
         anyio.run(_test)
+
+    def test_can_use_tool_waits_for_result(self):
+        """A can_use_tool callback alone must hold stdin open until the
+        run-ending result, exactly like hooks and SDK MCP servers do."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            end_input_called = anyio.Event()
+
+            async def tracking_end_input():
+                end_input_called.set()
+
+            mock_transport.end_input = tracking_end_input
+
+            async def allow_all(tool_name, tool_input, context):
+                return PermissionResultAllow()
+
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=True,
+                can_use_tool=allow_all,
+            )
+
+            async with anyio.create_task_group() as tg:
+
+                async def wait_then_check():
+                    await anyio.sleep(0.05)
+                    assert not end_input_called.is_set()
+                    q._first_result_event.set()
+                    await anyio.sleep(0.05)
+                    assert end_input_called.is_set()
+
+                tg.start_soon(q.wait_for_result_and_end_input)
+                tg.start_soon(wait_then_check)
+
+        anyio.run(_test)
+
+
+def _make_permission_gated_transport():
+    """Mock transport that enforces the real CLI contract for can_use_tool.
+
+    - The ``can_use_tool`` control_request is only emitted after the SDK has
+      written the user message.
+    - The assistant/result frames are only emitted after the SDK has written
+      the permission control_response.
+    - Any write after ``end_input()`` raises, like a closed pipe would.
+
+    Returns ``(transport, state)`` where ``state`` records what happened.
+    """
+    state: dict = {"writes": [], "ended": False, "callback_calls": []}
+    user_message_written = anyio.Event()
+    permission_response_written = anyio.Event()
+
+    transport = AsyncMock()
+    transport.connect = AsyncMock()
+    transport.close = AsyncMock()
+    transport.is_ready = Mock(return_value=True)
+
+    async def write(data):
+        if state["ended"]:
+            raise RuntimeError("stdin closed")
+        state["writes"].append(data)
+        payload = json.loads(data)
+        if payload.get("type") == "user":
+            user_message_written.set()
+        elif payload.get("type") == "control_response":
+            permission_response_written.set()
+
+    async def end_input():
+        state["ended"] = True
+
+    async def read_messages():
+        with anyio.move_on_after(5):
+            await user_message_written.wait()
+        yield {
+            "type": "control_request",
+            "request_id": "perm_1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Write",
+                "input": {"file_path": "/tmp/x", "content": "hi"},
+                "tool_use_id": "toolu_1",
+            },
+        }
+        # The CLI cannot make progress until the permission verdict arrives.
+        with anyio.move_on_after(5):
+            await permission_response_written.wait()
+        if not permission_response_written.is_set():
+            return
+        for msg in _ASSISTANT_AND_RESULT:
+            yield msg
+
+    transport.write = write
+    transport.end_input = end_input
+    transport.read_messages = read_messages
+    return transport, state
+
+
+class TestCanUseToolKeepsStdinOpen:
+    """A ``can_use_tool`` callback is served over the control protocol, so
+    stdin must stay open until the run-ending result for the permission
+    verdict to reach the CLI. Previously only hooks and SDK MCP servers held
+    stdin open, so ``query()`` with a finite prompt and only ``can_use_tool``
+    closed stdin as soon as the prompt was written and every permission
+    request failed CLI-side with "Stream closed"."""
+
+    @staticmethod
+    async def _allow_all(state):
+        async def callback(tool_name, tool_input, context):
+            state["callback_calls"].append(tool_name)
+            return PermissionResultAllow()
+
+        return callback
+
+    def _run_query(self, prompt_factory):
+        async def _test():
+            transport, state = _make_permission_gated_transport()
+            callback = await self._allow_all(state)
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = transport
+                messages = [
+                    msg
+                    async for msg in query(
+                        prompt=prompt_factory(),
+                        options=ClaudeAgentOptions(can_use_tool=callback),
+                    )
+                ]
+            return messages, state
+
+        return anyio.run(_test)
+
+    def test_async_iterable_prompt_with_can_use_tool_waits_for_result(self):
+        async def prompt_stream():
+            yield {"type": "user", "message": {"role": "user", "content": "write it"}}
+
+        messages, state = self._run_query(prompt_stream)
+
+        assert state["callback_calls"] == ["Write"]
+        responses = [
+            json.loads(w) for w in state["writes"] if '"control_response"' in w
+        ]
+        assert len(responses) == 1
+        assert responses[0]["response"]["subtype"] == "success"
+        assert responses[0]["response"]["response"]["behavior"] == "allow"
+        assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
+        assert state["ended"] is True
+
+    def test_string_prompt_with_can_use_tool_is_supported(self):
+        """String prompts are streamed over stdin internally, so can_use_tool
+        no longer needs an AsyncIterable prompt."""
+        messages, state = self._run_query(lambda: "write it")
+
+        assert state["callback_calls"] == ["Write"]
+        assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
+        assert state["ended"] is True
 
 
 class TestQueryCrossTaskCleanup:

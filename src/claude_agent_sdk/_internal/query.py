@@ -915,25 +915,38 @@ class Query:
             if status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
 
+    def _has_bidirectional_needs(self) -> bool:
+        """Whether the CLI may still send control requests that need a reply.
+
+        SDK MCP servers, hooks, and the ``can_use_tool`` permission callback
+        are all served over the control protocol: the CLI writes a
+        ``control_request`` to stdout and blocks until the SDK writes the
+        matching ``control_response`` to stdin. Closing stdin while any of
+        these are configured makes every later request fail CLI-side with
+        "Stream closed". Mirrors the TypeScript SDK's ``hasBidirectionalNeeds``.
+        """
+        return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
+
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for a run-ending result (if needed) then close stdin.
 
-        If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until a result arrives with no tasks in flight. A
-        result frame ends one turn, not necessarily the run: background tasks
-        keep running past it and still need stdin for hook/SDK-MCP control
-        responses (see #1088). The control protocol requires stdin to remain
-        open for the entire conversation, so no timeout is applied. The event
-        is guaranteed to fire: either when a result message arrives with no
-        in-flight tasks (every task completion wakes the parent for a
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
+        bidirectional communication, keeps stdin open until a result arrives
+        with no tasks in flight. A result frame ends one turn, not necessarily
+        the run: background tasks keep running past it and still need stdin
+        for control responses (see #1088). The control protocol requires stdin
+        to remain open for the entire conversation, so no timeout is applied.
+        The event is guaranteed to fire: either when a result message arrives
+        with no in-flight tasks (every task completion wakes the parent for a
         follow-up turn, which ends in such a result), or in _read_messages'
         finally block if the process exits early.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        if self._has_bidirectional_needs():
             logger.debug(
                 "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={self.can_use_tool is not None})"
             )
             await self._first_result_event.wait()
 
@@ -942,8 +955,9 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
+        waits for a run-ending result before closing stdin to allow
+        bidirectional control protocol communication.
         """
         try:
             async for message in stream:

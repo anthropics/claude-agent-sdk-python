@@ -2091,6 +2091,18 @@ class ClaudeAgentOptions:
     TypeScript SDK's ``includeHookEvents``.
     """
 
+    forward_subagent_text: bool = False
+    """Forward subagent text and thinking blocks as messages in the stream.
+
+    By default only ``tool_use`` / ``tool_result`` blocks from subagents
+    (spawned via the Agent tool) are emitted, as ``AssistantMessage`` /
+    ``UserMessage`` objects whose ``parent_tool_use_id`` is the spawning
+    Agent ``tool_use`` id — enough for a progress heartbeat. When true, the
+    subagent's text and thinking blocks are forwarded the same way, so
+    consumers can render the full nested transcript. Matches the TypeScript
+    SDK's ``forwardSubagentText``.
+    """
+
     fork_session: bool = False
     """When true, resumed sessions fork to a new session ID rather than
     continuing the previous session. Use with ``resume``."""
@@ -2306,6 +2318,9 @@ class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
+    excludeDynamicSections: NotRequired[bool]
+    skills: NotRequired[list[str]]
+    forwardSubagentText: NotRequired[bool]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

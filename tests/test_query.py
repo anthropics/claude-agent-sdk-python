@@ -77,6 +77,51 @@ def test_initialize_omits_skills_for_none_and_all():
     assert "skills" not in _capture_initialize_request(skills="all")
 
 
+def test_initialize_sends_forward_subagent_text_when_enabled():
+    """forwardSubagentText is sent as an initialize capability, not a CLI flag."""
+    sent = _capture_initialize_request(forward_subagent_text=True)
+    assert sent["forwardSubagentText"] is True
+
+
+def test_initialize_omits_forward_subagent_text_by_default():
+    assert "forwardSubagentText" not in _capture_initialize_request()
+    assert "forwardSubagentText" not in _capture_initialize_request(
+        forward_subagent_text=False
+    )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_forward_subagent_text_option_reaches_initialize(enabled):
+    """ClaudeAgentOptions.forward_subagent_text is plumbed through query()."""
+
+    async def _test():
+        mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
+        captured: dict = {}
+
+        async def fake_send(self, request, timeout=60.0):
+            if request.get("subtype") == "initialize":
+                captured.update(request)
+            return {}
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_cls,
+            patch.object(Query, "_send_control_request", fake_send),
+        ):
+            mock_cls.return_value = mock_transport
+            async for _ in query(
+                prompt="Hello",
+                options=ClaudeAgentOptions(forward_subagent_text=enabled),
+            ):
+                pass
+
+        assert captured["subtype"] == "initialize"
+        assert captured.get("forwardSubagentText") == (True if enabled else None)
+
+    anyio.run(_test)
+
+
 def _make_mock_transport(messages, control_requests=None):
     """Create a mock transport that yields messages and optionally sends control requests.
 

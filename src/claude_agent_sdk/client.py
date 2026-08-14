@@ -238,6 +238,7 @@ class ClaudeSDKClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=self.options.skills,
+            forward_subagent_text=self.options.forward_subagent_text,
         )
 
         if self.options.session_store is not None:

@@ -1748,15 +1748,25 @@ class SessionMessage:
         uuid: Unique message identifier.
         session_id: ID of the session this message belongs to.
         message: Raw Anthropic API message dict (role, content, etc.).
-        parent_tool_use_id: Always ``None`` for top-level conversation
-            messages (tool-use sidechain messages are filtered out).
+        parent_tool_use_id: For messages returned by ``get_subagent_messages()``
+            / ``get_subagent_messages_from_store()``, the id of the Agent
+            ``tool_use`` block in the parent session that spawned the subagent
+            (recovered from the subagent's metadata; ``None`` if that metadata
+            is unavailable). Always ``None`` for top-level
+            ``get_session_messages()`` / ``get_session_messages_from_store()``
+            results.
+        parent_agent_id: For subagent messages, the agent id of the subagent
+            that spawned this subagent, or ``None`` if it was spawned by the
+            main session (or the metadata is unavailable). Always ``None`` for
+            top-level session messages.
     """
 
     type: Literal["user", "assistant"]
     uuid: str
     session_id: str
     message: Any
-    parent_tool_use_id: None = None
+    parent_tool_use_id: str | None = None
+    parent_agent_id: str | None = None
 
 
 # Controls whether thinking text is returned summarized or omitted. Opus 4.7+

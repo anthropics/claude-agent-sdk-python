@@ -1036,7 +1036,11 @@ def _is_visible_message(entry: _TranscriptEntry) -> bool:
     return not entry.get("teamName")
 
 
-def _to_session_message(entry: _TranscriptEntry) -> SessionMessage:
+def _to_session_message(
+    entry: _TranscriptEntry,
+    parent_tool_use_id: str | None = None,
+    parent_agent_id: str | None = None,
+) -> SessionMessage:
     """Converts a transcript entry dict into a SessionMessage."""
     entry_type = entry.get("type")
     # Narrow to the Literal type — _is_visible_message already guarantees
@@ -1047,7 +1051,8 @@ def _to_session_message(entry: _TranscriptEntry) -> SessionMessage:
         uuid=entry.get("uuid", ""),
         session_id=entry.get("sessionId", ""),
         message=entry.get("message"),
-        parent_tool_use_id=None,
+        parent_tool_use_id=parent_tool_use_id,
+        parent_agent_id=parent_agent_id,
     )
 
 
@@ -1331,7 +1336,11 @@ def get_subagent_messages(
 
     Parses the subagent transcript, builds the conversation chain via
     ``parentUuid`` links, and returns user/assistant messages in
-    chronological order.
+    chronological order. Each message's ``parent_tool_use_id`` is the id of
+    the Agent ``tool_use`` in the parent session that spawned this subagent
+    (and ``parent_agent_id`` the spawning subagent, for nested subagents),
+    read from the ``agent-<agentId>.meta.json`` sidecar next to the
+    transcript; both are ``None`` if the sidecar is missing.
 
     Args:
         session_id: UUID of the parent session.
@@ -1386,22 +1395,66 @@ def get_subagent_messages(
     if not content:
         return []
 
+    # The .meta.json sidecar next to the transcript records which Agent
+    # tool_use spawned this subagent (and, for nested subagents, the parent
+    # agent id). Missing or unreadable sidecar → leave both as None.
+    parent_tool_use_id, parent_agent_id = _parent_ids_from_agent_metadata(
+        _read_agent_metadata_sidecar(match)
+    )
+
     entries = _parse_transcript_entries(content)
-    return _entries_to_subagent_messages(entries, limit, offset)
+    return _entries_to_subagent_messages(
+        entries, limit, offset, parent_tool_use_id, parent_agent_id
+    )
+
+
+def _read_agent_metadata_sidecar(transcript_path: Path) -> dict[str, Any] | None:
+    """Read ``agent-<id>.meta.json`` beside ``agent-<id>.jsonl``, if present."""
+    meta_path = transcript_path.with_name(
+        transcript_path.name[: -len(".jsonl")] + ".meta.json"
+    )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _parent_ids_from_agent_metadata(
+    meta: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Extract ``(toolUseId, parentAgentId)`` from an agent metadata dict.
+
+    Works for both the on-disk ``.meta.json`` sidecar and the synthetic
+    ``agent_metadata`` entry a :class:`SessionStore` receives in its place.
+    """
+    if not meta:
+        return None, None
+    tool_use_id = meta.get("toolUseId")
+    parent_agent_id = meta.get("parentAgentId")
+    return (
+        tool_use_id if isinstance(tool_use_id, str) else None,
+        parent_agent_id if isinstance(parent_agent_id, str) else None,
+    )
 
 
 def _entries_to_subagent_messages(
     entries: list[_TranscriptEntry],
     limit: int | None,
     offset: int,
+    parent_tool_use_id: str | None = None,
+    parent_agent_id: str | None = None,
 ) -> list[SessionMessage]:
     """Builds the subagent chain from parsed entries and applies paging.
 
-    Shared by the filesystem and SessionStore-backed paths.
+    Shared by the filesystem and SessionStore-backed paths. Every message in
+    a subagent transcript shares the same parent ids.
     """
     chain = _build_subagent_chain(entries)
     messages = [
-        _to_session_message(e) for e in chain if e.get("type") in ("user", "assistant")
+        _to_session_message(e, parent_tool_use_id, parent_agent_id)
+        for e in chain
+        if e.get("type") in ("user", "assistant")
     ]
 
     if limit is not None and limit > 0:
@@ -1862,7 +1915,9 @@ async def get_subagent_messages_from_store(
     Subagents may live at ``subagents/agent-<id>`` or nested under
     ``subagents/workflows/<runId>/agent-<id>``. Scans subkeys when the
     store implements :meth:`SessionStore.list_subkeys`; otherwise tries
-    the direct path.
+    the direct path. ``parent_tool_use_id`` / ``parent_agent_id`` are taken
+    from the subagent's ``agent_metadata`` entry in the store (``None`` if
+    absent).
 
     Args:
         session_store: The store to read from.
@@ -1910,16 +1965,25 @@ async def get_subagent_messages_from_store(
     if not entries:
         return []
 
-    # Drop synthetic agent_metadata entries injected by the mirror hook —
-    # they describe the .meta.json sidecar, not transcript lines.
-    transcript = [
-        e
-        for e in entries
-        if not (isinstance(e, dict) and e.get("type") == "agent_metadata")
-    ]
+    # The synthetic agent_metadata entry (the store's copy of the .meta.json
+    # sidecar) records which Agent tool_use spawned this subagent. Recover
+    # the parent ids from it — last one wins, since the metadata is
+    # rewritten on resume — then drop it: it is not a transcript line.
+    meta_entry: dict[str, Any] | None = None
+    transcript: list[Any] = []
+    for e in entries:
+        if isinstance(e, dict) and e.get("type") == "agent_metadata":
+            meta_entry = dict(e)
+        else:
+            transcript.append(e)
     if not transcript:
         return []
+    parent_tool_use_id, parent_agent_id = _parent_ids_from_agent_metadata(meta_entry)
 
     return _entries_to_subagent_messages(
-        _filter_transcript_entries(transcript), limit, offset
+        _filter_transcript_entries(transcript),
+        limit,
+        offset,
+        parent_tool_use_id,
+        parent_agent_id,
     )

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.139
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.233
+
 ## 0.2.138
 
 ### Internal/Other Changes

@@ -364,3 +364,131 @@ class TestClaudeSDKClientResourceCleanup:
                 receive_stream.receive_nowait()
 
         anyio.run(_test)
+
+
+class TestToolAliasesPassthrough:
+    """Verify that tool_aliases in ClaudeAgentOptions reaches the Query constructor
+    in both the query() (InternalClient) and ClaudeSDKClient code paths."""
+
+    def _make_mock_query(self):
+        """Minimal Query mock sufficient for connect/disconnect."""
+        mock_query = AsyncMock()
+        mock_query.start = AsyncMock()
+        mock_query.initialize = AsyncMock(return_value=None)
+        mock_query.close = AsyncMock()
+        mock_query.close_receive_stream = Mock()
+        mock_query._tg = None
+        mock_query.set_transcript_mirror_batcher = Mock()
+
+        def _consume_coro(coro):
+            coro.close()
+            return Mock()
+
+        mock_query.spawn_task = Mock(side_effect=_consume_coro)
+
+        async def mock_receive():
+            yield {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "test",
+            }
+
+        mock_query.receive_messages = mock_receive
+        return mock_query
+
+    def _make_mock_transport(self):
+        mock_transport = AsyncMock()
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        return mock_transport
+
+    def test_query_function_passes_tool_aliases_to_query(self):
+        """InternalClient passes tool_aliases through to the Query constructor."""
+
+        async def _test():
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch("claude_agent_sdk._internal.client.Query") as mock_query_class,
+            ):
+                mock_transport_class.return_value = self._make_mock_transport()
+                mock_query_class.return_value = self._make_mock_query()
+
+                options = ClaudeAgentOptions(
+                    tool_aliases={"Read": "mcp__fakefs__Read"}
+                )
+                async for _ in query(prompt="test", options=options):
+                    pass
+
+                call_kwargs = mock_query_class.call_args.kwargs
+                assert call_kwargs["tool_aliases"] == {"Read": "mcp__fakefs__Read"}
+
+        anyio.run(_test)
+
+    def test_query_function_passes_none_tool_aliases_to_query(self):
+        """InternalClient passes tool_aliases=None when the option is unset."""
+
+        async def _test():
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_transport_class,
+                patch("claude_agent_sdk._internal.client.Query") as mock_query_class,
+            ):
+                mock_transport_class.return_value = self._make_mock_transport()
+                mock_query_class.return_value = self._make_mock_query()
+
+                async for _ in query(prompt="test", options=ClaudeAgentOptions()):
+                    pass
+
+                call_kwargs = mock_query_class.call_args.kwargs
+                assert call_kwargs["tool_aliases"] is None
+
+        anyio.run(_test)
+
+    def test_claude_sdk_client_passes_tool_aliases_to_query(self):
+        """ClaudeSDKClient passes tool_aliases through to the Query constructor."""
+        from claude_agent_sdk import ClaudeSDKClient
+
+        async def _test():
+            with patch("claude_agent_sdk._internal.query.Query") as mock_query_class:
+                mock_query_class.return_value = self._make_mock_query()
+
+                options = ClaudeAgentOptions(
+                    tool_aliases={"Bash": "mcp__workspace__bash"}
+                )
+                async with ClaudeSDKClient(
+                    options=options, transport=self._make_mock_transport()
+                ):
+                    pass
+
+                call_kwargs = mock_query_class.call_args.kwargs
+                assert call_kwargs["tool_aliases"] == {"Bash": "mcp__workspace__bash"}
+
+        anyio.run(_test)
+
+    def test_claude_sdk_client_passes_none_tool_aliases_to_query(self):
+        """ClaudeSDKClient passes tool_aliases=None when the option is unset."""
+        from claude_agent_sdk import ClaudeSDKClient
+
+        async def _test():
+            with patch("claude_agent_sdk._internal.query.Query") as mock_query_class:
+                mock_query_class.return_value = self._make_mock_query()
+
+                async with ClaudeSDKClient(
+                    options=ClaudeAgentOptions(), transport=self._make_mock_transport()
+                ):
+                    pass
+
+                call_kwargs = mock_query_class.call_args.kwargs
+                assert call_kwargs["tool_aliases"] is None
+
+        anyio.run(_test)

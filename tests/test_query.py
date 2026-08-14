@@ -77,6 +77,20 @@ def test_initialize_omits_skills_for_none_and_all():
     assert "skills" not in _capture_initialize_request(skills="all")
 
 
+def test_initialize_sends_tool_aliases():
+    """Query.initialize() includes toolAliases in the control request when set."""
+    sent = _capture_initialize_request(tool_aliases={"Bash": "mcp__workspace__bash"})
+    assert sent["subtype"] == "initialize"
+    assert sent["toolAliases"] == {"Bash": "mcp__workspace__bash"}
+
+
+def test_initialize_omits_tool_aliases_when_unset():
+    """toolAliases is absent from initialize when not configured or empty."""
+    assert "toolAliases" not in _capture_initialize_request()
+    assert "toolAliases" not in _capture_initialize_request(tool_aliases=None)
+    assert "toolAliases" not in _capture_initialize_request(tool_aliases={})
+
+
 def _make_mock_transport(messages, control_requests=None):
     """Create a mock transport that yields messages and optionally sends control requests.
 

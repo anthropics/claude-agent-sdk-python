@@ -238,6 +238,7 @@ class ClaudeSDKClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=self.options.skills,
+            tool_aliases=self.options.tool_aliases,
         )
 
         if self.options.session_store is not None:

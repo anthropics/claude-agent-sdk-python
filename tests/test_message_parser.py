@@ -1015,6 +1015,37 @@ class TestMessageParser:
         with pytest.raises(MessageParseError):
             parse_message({"type": role, "message": message})
 
+    @pytest.mark.parametrize("role", ["assistant", "user"])
+    @pytest.mark.parametrize("bad_message", ["a string", 5, ["a", "list"], None])
+    def test_non_dict_message_raises_documented_error(
+        self, role: str, bad_message: object
+    ) -> None:
+        """A non-dict ``message`` raises MessageParseError, never a raw TypeError.
+
+        The block-level guard (above) only runs after ``message["content"]`` is
+        indexed, so a ``message`` that is not a dict crashed with a raw
+        TypeError before this guard existed.
+        """
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message({"type": role, "message": bad_message})
+        assert "expected dict" in str(exc_info.value)
+
+    @pytest.mark.parametrize("bad_info", ["a string", 5, ["a", "list"], None])
+    def test_non_dict_rate_limit_info_raises_documented_error(
+        self, bad_info: object
+    ) -> None:
+        """A non-dict ``rate_limit_info`` raises MessageParseError, not a TypeError."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(
+                {
+                    "type": "rate_limit_event",
+                    "uuid": "u",
+                    "session_id": "s",
+                    "rate_limit_info": bad_info,
+                }
+            )
+        assert "expected dict" in str(exc_info.value)
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

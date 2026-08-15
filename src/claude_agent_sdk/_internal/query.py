@@ -272,8 +272,9 @@ class Query:
 
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
+        messages = self.transport.read_messages()
         try:
-            async for message in self.transport.read_messages():
+            async for message in messages:
                 if self._closed:
                     break
 
@@ -404,25 +405,28 @@ class Query:
             # Put error in stream so iterators can handle it
             await self._message_send.send({"type": "error", "error": error_text})
         finally:
-            # Flush any remaining transcript mirror entries before closing so
-            # an early stdout EOF or transport error doesn't drop entries
-            # batched this turn. flush() never raises. Shielded so the await
-            # still runs when this finally is reached via cancellation.
-            if self._transcript_mirror_batcher is not None:
-                with anyio.CancelScope(shield=True):
-                    await self._transcript_mirror_batcher.flush()
-            # Unblock any waiters (e.g. string-prompt path waiting for first
-            # result) so they don't stall for the full timeout on early exit.
-            self._first_result_event.set()
-            # Always signal end of stream. send_nowait: trio's level-triggered
-            # cancellation would re-raise Cancelled at an await checkpoint
-            # here, dropping the sentinel and leaving receive_messages() hung.
-            # close() is the fallback for the buffer-full case where
-            # send_nowait raises WouldBlock — receivers then exit on
-            # EndOfStream after draining.
-            with suppress(anyio.WouldBlock):
-                self._message_send.send_nowait({"type": "end"})
-            self._message_send.close()
+            try:
+                await messages.aclose()
+            finally:
+                # Flush any remaining transcript mirror entries before closing so
+                # an early stdout EOF or transport error doesn't drop entries
+                # batched this turn. flush() never raises. Shielded so the await
+                # still runs when this finally is reached via cancellation.
+                if self._transcript_mirror_batcher is not None:
+                    with anyio.CancelScope(shield=True):
+                        await self._transcript_mirror_batcher.flush()
+                # Unblock any waiters (e.g. string-prompt path waiting for first
+                # result) so they don't stall for the full timeout on early exit.
+                self._first_result_event.set()
+                # Always signal end of stream. send_nowait: trio's level-triggered
+                # cancellation would re-raise Cancelled at an await checkpoint
+                # here, dropping the sentinel and leaving receive_messages() hung.
+                # close() is the fallback for the buffer-full case where
+                # send_nowait raises WouldBlock — receivers then exit on
+                # EndOfStream after draining.
+                with suppress(anyio.WouldBlock):
+                    self._message_send.send_nowait({"type": "end"})
+                self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""

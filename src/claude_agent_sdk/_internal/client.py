@@ -183,6 +183,7 @@ class InternalClient:
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=configured_options.skills,
+            include_hook_events=configured_options.include_hook_events,
         )
 
         if configured_options.session_store is not None:

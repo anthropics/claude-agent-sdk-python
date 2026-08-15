@@ -309,6 +309,60 @@ class TestStringPromptWithSdkMcpServers:
 
         anyio.run(_test)
 
+    def test_streaming_prompt_input_stream_error_surfaces(self):
+        """An exception raised by the caller's prompt AsyncIterable must
+        surface to the consumer. Regression test: stream_input() swallowed
+        the exception at debug level and returned without closing stdin, so
+        the CLI kept waiting for input, no result ever arrived, and query()
+        hung forever with no error."""
+
+        async def _test():
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def mock_receive():
+                # Like the real CLI, stdout stays open until the SDK sends
+                # input or closes stdin; nothing arrives on its own. Without
+                # the fix the consumer blocks here forever.
+                await anyio.sleep(30)
+                yield {}  # pragma: no cover - never reached
+
+            mock_transport.read_messages = mock_receive
+
+            async def raising_stream():
+                yield {
+                    "type": "user",
+                    "session_id": "",
+                    "message": {"role": "user", "content": "hi"},
+                    "parent_tool_use_id": None,
+                }
+                raise ValueError("prompt generator exploded")
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                with anyio.fail_after(5):
+                    with pytest.raises(Exception, match="prompt generator exploded"):
+                        async for _ in query(prompt=raising_stream()):
+                            pass
+
+            # The fix also closes stdin so the CLI can wind down cleanly.
+            mock_transport.end_input.assert_called()
+
+        anyio.run(_test)
+
     def test_string_prompt_with_hooks_waits_for_result(self):
         """end_input() should wait for first result when hooks are configured,
         even without SDK MCP servers."""

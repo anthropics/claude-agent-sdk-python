@@ -1841,7 +1841,86 @@ class TestSubprocessCLITransport:
         settings_value = cmd[settings_idx + 1]
 
         parsed = json.loads(settings_value)
-        assert parsed == {"sandbox": {"enabled": True}}
+        assert parsed == {"sandbox": {"enabled": True, "failIfUnavailable": True}}
+
+    def test_sandbox_enabled_defaults_to_fail_closed(self):
+        """An enabled sandbox defaults failIfUnavailable to True.
+
+        The CLI reads this setting as ``?? false``, so without it a sandbox
+        that cannot start only warns and every command runs unsandboxed. The
+        TypeScript SDK injects True here; the Python SDK must match so the
+        same options do not silently fail open.
+        """
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True, "excludedCommands": ["git"]}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+
+        assert parsed["sandbox"]["failIfUnavailable"] is True
+        assert parsed["sandbox"]["excludedCommands"] == ["git"]
+
+    def test_sandbox_explicit_fail_if_unavailable_is_preserved(self):
+        """An explicit failIfUnavailable is never overridden."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True, "failIfUnavailable": False}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+
+        assert parsed["sandbox"]["failIfUnavailable"] is False
+
+    def test_sandbox_not_enabled_gets_no_fail_if_unavailable(self):
+        """A sandbox that is not enabled is passed through untouched."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": False}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+
+        assert parsed == {"sandbox": {"enabled": False}}
+
+    def test_sandbox_options_dict_is_not_mutated(self):
+        """Building the command does not mutate the caller's sandbox dict."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        json.loads(cmd[cmd.index("--settings") + 1])
+
+        assert sandbox == {"enabled": True}
 
     def test_sandbox_network_config(self):
         """Test sandbox with full network configuration."""

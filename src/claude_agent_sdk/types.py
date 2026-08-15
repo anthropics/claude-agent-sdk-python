@@ -888,6 +888,10 @@ class SandboxSettings(TypedDict, total=False):
 
     Attributes:
         enabled: Enable bash sandboxing (macOS/Linux only). Default: False
+        failIfUnavailable: Exit with an error at startup if ``enabled`` is True but the
+            sandbox cannot start. When False the CLI only warns and commands run
+            unsandboxed. The SDK defaults this to True for an enabled sandbox,
+            matching the TypeScript SDK.
         autoAllowBashIfSandboxed: Auto-approve bash commands when sandboxed. Default: True
         excludedCommands: Commands that should run outside the sandbox (e.g., ["git", "docker"])
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
@@ -912,6 +916,7 @@ class SandboxSettings(TypedDict, total=False):
     """
 
     enabled: bool
+    failIfUnavailable: bool
     autoAllowBashIfSandboxed: bool
     excludedCommands: list[str]
     allowUnsandboxedCommands: bool

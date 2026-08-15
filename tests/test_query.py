@@ -17,6 +17,7 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    PermissionResultAllow,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -494,6 +495,118 @@ class TestStdinStaysOpenWithInflightTasks:
 
         anyio.run(_test)
 
+    def test_task_settled_before_any_result_defers_close_for_late_control(self):
+        """A task that settles before its own result is ever observed keeps
+        stdin open through that result, so a late continuation control
+        request (e.g. a permission check) still gets a response (#1190).
+
+        Unlike ``test_result_with_inflight_task_keeps_stdin_open`` above,
+        the task here never appears inflight during a processed result: the
+        very first result frame arrives *after* ``task_notification``.
+        Without the fix, that result would close stdin immediately and a
+        late control request would fail with "stdin already closed".
+        """
+
+        async def _test():
+            server = _make_greet_server()
+            end_input_calls = []
+            control_response_writes = []
+            write_after_close = []
+
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            closed = False
+
+            async def tracking_write(data):
+                if '"request_id":"late-control"' in data or (
+                    '"request_id": "late-control"' in data
+                ):
+                    if closed:
+                        write_after_close.append(True)
+                    else:
+                        control_response_writes.append(data)
+
+            async def tracking_end_input():
+                nonlocal closed
+                end_input_calls.append(True)
+                closed = True
+
+            mock_transport.write = tracking_write
+            mock_transport.end_input = tracking_end_input
+
+            closed_after_before_continuation_result = None
+
+            async def mock_receive():
+                nonlocal closed_after_before_continuation_result
+                yield dict(_TASK_STARTED)
+                yield dict(_TASK_NOTIFICATION)
+                yield _make_result("uuid-before-continuation")
+                for _ in range(20):
+                    await anyio.sleep(0)
+                closed_after_before_continuation_result = bool(end_input_calls)
+                # The task's completion wakes a late continuation control
+                # request — e.g. a permission check for the tool call the
+                # subagent's result triggers next.
+                yield {
+                    "type": "control_request",
+                    "request_id": "late-control",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Read",
+                        "input": {"file_path": "/tmp/late.txt"},
+                        "tool_use_id": "late-tool",
+                    },
+                }
+                for _ in range(20):
+                    await anyio.sleep(0)
+                yield _make_result("uuid-final")
+                for _ in range(20):
+                    await anyio.sleep(0)
+
+            mock_transport.read_messages = mock_receive
+
+            async def allow_tool(tool_name, tool_input, context):
+                return PermissionResultAllow(updated_input=tool_input)
+
+            async def prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": "Hello"},
+                }
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+
+                messages = []
+                async for msg in query(
+                    prompt=prompt_stream(),
+                    options=ClaudeAgentOptions(
+                        mcp_servers={"greeter": server},
+                        can_use_tool=allow_tool,
+                    ),
+                ):
+                    messages.append(msg)
+
+            assert closed_after_before_continuation_result is False
+            assert len(control_response_writes) == 1
+            assert write_after_close == []
+            assert end_input_calls == [True]
+            results = [m for m in messages if isinstance(m, ResultMessage)]
+            assert len(results) == 2
+
+        anyio.run(_test)
+
     def test_track_task_lifecycle_unit(self):
         """_track_task_lifecycle adds on start and clears only on terminal."""
         transport = AsyncMock()
@@ -530,6 +643,53 @@ class TestStdinStaysOpenWithInflightTasks:
         # Frames without a task_id are ignored.
         q._track_task_lifecycle({"subtype": "task_started"})
         assert q._inflight_tasks == set()
+
+    def test_settle_before_any_result_defers_the_next_result(self):
+        """A task that settles without ever being seen inflight during a
+        result must not let the very next result close stdin (#1190).
+
+        ``task_started`` -> ``task_notification`` -> result is exactly the
+        ordering #1190 reports: the task's own turn result never arrived
+        while it was inflight, so its exit is not yet covered by any result
+        the caller has observed, and the CLI may still owe a continuation
+        control round trip after this result.
+        """
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        q._track_task_lifecycle(dict(_TASK_STARTED))
+        assert q._inflight_tasks == {"task-1"}
+        assert q._tasks_pending_first_result == {"task-1"}
+        assert q._task_settled_since_last_result is False
+
+        q._track_task_lifecycle(dict(_TASK_NOTIFICATION))
+        assert q._inflight_tasks == set()
+        assert q._tasks_pending_first_result == set()
+        assert q._task_settled_since_last_result is True
+
+    def test_settle_after_a_seen_result_does_not_defer(self):
+        """A task settling after already being seen inflight during a result
+        does not set the deferral flag — that earlier result already
+        covered "turn ended, task still running", so the result that
+        follows settlement is the ordinary next-turn result (matches
+        ``test_result_with_inflight_task_keeps_stdin_open`` above, which
+        closes on that very result)."""
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=False)
+
+        q._track_task_lifecycle(dict(_TASK_STARTED))
+        assert q._tasks_pending_first_result == {"task-1"}
+
+        # Simulates the "result" branch in _read_messages: a result was
+        # processed while the task was inflight.
+        q._tasks_pending_first_result -= q._inflight_tasks
+        assert q._tasks_pending_first_result == set()
+
+        q._track_task_lifecycle(dict(_TASK_NOTIFICATION))
+        assert q._inflight_tasks == set()
+        assert q._task_settled_since_last_result is False
 
     def test_shell_and_monitor_tasks_never_defer_the_close(self):
         """Only delegated agent work defers the stdin close.

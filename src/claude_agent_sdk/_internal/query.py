@@ -156,6 +156,28 @@ class Query:
         # a result that arrives while this set is non-empty must not close
         # stdin.
         self._inflight_tasks: set[str] = set()
+        # Subset of _inflight_tasks that has not yet been inflight during a
+        # processed result frame. A task leaves this set either when a
+        # result is processed while it is inflight (it has now had its
+        # "turn ended, I'm still running" result observed) or when it
+        # settles — in which case its exit was never covered by an observed
+        # result. See _task_settled_since_last_result below.
+        self._tasks_pending_first_result: set[str] = set()
+        # Set when a deferring task settles without ever having been seen
+        # inflight during a processed result frame; cleared the next time a
+        # result frame is evaluated. Covers the ordering gap where such a
+        # task settles and the turn's result frame both land with
+        # _inflight_tasks already empty at that result — closing stdin there
+        # would drop a continuation control request the settled task still
+        # owes (see #1190). A task that *was* seen inflight during an
+        # earlier result does not set this: that earlier result already
+        # covered the "turn ended, task still running" case, so the result
+        # that follows its settlement is the ordinary follow-up turn and
+        # should close stdin immediately, same as before this fix.
+        # The _read_messages finally block's unconditional
+        # _first_result_event.set() is the backstop if no further result
+        # frame ever arrives, so deferring here cannot hang the waiter.
+        self._task_settled_since_last_result = False
         # Set to the result's error text when the most recent message is a
         # result with is_error=True. Used to replace the generic "exit code 1"
         # ProcessError with the structured error the CLI already reported.
@@ -332,6 +354,12 @@ class Query:
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
                     if self._inflight_tasks:
+                        # These tasks have now had a result observed while
+                        # they were inflight; their eventual settlement is
+                        # covered by *this* observation, so it must not defer
+                        # a later result the way _task_settled_since_last_result
+                        # does for a task that settles unobserved (#1190).
+                        self._tasks_pending_first_result -= self._inflight_tasks
                         # One turn ended, but background tasks are still
                         # running and may need hook/SDK-MCP control responses
                         # over stdin. Closing it now silently disables hooks
@@ -344,6 +372,21 @@ class Query:
                             "keeping stdin open",
                             len(self._inflight_tasks),
                         )
+                    elif self._task_settled_since_last_result:
+                        # No task is in flight, but one reached a terminal
+                        # status since the last result was evaluated — quite
+                        # possibly in this very batch of frames, ahead of
+                        # this result rather than because of it. That task's
+                        # continuation turn may still owe a hook/SDK-MCP
+                        # control round trip before the run truly ends
+                        # (#1190). Keep stdin open through this result; the
+                        # next one closes it, same as the plain-inflight case
+                        # above.
+                        logger.debug(
+                            "Result received just after a task settled; "
+                            "keeping stdin open for its continuation"
+                        )
+                        self._task_settled_since_last_result = False
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
@@ -869,14 +912,28 @@ class Query:
 
         This is a mitigation, not a complete answer to #1088. An empty set
         means "nothing we know of is running", which is not the same as "the
-        run is over": a task that settles *before* the turn's result frame
-        leaves the set empty at that result, so stdin closes even though the
-        completion may still wake the parent for a continuation turn. No
-        ledger can close that gap, because the ledger cannot distinguish a
-        settled task whose continuation is pending from no work at all — that
-        needs a run-boundary signal from the CLI rather than an inference from
-        task bookkeeping. What this does fix is the common ordering, where the
-        task outlives the turn that spawned it.
+        run is over". The common ordering — the task outlives the turn that
+        spawned it — is fully handled: the result that ends that turn still
+        finds the task in ``_inflight_tasks`` and stdin stays open.
+
+        A task that settles *before any result has ever been observed while
+        it was inflight* is handled too, but only for one extra result
+        rather than by distinguishing the run boundary outright (#1190).
+        ``_tasks_pending_first_result`` (see ``__init__``) tracks exactly
+        that condition; a settlement out of it sets
+        ``_task_settled_since_last_result``, which makes the very next
+        result frame — empty set or not — keep stdin open once more before
+        closing, on the chance that this is the pre-continuation result the
+        settled task is still owed a control round trip for. A task that
+        *has* already been seen inflight during a result does not set the
+        flag on settlement: that earlier result already covered "turn ended,
+        task still running", so the result that follows its settlement is
+        the ordinary next-turn result and closes stdin immediately, same as
+        before this mitigation. What no ledger can do — settled-flag or
+        inflight-count alike — is tell a run that is genuinely over from one
+        that will, after this one deferral, still need a further
+        continuation of its own; that needs a run-boundary signal from the
+        CLI rather than an inference from task bookkeeping.
 
         Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
         background *shell* — ``Bash(run_in_background=True)`` on a dev server or
@@ -907,13 +964,29 @@ class Query:
         if subtype == "task_started":
             if message.get("task_type") in DEFERRING_TASK_TYPES:
                 self._inflight_tasks.add(task_id)
+                self._tasks_pending_first_result.add(task_id)
         elif subtype == "task_notification":
-            self._inflight_tasks.discard(task_id)
+            self._settle_task(task_id)
         elif subtype == "task_updated":
             patch = message.get("patch")
             status = patch.get("status") if isinstance(patch, dict) else None
             if status in TERMINAL_TASK_STATUSES:
-                self._inflight_tasks.discard(task_id)
+                self._settle_task(task_id)
+
+    def _settle_task(self, task_id: str) -> None:
+        """Discards a task that reached a terminal status.
+
+        If the task was never inflight during an already-processed result
+        frame, its exit is not yet covered by any result the caller has
+        seen — mark that the next result should be treated as possibly
+        pre-continuation rather than run-ending (see _track_task_lifecycle).
+        """
+        if task_id not in self._inflight_tasks:
+            return
+        self._inflight_tasks.discard(task_id)
+        if task_id in self._tasks_pending_first_result:
+            self._tasks_pending_first_result.discard(task_id)
+            self._task_settled_since_last_result = True
 
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for a run-ending result (if needed) then close stdin.

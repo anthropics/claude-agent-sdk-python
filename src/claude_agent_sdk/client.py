@@ -279,10 +279,14 @@ class ClaudeSDKClient:
 
         from ._internal.message_parser import parse_message
 
-        async for data in self._query.receive_messages():
-            message = parse_message(data)
-            if message is not None:
-                yield message
+        messages = self._query.receive_messages()
+        try:
+            async for data in messages:
+                message = parse_message(data)
+                if message is not None:
+                    yield message
+        finally:
+            await messages.aclose()
 
     async def query(
         self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"
@@ -604,10 +608,14 @@ class ClaudeSDKClient:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
         """
-        async for message in self.receive_messages():
-            yield message
-            if isinstance(message, ResultMessage):
-                return
+        messages = self.receive_messages()
+        try:
+            async for message in messages:
+                yield message
+                if isinstance(message, ResultMessage):
+                    return
+        finally:
+            await messages.aclose()
 
     async def disconnect(self) -> None:
         """Disconnect from Claude."""

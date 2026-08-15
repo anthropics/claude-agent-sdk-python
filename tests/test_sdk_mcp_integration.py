@@ -752,15 +752,37 @@ class TestPythonTypeToJsonSchema:
         }
 
     def test_parameterized_dict(self) -> None:
-        assert python_type_to_json_schema(dict[str, int]) == {"type": "object"}
+        assert python_type_to_json_schema(dict[str, int]) == {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+        }
+
+    def test_nested_mapping(self) -> None:
+        from collections.abc import Mapping
+
+        assert python_type_to_json_schema(Mapping[str, list[bool]]) == {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": {"type": "boolean"},
+            },
+        }
+
+    def test_mapping_rejects_non_string_keys(self) -> None:
+        with pytest.raises(TypeError, match="JSON object keys must be strings"):
+            python_type_to_json_schema(dict[int, str])
 
     def test_optional_str(self) -> None:
         result = python_type_to_json_schema(str | None)
-        assert result == {"type": "string"}
+        assert result == {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        }
 
     def test_optional_int_union_syntax(self) -> None:
         result = python_type_to_json_schema(int | None)
-        assert result == {"type": "integer"}
+        assert result == {
+            "anyOf": [{"type": "integer"}, {"type": "null"}],
+        }
 
     def test_multi_type_union(self) -> None:
         result = python_type_to_json_schema(str | int)
@@ -771,14 +793,71 @@ class TestPythonTypeToJsonSchema:
     def test_multi_type_union_with_none(self) -> None:
         result = python_type_to_json_schema(str | int | None)
         assert result == {
-            "anyOf": [{"type": "string"}, {"type": "integer"}],
+            "anyOf": [
+                {"type": "string"},
+                {"type": "integer"},
+                {"type": "null"},
+            ],
         }
 
-    def test_unknown_type_defaults_to_string(self) -> None:
+    def test_literal_values(self) -> None:
+        from typing import Literal
+
+        assert python_type_to_json_schema(Literal["fast", "safe"]) == {
+            "type": "string",
+            "enum": ["fast", "safe"],
+        }
+
+    def test_enum_values(self) -> None:
+        from enum import Enum
+
+        class Mode(Enum):
+            FAST = "fast"
+            SAFE = "safe"
+
+        assert python_type_to_json_schema(Mode) == {
+            "type": "string",
+            "enum": ["fast", "safe"],
+        }
+
+    def test_variadic_and_fixed_tuples(self) -> None:
+        assert python_type_to_json_schema(tuple[int, ...]) == {
+            "type": "array",
+            "items": {"type": "integer"},
+        }
+        assert python_type_to_json_schema(tuple[str, bool]) == {
+            "type": "array",
+            "prefixItems": [{"type": "string"}, {"type": "boolean"}],
+            "minItems": 2,
+            "maxItems": 2,
+        }
+
+    def test_any_is_unconstrained(self) -> None:
+        from typing import Any
+
+        assert python_type_to_json_schema(Any) == {}
+
+    def test_unknown_type_raises(self) -> None:
         class Custom:
             pass
 
-        assert python_type_to_json_schema(Custom) == {"type": "string"}
+        with pytest.raises(
+            TypeError, match="Provide an explicit JSON Schema dictionary"
+        ):
+            python_type_to_json_schema(Custom)
+
+    def test_unknown_type_fails_when_server_is_created(self) -> None:
+        class Custom:
+            pass
+
+        @tool("custom", "Custom input", {"value": Custom})
+        async def custom(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        with pytest.raises(
+            TypeError, match="Provide an explicit JSON Schema dictionary"
+        ):
+            create_sdk_mcp_server("unsupported-test", tools=[custom])
 
     def test_nested_typeddict(self) -> None:
         from typing import TypedDict
@@ -889,6 +968,24 @@ class TestTypedDictToJsonSchema:
         assert result["properties"]["name"] == {"type": "string"}
         assert result["properties"]["timeout"] == {"type": "integer"}
         assert result["required"] == ["name"]
+
+    def test_typeddict_required_and_optional_nullable_fields(self) -> None:
+        import sys
+
+        if sys.version_info >= (3, 11):
+            from typing import NotRequired, TypedDict
+        else:
+            from typing_extensions import NotRequired, TypedDict
+
+        class Config(TypedDict):
+            required_nullable: str | None
+            optional_nullable: NotRequired[str | None]
+
+        result = typeddict_to_json_schema(Config)
+        nullable = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        assert result["properties"]["required_nullable"] == nullable
+        assert result["properties"]["optional_nullable"] == nullable
+        assert result["required"] == ["required_nullable"]
 
     def test_typeddict_with_list_field(self) -> None:
         from typing import TypedDict
@@ -1009,6 +1106,44 @@ class TestTypedDictMcpIntegration:
         assert schema["properties"]["query"] == {"type": "string"}
         assert schema["properties"]["max_results"] == {"type": "integer"}
         assert sorted(schema["required"]) == ["max_results", "query"]
+
+    @pytest.mark.anyio
+    async def test_semantic_annotations_flow_through_list_tools(self) -> None:
+        import sys
+        from typing import Literal
+
+        if sys.version_info >= (3, 11):
+            from typing import NotRequired, TypedDict
+        else:
+            from typing_extensions import NotRequired, TypedDict
+
+        class SearchParams(TypedDict):
+            mode: Literal["fast", "safe"]
+            labels: dict[str, int]
+            note: NotRequired[str | None]
+
+        @tool("search", "Search for items", SearchParams)
+        async def search(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        server_config = create_sdk_mcp_server(name="semantic-test", tools=[search])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        response = await list_handler(ListToolsRequest(method="tools/list"))
+
+        schema = response.root.tools[0].inputSchema
+        assert schema["properties"]["mode"] == {
+            "type": "string",
+            "enum": ["fast", "safe"],
+        }
+        assert schema["properties"]["labels"] == {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+        }
+        assert schema["properties"]["note"] == {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        }
+        assert sorted(schema["required"]) == ["labels", "mode"]
 
     @pytest.mark.anyio
     async def test_typeddict_tool_call_works(self) -> None:

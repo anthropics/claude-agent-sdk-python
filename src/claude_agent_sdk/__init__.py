@@ -3,9 +3,19 @@
 import logging
 import sys
 import types as builtin_types
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
+from enum import Enum
+from typing import (
+    Annotated,
+    Any,
+    Generic,
+    Literal,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
@@ -225,6 +235,8 @@ def tool(
         - The function receives a single dict argument with the input parameters
         - The function should return a dict with a "content" key containing the response
         - Errors can be indicated by including "is_error": True in the response
+        - Unsupported Python annotations raise TypeError when the MCP server is
+          created; use an explicit JSON Schema for custom validation rules
     """
 
     def decorator(
@@ -266,33 +278,111 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
         return {"type": "number"}
     if py_type is bool:
         return {"type": "boolean"}
+    if py_type is builtin_types.NoneType or py_type is None:
+        return {"type": "null"}
+    if py_type is Any or py_type is object:
+        return {}
 
-    origin = getattr(py_type, "__origin__", None)
+    if origin is Literal:
+        return _literal_values_to_json_schema(get_args(py_type), py_type)
 
-    if origin is Union or isinstance(py_type, builtin_types.UnionType):
-        args = py_type.__args__
-        non_none = [a for a in args if a is not builtin_types.NoneType]
-        if len(non_none) == 1:
-            return _python_type_to_json_schema(non_none[0])
-        return {"anyOf": [_python_type_to_json_schema(a) for a in non_none]}
+    if origin is Union or origin is builtin_types.UnionType:
+        return {"anyOf": [_python_type_to_json_schema(a) for a in get_args(py_type)]}
 
     if origin is list:
-        item_args = getattr(py_type, "__args__", None)
+        item_args = get_args(py_type)
         if item_args:
             return {"type": "array", "items": _python_type_to_json_schema(item_args[0])}
         return {"type": "array"}
-    if origin is dict:
-        return {"type": "object"}
+
+    if origin is tuple:
+        args = get_args(py_type)
+        if not args:
+            if py_type == tuple[()]:
+                return {"type": "array", "maxItems": 0}
+            return {"type": "array"}
+        if len(args) == 2 and args[1] is Ellipsis:
+            return {"type": "array", "items": _python_type_to_json_schema(args[0])}
+        return {
+            "type": "array",
+            "prefixItems": [_python_type_to_json_schema(a) for a in args],
+            "minItems": len(args),
+            "maxItems": len(args),
+        }
+
+    if origin is not None and isinstance(origin, type) and issubclass(origin, Mapping):
+        args = get_args(py_type)
+        if not args:
+            return {"type": "object"}
+        key_type, value_type = args
+        if key_type is not str:
+            raise TypeError(
+                f"Unsupported mapping key annotation {key_type!r}; JSON object keys "
+                "must be strings. Provide an explicit JSON Schema dictionary instead."
+            )
+        return {
+            "type": "object",
+            "additionalProperties": _python_type_to_json_schema(value_type),
+        }
 
     if py_type is list:
         return {"type": "array"}
-    if py_type is dict:
-        return {"type": "object"}
+    if py_type is tuple:
+        return {"type": "array"}
 
     if is_typeddict(py_type):
         return _typeddict_to_json_schema(py_type)
 
-    return {"type": "string"}
+    if isinstance(py_type, type) and issubclass(py_type, Mapping):
+        return {"type": "object"}
+
+    if isinstance(py_type, type) and issubclass(py_type, Enum):
+        return _literal_values_to_json_schema(
+            tuple(member.value for member in py_type), py_type
+        )
+
+    raise TypeError(
+        f"Unsupported Python type annotation {py_type!r}. "
+        "Provide an explicit JSON Schema dictionary instead."
+    )
+
+
+def _literal_values_to_json_schema(
+    values: tuple[Any, ...], annotation: Any
+) -> dict[str, Any]:
+    """Build a JSON Schema enum for Literal arguments or Enum values."""
+    if not values:
+        raise TypeError(f"{annotation!r} has no values and cannot define a JSON enum")
+
+    json_values: list[str | int | float | bool | None] = []
+    json_types: set[str] = set()
+    for value in values:
+        if isinstance(value, Enum):
+            value = value.value
+        if value is None:
+            json_type = "null"
+        elif isinstance(value, bool):
+            json_type = "boolean"
+        elif isinstance(value, str):
+            json_type = "string"
+        elif isinstance(value, int):
+            json_type = "integer"
+        elif isinstance(value, float):
+            json_type = "number"
+        else:
+            raise TypeError(
+                f"Unsupported value {value!r} in {annotation!r}. "
+                "JSON Schema enum values must be strings, numbers, booleans, or null."
+            )
+        json_values.append(value)
+        json_types.add(json_type)
+
+    schema: dict[str, Any] = {"enum": json_values}
+    if json_types <= {"integer", "number"}:
+        schema["type"] = "number" if "number" in json_types else "integer"
+    elif len(json_types) == 1:
+        schema["type"] = next(iter(json_types))
+    return schema
 
 
 def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:

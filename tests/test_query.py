@@ -671,6 +671,72 @@ class TestStdinStaysOpenWithInflightTasks:
         anyio.run(_test)
 
 
+class TestAsyncIterablePromptStreaming:
+    """Test concurrent input and output for AsyncIterable prompts."""
+
+    def test_input_and_output_can_interleave(self):
+        """A response can be yielded before the async prompt iterable is
+        exhausted; input streaming and output processing run concurrently."""
+
+        async def _test():
+            first_prompt_written = anyio.Event()
+            allow_producer_to_finish = anyio.Event()
+            producer_finished = anyio.Event()
+
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def tracking_write(data):
+                if json.loads(data)["message"]["content"] == "First":
+                    first_prompt_written.set()
+
+            async def mock_receive():
+                await first_prompt_written.wait()
+                yield dict(_ASSISTANT_AND_RESULT[0])
+                await producer_finished.wait()
+                yield dict(_ASSISTANT_AND_RESULT[1])
+
+            async def prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": "First"},
+                }
+                await allow_producer_to_finish.wait()
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": "Second"},
+                }
+                producer_finished.set()
+
+            mock_transport.write = tracking_write
+            mock_transport.read_messages = mock_receive
+
+            messages = []
+            with patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ):
+                with anyio.fail_after(2):
+                    async for message in query(
+                        prompt=prompt_stream(), transport=mock_transport
+                    ):
+                        messages.append(message)
+                        if isinstance(message, AssistantMessage):
+                            assert not producer_finished.is_set()
+                            allow_producer_to_finish.set()
+
+            assert producer_finished.is_set()
+            assert [type(message) for message in messages] == [
+                AssistantMessage,
+                ResultMessage,
+            ]
+
+        anyio.run(_test)
+
+
 class TestAsyncIterablePromptWithSdkMcpServers:
     """Test that AsyncIterable prompts keep stdin open for SDK MCP servers."""
 

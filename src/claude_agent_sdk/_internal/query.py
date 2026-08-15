@@ -348,6 +348,14 @@ class Query:
                         self._first_result_event.set()
                     if message.get("is_error"):
                         errors = message.get("errors") or []
+                        api_error_status = message.get("api_error_status")
+                        if not errors and api_error_status is not None:
+                            # The CLI reports a failed API call as is_error=True
+                            # with subtype "success" and an empty errors[], so
+                            # the subtype fallback below would report the error
+                            # as "success". The HTTP status is the only
+                            # diagnostic in the frame (#1156).
+                            errors = [f"API error (HTTP {api_error_status})"]
                         self._last_error_result_text = "; ".join(errors) or str(
                             message.get("subtype", "unknown error")
                         )

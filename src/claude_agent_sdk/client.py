@@ -1,5 +1,6 @@
 """Claude SDK Client for interacting with Claude Code."""
 
+import contextlib
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
@@ -8,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import Transport
 from ._errors import CLIConnectionError
+from ._internal.tracing import record_span_event, set_span_attributes, start_span
 
 if TYPE_CHECKING:
     from ._internal.session_resume import MaterializedResume
@@ -78,6 +80,8 @@ class ClaudeSDKClient:
         self._transport: Transport | None = None
         self._query: Any | None = None
         self._materialized: MaterializedResume | None = None
+        self._session_span: Any | None = None
+        self._session_span_ctx: Any | None = None
 
     def _convert_hooks_to_internal_format(
         self, hooks: dict[HookEvent, list[HookMatcher]]
@@ -134,8 +138,25 @@ class ClaudeSDKClient:
             if self._custom_transport is None
             else None
         )
+
+        # Start a session-level tracing span (best-effort).
+        span_attrs: dict[str, Any] = {}
+        if self.options.model:
+            span_attrs["claude_agent_sdk.model"] = self.options.model
+        if self.options.max_turns is not None:
+            span_attrs["claude_agent_sdk.max_turns"] = self.options.max_turns
+        span_ctx = start_span("claude_agent_sdk.session", attributes=span_attrs)
+        try:
+            span = span_ctx.__enter__()
+        except Exception:  # noqa: BLE001
+            span = None
+            span_ctx = None  # type: ignore[assignment]
+        self._session_span = span
+        self._session_span_ctx = span_ctx
+
         try:
             await self._connect_inner(prompt, actual_prompt)
+            record_span_event(self._session_span, "connected")
         except BaseException:
             # If connect fails after the subprocess has spawned (e.g. at
             # query.initialize()), close the subprocess/read task *before*
@@ -282,6 +303,25 @@ class ClaudeSDKClient:
         async for data in self._query.receive_messages():
             message = parse_message(data)
             if message is not None:
+                record_span_event(
+                    self._session_span,
+                    f"message.{type(message).__name__}",
+                )
+                if isinstance(message, ResultMessage):
+                    attrs: dict[str, Any] = {}
+                    if message.num_turns is not None:
+                        attrs["claude_agent_sdk.num_turns"] = message.num_turns
+                    if message.is_error is not None:
+                        attrs["claude_agent_sdk.is_error"] = message.is_error
+                    if message.duration_ms is not None:
+                        attrs["claude_agent_sdk.duration_ms"] = message.duration_ms
+                    if message.session_id:
+                        attrs["claude_agent_sdk.session_id"] = message.session_id
+                    if message.total_cost_usd is not None:
+                        attrs["claude_agent_sdk.total_cost_usd"] = (
+                            message.total_cost_usd
+                        )
+                    set_span_attributes(self._session_span, attrs)
                 yield message
 
     async def query(
@@ -619,6 +659,12 @@ class ClaudeSDKClient:
         if self._materialized is not None:
             await self._materialized.cleanup()
             self._materialized = None
+        # End the session tracing span (best-effort).
+        if self._session_span_ctx is not None:
+            with contextlib.suppress(Exception):
+                self._session_span_ctx.__exit__(None, None, None)
+        self._session_span = None
+        self._session_span_ctx = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

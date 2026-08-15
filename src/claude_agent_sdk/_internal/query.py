@@ -29,6 +29,7 @@ from ..types import (
     ToolPermissionContext,
 )
 from ._task_compat import TaskHandle, spawn_detached
+from .tracing import start_span
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -435,33 +436,38 @@ class Query:
 
             if subtype == "can_use_tool":
                 permission_request: SDKControlPermissionRequest = request_data  # type: ignore[assignment]
+                tool_name = permission_request["tool_name"]
                 original_input = permission_request["input"]
                 # Handle tool permission request
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
 
-                context = ToolPermissionContext(
-                    signal=None,  # TODO: Add abort signal support
-                    suggestions=[
-                        PermissionUpdate.from_dict(s)
-                        for s in (
-                            permission_request.get("permission_suggestions") or []
-                        )
-                    ],
-                    tool_use_id=permission_request.get("tool_use_id"),
-                    agent_id=permission_request.get("agent_id"),
-                    blocked_path=permission_request.get("blocked_path"),
-                    decision_reason=permission_request.get("decision_reason"),
-                    title=permission_request.get("title"),
-                    display_name=permission_request.get("display_name"),
-                    description=permission_request.get("description"),
-                )
+                with start_span(
+                    "claude_agent_sdk.tool_permission",
+                    attributes={"tool.name": tool_name},
+                ):
+                    context = ToolPermissionContext(
+                        signal=None,  # TODO: Add abort signal support
+                        suggestions=[
+                            PermissionUpdate.from_dict(s)
+                            for s in (
+                                permission_request.get("permission_suggestions") or []
+                            )
+                        ],
+                        tool_use_id=permission_request.get("tool_use_id"),
+                        agent_id=permission_request.get("agent_id"),
+                        blocked_path=permission_request.get("blocked_path"),
+                        decision_reason=permission_request.get("decision_reason"),
+                        title=permission_request.get("title"),
+                        display_name=permission_request.get("display_name"),
+                        description=permission_request.get("description"),
+                    )
 
-                response = await self.can_use_tool(
-                    permission_request["tool_name"],
-                    permission_request["input"],
-                    context,
-                )
+                    response = await self.can_use_tool(
+                        tool_name,
+                        permission_request["input"],
+                        context,
+                    )
 
                 # Convert PermissionResult to expected dict format
                 if isinstance(response, PermissionResultAllow):
@@ -514,9 +520,23 @@ class Query:
                 # Type narrowing - we've verified these are not None above
                 assert isinstance(server_name, str)
                 assert isinstance(mcp_message, dict)
-                mcp_response = await self._handle_sdk_mcp_request(
-                    server_name, mcp_message
-                )
+                mcp_method = mcp_message.get("method", "")
+                mcp_tool_name = ""
+                if mcp_method == "tools/call":
+                    params = mcp_message.get("params", {})
+                    if isinstance(params, dict):
+                        mcp_tool_name = params.get("name", "")
+                with start_span(
+                    "claude_agent_sdk.tool_call",
+                    attributes={
+                        "mcp.server": server_name,
+                        "mcp.method": mcp_method,
+                        "tool.name": mcp_tool_name,
+                    },
+                ):
+                    mcp_response = await self._handle_sdk_mcp_request(
+                        server_name, mcp_message
+                    )
                 # Wrap the MCP response as expected by the control protocol
                 response_data = {"mcp_response": mcp_response}
 

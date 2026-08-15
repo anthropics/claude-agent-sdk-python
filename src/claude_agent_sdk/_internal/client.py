@@ -11,6 +11,7 @@ from ..types import (
     HookEvent,
     HookMatcher,
     Message,
+    ResultMessage,
     _warn_if_can_use_tool_shadowed,
 )
 from .message_parser import parse_message
@@ -22,6 +23,7 @@ from .session_resume import (
     materialize_resume_session,
 )
 from .session_store_validation import validate_session_store_options
+from .tracing import record_span_event, set_span_attributes, start_span
 from .transport import Transport
 from .transport.subprocess_cli import SubprocessCLITransport
 
@@ -95,6 +97,27 @@ class InternalClient:
         options: ClaudeAgentOptions,
         transport: Transport | None,
         materialized: MaterializedResume | None,
+    ) -> AsyncGenerator[Message, None]:
+        # Build span attributes for the query-level tracing span.
+        span_attrs: dict[str, Any] = {}
+        if options.model:
+            span_attrs["claude_agent_sdk.model"] = options.model
+        if options.max_turns is not None:
+            span_attrs["claude_agent_sdk.max_turns"] = options.max_turns
+
+        with start_span("claude_agent_sdk.query", attributes=span_attrs) as query_span:
+            async for msg in self._process_query_inner_traced(
+                prompt, options, transport, materialized, query_span
+            ):
+                yield msg
+
+    async def _process_query_inner_traced(
+        self,
+        prompt: str | AsyncIterable[dict[str, Any]],
+        options: ClaudeAgentOptions,
+        transport: Transport | None,
+        materialized: MaterializedResume | None,
+        query_span: Any,
     ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = options
@@ -227,6 +250,25 @@ class InternalClient:
             async for data in query.receive_messages():
                 message = parse_message(data)
                 if message is not None:
+                    record_span_event(
+                        query_span,
+                        f"message.{type(message).__name__}",
+                    )
+                    if isinstance(message, ResultMessage):
+                        attrs: dict[str, Any] = {}
+                        if message.num_turns is not None:
+                            attrs["claude_agent_sdk.num_turns"] = message.num_turns
+                        if message.is_error is not None:
+                            attrs["claude_agent_sdk.is_error"] = message.is_error
+                        if message.duration_ms is not None:
+                            attrs["claude_agent_sdk.duration_ms"] = message.duration_ms
+                        if message.session_id:
+                            attrs["claude_agent_sdk.session_id"] = message.session_id
+                        if message.total_cost_usd is not None:
+                            attrs["claude_agent_sdk.total_cost_usd"] = (
+                                message.total_cost_usd
+                            )
+                        set_span_attributes(query_span, attrs)
                     yield message
 
         finally:

@@ -1091,3 +1091,80 @@ class TestTypedDictMcpIntegration:
         response1 = await list_handler(request)
         response2 = await list_handler(request)
         assert response1.root.tools == response2.root.tools
+
+
+@pytest.mark.anyio
+async def test_tool_result_meta_reaches_call_tool_result():
+    """A handler's ``_meta`` key is forwarded onto the resulting CallToolResult.
+
+    ``_meta`` is the MCP-spec channel for handler-only data that must not enter
+    model context (record IDs, pagination cursors, etc.). Previously the SDK's
+    ``call_tool`` handler only read ``content`` and ``is_error`` from the
+    handler's return value, silently dropping ``_meta``.
+    """
+
+    @tool("recall", "Recalls observations", {})
+    async def recall(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "Recalled 3 observations"}],
+            "_meta": {"observation_ids": ["obs_1", "obs_2", "obs_3"]},
+        }
+
+    server_config = create_sdk_mcp_server(name="meta-test", tools=[recall])
+    server = server_config["instance"]
+    call_handler = server.request_handlers[CallToolRequest]
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="recall", arguments={}),
+    )
+    result = await call_handler(request)
+
+    assert result.root.meta == {"observation_ids": ["obs_1", "obs_2", "obs_3"]}
+
+
+def test_tool_result_meta_flows_through_jsonrpc_bridge():
+    """``_meta`` on a tool result survives the Query JSON-RPC bridge to the CLI.
+
+    Mirrors test_max_result_size_chars_annotation_flows_to_cli, but for the
+    tools/call response rather than tools/list.
+    """
+    import anyio
+
+    from claude_agent_sdk._internal.query import Query
+
+    @tool("recall", "Recalls observations", {})
+    async def recall(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "Recalled 3 observations"}],
+            "_meta": {"observation_ids": ["obs_1", "obs_2", "obs_3"]},
+        }
+
+    @tool("no_meta", "Returns a result with no meta", {})
+    async def no_meta(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    server_config = create_sdk_mcp_server(
+        name="meta-bridge-test", tools=[recall, no_meta]
+    )
+
+    async def _run(tool_name: str, tool_id: int):
+        query_instance = Query.__new__(Query)
+        query_instance.sdk_mcp_servers = {"meta-bridge-test": server_config["instance"]}
+        return await query_instance._handle_sdk_mcp_request(
+            "meta-bridge-test",
+            {
+                "jsonrpc": "2.0",
+                "id": tool_id,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": {}},
+            },
+        )
+
+    with_meta = anyio.run(_run, "recall", 1)
+    assert with_meta["result"]["_meta"] == {
+        "observation_ids": ["obs_1", "obs_2", "obs_3"]
+    }
+
+    without_meta = anyio.run(_run, "no_meta", 2)
+    assert "_meta" not in without_meta["result"]

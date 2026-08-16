@@ -34,7 +34,9 @@ class TestQueryFunction:
 
                 assert len(messages) == 1
                 assert isinstance(messages[0], AssistantMessage)
-                assert messages[0].content[0].text == "4"
+                block = messages[0].content[0]
+                assert isinstance(block, TextBlock)
+                assert block.text == "4"
 
         anyio.run(_test)
 
@@ -227,13 +229,6 @@ class TestQueryFunction:
                 mock_query.initialize = AsyncMock()
                 mock_query.close = AsyncMock()
                 mock_query.close_receive_stream = Mock()
-                mock_query._tg = None
-
-                def _consume_coro(coro):
-                    coro.close()
-                    return Mock()
-
-                mock_query.spawn_task = Mock(side_effect=_consume_coro)
 
                 async def mock_receive():
                     yield {
@@ -251,11 +246,7 @@ class TestQueryFunction:
                 async for _ in query(prompt="test", options=ClaudeAgentOptions()):
                     pass
 
-                mock_query.spawn_task.assert_called_once()
-                assert not mock_query.wait_for_result_and_end_input.await_args_list, (
-                    "wait_for_result_and_end_input should be spawned as a task, "
-                    "not awaited directly"
-                )
+                mock_query.wait_for_result_and_end_input.assert_called_once()
 
         anyio.run(_test)
 

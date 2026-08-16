@@ -6,6 +6,9 @@ from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
 from dataclasses import asdict, replace
 from typing import Any
 
+import anyio
+
+from .._errors import ProcessError
 from ..types import (
     ClaudeAgentOptions,
     HookEvent,
@@ -201,33 +204,63 @@ class InternalClient:
             )
 
         try:
-            # Start reading messages
-            await query.start()
+            read_done = anyio.Event()
 
-            # Always initialize to send agents via stdin (matching TypeScript SDK)
-            await query.initialize()
+            async def _run_read_messages() -> None:
+                try:
+                    await query._read_messages()
+                finally:
+                    read_done.set()
 
-            # Handle prompt input
-            if isinstance(prompt, str):
-                # For string prompts, write user message to stdin after initialize
-                # (matching TypeScript SDK behavior)
-                user_message = {
-                    "type": "user",
-                    "session_id": "",
-                    "message": {"role": "user", "content": prompt},
-                    "parent_tool_use_id": None,
-                }
-                await chosen_transport.write(json.dumps(user_message) + "\n")
-                query.spawn_task(query.wait_for_result_and_end_input())
-            elif isinstance(prompt, AsyncIterable):
-                # Stream input in background for async iterables
-                query.spawn_task(query.stream_input(prompt))
+            async def _monitor_process() -> None:
+                if hasattr(chosen_transport, "wait"):
+                    returncode = await chosen_transport.wait()
+                    if (
+                        type(returncode) is int
+                        and returncode != 0
+                        and not read_done.is_set()
+                    ):
+                        raise ProcessError(
+                            f"Claude Code process exited unexpectedly with code {returncode}",
+                            exit_code=returncode,
+                            stderr="",
+                        )
 
-            # Yield parsed messages, skipping unknown message types
-            async for data in query.receive_messages():
-                message = parse_message(data)
-                if message is not None:
-                    yield message
+            try:
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(_run_read_messages)
+                    tg.start_soon(_monitor_process)
+
+                    # Always initialize to send agents via stdin (matching TypeScript SDK)
+                    await query.initialize()
+
+                    if isinstance(prompt, str):
+                        user_message = {
+                            "type": "user",
+                            "session_id": "",
+                            "message": {"role": "user", "content": prompt},
+                            "parent_tool_use_id": None,
+                        }
+                        await chosen_transport.write(json.dumps(user_message) + "\n")
+                        tg.start_soon(query.wait_for_result_and_end_input)
+                    elif isinstance(prompt, AsyncIterable):
+                        tg.start_soon(query.stream_input, prompt)
+
+                    async for data in query.receive_messages():
+                        message = parse_message(data)
+                        if message is not None:
+                            yield message
+
+                    tg.cancel_scope.cancel()
+            except BaseException as e:
+                if isinstance(e, GeneratorExit):
+                    raise
+                if hasattr(e, "exceptions") and any(
+                    isinstance(exc, GeneratorExit)
+                    for exc in getattr(e, "exceptions", ())
+                ):
+                    raise GeneratorExit() from None
+                raise
 
         finally:
             await query.close()

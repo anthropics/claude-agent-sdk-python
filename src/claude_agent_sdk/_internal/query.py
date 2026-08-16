@@ -929,11 +929,12 @@ class Query:
         follow-up turn, which ends in such a result), or in _read_messages'
         finally block if the process exits early.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        if self.sdk_mcp_servers or self.hooks or self.can_use_tool:
             logger.debug(
                 "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={self.can_use_tool is not None})"
             )
             await self._first_result_event.wait()
 
@@ -942,8 +943,9 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or can_use_tool are present, waits for the
+        first result before closing stdin to allow bidirectional control
+        protocol communication.
         """
         try:
             async for message in stream:

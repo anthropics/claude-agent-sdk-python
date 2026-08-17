@@ -112,7 +112,9 @@ async def import_session_to_store(
         # transcript is still imported); other read errors propagate.
         meta = _read_agent_metadata_sidecar(file_path)
         if meta is not None:
-            meta_entry = cast(SessionStoreEntry, {"type": "agent_metadata", **meta})
+            # Synthetic discriminator last so a stray "type" key in the
+            # CLI-owned sidecar can never shadow it.
+            meta_entry = cast(SessionStoreEntry, {**meta, "type": "agent_metadata"})
             await store.append(sub_key, [meta_entry])
 
 

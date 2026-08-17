@@ -1340,7 +1340,7 @@ def get_subagent_messages(
     the Agent ``tool_use`` in the parent session that spawned this subagent
     (and ``parent_agent_id`` the spawning subagent, for nested subagents),
     read from the ``agent-<agentId>.meta.json`` sidecar next to the
-    transcript; both are ``None`` if the sidecar is missing.
+    transcript; both are ``None`` if the sidecar is missing or unusable.
 
     Args:
         session_id: UUID of the parent session.
@@ -1397,10 +1397,14 @@ def get_subagent_messages(
 
     # The .meta.json sidecar next to the transcript records which Agent
     # tool_use spawned this subagent (and, for nested subagents, the parent
-    # agent id). Missing or unreadable sidecar → leave both as None.
-    parent_tool_use_id, parent_agent_id = _parent_ids_from_agent_metadata(
-        _read_agent_metadata_sidecar(match)
-    )
+    # agent id). Like the transcript read above, any failure to read it
+    # (missing, unreadable, corrupt) degrades to "no metadata" rather than
+    # raising from this best-effort read helper.
+    try:
+        meta = _read_agent_metadata_sidecar(match)
+    except OSError:
+        meta = None
+    parent_tool_use_id, parent_agent_id = _parent_ids_from_agent_metadata(meta)
 
     entries = _parse_transcript_entries(content)
     return _entries_to_subagent_messages(

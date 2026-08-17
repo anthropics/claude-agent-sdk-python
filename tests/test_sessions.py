@@ -1907,6 +1907,24 @@ class TestGetSubagentMessages:
         assert all(m.parent_tool_use_id is None for m in messages)
         assert all(m.parent_agent_id is None for m in messages)
 
+    def test_unreadable_sidecar_degrades_to_none(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A sidecar that exists but cannot be read (here: a directory) must
+        not make the best-effort read helper raise."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        self._write_agent(subagents_dir, "x", sid, None)
+        (subagents_dir / "agent-x.meta.json").mkdir()
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert len(messages) == 2
+        assert all(m.parent_tool_use_id is None for m in messages)
+        assert all(m.parent_agent_id is None for m in messages)
+
     def test_skips_corrupt_lines(self, claude_config_dir: Path, tmp_path: Path):
         """Corrupt JSONL lines are skipped."""
         project_path = str(tmp_path / "proj")

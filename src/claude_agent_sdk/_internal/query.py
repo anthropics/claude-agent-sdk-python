@@ -56,6 +56,23 @@ logger = logging.getLogger(__name__)
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
 
 
+async def _call_sdk_mcp_handler(server: Any, request: Any) -> Any:
+    """Invoke an SDK MCP server's handler for a request, or None if unhandled.
+
+    MCP SDK v1 keys handlers by request type and wraps the result in a
+    ServerResult; v2 keys them by method name and returns the result directly.
+    """
+    handlers = getattr(server, "request_handlers", None)
+    if handlers is not None:
+        handler = handlers.get(type(request))
+        return (await handler(request)).root if handler else None
+    entry = server.get_request_handler(request.method)
+    if entry is None:
+        return None
+    # Handlers registered by create_sdk_mcp_server() ignore the context.
+    return await entry.handler(None, request.params)
+
+
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     """Convert Python-safe field names to CLI-expected field names.
 
@@ -653,30 +670,15 @@ class Query:
 
             elif method == "tools/list":
                 request = ListToolsRequest(method=method)
-                handler = server.request_handlers.get(ListToolsRequest)
-                if handler:
-                    result = await handler(request)
-                    # Convert MCP result to JSONRPC response
-                    tools_data = []
-                    for tool in result.root.tools:  # type: ignore[union-attr]
-                        tool_data: dict[str, Any] = {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "inputSchema": (
-                                tool.inputSchema.model_dump()
-                                if hasattr(tool.inputSchema, "model_dump")
-                                else tool.inputSchema
-                            )
-                            if tool.inputSchema
-                            else {},
-                        }
-                        if tool.annotations:
-                            tool_data["annotations"] = tool.annotations.model_dump(
-                                exclude_none=True
-                            )
-                        if tool.meta:
-                            tool_data["_meta"] = tool.meta
-                        tools_data.append(tool_data)
+                result = await _call_sdk_mcp_handler(server, request)
+                if result is not None:
+                    # Convert MCP result to JSONRPC response. Dumping by alias
+                    # yields the wire names (inputSchema, _meta, ...) on both
+                    # MCP SDK v1 and v2, which renamed the fields to snake_case.
+                    tools_data = [
+                        tool.model_dump(by_alias=True, exclude_none=True, mode="json")
+                        for tool in result.tools
+                    ]
                     return {
                         "jsonrpc": "2.0",
                         "id": message.get("id"),
@@ -690,12 +692,11 @@ class Query:
                         name=params.get("name"), arguments=params.get("arguments", {})
                     ),
                 )
-                handler = server.request_handlers.get(CallToolRequest)
-                if handler:
-                    result = await handler(call_request)
+                result = await _call_sdk_mcp_handler(server, call_request)
+                if result is not None:
                     # Convert MCP result to JSONRPC response
                     content = []
-                    for item in result.root.content:  # type: ignore[union-attr]
+                    for item in result.content:
                         item_type = getattr(item, "type", None)
                         if item_type == "text":
                             content.append(
@@ -703,11 +704,9 @@ class Query:
                             )
                         elif item_type == "image":
                             content.append(
-                                {
-                                    "type": "image",
-                                    "data": getattr(item, "data", ""),
-                                    "mimeType": getattr(item, "mimeType", ""),
-                                }
+                                item.model_dump(
+                                    by_alias=True, exclude_none=True, mode="json"
+                                )
                             )
                         elif item_type == "resource_link":
                             parts = []
@@ -743,7 +742,10 @@ class Query:
                             )
 
                     response_data = {"content": content}
-                    if hasattr(result.root, "isError") and result.root.isError:
+                    # MCP SDK v2 renamed isError to is_error.
+                    if getattr(result, "isError", None) or getattr(
+                        result, "is_error", None
+                    ):
                         response_data["isError"] = True  # type: ignore[assignment]
 
                     return {

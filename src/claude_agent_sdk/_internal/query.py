@@ -101,6 +101,7 @@ class Query:
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
+        forward_subagent_text: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -116,6 +117,8 @@ class Query:
                 initialize (see ``SystemPromptPreset``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
+            forward_subagent_text: Ask the CLI (via initialize) to forward
+                subagent text/thinking blocks, not just tool_use/tool_result
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -126,6 +129,7 @@ class Query:
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
         self._skills = skills
+        self._forward_subagent_text = forward_subagent_text
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -238,6 +242,8 @@ class Query:
         # only send the field when it's an explicit list.
         if isinstance(self._skills, list):
             request["skills"] = self._skills
+        if self._forward_subagent_text:
+            request["forwardSubagentText"] = True
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

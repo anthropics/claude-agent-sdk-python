@@ -77,7 +77,6 @@ def find_installed_cli() -> Path | None:
         locations = [
             Path.home() / ".local" / "bin" / "claude",
             Path("/usr/local/bin/claude"),
-            Path.home() / "node_modules" / ".bin" / "claude",
         ]
 
     # Also check PATH

@@ -133,11 +133,15 @@ class InternalClient:
                 options=configured_options,
             )
 
-        # Connect transport
-        await chosen_transport.connect()
+        # --- Pre-compute all Query parameters BEFORE connect() ---
+        # This eliminates the window between subprocess startup and hook
+        # registration. On session resume the CLI replays deferred tools
+        # during startup; if hooks aren't registered by then the deferred
+        # tool executes without calling the resumed PreToolUse callback.
+        # See https://github.com/anthropics/claude-agent-sdk-python/issues/993
 
         # Extract SDK MCP servers from configured options
-        sdk_mcp_servers = {}
+        sdk_mcp_servers: dict[str, Any] = {}
         if configured_options.mcp_servers and isinstance(
             configured_options.mcp_servers, dict
         ):
@@ -168,16 +172,20 @@ class InternalClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Create Query to handle control protocol
-        # Always use streaming mode internally (matching TypeScript SDK)
-        # This ensures agents are always sent via initialize request
+        # Convert hooks once (registers callback IDs into hook_callbacks dict)
+        hooks = (
+            self._convert_hooks_to_internal_format(configured_options.hooks)
+            if configured_options.hooks
+            else None
+        )
+
+        # Create Query BEFORE connect so no work remains between
+        # the subprocess starting and hooks being registered.
         query = Query(
             transport=chosen_transport,
             is_streaming_mode=True,  # Always streaming internally
             can_use_tool=configured_options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
-            if configured_options.hooks
-            else None,
+            hooks=hooks,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
@@ -185,6 +193,7 @@ class InternalClient:
             skills=configured_options.skills,
         )
 
+        # Session store setup (attribute-only, no subprocess dependency)
         if configured_options.session_store is not None:
 
             async def _on_mirror_error(key: Any, error: str) -> None:
@@ -200,11 +209,17 @@ class InternalClient:
                 )
             )
 
-        try:
-            # Start reading messages
-            await query.start()
+        # Connect transport (starts the CLI subprocess)
+        await chosen_transport.connect()
 
-            # Always initialize to send agents via stdin (matching TypeScript SDK)
+        try:
+            # Start reading messages and register hooks IMMEDIATELY.
+            # This is the earliest possible point to send the initialize
+            # request (with hook callback IDs) to the CLI. On session
+            # resume the CLI may replay deferred tools during startup;
+            # sending hooks before any other stdin message ensures the
+            # PreToolUse callback is available when the tool is replayed.
+            await query.start()
             await query.initialize()
 
             # Handle prompt input

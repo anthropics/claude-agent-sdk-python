@@ -629,7 +629,17 @@ class McpHttpServerConfig(TypedDict):
 
 
 class McpSdkServerConfig(TypedDict):
-    """SDK MCP server configuration."""
+    """SDK (in-process) MCP server configuration.
+
+    Usually produced by ``create_sdk_mcp_server()``. ``instance`` may also be
+    any ``mcp.server.Server`` you have built yourself; the SDK serves it to
+    Claude Code over an in-memory MCP transport (one ``Server.run`` per
+    query, so its lifespan runs once), and the requests it handles (tools,
+    resources, prompts, ...) all reach it. Requests and notifications the
+    server sends to the client (sampling, elicitation, roots, logging,
+    progress) are not forwarded yet, and on mcp 1.x its tools are not
+    cancelled when Claude Code abandons a call: they run to completion.
+    """
 
     type: Literal["sdk"]
     name: str

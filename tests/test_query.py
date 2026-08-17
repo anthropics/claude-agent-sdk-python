@@ -135,7 +135,11 @@ _MCP_CONTROL_REQUESTS = [
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {},
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-cli", "version": "0"},
+                },
             },
         },
     },
@@ -154,6 +158,51 @@ _MCP_CONTROL_REQUESTS = [
         },
     },
 ]
+
+
+def _mcp_handshake_transport(writes: list[str]) -> AsyncMock:
+    """Mock transport that plays the CLI side of an SDK MCP handshake.
+
+    Like the real CLI, it sends each MCP control request and waits for the
+    SDK's control response before moving on, then emits the assistant and
+    result messages.
+    """
+    mock_transport = AsyncMock()
+    responded = {req["request_id"]: anyio.Event() for req in _MCP_CONTROL_REQUESTS}
+
+    async def tracking_write(data):
+        writes.append(data)
+        frame = json.loads(data)
+        if frame.get("type") == "control_response":
+            responded[frame["response"]["request_id"]].set()
+
+    async def mock_receive():
+        for req in _MCP_CONTROL_REQUESTS:
+            yield req
+            await responded[req["request_id"]].wait()
+        for msg in _ASSISTANT_AND_RESULT:
+            yield msg
+
+    mock_transport.write = tracking_write
+    mock_transport.read_messages = mock_receive
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+    return mock_transport
+
+
+def _assert_mcp_handshake_succeeded(writes: list[str]) -> None:
+    control_responses = [
+        json.loads(w) for w in writes if json.loads(w).get("type") == "control_response"
+    ]
+    assert len(control_responses) == 2
+    init, listing = (r["response"] for r in control_responses)
+    assert init["subtype"] == "success"
+    assert init["response"]["mcp_response"]["result"]["serverInfo"]["name"] == "greeter"
+    assert listing["subtype"] == "success"
+    tools = listing["response"]["mcp_response"]["result"]["tools"]
+    assert [t["name"] for t in tools] == ["greet"]
 
 
 def _make_greet_server():
@@ -254,26 +303,8 @@ class TestStringPromptWithSdkMcpServers:
 
         async def _test():
             server = _make_greet_server()
-
-            mock_transport = AsyncMock()
-            writes = []
-
-            async def tracking_write(data):
-                writes.append(data)
-
-            mock_transport.write = tracking_write
-            mock_transport.connect = AsyncMock()
-            mock_transport.close = AsyncMock()
-            mock_transport.end_input = AsyncMock()
-            mock_transport.is_ready = Mock(return_value=True)
-
-            async def mock_receive():
-                for req in _MCP_CONTROL_REQUESTS:
-                    yield req
-                for msg in _ASSISTANT_AND_RESULT:
-                    yield msg
-
-            mock_transport.read_messages = mock_receive
+            writes: list[str] = []
+            mock_transport = _mcp_handshake_transport(writes)
 
             with (
                 patch(
@@ -301,11 +332,7 @@ class TestStringPromptWithSdkMcpServers:
 
             # user message + 2 MCP control responses = at least 3 writes
             assert len(writes) >= 3
-
-            control_responses = [
-                json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
-            ]
-            assert len(control_responses) == 2
+            _assert_mcp_handshake_succeeded(writes)
 
         anyio.run(_test)
 
@@ -740,26 +767,8 @@ class TestAsyncIterablePromptWithSdkMcpServers:
 
         async def _test():
             server = _make_greet_server()
-
-            mock_transport = AsyncMock()
-            writes = []
-
-            async def tracking_write(data):
-                writes.append(data)
-
-            mock_transport.write = tracking_write
-            mock_transport.connect = AsyncMock()
-            mock_transport.close = AsyncMock()
-            mock_transport.end_input = AsyncMock()
-            mock_transport.is_ready = Mock(return_value=True)
-
-            async def mock_receive():
-                for req in _MCP_CONTROL_REQUESTS:
-                    yield req
-                for msg in _ASSISTANT_AND_RESULT:
-                    yield msg
-
-            mock_transport.read_messages = mock_receive
+            writes: list[str] = []
+            mock_transport = _mcp_handshake_transport(writes)
 
             async def prompt_stream():
                 yield {
@@ -793,11 +802,7 @@ class TestAsyncIterablePromptWithSdkMcpServers:
 
             # user message + 2 MCP control responses = at least 3 writes
             assert len(writes) >= 3
-
-            control_responses = [
-                json.loads(w.rstrip("\n")) for w in writes if "control_response" in w
-            ]
-            assert len(control_responses) == 2
+            _assert_mcp_handshake_succeeded(writes)
 
         anyio.run(_test)
 

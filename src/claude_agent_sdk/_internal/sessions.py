@@ -1408,16 +1408,53 @@ def get_subagent_messages(
     )
 
 
-def _read_agent_metadata_sidecar(transcript_path: Path) -> dict[str, Any] | None:
-    """Read ``agent-<id>.meta.json`` beside ``agent-<id>.jsonl``, if present."""
-    meta_path = transcript_path.with_name(
+def _agent_metadata_sidecar_path(transcript_path: Path) -> Path:
+    """``agent-<id>.jsonl`` -> ``agent-<id>.meta.json`` (same directory).
+
+    The single definition of the sidecar naming convention, shared by the
+    read path here, session import, and resume materialization.
+    """
+    return transcript_path.with_name(
         transcript_path.name[: -len(".jsonl")] + ".meta.json"
     )
+
+
+def _read_agent_metadata_sidecar(transcript_path: Path) -> dict[str, Any] | None:
+    """Read the ``.meta.json`` sidecar beside a subagent transcript.
+
+    Returns ``None`` when the sidecar is missing, unreadable, not valid JSON,
+    or not a JSON object — an unusable optional sidecar degrades to an absent
+    one. Other ``OSError``s (e.g. permission denied) propagate.
+    """
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        meta = json.loads(
+            _agent_metadata_sidecar_path(transcript_path).read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        return None
+    except ValueError:
         return None
     return meta if isinstance(meta, dict) else None
+
+
+def _split_agent_metadata(
+    entries: list[Any],
+) -> tuple[dict[str, Any] | None, list[Any]]:
+    """Separate the synthetic ``agent_metadata`` entry from transcript lines.
+
+    A subagent's :class:`SessionStore` stream carries its ``.meta.json``
+    sidecar as ``{"type": "agent_metadata", ...}`` entries alongside the
+    transcript. Returns ``(metadata, transcript)`` where ``metadata`` is the
+    *last* such entry (it is rewritten on resume, so last wins) or ``None``.
+    """
+    metadata: dict[str, Any] | None = None
+    transcript: list[Any] = []
+    for e in entries:
+        if isinstance(e, dict) and e.get("type") == "agent_metadata":
+            metadata = dict(e)
+        else:
+            transcript.append(e)
+    return metadata, transcript
 
 
 def _parent_ids_from_agent_metadata(
@@ -1969,13 +2006,7 @@ async def get_subagent_messages_from_store(
     # sidecar) records which Agent tool_use spawned this subagent. Recover
     # the parent ids from it — last one wins, since the metadata is
     # rewritten on resume — then drop it: it is not a transcript line.
-    meta_entry: dict[str, Any] | None = None
-    transcript: list[Any] = []
-    for e in entries:
-        if isinstance(e, dict) and e.get("type") == "agent_metadata":
-            meta_entry = dict(e)
-        else:
-            transcript.append(e)
+    meta_entry, transcript = _split_agent_metadata(entries)
     if not transcript:
         return []
     parent_tool_use_id, parent_agent_id = _parent_ids_from_agent_metadata(meta_entry)

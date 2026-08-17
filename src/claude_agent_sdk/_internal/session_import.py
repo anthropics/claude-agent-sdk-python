@@ -10,13 +10,14 @@ Mirrors the TypeScript SDK's ``importSessionToStore``.
 
 from __future__ import annotations
 
-import errno
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 from ..types import SessionKey, SessionStore, SessionStoreEntry
 from .sessions import (
+    _read_agent_metadata_sidecar,
     _resolve_session_file_path,
     _validate_uuid,
 )
@@ -107,15 +108,11 @@ async def import_session_to_store(
         # are only sent to live mirrors and persisted in the .meta.json
         # sidecar. Import the sidecar so materialize_resume_session() can
         # recreate it and resumed subagents keep their agentType/worktreePath.
-        meta_path = file_path.with_name(file_path.name[: -len(".jsonl")] + ".meta.json")
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except OSError as e:
-            if e.errno != errno.ENOENT:
-                raise
-        else:
-            meta_entry: SessionStoreEntry = {"type": "agent_metadata"}
-            meta_entry.update(meta)
+        # A missing, corrupt, or non-object sidecar is treated as absent (the
+        # transcript is still imported); other read errors propagate.
+        meta = _read_agent_metadata_sidecar(file_path)
+        if meta is not None:
+            meta_entry = cast(SessionStoreEntry, {"type": "agent_metadata", **meta})
             await store.append(sub_key, [meta_entry])
 
 

@@ -205,6 +205,29 @@ class TestSubagents:
         }
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("sidecar", ["not json {", "[1, 2]", "42"])
+    async def test_unusable_meta_json_sidecar_is_treated_as_absent(
+        self, claude_dir: Path, cwd: Path, project_key: str, sidecar: str
+    ) -> None:
+        """A corrupt or non-object sidecar must not abort the import midway
+        (previously json errors / TypeError escaped after the transcripts had
+        already been appended); it degrades to a missing sidecar."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        sub_dir = claude_dir / SESSION_ID / "subagents"
+        _write_jsonl(sub_dir / "agent-abc.jsonl", [_entry(10)])
+        (sub_dir / "agent-abc.meta.json").write_text(sidecar, encoding="utf-8")
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        sub_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+            "subpath": "subagents/agent-abc",
+        }
+        assert store.get_entries(sub_key) == [_entry(10)]
+
+    @pytest.mark.anyio
     async def test_include_subagents_false_skips_subagents(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:

@@ -35,7 +35,13 @@ import anyio
 
 from ..types import ClaudeAgentOptions, SessionKey, SessionStore, SessionStoreFlushMode
 from .session_store_validation import _store_implements
-from .sessions import _get_projects_dir, _validate_uuid, project_key_for_directory
+from .sessions import (
+    _agent_metadata_sidecar_path,
+    _get_projects_dir,
+    _split_agent_metadata,
+    _validate_uuid,
+    project_key_for_directory,
+)
 from .transcript_mirror_batcher import (
     MAX_PENDING_BYTES,
     MAX_PENDING_ENTRIES,
@@ -562,15 +568,9 @@ async def _materialize_subkeys(
         if not sub_entries:
             continue
 
-        # Partition: agent_metadata entries describe the .meta.json sidecar;
-        # everything else is a transcript line.
-        metadata: list[dict[str, Any]] = []
-        transcript: list[Any] = []
-        for e in sub_entries:
-            if isinstance(e, dict) and e.get("type") == "agent_metadata":
-                metadata.append(e)
-            else:
-                transcript.append(e)
+        # agent_metadata entries describe the .meta.json sidecar (last one
+        # wins); everything else is a transcript line.
+        metadata, transcript = _split_agent_metadata(sub_entries)
 
         sub_file = (session_dir / subpath).with_name(
             (session_dir / subpath).name + ".jsonl"
@@ -578,12 +578,10 @@ async def _materialize_subkeys(
         if transcript:
             _write_jsonl(sub_file, transcript)
 
-        if metadata:
-            # Last metadata entry wins; strip the synthetic ``type`` field.
-            meta_content = {k: v for k, v in metadata[-1].items() if k != "type"}
-            meta_file = sub_file.with_name(
-                sub_file.name[: -len(".jsonl")] + ".meta.json"
-            )
+        if metadata is not None:
+            # Strip the synthetic ``type`` field.
+            meta_content = {k: v for k, v in metadata.items() if k != "type"}
+            meta_file = _agent_metadata_sidecar_path(sub_file)
             meta_file.parent.mkdir(parents=True, exist_ok=True)
             meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
             with suppress(OSError):

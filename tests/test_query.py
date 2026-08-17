@@ -930,6 +930,8 @@ def _make_permission_gated_transport():
     async def read_messages():
         with anyio.move_on_after(5):
             await user_message_written.wait()
+        if not user_message_written.is_set():
+            return
         yield {
             "type": "control_request",
             "request_id": "perm_1",
@@ -1020,6 +1022,72 @@ class TestCanUseToolKeepsStdinOpen:
         assert state["callback_calls"] == ["Write"]
         assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
         assert state["ended"] is True
+
+    def test_prompt_iterable_that_raises_after_a_message_still_closes_stdin(self):
+        """If the caller's prompt iterable fails after sending a message, the
+        turn already sent still completes (permission round-trip included)
+        and stdin is closed afterwards instead of being left open forever."""
+
+        async def prompt_stream():
+            yield {"type": "user", "message": {"role": "user", "content": "write it"}}
+            raise RuntimeError("caller's generator blew up")
+
+        messages, state = self._run_query(prompt_stream)
+
+        assert state["callback_calls"] == ["Write"]
+        assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
+        assert state["ended"] is True
+
+    def test_prompt_iterable_that_raises_immediately_closes_stdin(self):
+        """Nothing was sent, so no result can release the hold: stdin must be
+        closed right away or the CLI (and the consumer) would wait forever."""
+
+        async def _test():
+            ended = anyio.Event()
+            transport = _make_mock_transport(messages=[])
+
+            async def end_input():
+                ended.set()
+
+            async def read_messages():
+                # Like the real CLI: produce nothing and stay alive until
+                # stdin is closed.
+                await ended.wait()
+                return
+                yield  # pragma: no cover
+
+            transport.end_input = end_input
+            transport.read_messages = read_messages
+
+            async def prompt_stream():
+                raise RuntimeError("caller's generator blew up")
+                yield  # pragma: no cover
+
+            async def allow_all(tool_name, tool_input, context):
+                return PermissionResultAllow()
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = transport
+                with anyio.fail_after(5):
+                    messages = [
+                        msg
+                        async for msg in query(
+                            prompt=prompt_stream(),
+                            options=ClaudeAgentOptions(can_use_tool=allow_all),
+                        )
+                    ]
+            assert messages == []
+            assert ended.is_set()
+
+        anyio.run(_test)
 
 
 class TestQueryCrossTaskCleanup:

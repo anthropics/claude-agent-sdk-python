@@ -966,15 +966,29 @@ class Query:
         waits for a run-ending result before closing stdin to allow
         bidirectional control protocol communication.
         """
+        written = 0
         try:
             async for message in stream:
                 if self._closed:
                     break
                 await self.transport.write(json.dumps(message) + "\n")
-
-            await self.wait_for_result_and_end_input()
+                written += 1
         except Exception as e:
-            logger.debug(f"Error streaming input: {e}")
+            # A user-supplied prompt iterable (or the write) failed. Don't
+            # leave stdin open — the CLI would wait for input forever and the
+            # consumer's `async for` would never finish — fall through and
+            # close it like a normal end of input.
+            logger.error("Prompt stream failed; closing stdin: %s", e)
+        try:
+            if written:
+                await self.wait_for_result_and_end_input()
+            else:
+                # Nothing was sent, so no result will arrive to release the
+                # hold; close immediately (mirrors the TypeScript SDK's
+                # messageCount guard).
+                await self.transport.end_input()
+        except Exception as e:
+            logger.debug(f"Error closing input stream: {e}")
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""

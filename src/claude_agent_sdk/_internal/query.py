@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -54,6 +54,34 @@ logger = logging.getLogger(__name__)
 # Anything added here must be a type that reliably reaches a terminal status,
 # or it will hang the query (see Query._track_task_lifecycle).
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+
+
+def _error_result_text(message: dict[str, Any]) -> str:
+    """Pick the most informative text from a ``result`` frame with ``is_error``.
+
+    Terminal errors the CLI raises itself (``error_max_turns``,
+    ``error_during_execution``, ...) carry their prose in ``errors[]``. A run
+    that ends on an API failure instead arrives as ``subtype: "success"`` with
+    ``is_error: true``, an empty ``errors[]`` and the "API Error: ..." prose in
+    ``result`` — falling back to the subtype there produced the self-
+    contradictory "Claude Code returned an error result: success". Prefer
+    ``errors[]``, then ``result``, then a non-success ``subtype``, then the
+    HTTP status, mirroring the TypeScript SDK's choice of ``result`` for the
+    ``success`` subtype.
+    """
+    errors = _normalize_result_errors(message.get("errors"))
+    if errors:
+        return "; ".join(errors)
+    result = message.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    subtype = message.get("subtype")
+    if isinstance(subtype, str) and subtype and subtype != "success":
+        return subtype
+    status = message.get("api_error_status")
+    if status is not None:
+        return f"API error (HTTP {status})"
+    return "unknown error"
 
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
@@ -156,11 +184,12 @@ class Query:
         # a result that arrives while this set is non-empty must not close
         # stdin.
         self._inflight_tasks: set[str] = set()
-        # Set to the result's error text when the most recent message is a
-        # result with is_error=True. Used to replace the generic "exit code 1"
-        # ProcessError with the structured error the CLI already reported.
-        # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
-        self._last_error_result_text: str | None = None
+        # Set to the result payload when the most recent message is a result
+        # with is_error=True. Used to replace the generic "exit code 1"
+        # ProcessError with a ResultError carrying what the CLI already
+        # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
+        # (Query.ts), but keeps the whole payload rather than just the text.
+        self._last_error_result: dict[str, Any] | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -347,12 +376,9 @@ class Query:
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
-                        errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
-                        )
+                        self._last_error_result = message
                     else:
-                        self._last_error_result_text = None
+                        self._last_error_result = None
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -361,7 +387,7 @@ class Query:
                     # marker means the conversation moved on; a ProcessError
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
-                    self._last_error_result_text = None
+                    self._last_error_result = None
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -372,22 +398,26 @@ class Query:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             # When the CLI emits a result with is_error=True (e.g.
-            # error_max_turns, error_during_execution) it then exits non-zero
-            # on purpose, for shell-script consumers. The trailing ProcessError
-            # carries no information beyond "exit code 1" — replace it with the
-            # structured error the CLI already reported so the exception is
-            # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
-            pending_error = e
-            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+            # error_max_turns, error_during_execution, or an API failure) it
+            # then exits non-zero on purpose, for shell-script consumers. The
+            # trailing ProcessError carries no information beyond "exit code
+            # 1" — replace it with a ResultError carrying what the CLI already
+            # reported so the exception is actionable and typed. Mirrors the
+            # TypeScript SDK (Query.ts readMessages).
+            pending_error: Exception = e
+            if isinstance(e, ProcessError) and self._last_error_result is not None:
                 error_text = (
                     f"Claude Code returned an error result: "
-                    f"{self._last_error_result_text}"
+                    f"{_error_result_text(self._last_error_result)}"
                 )
                 # stderr deliberately not carried over: the transport's value is
                 # a generic placeholder, and the result text is the real cause.
-                pending_error = ProcessError(error_text, exit_code=e.exit_code)
+                pending_error = ResultError(
+                    error_text, data=self._last_error_result, exit_code=e.exit_code
+                )
+                pending_error.__cause__ = e
                 logger.debug(
-                    "Replacing ProcessError (exit code %s) with result error text",
+                    "Replacing ProcessError (exit code %s) with ResultError",
                     e.exit_code,
                 )
             else:
@@ -401,8 +431,14 @@ class Query:
                 if request_id not in self.pending_control_results:
                     self.pending_control_results[request_id] = pending_error
                     event.set()
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            # Put the error in the stream so iterators can raise it. The typed
+            # exception rides along so receive_messages() re-raises it as-is
+            # (ResultError / ProcessError with its exit code,
+            # CLIJSONDecodeError, ...) instead of flattening it to a bare
+            # Exception(str).
+            await self._message_send.send(
+                {"type": "error", "error": error_text, "exception": pending_error}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -962,6 +998,9 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
+                exc = message.get("exception")
+                if isinstance(exc, Exception):
+                    raise exc
                 raise Exception(message.get("error", "Unknown error"))
 
             yield message

@@ -22,7 +22,7 @@ from claude_agent_sdk import (
     query,
     tool,
 )
-from claude_agent_sdk._errors import ProcessError
+from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -1307,16 +1307,174 @@ class TestProcessExitAfterErrorResult:
 
             received = []
             with pytest.raises(
-                Exception,
+                ProcessError,
                 match=r"Claude Code returned an error result: "
                 r"Reached maximum number of turns \(60\)",
-            ):
+            ) as exc_info:
                 async for msg in q.receive_messages():
                     received.append(msg)
             await q.close()
 
             assert len(received) == 1
             assert received[0]["subtype"] == "error_max_turns"
+            # The stream raises a typed ResultError (a ProcessError), not a
+            # bare Exception(str): payload and exit code preserved, original
+            # exit error chained.
+            err = exc_info.value
+            assert type(err) is ResultError
+            assert isinstance(err, ProcessError)
+            assert err.exit_code == 1
+            assert err.subtype == "error_max_turns"
+            assert err.errors == ["Reached maximum number of turns (60)"]
+            assert err.data is received[0]
+            assert isinstance(err.__cause__, ProcessError)
+            assert "Command failed" in str(err.__cause__)
+
+        anyio.run(_test)
+
+    def test_api_error_result_uses_result_text_not_success_subtype(self):
+        """A run that ends on an API failure is reported as subtype=success,
+        is_error=True, errors=[] with the prose in `result`. The raised error
+        must carry that prose — never "returned an error result: success"."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success",
+                        errors=[],
+                        result="API Error: Stream idle timeout - no chunks received",
+                        api_error_status=None,
+                        terminal_reason="api_error",
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ResultError) as exc_info:
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+            err = exc_info.value
+            text = str(err)
+            assert (
+                "Claude Code returned an error result: "
+                "API Error: Stream idle timeout - no chunks received" in text
+            )
+            assert "error result: success" not in text
+            # The "mid-turn API failure" shape is recoverable from the payload.
+            assert err.subtype == "success"
+            assert err.terminal_reason == "api_error"
+            assert err.result == "API Error: Stream idle timeout - no chunks received"
+            assert err.errors == []
+            assert err.session_id == "s"
+
+        anyio.run(_test)
+
+    def test_api_error_result_without_text_uses_http_status(self):
+        """If neither errors[] nor result carry text, fall back to the HTTP
+        status rather than the meaningless "success" subtype."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success", errors=[], result="", api_error_status=529
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                ProcessError,
+                match=r"Claude Code returned an error result: API error \(HTTP 529\)",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_blank_errors_fall_back_to_subtype(self):
+        """errors=[""] must not produce an empty-suffixed message."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(subtype="error_during_execution", errors=[" "])
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                ProcessError,
+                match=r"Claude Code returned an error result: error_during_execution",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize(
+        ("errors", "expected"),
+        [("boom", "boom"), (42, "error_during_execution")],
+    )
+    def test_malformed_errors_field_does_not_break_reader(self, errors, expected):
+        """A non-list `errors` must neither be split per character nor crash
+        the read loop with an unrelated TypeError."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(subtype="error_during_execution", errors=errors)
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                ProcessError,
+                match=rf"Claude Code returned an error result: {expected} \(",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_non_process_error_type_is_preserved(self):
+        """Transport failures other than ProcessError keep their type when
+        re-raised from the message stream."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[],
+                exc=CLIConnectionError("lost the CLI"),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(CLIConnectionError, match="lost the CLI"):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
 
         anyio.run(_test)
 
@@ -1398,6 +1556,8 @@ class TestProcessExitAfterErrorResult:
                 "Resume rejected by --resume-drops-turn: nope" in str(exc_info.value)
             )
             assert exc_info.value.exit_code == 1
+            assert isinstance(exc_info.value, ResultError)
+            assert exc_info.value.subtype == "error_during_execution"
             await q.close()
 
         anyio.run(_test)

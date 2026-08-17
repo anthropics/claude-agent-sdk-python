@@ -839,8 +839,10 @@ class Query:
           ``SessionStore``. That flush was already shielded on its own before
           this scope existed, so nothing here makes it worse.
         - Stopping the in-process MCP servers, which cancels any tool call
-          still running. ``SdkMcpBridge`` bounds that wait itself and gives
-          up on a tool that does not react to cancellation.
+          still running. ``SdkMcpBridge`` bounds that wait itself: a tool
+          that does not react to cancellation (one blocked in a worker
+          thread, say) is given up on after a grace period of a few seconds
+          per server.
         - ``transport.close()``. For a custom ``Transport`` (accepted by
           ``query(transport=...)`` and ``ClaudeSDKClient(transport=...)``) that
           is arbitrary user code, and an enclosing anyio cancel scope can no

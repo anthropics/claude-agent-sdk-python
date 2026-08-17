@@ -610,7 +610,12 @@ class ClaudeSDKClient:
                 return
 
     async def disconnect(self) -> None:
-        """Disconnect from Claude."""
+        """Disconnect from Claude.
+
+        Any SDK MCP tool call still running is cancelled first; a tool that
+        does not react to cancellation (one blocked in a worker thread, say)
+        is given up on after a grace period of a few seconds per server.
+        """
         if self._query:
             await self._query.close()
             self._query.close_receive_stream()

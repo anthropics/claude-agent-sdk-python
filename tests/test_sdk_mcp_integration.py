@@ -456,6 +456,54 @@ async def test_close_does_not_hang_on_a_tool_blocked_outside_the_event_loop(
         await session._task.wait()
 
 
+@pytest.mark.anyio
+async def test_close_with_a_cancellable_tool_in_flight_is_prompt_and_quiet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Older mcp 1.x releases do not cancel a running handler when the
+    connection closes, so closing must cancel in-flight calls through mcp
+    first: no grace-period wait, no warning, and no handler answering into a
+    stream that is already closed."""
+    events: list[str] = []
+    started = anyio.Event()
+
+    @tool("sleepy", "Sleeps", {})
+    async def sleepy(args: dict[str, Any]) -> dict[str, Any]:
+        events.append("start")
+        started.set()
+        try:
+            await anyio.sleep(30)
+        except BaseException as e:
+            events.append(f"cancelled:{type(e).__name__}")
+            raise
+        events.append("finished")
+        return {"content": []}
+
+    config = create_sdk_mcp_server(name="srv", tools=[sleepy])
+    client = SdkMcpClient({"srv": config})
+    await client.initialize("srv")
+    in_flight = client.query.spawn_task(client.call_tool("srv", "sleepy"))
+    await started.wait()
+    with caplog.at_level(logging.WARNING):
+        t0 = anyio.current_time()
+        await client.aclose()
+        elapsed = anyio.current_time() - t0
+    assert elapsed < sdk_mcp_bridge.SHUTDOWN_GRACE_SECONDS / 5
+    assert in_flight.done()
+    assert (
+        events[0] == "start"
+        and events[1].startswith("cancelled")
+        and "finished" not in events
+    )
+    noisy = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and "sdk_mcp" in r.name.lower() + r.message.lower()
+    ]
+    assert not noisy, [r.message for r in noisy]
+
+
 def _asyncio_task_count() -> int | None:
     if sniffio.current_async_library() != "asyncio":
         return None
@@ -660,7 +708,7 @@ async def test_tool_call_text_results():
 
         greeting = await client.call_tool("srv", "greet_user", {"name": "Alice"})
         assert greeting["content"] == [{"type": "text", "text": "Hello, Alice!"}]
-        assert not greeting.get("isError", False)
+        assert greeting["isError"] is False
 
         total = await client.call_tool("srv", "add_numbers", {"a": 5, "b": 3})
         assert texts(total) == ["The sum is 8"]
@@ -711,7 +759,7 @@ async def test_is_error_flag_propagated():
     assert failure["isError"] is True
     assert "is_error" not in failure
     assert texts(failure) == ["Division by zero"]
-    assert not success.get("isError", False)
+    assert success["isError"] is False
     assert texts(success) == ["2.0"]
 
 
@@ -1176,7 +1224,7 @@ async def test_hand_built_server_is_served_verbatim():
     assert [t["name"] for t in listed] == ["raw"]
     assert result["content"] == AUDIO_RESULT["content"]
     assert result["structuredContent"] == {"tool": "raw", "arguments": {"n": 7}}
-    assert not result.get("isError", False)
+    assert result["isError"] is False
     assert [r["uri"] for r in resources["result"]["resources"]] == ["memo://readme"]
 
 

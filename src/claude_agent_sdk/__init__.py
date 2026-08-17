@@ -179,6 +179,10 @@ class ToolAnnotations(_McpToolAnnotations, extra="allow"):
     is also the spelling type checkers expect there.
     """
 
+    maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
+    """Size, in characters, up to which Claude Code keeps this tool's result
+    inline instead of persisting it to a file and showing a preview."""
+
 
 @dataclass
 class SdkMcpTool(Generic[T]):

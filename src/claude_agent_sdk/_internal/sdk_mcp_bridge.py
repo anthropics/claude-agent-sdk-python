@@ -15,8 +15,10 @@ that session, including a repeated handshake (the CLI re-initializes its SDK
 servers in some situations, and mcp accepts that on a live connection). A
 session is over when ``Server.run`` returns; if that happens underneath the
 CLI (the server failed), later messages are answered with an error naming
-the server and the cause, and only a new ``initialize`` from the CLI starts
-the server again.
+the server and the cause. Only a new ``initialize`` starts the server again,
+and the CLI sends one only for a server whose handshake failed (it retries
+those every turn); a server that dies after a good handshake stays down for
+the rest of the query, as with the TypeScript SDK.
 """
 
 from __future__ import annotations
@@ -61,10 +63,10 @@ class _PendingResponse:
     """The slot a request's response is delivered to.
 
     It lives in the session's table of unanswered requests until a response
-    arrives or whoever is waiting gives up, whichever comes first. Ids are
-    unique among unanswered requests; a request that reuses one is refused
-    before it reaches the server, so a response can only ever belong to the
-    request that registered the id.
+    arrives or the session fails it. Ids are unique among unanswered
+    requests; a request that reuses one is refused before it reaches the
+    server, so a response can only ever belong to the request that
+    registered the id.
     """
 
     def __init__(self, table: dict[Any, _PendingResponse], request_id: Any) -> None:
@@ -84,11 +86,11 @@ class _PendingResponse:
             del self._table[self._request_id]
 
     async def wait(self) -> dict[str, Any]:
-        try:
-            await self._event.wait()
-        finally:
-            if self._table.get(self._request_id) is self:
-                del self._table[self._request_id]
+        # The slot stays in the table even if this waiter is cancelled: the
+        # server still owns the request, so its id must stay reserved (a new
+        # request reusing it would otherwise receive this one's response) and
+        # the session must still be able to cancel it when it closes.
+        await self._event.wait()
         assert self._outcome is not None
         if isinstance(self._outcome, Exception):
             raise self._outcome
@@ -292,6 +294,24 @@ class _Session:
         """
         await self._ready.wait()
         if self._to_server is not None:
+            # Cancel whatever is still in flight through mcp's own path first.
+            # mcp releases that do not cancel running handlers when the
+            # connection closes (< 1.27) would otherwise either hold the
+            # session open for the whole grace period or, if the tool
+            # finishes inside it, answer into a stream that is already closed.
+            if self._pending and can_cancel_requests(self._server):
+                for request_id in list(self._pending):
+                    with suppress(Exception):
+                        await self.submit(
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "notifications/cancelled",
+                                "params": {
+                                    "requestId": request_id,
+                                    "reason": "connection closing",
+                                },
+                            }
+                        )
             await self._to_server.aclose()
         with anyio.move_on_after(SHUTDOWN_GRACE_SECONDS) as scope:
             await self._task.wait()
@@ -304,6 +324,10 @@ class _Session:
                 SHUTDOWN_GRACE_SECONDS,
             )
             self._task.cancel()
+            # The task may take a while to actually unwind (a handler blocked
+            # in a thread keeps it alive), so do not leave callers waiting on
+            # responses that can no longer arrive.
+            self._fail_pending("session closed")
 
 
 class SdkMcpBridge:

@@ -24,6 +24,7 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    ResultError,
 )
 from ._internal.session_import import import_session_to_store
 from ._internal.session_mutations import (
@@ -677,5 +678,6 @@ __all__ = [
     "CLIConnectionError",
     "CLINotFoundError",
     "ProcessError",
+    "ResultError",
     "CLIJSONDecodeError",
 ]

@@ -252,6 +252,7 @@ from claude_agent_sdk import (
     CLINotFoundError,    # Claude Code not installed
     CLIConnectionError,  # Connection issues
     ProcessError,        # Process failed
+    ResultError,         # Run ended with an error result (subclass of ProcessError)
     CLIJSONDecodeError,  # JSON parsing issues
 )
 
@@ -260,6 +261,11 @@ try:
         pass
 except CLINotFoundError:
     print("Please install Claude Code")
+except ResultError as e:
+    # The CLI reported a terminal error result (also yielded as the final
+    # ResultMessage) and exited. Structured fields are on the exception.
+    print(f"Run failed: {e.subtype=} {e.terminal_reason=} {e.api_error_status=}")
+    print(e.result or e.errors)
 except ProcessError as e:
     print(f"Process failed with exit code: {e.exit_code}")
 except CLIJSONDecodeError as e:

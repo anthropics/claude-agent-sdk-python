@@ -69,9 +69,12 @@ class _PendingResponse:
     registered the id.
     """
 
-    def __init__(self, table: dict[Any, _PendingResponse], request_id: Any) -> None:
+    def __init__(
+        self, table: dict[Any, _PendingResponse], request_id: Any, method: Any
+    ) -> None:
         if request_id in table:
             raise Exception(f"Request id {request_id!r} is already in flight")
+        self.method = method
         self._table = table
         self._request_id = request_id
         self._event = anyio.Event()
@@ -273,7 +276,7 @@ class _Session:
         parsed, request_id = parse_jsonrpc(message, self._respond)
         pending = None
         if request_id is not None:
-            pending = _PendingResponse(self._pending, request_id)
+            pending = _PendingResponse(self._pending, request_id, message.get("method"))
         try:
             await self._to_server.send(parsed)
         except (anyio.ClosedResourceError, anyio.BrokenResourceError):
@@ -293,29 +296,36 @@ class _Session:
         go, rather than blocking the caller on it.
         """
         await self._ready.wait()
+        deadline = anyio.current_time() + SHUTDOWN_GRACE_SECONDS
         if self._to_server is not None:
             # Cancel whatever is still in flight through mcp's own path first.
             # mcp releases that do not cancel running handlers when the
             # connection closes (< 1.27) would otherwise either hold the
             # session open for the whole grace period or, if the tool
             # finishes inside it, answer into a stream that is already closed.
-            if self._pending and can_cancel_requests(self._server):
-                for request_id in list(self._pending):
-                    with suppress(Exception):
-                        await self.submit(
-                            {
-                                "jsonrpc": "2.0",
-                                "method": "notifications/cancelled",
-                                "params": {
-                                    "requestId": request_id,
-                                    "reason": "connection closing",
-                                },
-                            }
-                        )
+            # A server that is not reading (still starting its lifespan, say)
+            # cannot take these, so sending them comes out of the grace
+            # period too. The handshake itself is never cancelled.
+            with anyio.CancelScope(deadline=deadline):
+                if can_cancel_requests(self._server):
+                    for request_id, pending in list(self._pending.items()):
+                        if pending.method == "initialize":
+                            continue
+                        with suppress(Exception):
+                            await self.submit(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "notifications/cancelled",
+                                    "params": {
+                                        "requestId": request_id,
+                                        "reason": "connection closing",
+                                    },
+                                }
+                            )
             await self._to_server.aclose()
-        with anyio.move_on_after(SHUTDOWN_GRACE_SECONDS) as scope:
+        with anyio.CancelScope(deadline=deadline):
             await self._task.wait()
-        if scope.cancelled_caught:
+        if not self._task.done():
             logger.warning(
                 "SDK MCP server %r did not stop within %ss of being closed "
                 "(a tool is probably blocked outside the event loop); "

@@ -5,7 +5,16 @@ import sys
 import types as builtin_types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Generic,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
@@ -164,24 +173,67 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+# The snake_case spelling of each hint, mapped to its wire (camelCase) name.
+_HINT_WIRE_NAMES = {
+    "read_only_hint": "readOnlyHint",
+    "destructive_hint": "destructiveHint",
+    "idempotent_hint": "idempotentHint",
+    "open_world_hint": "openWorldHint",
+    "max_result_size_chars": "maxResultSizeChars",
+}
+
+
 class ToolAnnotations(_McpToolAnnotations, extra="allow"):
-    """Hints about a tool's behavior (``readOnlyHint``, ``destructiveHint``, ...).
+    """Hints about a tool's behavior, plus ``maxResultSizeChars``.
 
-    This is ``mcp.types.ToolAnnotations`` with unknown fields preserved, so
-    ``ToolAnnotations(maxResultSizeChars=N)`` (the size up to which Claude Code
-    keeps a large tool result inline instead of saving it to a file) keeps
-    working on every supported mcp version; mcp 2.x's own class drops fields
-    it does not know. Either class is accepted wherever the SDK takes
-    annotations.
+    A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling
+    on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``
+    and ``ToolAnnotations(read_only_hint=True)`` are the same thing, and both
+    type-check. (mcp's own class differs between majors here: 1.x only knows
+    the camelCase names and 2.x prefers snake_case.) Attribute access follows
+    the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.
 
-    The camelCase keyword arguments work at runtime on every mcp version. mcp
-    2.x names the Python attributes in snake_case (``read_only_hint``), which
-    is also the spelling type checkers expect there.
+    ``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but
+    a Claude Code one: the size, in characters, up to which Claude Code keeps
+    this tool's result inline instead of persisting it to a file and showing
+    a preview. It travels to the CLI in the tool's ``_meta``.
+
+    Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted
+    wherever the SDK takes annotations.
     """
 
     maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
-    """Size, in characters, up to which Claude Code keeps this tool's result
-    inline instead of persisting it to a file and showing a preview."""
+
+    if TYPE_CHECKING:
+
+        def __init__(  # both spellings, deliberately
+            self,
+            *,
+            title: str | None = None,
+            readOnlyHint: bool | None = None,  # noqa: N803
+            read_only_hint: bool | None = None,
+            destructiveHint: bool | None = None,  # noqa: N803
+            destructive_hint: bool | None = None,
+            idempotentHint: bool | None = None,  # noqa: N803
+            idempotent_hint: bool | None = None,
+            openWorldHint: bool | None = None,  # noqa: N803
+            open_world_hint: bool | None = None,
+            maxResultSizeChars: int | None = None,  # noqa: N803
+            max_result_size_chars: int | None = None,
+            **extra: Any,
+        ) -> None: ...
+
+    else:
+
+        def __init__(self, **data: Any) -> None:
+            # Fold the snake_case spellings into the wire names, which every
+            # mcp version accepts (as field names on 1.x, as aliases on 2.x).
+            # Given both, the wire name wins.
+            for snake, wire in _HINT_WIRE_NAMES.items():
+                if snake in data:
+                    value = data.pop(snake)
+                    data.setdefault(wire, value)
+            super().__init__(**data)
 
 
 @dataclass

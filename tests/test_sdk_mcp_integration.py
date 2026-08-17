@@ -504,6 +504,129 @@ async def test_close_with_a_cancellable_tool_in_flight_is_prompt_and_quiet(
     assert not noisy, [r.message for r in noisy]
 
 
+@pytest.mark.anyio
+async def test_id_of_a_call_whose_waiter_gave_up_stays_reserved_until_the_server_answers():
+    release = anyio.Event()
+    calls = 0
+
+    @tool("slow", "Finishes when released", {})
+    async def slow(args: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return {"content": [{"type": "text", "text": "late"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[slow])
+    call = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "slow", "arguments": {}},
+    }
+    async with connected(config) as client:
+        with anyio.fail_after(5):
+            # The caller stops waiting (the CLI's own timeout, an interrupt).
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(client.send, "srv", call)
+                await anyio.sleep(0.05)
+                tg.cancel_scope.cancel()
+            # The server still owns id 7, so a new request may not reuse it.
+            reused = await client.send("srv", call)
+            assert reused is not None and reused["id"] == 7
+            assert "already in flight" in reused["error"]["message"]
+            assert calls == 1
+            # Once the server has answered, the id is free again.
+            release.set()
+            await anyio.sleep(0.05)
+            again = await client.send("srv", call)
+    assert again is not None and "error" not in again, again
+    assert texts(again["result"]) == ["late"]
+    assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_waiter_on_a_stuck_call_is_failed_once_the_grace_period_is_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sdk_mcp_bridge, "SHUTDOWN_GRACE_SECONDS", 0.2)
+    release = threading.Event()
+    entered = anyio.Event()
+
+    @tool("blocked", "Blocks in a thread", {})
+    async def blocked(args: dict[str, Any]) -> dict[str, Any]:
+        entered.set()
+        await anyio.to_thread.run_sync(release.wait)
+        return {"content": []}
+
+    config = create_sdk_mcp_server(name="srv", tools=[blocked])
+    client = SdkMcpClient({"srv": config})
+    await client.initialize("srv")
+    [bridge] = client.query._sdk_mcp_bridges.values()
+    call = {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {"name": "blocked", "arguments": {}},
+    }
+    outcome: list[str] = []
+
+    async def waiter() -> None:
+        # A caller Query.close() does not cancel: it waits on the bridge
+        # directly, as a second user of the bridge would.
+        try:
+            reply = await bridge.handle(call)
+        except Exception as e:
+            outcome.append(f"raised: {e}")
+        else:
+            outcome.append(f"replied: {reply}")
+
+    try:
+        with anyio.fail_after(3):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(waiter)
+                await entered.wait()
+                await bridge.aclose()
+                # aclose() returned after the grace period; the waiter must
+                # now finish on its own with an error, not hang on the thread.
+        assert len(outcome) == 1, outcome
+    finally:
+        release.set()
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_close_while_a_lifespan_is_still_starting_is_bounded_by_the_grace_period(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server still in its lifespan startup is not reading its input, so
+    the initialize the CLI sent is pending and nothing else can be
+    delivered either. Closing must still take no longer than the grace."""
+    monkeypatch.setattr(sdk_mcp_bridge, "SHUTDOWN_GRACE_SECONDS", 0.5)
+    stage: list[str] = []
+
+    @asynccontextmanager
+    async def lifespan(server: Any) -> AsyncIterator[dict[str, Any]]:
+        stage.append("startup")
+        await anyio.sleep(60)  # a slow backend, say
+        stage.append("started")
+        yield {}
+
+    server: Any = Server("raw", lifespan=lifespan)
+    client = SdkMcpClient(
+        {"srv": McpSdkServerConfig(type="sdk", name="srv", instance=server)}
+    )
+    init = client.query.spawn_task(
+        client.request("srv", "initialize", INITIALIZE_PARAMS)
+    )
+    await anyio.sleep(0.2)
+    assert stage == ["startup"]
+    t0 = anyio.current_time()
+    with anyio.fail_after(sdk_mcp_bridge.SHUTDOWN_GRACE_SECONDS + 5):
+        await client.aclose()
+    assert anyio.current_time() - t0 < sdk_mcp_bridge.SHUTDOWN_GRACE_SECONDS + 1
+    assert init.done()
+
+
 def _asyncio_task_count() -> int | None:
     if sniffio.current_async_library() != "asyncio":
         return None
@@ -655,6 +778,45 @@ async def test_max_result_size_chars_declared_as_a_field_on_a_subclass_flows_too
         [listed] = await client.list_tools("srv")
 
     assert listed["_meta"] == {"anthropic/maxResultSizeChars": 444}
+
+
+@pytest.mark.anyio
+async def test_tool_annotations_take_either_spelling_on_every_mcp_version():
+    """The SDK's ToolAnnotations accepts camelCase and snake_case for every
+    hint (mcp's own class differs per major), and both reach the wire the
+    same way; given both, the wire (camelCase) name wins."""
+    camel = ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, maxResultSizeChars=11
+    )
+    snake = ToolAnnotations(
+        read_only_hint=True, destructive_hint=False, max_result_size_chars=11
+    )
+    assert camel == snake
+    assert snake.model_extra == {}
+    both = ToolAnnotations(
+        openWorldHint=True, open_world_hint=False, max_result_size_chars=2
+    )
+    assert both == ToolAnnotations(openWorldHint=True, maxResultSizeChars=2)
+
+    tools = []
+    for name, annotations in (("camel", camel), ("snake", snake)):
+
+        @tool(name, "Annotated either way", {}, annotations=annotations)
+        async def annotated(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": []}
+
+        tools.append(annotated)
+
+    config = create_sdk_mcp_server(name="srv", tools=tools)
+    async with connected(config) as client:
+        listed = {t["name"]: t for t in await client.list_tools("srv")}
+
+    for name in ("camel", "snake"):
+        assert listed[name]["annotations"] == {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+        }
+        assert listed[name]["_meta"] == {"anthropic/maxResultSizeChars": 11}
 
 
 def test_tool_annotations_is_an_mcp_tool_annotations():

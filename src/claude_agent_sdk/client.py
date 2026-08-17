@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from . import Transport
@@ -14,13 +14,12 @@ if TYPE_CHECKING:
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
-    HookEvent,
-    HookMatcher,
     McpStatusResponse,
     Message,
     PermissionMode,
     ResultMessage,
-    _warn_if_can_use_tool_shadowed,
+    _configure_can_use_tool,
+    _hooks_to_internal_format,
 )
 
 
@@ -78,24 +77,6 @@ class ClaudeSDKClient:
         self._transport: Transport | None = None
         self._query: Any | None = None
         self._materialized: MaterializedResume | None = None
-
-    def _convert_hooks_to_internal_format(
-        self, hooks: dict[HookEvent, list[HookMatcher]]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Convert HookMatcher format to internal Query format."""
-        internal_hooks: dict[str, list[dict[str, Any]]] = {}
-        for event, matchers in hooks.items():
-            internal_hooks[event] = []
-            for matcher in matchers:
-                # Convert HookMatcher to internal dict format
-                internal_matcher: dict[str, Any] = {
-                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
-                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
-                }
-                if hasattr(matcher, "timeout") and matcher.timeout is not None:
-                    internal_matcher["timeout"] = matcher.timeout
-                internal_hooks[event].append(internal_matcher)
-        return internal_hooks
 
     async def connect(
         self, prompt: str | AsyncIterable[dict[str, Any]] | None = None
@@ -158,21 +139,7 @@ class ClaudeSDKClient:
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        if self.options.can_use_tool:
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if self.options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Advisory: warn if other options shadow the callback
-            _warn_if_can_use_tool_shadowed(self.options)
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
-        else:
-            options = self.options
+        options = _configure_can_use_tool(self.options)
 
         if self._materialized is not None:
             options = apply_materialized_options(options, self._materialized)
@@ -223,7 +190,7 @@ class ClaudeSDKClient:
             transport=self._transport,
             is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
             can_use_tool=self.options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(self.options.hooks)
+            hooks=_hooks_to_internal_format(self.options.hooks)
             if self.options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,

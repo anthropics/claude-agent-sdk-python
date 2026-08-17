@@ -3,7 +3,7 @@
 import sys
 import warnings
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeAlias
 
@@ -1871,6 +1871,50 @@ def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
         # different, async-frame-dependent depth for each entry point, so
         # precise caller attribution isn't feasible here.
         warnings.warn(message, CanUseToolShadowedWarning, stacklevel=2)
+
+
+def _configure_can_use_tool(options: "ClaudeAgentOptions") -> "ClaudeAgentOptions":
+    """Validate ``can_use_tool`` and route permission prompts over stdio.
+
+    Shared by ``query()`` and ``ClaudeSDKClient.connect()`` so both entry
+    points enforce the same rules. Returns ``options`` unchanged when no
+    callback is set; otherwise checks it is not combined with
+    ``permission_prompt_tool_name``, emits the shadowing advisory, and returns
+    a copy with ``permission_prompt_tool_name="stdio"`` so the CLI sends
+    permission requests over the control protocol.
+
+    Raises:
+        ValueError: If both ``can_use_tool`` and ``permission_prompt_tool_name``
+            are set.
+    """
+    if not options.can_use_tool:
+        return options
+    # canUseTool and permission_prompt_tool_name are mutually exclusive
+    if options.permission_prompt_tool_name:
+        raise ValueError(
+            "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+            "Please use one or the other."
+        )
+    _warn_if_can_use_tool_shadowed(options)
+    return replace(options, permission_prompt_tool_name="stdio")
+
+
+def _hooks_to_internal_format(
+    hooks: "dict[HookEvent, list[HookMatcher]]",
+) -> dict[str, list[dict[str, Any]]]:
+    """Convert ``ClaudeAgentOptions.hooks`` to the dict shape ``Query`` expects."""
+    internal_hooks: dict[str, list[dict[str, Any]]] = {}
+    for event, matchers in hooks.items():
+        internal_hooks[event] = []
+        for matcher in matchers:
+            internal_matcher: dict[str, Any] = {
+                "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
+                "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
+            }
+            if hasattr(matcher, "timeout") and matcher.timeout is not None:
+                internal_matcher["timeout"] = matcher.timeout
+            internal_hooks[event].append(internal_matcher)
+    return internal_hooks
 
 
 @dataclass

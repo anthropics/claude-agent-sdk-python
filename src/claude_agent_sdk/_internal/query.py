@@ -928,18 +928,25 @@ class Query:
         return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
 
     async def wait_for_result_and_end_input(self) -> None:
-        """Wait for a run-ending result (if needed) then close stdin.
+        """Wait for the closing result (if needed) then close stdin.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
-        bidirectional communication, keeps stdin open until a result arrives
-        with no tasks in flight. A result frame ends one turn, not necessarily
-        the run: background tasks keep running past it and still need stdin
-        for control responses (see #1088). The control protocol requires stdin
-        to remain open for the entire conversation, so no timeout is applied.
-        The event is guaranteed to fire: either when a result message arrives
-        with no in-flight tasks (every task completion wakes the parent for a
-        follow-up turn, which ends in such a result), or in _read_messages'
-        finally block if the process exits early.
+        bidirectional communication, keeps stdin open until the first result
+        frame that arrives with no tasks in flight. A result frame ends one
+        turn, not necessarily the run: background tasks keep running past it
+        and still need stdin for control responses (see #1088). The control
+        protocol requires stdin to remain open for the entire conversation, so
+        no timeout is applied. The event is guaranteed to fire: either when a
+        result message arrives with no in-flight tasks (every task completion
+        wakes the parent for a follow-up turn, which ends in such a result),
+        or in _read_messages' finally block if the process exits early.
+
+        Known limitation: the event is one-shot and is not aware of prompt
+        messages still queued CLI-side, so an ``AsyncIterable`` prompt that
+        yields several user messages (several turns) releases the hold at the
+        first turn boundary with no tracked tasks; control requests from later
+        turns can then find stdin closed. Single-message and string prompts —
+        the common one-shot shapes — are fully covered.
         """
         if self._has_bidirectional_needs():
             logger.debug(

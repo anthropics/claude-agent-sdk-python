@@ -3,15 +3,14 @@
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import Any
 
 from ..types import (
     ClaudeAgentOptions,
-    HookEvent,
-    HookMatcher,
     Message,
-    _warn_if_can_use_tool_shadowed,
+    _configure_can_use_tool,
+    _hooks_to_internal_format,
 )
 from .message_parser import parse_message
 from .query import Query
@@ -31,24 +30,6 @@ class InternalClient:
 
     def __init__(self) -> None:
         """Initialize the internal client."""
-
-    def _convert_hooks_to_internal_format(
-        self, hooks: dict[HookEvent, list[HookMatcher]]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Convert HookMatcher format to internal Query format."""
-        internal_hooks: dict[str, list[dict[str, Any]]] = {}
-        for event, matchers in hooks.items():
-            internal_hooks[event] = []
-            for matcher in matchers:
-                # Convert HookMatcher to internal dict format
-                internal_matcher: dict[str, Any] = {
-                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
-                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
-                }
-                if hasattr(matcher, "timeout") and matcher.timeout is not None:
-                    internal_matcher["timeout"] = matcher.timeout
-                internal_hooks[event].append(internal_matcher)
-        return internal_hooks
 
     async def process_query(
         self,
@@ -97,20 +78,7 @@ class InternalClient:
         materialized: MaterializedResume | None,
     ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        configured_options = options
-        if options.can_use_tool:
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Advisory: warn if other options shadow the callback
-            _warn_if_can_use_tool_shadowed(options)
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            configured_options = replace(options, permission_prompt_tool_name="stdio")
+        configured_options = _configure_can_use_tool(options)
 
         if materialized is not None:
             configured_options = apply_materialized_options(
@@ -168,7 +136,7 @@ class InternalClient:
             transport=chosen_transport,
             is_streaming_mode=True,  # Always streaming internally
             can_use_tool=configured_options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(configured_options.hooks)
+            hooks=_hooks_to_internal_format(configured_options.hooks)
             if configured_options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,

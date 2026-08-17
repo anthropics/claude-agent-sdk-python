@@ -457,6 +457,71 @@ class TestSubagentsFromStore:
         )
         msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
         assert len(msgs) == 1
+        assert msgs[0].parent_tool_use_id is None
+        assert msgs[0].parent_agent_id is None
+
+    async def test_parent_ids_recovered_from_agent_metadata_entry(self) -> None:
+        """toolUseId / parentAgentId on the agent_metadata entry (the store's
+        copy of the .meta.json sidecar) are stamped on every message; when the
+        metadata was rewritten (e.g. on resume) the last entry wins."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        sub_key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": sid,
+            "subpath": "subagents/agent-x",
+        }
+        u = str(uuid_mod.uuid4())
+        a = str(uuid_mod.uuid4())
+        await store.append(
+            sub_key,
+            [
+                {"type": "agent_metadata", "agentType": "gp", "toolUseId": "toolu_old"},
+                _user("hi", u, None, sid),
+                _assistant("hello", a, u, sid),
+                {
+                    "type": "agent_metadata",
+                    "agentType": "gp",
+                    "toolUseId": "toolu_new",
+                    "parentAgentId": "a-parent",
+                },
+            ],  # type: ignore[arg-type]
+        )
+        msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
+        assert [m.uuid for m in msgs] == [u, a]
+        assert all(m.parent_tool_use_id == "toolu_new" for m in msgs)
+        assert all(m.parent_agent_id == "a-parent" for m in msgs)
+
+    async def test_parent_ids_ignore_non_string_metadata(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        sub_key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": sid,
+            "subpath": "subagents/agent-x",
+        }
+        u = str(uuid_mod.uuid4())
+        await store.append(
+            sub_key,
+            [
+                {"type": "agent_metadata", "toolUseId": 7, "parentAgentId": None},
+                _user("hi", u, None, sid),
+            ],  # type: ignore[arg-type]
+        )
+        msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
+        assert len(msgs) == 1
+        assert msgs[0].parent_tool_use_id is None
+        assert msgs[0].parent_agent_id is None
+
+    async def test_session_messages_parent_ids_are_none(self) -> None:
+        """Top-level get_session_messages_from_store never sets parent ids."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=1)
+        msgs = await get_session_messages_from_store(store, sid, directory=DIR)
+        assert len(msgs) == 2
+        assert all(m.parent_tool_use_id is None for m in msgs)
+        assert all(m.parent_agent_id is None for m in msgs)
 
     async def test_list_subagents_dedupes_agent_id_across_subpaths(self) -> None:
         """Parity with TS: the same agent ID under multiple subpaths

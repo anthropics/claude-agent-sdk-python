@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.140
+
+### New Features
+
+- **MCP 2.x support for in-process SDK MCP servers**: The SDK now supports `mcp` 2.x alongside 1.x (dependency widened to `mcp>=1.23.0,<3.0.0`). In-process servers are served over mcp's own in-memory transport instead of hand-rolled JSON-RPC dispatch, so hand-built `mcp.server.Server` instances now work at full fidelity — resources, prompts, and all result content types reach the CLI verbatim. Tool cancellation on interrupt is supported on mcp 2.x. `claude_agent_sdk.ToolAnnotations` accepts both camelCase and snake_case hint names on every mcp version (#1218)
+- **`forward_subagent_text` option**: New `forward_subagent_text` boolean on `ClaudeAgentOptions` forwards a subagent's text and thinking blocks as messages in the stream, so consumers can render the full nested transcript. Matches the TypeScript SDK's `forwardSubagentText` (#1206)
+- **`ResultError` exception with structured error payload**: When the CLI exits after a terminal error result, the SDK now raises `ResultError` (a subclass of `ProcessError`) instead of a bare "exit code 1" error. Carries `subtype`, `errors`, `result`, `api_error_status`, `terminal_reason`, `session_id`, and the raw `data` dict so callers can branch on failure reason without string matching. New exported types: `ResultError` (#1205)
+- **`can_use_tool` callback support for `query()` and string prompts**: The `can_use_tool` permission callback now works with string prompts (not just `ClaudeSDKClient`), and stdin is kept open so the CLI can send permission requests over the control protocol (#1204)
+
+### Bug Fixes
+
+- **Recover `parent_tool_use_id` when reading subagent transcripts**: `get_subagent_messages()` and `get_subagent_messages_from_store()` now recover the `parent_tool_use_id` from the subagent's metadata, linking each subagent's messages to the Agent `tool_use` block in the parent session. `SessionMessage` also gains a `parent_agent_id` field for the spawning agent's id (#1207)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.235
+
 ## 0.2.139
 
 ### Internal/Other Changes

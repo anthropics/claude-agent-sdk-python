@@ -486,29 +486,23 @@ class SubprocessCLITransport(Transport):
         if has_settings:
             assert self._options.settings is not None
             settings_str = self._options.settings.strip()
-            # Check if settings is a JSON string or a file path
-            if settings_str.startswith("{") and settings_str.endswith("}"):
-                # Parse JSON string
-                try:
-                    settings_obj = json.loads(settings_str)
-                except json.JSONDecodeError:
-                    # If parsing fails, treat as file path
-                    logger.warning(
-                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
-                    )
-                    # Read the file
-                    settings_path = Path(settings_str)
-                    if settings_path.exists():
-                        with settings_path.open(encoding="utf-8") as f:
-                            settings_obj = json.load(f)
+            # Explicitly separate JSON string vs. file path branches.
+            # A value that starts with '{' is always treated as inline JSON;
+            # parse failures are raised immediately instead of falling back
+            # to file-path interpretation (which could read unintended files
+            # when the value is e.g. "{bad json}").
+            if settings_str.startswith("{"):
+                # Parse as JSON string — propagate errors to the caller
+                settings_obj = json.loads(settings_str)
             else:
                 # It's a file path - read and parse
                 settings_path = Path(settings_str)
-                if settings_path.exists():
-                    with settings_path.open(encoding="utf-8") as f:
-                        settings_obj = json.load(f)
-                else:
-                    logger.warning(f"Settings file not found: {settings_path}")
+                if not settings_path.exists():
+                    raise FileNotFoundError(
+                        f"Settings file not found: {settings_str}"
+                    )
+                with settings_path.open(encoding="utf-8") as f:
+                    settings_obj = json.load(f)
 
         # Merge sandbox settings
         if has_sandbox:

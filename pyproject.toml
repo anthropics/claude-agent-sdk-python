@@ -28,7 +28,8 @@ dependencies = [
     "anyio>=4.0.0",
     "sniffio>=1.0.0",
     "typing_extensions>=4.0.0; python_version<'3.11'",
-    "mcp>=1.23.0,<2.0.0",
+    "mcp>=1.23.0,<3.0.0",
+    "jsonschema>=4.20.0",
 ]
 
 [project.optional-dependencies]
@@ -103,6 +104,11 @@ strict_equality = true
 # opentelemetry-api is an optional dependency (the [otel] extra); the
 # import in subprocess_cli.py is guarded by try/except ImportError.
 module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# jsonschema ships without type information or a py.typed marker.
+module = ["jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

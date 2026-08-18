@@ -110,6 +110,30 @@ class TestMainTranscript:
         assert store.get_entries(key) == [_entry(0), _entry(1)]
 
     @pytest.mark.anyio
+    async def test_skips_corrupt_truncated_line(
+        self, claude_dir: Path, cwd: Path, project_key: str
+    ) -> None:
+        """A partially-written final line (the normal outcome when the CLI is
+        killed mid-append) is skipped, not raised — matching the read path."""
+        path = claude_dir / f"{SESSION_ID}.jsonl"
+        path.write_text(
+            json.dumps(_entry(0))
+            + "\n"
+            + json.dumps(_entry(1))
+            + "\n"
+            + '{"type": "user", "uuid": "u2", "messa',  # truncated, unterminated
+            encoding="utf-8",
+        )
+
+        store = InMemorySessionStore()
+        await import_session_to_store(
+            SESSION_ID, store, directory=str(cwd), batch_size=1
+        )
+
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(key) == [_entry(0), _entry(1)]
+
+    @pytest.mark.anyio
     async def test_nonpositive_batch_size_uses_default(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:

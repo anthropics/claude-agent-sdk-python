@@ -1078,6 +1078,51 @@ class TestTypedDictMcpIntegration:
         assert schema == json_schema
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "json_schema",
+        [
+            {"type": "object"},
+            {"type": "object", "additionalProperties": True},
+            {"type": "array", "items": {"type": "string"}},
+        ],
+    )
+    async def test_json_schema_without_properties_passthrough(
+        self, json_schema: dict[str, Any]
+    ) -> None:
+        """A valid JSON Schema that omits 'properties' (open object, array, ...)
+        passes through unchanged instead of being mangled into a param mapping."""
+
+        @tool("validate", "Validate input", json_schema)
+        async def validate(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "OK"}]}
+
+        server_config = create_sdk_mcp_server(name="no-props-test", tools=[validate])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        response = await list_handler(ListToolsRequest(method="tools/list"))
+        assert response.root.tools[0].inputSchema == json_schema
+
+    @pytest.mark.anyio
+    async def test_param_mapping_with_param_named_type_still_expands(self) -> None:
+        """A {name: type} mapping whose value happens to be keyed 'type' must
+        still expand: its value is a Python type, not a JSON-Schema string."""
+
+        @tool("configure", "Configure", {"type": str, "value": int})
+        async def configure(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "OK"}]}
+
+        server_config = create_sdk_mcp_server(name="type-param-test", tools=[configure])
+        server = server_config["instance"]
+        list_handler = server.request_handlers[ListToolsRequest]
+        response = await list_handler(ListToolsRequest(method="tools/list"))
+
+        schema = response.root.tools[0].inputSchema
+        assert schema["type"] == "object"
+        assert schema["properties"]["type"] == {"type": "string"}
+        assert schema["properties"]["value"] == {"type": "integer"}
+        assert set(schema["required"]) == {"type", "value"}
+
+    @pytest.mark.anyio
     async def test_cached_tool_list_is_stable(self) -> None:
         @tool("cached", "Test caching", {"x": str})
         async def cached(args: dict[str, Any]) -> dict[str, Any]:

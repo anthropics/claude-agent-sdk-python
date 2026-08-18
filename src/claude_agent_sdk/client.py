@@ -531,17 +531,23 @@ class ClaudeSDKClient:
 
     async def receive_response(self) -> AsyncIterator[Message]:
         """
-        Receive messages from Claude until and including a ResultMessage.
+        Receive messages from Claude until and including the run-ending ResultMessage.
 
         This async iterator yields all messages in sequence and automatically terminates
-        after yielding a ResultMessage (which indicates the response is complete).
+        after yielding the ResultMessage that ends the run.
         It's a convenience method over receive_messages() for single-response workflows.
 
         **Stopping Behavior:**
         - Yields each message as it's received
-        - Terminates immediately after yielding a ResultMessage
+        - Terminates immediately after yielding the run-ending ResultMessage
         - The ResultMessage IS included in the yielded messages
         - If no ResultMessage is received, the iterator continues indefinitely
+        - A ResultMessage is skipped over (not treated as terminal) when it only
+          ends one turn while delegated agent work (a background subagent or
+          workflow) is still in flight — the run continues with a follow-up
+          turn, which ends in its own, later ResultMessage. This keeps the
+          iterator from returning early and silently missing the rest of the
+          run (#1138).
 
         Yields:
             Message: Each message received (UserMessage, AssistantMessage, SystemMessage, ResultMessage)
@@ -565,9 +571,14 @@ class ClaudeSDKClient:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
         """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        query = self._query
         async for message in self.receive_messages():
             yield message
-            if isinstance(message, ResultMessage):
+            if isinstance(message, ResultMessage) and not query.is_deferred_result(
+                message.uuid
+            ):
                 return
 
     async def disconnect(self) -> None:

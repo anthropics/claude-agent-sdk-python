@@ -1485,7 +1485,9 @@ class SessionKey(TypedDict):
 
     Main transcripts have no ``subpath``; subagent transcripts include a
     ``subpath`` like ``"subagents/agent-{id}"`` that mirrors the on-disk
-    directory structure.
+    directory structure. Adapters must preserve the boundaries between
+    components; if a backend requires a composite string key, encode or escape
+    each component rather than joining raw values with a delimiter.
     """
 
     project_key: str

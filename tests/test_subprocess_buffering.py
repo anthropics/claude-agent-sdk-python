@@ -475,6 +475,35 @@ class TestSubprocessBuffering:
 
         assert f"maximum buffer size of {limit} bytes" in str(exc_info.value)
 
+    def test_multibyte_line_uses_utf8_size_across_chunks(self) -> None:
+        """A Unicode message is accepted exactly at its UTF-8 byte size and
+        rejected one byte below it, even when split across stream chunks."""
+        line = json.dumps(
+            {"type": "assistant", "data": "🚀" * 20},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        byte_size = len(line.encode("utf-8"))
+        assert len(line) < byte_size - 1
+
+        # Split within the multibyte content (TextReceiveStream has already
+        # decoded UTF-8, so chunk boundaries are between Unicode characters).
+        rocket = line.index("🚀")
+        chunks = [
+            line[: rocket + 3],
+            line[rocket + 3 : rocket + 11],
+            line[rocket + 11 :] + "\n",
+        ]
+
+        assert self._collect(chunks, max_buffer_size=byte_size)[0]["data"] == "🚀" * 20
+
+        with pytest.raises(CLIJSONDecodeError) as exc_info:
+            self._collect(chunks, max_buffer_size=byte_size - 1)
+
+        assert f"Buffer size {byte_size} exceeds limit {byte_size - 1}" in str(
+            exc_info.value.original_error
+        )
+
     def test_malformed_complete_line_raises(self) -> None:
         """A complete line that looks like JSON but doesn't parse is corrupt —
         no later data can complete it — so it surfaces as CLIJSONDecodeError

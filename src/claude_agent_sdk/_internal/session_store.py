@@ -63,7 +63,21 @@ class InMemorySessionStore(SessionStore):
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
-        self._store.setdefault(k, []).extend(entries)
+        existing = self._store.setdefault(k, [])
+        # `uuid` is contractually an idempotency key (see SessionStore.append):
+        # a retried batch may partially overlap a prior partial write, so
+        # ignore entries whose uuid is already stored. Entries without a uuid
+        # (titles, tags, mode markers) are appended without dedup.
+        seen_uuids = {
+            e["uuid"] for e in existing if isinstance(e, dict) and e.get("uuid") is not None
+        }
+        for entry in entries:
+            uuid = entry.get("uuid") if isinstance(entry, dict) else None
+            if uuid is not None:
+                if uuid in seen_uuids:
+                    continue
+                seen_uuids.add(uuid)
+            existing.append(entry)
         now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't

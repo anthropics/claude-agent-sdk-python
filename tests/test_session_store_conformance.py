@@ -35,6 +35,27 @@ class TestInMemorySessionStore:
         await run_session_store_conformance(InMemorySessionStore)
 
     @pytest.mark.anyio
+    async def test_append_is_idempotent_by_uuid(self) -> None:
+        """`uuid` is contractually an idempotency key, and the mirror batcher
+        can retry a batch that partially overlaps a prior partial write."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [{"type": "user", "uuid": "a"}, {"type": "user", "uuid": "b"}])
+        await store.append(_KEY, [{"type": "user", "uuid": "b"}, {"type": "user", "uuid": "c"}])
+        loaded = await store.load(_KEY)
+        assert loaded is not None
+        assert [e["uuid"] for e in loaded] == ["a", "b", "c"]
+
+    @pytest.mark.anyio
+    async def test_append_does_not_dedup_entries_without_uuid(self) -> None:
+        """Entries without a uuid (titles, tags, mode markers) append verbatim."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [{"type": "summary", "title": "t"}])
+        await store.append(_KEY, [{"type": "summary", "title": "t"}])
+        loaded = await store.load(_KEY)
+        assert loaded is not None
+        assert len(loaded) == 2
+
+    @pytest.mark.anyio
     async def test_conformance_with_async_factory(self) -> None:
         async def make() -> SessionStore:
             return InMemorySessionStore()
@@ -175,6 +196,31 @@ class TestSessionStoreOptionsValidation:
         validate_session_store_options(
             ClaudeAgentOptions(
                 session_store=InMemorySessionStore(), continue_conversation=True
+            )
+        )
+
+    def test_continue_conversation_ok_when_list_sessions_set_on_instance(
+        self,
+    ) -> None:
+        """SessionStore is a structural Protocol, so an implementation assigned
+        on the instance (delegation, functools.partial, a test double) satisfies
+        it just as a class-level def does.
+        """
+
+        class DelegatingStore(SessionStore):
+            def __init__(self, inner: SessionStore) -> None:
+                self.list_sessions = inner.list_sessions
+
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                session_store=DelegatingStore(InMemorySessionStore()),
+                continue_conversation=True,
             )
         )
 

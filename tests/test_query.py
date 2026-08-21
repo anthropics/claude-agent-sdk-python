@@ -238,6 +238,45 @@ def _mcp_handshake_transport(writes: list[str]) -> AsyncMock:
     return mock_transport
 
 
+def _resumed_mcp_handshake_transport(
+    writes: list[str], stream_exhausted: anyio.Event
+) -> tuple[AsyncMock, dict[str, bool]]:
+    """Mock a deferred SDK MCP request arriving after an empty resume stream."""
+    state = {"ended": False}
+    responded = anyio.Event()
+    request = _MCP_CONTROL_REQUESTS[0]
+    mock_transport = AsyncMock()
+
+    async def tracking_write(data):
+        if state["ended"]:
+            raise CLIConnectionError("stdin closed")
+        writes.append(data)
+        frame = json.loads(data)
+        if frame.get("type") == "control_response":
+            responded.set()
+
+    async def end_input():
+        state["ended"] = True
+
+    async def mock_receive():
+        await stream_exhausted.wait()
+        yield request
+        with anyio.move_on_after(1):
+            await responded.wait()
+        if not responded.is_set():
+            return
+        for msg in _ASSISTANT_AND_RESULT:
+            yield msg
+
+    mock_transport.write = tracking_write
+    mock_transport.read_messages = mock_receive
+    mock_transport.connect = AsyncMock()
+    mock_transport.close = AsyncMock()
+    mock_transport.end_input = end_input
+    mock_transport.is_ready = Mock(return_value=True)
+    return mock_transport, state
+
+
 def _assert_mcp_handshake_succeeded(writes: list[str]) -> None:
     control_responses = [
         json.loads(w) for w in writes if json.loads(w).get("type") == "control_response"
@@ -747,6 +786,112 @@ class TestStdinStaysOpenWithInflightTasks:
 class TestAsyncIterablePromptWithSdkMcpServers:
     """Test that AsyncIterable prompts keep stdin open for SDK MCP servers."""
 
+    def test_empty_resumed_stream_waits_for_result(self):
+        """A resumed deferred SDK MCP call can emit a control request without
+        a new prompt message, so stdin must stay open until its result."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            ended = anyio.Event()
+
+            async def end_input():
+                ended.set()
+
+            mock_transport.end_input = end_input
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=True,
+                sdk_mcp_servers={"greeter": _make_greet_server()["instance"]},
+                is_resuming=True,
+            )
+
+            async def empty_stream():
+                return
+                yield  # pragma: no cover
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(q.stream_input, empty_stream())
+                await anyio.sleep(0.05)
+                assert not ended.is_set()
+                q._first_result_event.set()
+
+            assert ended.is_set()
+
+        anyio.run(_test)
+
+    def test_empty_new_stream_closes_immediately(self):
+        """A new empty stream has no work that could produce a result."""
+
+        async def _test():
+            mock_transport = _make_mock_transport(messages=[])
+            q = Query(
+                transport=mock_transport,
+                is_streaming_mode=True,
+                sdk_mcp_servers={"greeter": _make_greet_server()["instance"]},
+            )
+
+            async def empty_stream():
+                return
+                yield  # pragma: no cover
+
+            await q.stream_input(empty_stream())
+            mock_transport.end_input.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_empty_resume_handles_deferred_mcp_request(self):
+        """The resumed SDK MCP control response must be written before stdin closes."""
+
+        async def _test():
+            server = _make_greet_server()
+            writes: list[str] = []
+            stream_exhausted = anyio.Event()
+            mock_transport, state = _resumed_mcp_handshake_transport(
+                writes, stream_exhausted
+            )
+
+            async def empty_stream():
+                stream_exhausted.set()
+                return
+                yield  # pragma: no cover
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = mock_transport
+                with anyio.fail_after(5):
+                    messages = [
+                        msg
+                        async for msg in query(
+                            prompt=empty_stream(),
+                            options=ClaudeAgentOptions(
+                                resume="00000000-0000-4000-8000-000000000000",
+                                mcp_servers={"greeter": server},
+                            ),
+                        )
+                    ]
+
+            assert [type(msg) for msg in messages] == [
+                AssistantMessage,
+                ResultMessage,
+            ]
+            control_responses = [
+                json.loads(write)
+                for write in writes
+                if json.loads(write).get("type") == "control_response"
+            ]
+            assert len(control_responses) == 1
+            assert control_responses[0]["response"]["subtype"] == "success"
+            assert state["ended"] is True
+
+        anyio.run(_test)
+
     def test_async_iterable_with_sdk_mcp_servers(self):
         """AsyncIterable prompt path should wait for first result before
         closing stdin when SDK MCP servers are present."""
@@ -1088,7 +1233,8 @@ class TestCanUseToolKeepsStdinOpen:
         assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
         assert state["ended"] is True
 
-    def test_prompt_iterable_that_raises_immediately_closes_stdin(self):
+    @pytest.mark.parametrize("resume", [None, "00000000-0000-4000-8000-000000000000"])
+    def test_prompt_iterable_that_raises_immediately_closes_stdin(self, resume):
         """Nothing was sent, so no result can release the hold: stdin must be
         closed right away or the CLI (and the consumer) would wait forever."""
 
@@ -1131,7 +1277,10 @@ class TestCanUseToolKeepsStdinOpen:
                         msg
                         async for msg in query(
                             prompt=prompt_stream(),
-                            options=ClaudeAgentOptions(can_use_tool=allow_all),
+                            options=ClaudeAgentOptions(
+                                can_use_tool=allow_all,
+                                resume=resume,
+                            ),
                         )
                     ]
             assert messages == []

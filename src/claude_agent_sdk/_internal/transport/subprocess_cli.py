@@ -1095,6 +1095,11 @@ class SubprocessCLITransport(Transport):
                     ValueError(
                         f"Buffer size {length} exceeds limit {self._max_buffer_size}"
                     ),
+                    hint=(
+                        "Large tool results (file reads, images, MCP responses) "
+                        "can exceed the default; raise it with "
+                        "ClaudeAgentOptions(max_buffer_size=...)."
+                    ),
                 )
 
         try:

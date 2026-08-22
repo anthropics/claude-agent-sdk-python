@@ -1821,6 +1821,69 @@ class TestSubprocessCLITransport:
         settings_idx = cmd.index("--settings")
         assert cmd[settings_idx + 1] == "/path/to/settings.json"
 
+    def test_build_command_with_invalid_settings_json_raises_decode_error(self):
+        """Test that malformed JSON in settings raises JSONDecodeError and does not fallback to file path."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings="{invalid json: true}", sandbox=sandbox),
+        )
+
+        with pytest.raises(json.JSONDecodeError):
+            transport._build_command()
+
+    def test_build_command_with_sandbox_and_settings_file(self, tmp_path):
+        """Test building CLI command with sandbox merged into existing settings file."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(
+            '{"permissions": {"allow": ["Bash(ls:*)"]}, "verbose": true}',
+            encoding="utf-8",
+        )
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "excludedCommands": ["git"],
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=str(settings_file), sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+
+        assert "--settings" in cmd
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        assert parsed["permissions"] == {"allow": ["Bash(ls:*)"]}
+        assert parsed["verbose"] is True
+        assert parsed["sandbox"] == {"enabled": True, "excludedCommands": ["git"]}
+
+    def test_build_command_with_nonexistent_settings_file_raises_error(self):
+        """Test that nonexistent settings file raises FileNotFoundError when merged with sandbox."""
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="/nonexistent/path/to/settings.json", sandbox=sandbox
+            ),
+        )
+
+        with pytest.raises(FileNotFoundError, match="Settings file not found"):
+            transport._build_command()
+
     def test_build_command_sandbox_minimal(self):
         """Test sandbox with minimal configuration."""
         import json

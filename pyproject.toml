@@ -133,10 +133,27 @@ select = [
     "C4", # flake8-comprehensions
     "PTH", # flake8-use-pathlib
     "SIM", # flake8-simplify
+    "TID251", # flake8-tidy-imports banned-api (see the table below)
 ]
 ignore = [
     "E501", # line too long (handled by formatter)
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Safe executable resolution (G5 in src/claude_agent_sdk/_internal/executable.py):
+# ambient program lookup is banned. Both of these search the current working
+# directory on Windows (CWE-427, HackerOne #3888880) and neither sticks to
+# native .exe/.com images. tests/test_executable_invariant.py additionally
+# fails on any process-spawning call under src/ that names its program by a
+# bare or relative literal.
+"shutil.which".msg = "shutil.which searches the current directory on Windows (CWE-427). Use claude_agent_sdk._internal.executable.find_executable / require_executable / run instead."
+"distutils.spawn.find_executable".msg = "Searches the current directory on Windows (CWE-427). Use claude_agent_sdk._internal.executable.find_executable instead."
+
+[tool.ruff.lint.per-file-ignores]
+# Build tooling runs before the package and its dependencies are importable,
+# and only on CI runners / maintainer machines, so it cannot (and need not)
+# go through claude_agent_sdk._internal.executable.
+"scripts/**" = ["TID251"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["claude_agent_sdk"]

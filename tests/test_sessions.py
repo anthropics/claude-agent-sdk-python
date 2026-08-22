@@ -600,6 +600,94 @@ class TestListSessions:
         assert len(sessions) == 1
         assert sessions[0].git_branch == "new-branch"
 
+    def test_oversized_first_record(self, claude_config_dir: Path, tmp_path: Path):
+        """A first record larger than the lite read window keeps its metadata.
+
+        The CLI writes `message` before the record's metadata keys, so a big
+        first message used to push the record's own cwd/gitBranch past the
+        64 KiB head window and drop first_prompt entirely.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        big_paste = "review this crash log\n" + "ERROR connection reset\n" * 4000
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": big_paste}],
+                    },
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                    "cwd": project_path,
+                    "gitBranch": "main",
+                },
+                **_COMPACT,
+            ),
+            json.dumps({"type": "assistant", "message": {"content": "ok"}}, **_COMPACT),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        s = sessions[0]
+        assert s.first_prompt is not None
+        assert s.first_prompt.startswith("review this crash log")
+        assert s.cwd == project_path
+        assert s.git_branch == "main"
+        assert s.created_at == 1768473000000
+
+    def test_oversized_record_after_leading_record(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Metadata survives when a small record precedes the oversized one.
+
+        The CLI usually writes a bookkeeping record (e.g. queue-operation)
+        before the first user turn, so the oversized record is rarely line 1.
+        A single leading newline in the window must not disable the head
+        growth.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        big_paste = "review this crash log\n" + "ERROR connection reset\n" * 4000
+        lines = [
+            json.dumps({"type": "queue-operation", "operation": "dequeue"}, **_COMPACT),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": big_paste}],
+                    },
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                    "cwd": project_path,
+                    "gitBranch": "main",
+                },
+                **_COMPACT,
+            ),
+            json.dumps({"type": "assistant", "message": {"content": "ok"}}, **_COMPACT),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        s = sessions[0]
+        assert s.first_prompt is not None
+        assert s.first_prompt.startswith("review this crash log")
+        assert s.cwd == project_path
+        assert s.git_branch == "main"
+        assert s.created_at == 1768473000000
+
 
 class TestSDKSessionInfoType:
     """Tests for the SDKSessionInfo dataclass."""
@@ -1421,6 +1509,82 @@ class TestCreatedAtExtraction:
             ),
         ]
         file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].created_at == 1768473000000
+
+    def test_created_at_ignores_nested_timestamp(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """created_at comes from a top-level timestamp, not a nested one.
+
+        A raw text scan of the head can match a "timestamp" key inside
+        another record's payload (e.g. a file-history-snapshot) and produce
+        a wrong created_at rather than a missing one.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "file-history-snapshot",
+                    "snapshot": {"timestamp": "2020-01-01T00:00:00.000Z"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "hello"},
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].created_at == 1768473000000
+
+    def test_created_at_survives_unicode_line_separator(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A U+2028 inside a JSON string must not split the record.
+
+        JSON.stringify writes U+2028/U+2029 (and U+0085) unescaped inside
+        strings, and str.splitlines() breaks on them, cutting the record
+        into fragments that fail to parse and losing its timestamp.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "before\u2028after"},
+                    "timestamp": "2026-01-15T10:30:00.000Z",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": "ok"},
+                    "timestamp": "2026-01-15T11:00:00.000Z",
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         sessions = list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1

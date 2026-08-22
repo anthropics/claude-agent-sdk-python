@@ -5,7 +5,16 @@ import sys
 import types as builtin_types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, Generic, TypeVar, Union, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Generic,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
@@ -16,7 +25,9 @@ else:
     from typing_extensions import get_type_hints as _get_type_hints
     from typing_extensions import is_typeddict
 
-from mcp.types import ToolAnnotations
+import jsonschema
+from mcp.types import CallToolResult, Tool
+from mcp.types import ToolAnnotations as _McpToolAnnotations
 
 from ._errors import (
     ClaudeSDKError,
@@ -24,7 +35,9 @@ from ._errors import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    ResultError,
 )
+from ._internal._mcp_compat import build_tool_server
 from ._internal.session_import import import_session_to_store
 from ._internal.session_mutations import (
     ForkSessionResult,
@@ -61,10 +74,12 @@ from .types import (
     AssistantMessage,
     BaseHookInput,
     CanUseTool,
+    CanUseToolShadowedWarning,
     ClaudeAgentOptions,
     ContentBlock,
     ContextUsageCategory,
     ContextUsageResponse,
+    ConversationResetMessage,
     DeferredToolUse,
     EffortLevel,
     HookCallback,
@@ -83,7 +98,10 @@ from .types import (
     McpToolAnnotations,
     McpToolInfo,
     Message,
+    MessageOrigin,
+    MessageOriginKind,
     MirrorErrorMessage,
+    ModelUsage,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionMode,
@@ -129,6 +147,7 @@ from .types import (
     SystemMessage,
     TaskBudget,
     TaskNotificationMessage,
+    TaskNotificationOriginSubkind,
     TaskNotificationStatus,
     TaskProgressMessage,
     TaskStartedMessage,
@@ -155,6 +174,69 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+# The snake_case spelling of each hint, mapped to its wire (camelCase) name.
+_HINT_WIRE_NAMES = {
+    "read_only_hint": "readOnlyHint",
+    "destructive_hint": "destructiveHint",
+    "idempotent_hint": "idempotentHint",
+    "open_world_hint": "openWorldHint",
+    "max_result_size_chars": "maxResultSizeChars",
+}
+
+
+class ToolAnnotations(_McpToolAnnotations, extra="allow"):
+    """Hints about a tool's behavior, plus ``maxResultSizeChars``.
+
+    A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling
+    on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``
+    and ``ToolAnnotations(read_only_hint=True)`` are the same thing, and both
+    type-check. (mcp's own class differs between majors here: 1.x only knows
+    the camelCase names and 2.x prefers snake_case.) Attribute access follows
+    the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.
+
+    ``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but
+    a Claude Code one: the size, in characters, up to which Claude Code keeps
+    this tool's result inline instead of persisting it to a file and showing
+    a preview. It travels to the CLI in the tool's ``_meta``.
+
+    Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted
+    wherever the SDK takes annotations.
+    """
+
+    maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
+
+    if TYPE_CHECKING:
+
+        def __init__(  # both spellings, deliberately
+            self,
+            *,
+            title: str | None = None,
+            readOnlyHint: bool | None = None,  # noqa: N803
+            read_only_hint: bool | None = None,
+            destructiveHint: bool | None = None,  # noqa: N803
+            destructive_hint: bool | None = None,
+            idempotentHint: bool | None = None,  # noqa: N803
+            idempotent_hint: bool | None = None,
+            openWorldHint: bool | None = None,  # noqa: N803
+            open_world_hint: bool | None = None,
+            maxResultSizeChars: int | None = None,  # noqa: N803
+            max_result_size_chars: int | None = None,
+            **extra: Any,
+        ) -> None: ...
+
+    else:
+
+        def __init__(self, **data: Any) -> None:
+            # Fold the snake_case spellings into the wire names, which every
+            # mcp version accepts (as field names on 1.x, as aliases on 2.x).
+            # Given both, the wire name wins.
+            for snake, wire in _HINT_WIRE_NAMES.items():
+                if snake in data:
+                    value = data.pop(snake)
+                    data.setdefault(wire, value)
+            super().__init__(**data)
+
+
 @dataclass
 class SdkMcpTool(Generic[T]):
     """Definition for an SDK MCP tool."""
@@ -163,14 +245,14 @@ class SdkMcpTool(Generic[T]):
     description: str
     input_schema: type[T] | dict[str, Any]
     handler: Callable[[T], Awaitable[dict[str, Any]]]
-    annotations: ToolAnnotations | None = None
+    annotations: _McpToolAnnotations | None = None
 
 
 def tool(
     name: str,
     description: str,
     input_schema: type | dict[str, Any],
-    annotations: ToolAnnotations | None = None,
+    annotations: _McpToolAnnotations | None = None,
 ) -> Callable[[Callable[[Any], Awaitable[dict[str, Any]]]], SdkMcpTool[Any]]:
     """Decorator for defining MCP tools with type safety.
 
@@ -190,6 +272,11 @@ def tool(
             - A JSON Schema dictionary for full validation
             Use ``Annotated[type, "description"]`` to add a description to a
             parameter in either dict-style or TypedDict schemas.
+        annotations: Optional MCP tool annotations (hints such as
+            ``readOnlyHint`` or ``destructiveHint``) advertised to Claude.
+            ``ToolAnnotations(maxResultSizeChars=N)`` additionally raises the
+            size up to which Claude Code keeps this tool's result inline
+            instead of persisting it to a file and showing a preview.
 
     Returns:
         A decorator function that wraps the tool implementation and returns
@@ -214,11 +301,24 @@ def tool(
         ...         return {"content": [{"type": "text", "text": "Error: Division by zero"}], "is_error": True}
         ...     return {"content": [{"type": "text", "text": f"Result: {args['a'] / args['b']}"}]}
 
+        Read-only tool that may return a large result:
+        >>> @tool(
+        ...     "get_schema",
+        ...     "Return the database schema",
+        ...     {},
+        ...     annotations=ToolAnnotations(readOnlyHint=True, maxResultSizeChars=500_000),
+        ... )
+        ... async def get_schema(args):
+        ...     return {"content": [{"type": "text", "text": load_schema()}]}
+
     Notes:
         - The tool function must be async (defined with async def)
         - The function receives a single dict argument with the input parameters
+        - Arguments are validated against the input schema before the function
+          is called; invalid input is reported back to Claude as an error result
         - The function should return a dict with a "content" key containing the response
-        - Errors can be indicated by including "is_error": True in the response
+        - Errors can be indicated by including "is_error": True in the response;
+          an exception raised by the function is reported the same way
     """
 
     def decorator(
@@ -307,6 +407,87 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     return schema
 
 
+def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
+    """Turn a tool's declared input_schema into the JSON Schema sent on the wire."""
+    if isinstance(tool_def.input_schema, dict):
+        if (
+            "type" in tool_def.input_schema
+            and "properties" in tool_def.input_schema
+            and isinstance(tool_def.input_schema["type"], str)
+        ):
+            return tool_def.input_schema
+        properties = {
+            param_name: _python_type_to_json_schema(param_type)
+            for param_name, param_type in tool_def.input_schema.items()
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties.keys()),
+        }
+    if is_typeddict(tool_def.input_schema):
+        return _typeddict_to_json_schema(tool_def.input_schema)
+    return {"type": "object", "properties": {}}
+
+
+def _build_meta(tool_def: SdkMcpTool[Any]) -> dict[str, Any] | None:
+    # Client-specific hints travel in _meta under namespaced keys because MCP
+    # clients drop annotation fields they do not know. maxResultSizeChars is
+    # the size up to which Claude Code keeps a tool result inline rather than
+    # persisting it and showing a preview; it rides on the annotations object
+    # as an extra (or subclass-declared) field.
+    max_size = getattr(tool_def.annotations, "maxResultSizeChars", None)
+    if max_size is None:
+        return None
+    return {"anthropic/maxResultSizeChars": max_size}
+
+
+def _tool_error_result(message: str) -> CallToolResult:
+    return CallToolResult.model_validate(
+        {"content": [{"type": "text", "text": message}], "isError": True}
+    )
+
+
+def _convert_tool_content(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map the content of a tool handler's result dict to MCP content blocks.
+
+    Text and image blocks pass through. Resource links and text resources are
+    flattened to text because that is what the CLI renders; binary resources
+    and unknown block types are dropped with a warning.
+    """
+    content: list[dict[str, Any]] = []
+    for item in items:
+        item_type = item.get("type")
+        if item_type == "text":
+            content.append({"type": "text", "text": item["text"]})
+        elif item_type == "image":
+            content.append(
+                {"type": "image", "data": item["data"], "mimeType": item["mimeType"]}
+            )
+        elif item_type == "resource_link":
+            parts = [
+                str(part)
+                for part in (item.get("name"), item.get("uri"), item.get("description"))
+                if part
+            ]
+            content.append(
+                {"type": "text", "text": "\n".join(parts) if parts else "Resource link"}
+            )
+        elif item_type == "resource":
+            resource = item.get("resource") or {}
+            if "text" in resource:
+                content.append({"type": "text", "text": resource["text"]})
+            else:
+                logger.warning(
+                    "Binary embedded resource cannot be converted to text, skipping"
+                )
+        else:
+            logger.warning(
+                "Unsupported content type %r in tool result, skipping", item_type
+            )
+    return content
+
+
 def create_sdk_mcp_server(
     name: str, version: str = "1.0.0", tools: list[SdkMcpTool[Any]] | None = None
 ) -> McpSdkServerConfig:
@@ -330,8 +511,9 @@ def create_sdk_mcp_server(
 
     Returns:
         McpSdkServerConfig: A configuration object that can be passed to
-        ClaudeAgentOptions.mcp_servers. This config contains the server
-        instance and metadata needed for the SDK to route tool calls.
+        ClaudeAgentOptions.mcp_servers. Its ``instance`` is a regular
+        ``mcp.server.Server`` that the SDK connects to Claude Code over an
+        in-memory MCP transport.
 
     Example:
         Simple calculator server:
@@ -369,157 +551,71 @@ def create_sdk_mcp_server(
         >>>
         >>> server = create_sdk_mcp_server("store", tools=[add_item])
 
+        Bringing your own server: any ``mcp.server.Server`` built with the
+        installed ``mcp`` package can be used in place of this helper, and
+        the requests it handles (tools, resources, prompts, ...) are served.
+        Requests and notifications the server sends to the client (sampling,
+        elicitation, roots, logging, progress) are not forwarded yet:
+        >>> from mcp.server import Server
+        >>> my_server = Server("mine")  # register handlers with the mcp API
+        >>> config = McpSdkServerConfig(type="sdk", name="mine", instance=my_server)
+
     Notes:
         - The server runs in the same process as your Python application
         - Tools have direct access to your application's variables and state
         - No subprocess or IPC overhead for tool calls
         - Server lifecycle is managed automatically by the SDK
+        - Tool arguments are validated against the tool's input schema, and
+          unknown tools, invalid arguments and exceptions raised by a handler
+          are all reported to Claude as error results rather than failing the
+          request
+        - Works with both mcp 1.x and mcp 2.x
 
     See Also:
         - tool(): Decorator for creating tool functions
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
-    from mcp.server import Server
-    from mcp.types import (
-        AudioContent,
-        CallToolResult,
-        EmbeddedResource,
-        ImageContent,
-        ResourceLink,
-        TextContent,
-        Tool,
-    )
+    tools = tools or []
+    tools_by_name = {tool_def.name: tool_def for tool_def in tools}
+    schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
+    wire_tools = [
+        Tool.model_validate(
+            {
+                "name": tool_def.name,
+                "description": tool_def.description,
+                "inputSchema": schemas[tool_def.name],
+                "annotations": tool_def.annotations,
+                "_meta": _build_meta(tool_def),
+            }
+        )
+        for tool_def in tools
+    ]
 
-    # Create MCP server instance
-    server = Server(name, version=version)
-
-    # Register tools if provided
-    if tools:
-        # Store tools for access in handlers
-        tool_map = {tool_def.name: tool_def for tool_def in tools}
-
-        # Pre-compute tool schemas once at creation time
-        def _build_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
-            if isinstance(tool_def.input_schema, dict):
-                if (
-                    "type" in tool_def.input_schema
-                    and "properties" in tool_def.input_schema
-                    and isinstance(tool_def.input_schema["type"], str)
-                ):
-                    return tool_def.input_schema
-                properties = {}
-                for param_name, param_type in tool_def.input_schema.items():
-                    properties[param_name] = _python_type_to_json_schema(param_type)
-                return {
-                    "type": "object",
-                    "properties": properties,
-                    "required": list(properties.keys()),
-                }
-            if is_typeddict(tool_def.input_schema):
-                return _typeddict_to_json_schema(tool_def.input_schema)
-            return {"type": "object", "properties": {}}
-
-        def _build_meta(tool_def: "SdkMcpTool[Any]") -> dict[str, Any] | None:
-            # The MCP SDK's Zod schema strips unknown annotation fields, so
-            # Anthropic-specific hints use _meta with namespaced keys instead.
-            # maxResultSizeChars controls the CLI's layer-2 tool-result spill
-            # threshold (toolResultStorage.ts maybePersistLargeToolResult).
-            if tool_def.annotations is None:
-                return None
-            max_size = getattr(tool_def.annotations, "maxResultSizeChars", None)
-            if max_size is None:
-                return None
-            return {"anthropic/maxResultSizeChars": max_size}
-
-        cached_tool_list = [
-            Tool.model_validate(
-                {
-                    "name": tool_def.name,
-                    "description": tool_def.description,
-                    "inputSchema": _build_schema(tool_def),
-                    "annotations": tool_def.annotations,
-                    "_meta": _build_meta(tool_def),
-                }
-            )
-            for tool_def in tools
-        ]
-
-        # Register list_tools handler to expose available tools
-        @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
-        async def list_tools() -> list[Tool]:
-            """Return the list of available tools."""
-            return cached_tool_list
-
-        # Register call_tool handler to execute tools
-        @server.call_tool()  # type: ignore[untyped-decorator]
-        async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
-            """Execute a tool by name with given arguments."""
-            if name not in tool_map:
-                raise ValueError(f"Tool '{name}' not found")
-
-            tool_def = tool_map[name]
-            # Call the tool's handler with arguments
+    async def run_tool(tool_name: str, arguments: dict[str, Any]) -> CallToolResult:
+        # The SDK owns these semantics so a tool behaves the same on every
+        # supported mcp version: unknown tools, invalid arguments and handler
+        # failures all come back as isError results the model can read, never
+        # as protocol errors.
+        tool_def = tools_by_name.get(tool_name)
+        if tool_def is None:
+            return _tool_error_result(f"Tool '{tool_name}' not found")
+        try:
+            try:
+                jsonschema.validate(instance=arguments, schema=schemas[tool_name])
+            except jsonschema.ValidationError as e:
+                return _tool_error_result(f"Input validation error: {e.message}")
             result = await tool_def.handler(arguments)
-
-            # Convert result to MCP format
-            content: list[
-                TextContent
-                | ImageContent
-                | AudioContent
-                | ResourceLink
-                | EmbeddedResource
-            ] = []
-            if "content" in result:
-                for item in result["content"]:
-                    item_type = item.get("type")
-                    if item_type == "text":
-                        content.append(TextContent(type="text", text=item["text"]))
-                    elif item_type == "image":
-                        content.append(
-                            ImageContent(
-                                type="image",
-                                data=item["data"],
-                                mimeType=item["mimeType"],
-                            )
-                        )
-                    elif item_type == "resource_link":
-                        parts = []
-                        link_name = item.get("name")
-                        uri = item.get("uri")
-                        desc = item.get("description")
-                        if link_name:
-                            parts.append(link_name)
-                        if uri:
-                            parts.append(str(uri))
-                        if desc:
-                            parts.append(desc)
-                        content.append(
-                            TextContent(
-                                type="text",
-                                text="\n".join(parts) if parts else "Resource link",
-                            )
-                        )
-                    elif item_type == "resource":
-                        resource = item.get("resource") or {}
-                        if "text" in resource:
-                            content.append(
-                                TextContent(type="text", text=resource["text"])
-                            )
-                        else:
-                            logger.warning(
-                                "Binary embedded resource cannot be converted to text, skipping"
-                            )
-                    else:
-                        logger.warning(
-                            "Unsupported content type %r in tool result, skipping",
-                            item_type,
-                        )
-
-            return CallToolResult(
-                content=content, isError=result.get("is_error", False)
+            return CallToolResult.model_validate(
+                {
+                    "content": _convert_tool_content(result.get("content", [])),
+                    "isError": result.get("is_error", False),
+                }
             )
+        except Exception as e:
+            return _tool_error_result(str(e))
 
-    # Return SDK server configuration
+    server = build_tool_server(name, version, wire_tools, run_tool)
+
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 
 
@@ -554,13 +650,18 @@ __all__ = [
     "TERMINAL_TASK_STATUSES",
     "TaskUsage",
     "ResultMessage",
+    "ModelUsage",
     "DeferredToolUse",
     "RateLimitEvent",
     "RateLimitInfo",
     "RateLimitStatus",
     "RateLimitType",
     "StreamEvent",
+    "ConversationResetMessage",
     "Message",
+    "MessageOrigin",
+    "MessageOriginKind",
+    "TaskNotificationOriginSubkind",
     "ClaudeAgentOptions",
     "TaskBudget",
     "TextBlock",
@@ -579,6 +680,7 @@ __all__ = [
     "ContextUsageResponse",
     # Tool callbacks
     "CanUseTool",
+    "CanUseToolShadowedWarning",
     "ToolPermissionContext",
     "PermissionResult",
     "PermissionResultAllow",
@@ -665,5 +767,6 @@ __all__ = [
     "CLIConnectionError",
     "CLINotFoundError",
     "ProcessError",
+    "ResultError",
     "CLIJSONDecodeError",
 ]

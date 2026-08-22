@@ -23,6 +23,7 @@ from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from typing import Any
 
+import anyio
 import sniffio
 
 logger = logging.getLogger(__name__)
@@ -73,10 +74,21 @@ class _AsyncioTaskHandle(TaskHandle):
         self._task.add_done_callback(lambda _t: callback(self))
 
     async def wait(self) -> None:
-        import asyncio
-
-        with suppress(asyncio.CancelledError):
-            await self._task
+        # Awaiting the task object directly would tie the two tasks together:
+        # cancelling the waiter cancels the wrapped task as well, and the
+        # waiter cannot tell its own CancelledError from the wrapped task's,
+        # so it would swallow a cancellation meant for itself. Waiting on a
+        # completion event keeps the waiter independently cancellable, like
+        # the trio handle.
+        if not self._task.done():
+            finished = anyio.Event()
+            self._task.add_done_callback(lambda _t: finished.set())
+            await finished.wait()
+        if self._task.cancelled():
+            return
+        exc = self._task.exception()
+        if exc is not None:
+            raise exc
 
 
 class _TrioTaskHandle(TaskHandle):

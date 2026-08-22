@@ -1,5 +1,322 @@
 # Changelog
 
+## 0.2.143
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.238
+
+## 0.2.142
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.237
+
+## 0.2.141
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.236
+
+## 0.2.140
+
+### New Features
+
+- **MCP 2.x support for in-process SDK MCP servers**: The SDK now supports `mcp` 2.x alongside 1.x (dependency widened to `mcp>=1.23.0,<3.0.0`). In-process servers are served over mcp's own in-memory transport instead of hand-rolled JSON-RPC dispatch, so hand-built `mcp.server.Server` instances now work at full fidelity — resources, prompts, and all result content types reach the CLI verbatim. Tool cancellation on interrupt is supported on mcp 2.x. `claude_agent_sdk.ToolAnnotations` accepts both camelCase and snake_case hint names on every mcp version (#1218)
+- **`forward_subagent_text` option**: New `forward_subagent_text` boolean on `ClaudeAgentOptions` forwards a subagent's text and thinking blocks as messages in the stream, so consumers can render the full nested transcript. Matches the TypeScript SDK's `forwardSubagentText` (#1206)
+- **`ResultError` exception with structured error payload**: When the CLI exits after a terminal error result, the SDK now raises `ResultError` (a subclass of `ProcessError`) instead of a bare "exit code 1" error. Carries `subtype`, `errors`, `result`, `api_error_status`, `terminal_reason`, `session_id`, and the raw `data` dict so callers can branch on failure reason without string matching. New exported types: `ResultError` (#1205)
+- **`can_use_tool` callback support for `query()` and string prompts**: The `can_use_tool` permission callback now works with string prompts (not just `ClaudeSDKClient`), and stdin is kept open so the CLI can send permission requests over the control protocol (#1204)
+
+### Bug Fixes
+
+- **Recover `parent_tool_use_id` when reading subagent transcripts**: `get_subagent_messages()` and `get_subagent_messages_from_store()` now recover the `parent_tool_use_id` from the subagent's metadata, linking each subagent's messages to the Agent `tool_use` block in the parent session. `SessionMessage` also gains a `parent_agent_id` field for the spawning agent's id (#1207)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.235
+
+## 0.2.139
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.233
+
+## 0.2.138
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.232
+
+## 0.2.137
+
+### New Features
+
+- **`ConversationResetMessage` for conversation reset events**: The SDK now surfaces the CLI's `conversation_reset` frame as a `ConversationResetMessage` dataclass, letting applications detect when a `/clear` or other transcript-discarding flow resets the conversation mid-session. Includes `new_conversation_id`, `uuid`, and `session_id` fields. This widens the `Message` union — code that exhaustively matches with `assert_never` will need updating (#1196)
+- **Message origin on `UserMessage` and `ResultMessage`**: New `origin: MessageOrigin | None` field on `UserMessage` and `ResultMessage` surfaces why a turn was initiated — distinguishing application-submitted prompts (`"human"`) from background-task notifications, scheduled triggers, peer messages, and other session-injected turns. New exported types: `MessageOrigin`, `MessageOriginKind`, `TaskNotificationOriginSubkind` (#1199)
+- **`resume_session_at` / `resume_drops_turn` options for truncating resume**: `ClaudeAgentOptions` now supports `resume_session_at` (fork a session at an earlier transcript entry) and `resume_drops_turn` (validate that only entries from a specific turn are discarded). Enables safe rewind-to-before-last-prompt without silently dropping unobserved messages (#1198)
+
+### Bug Fixes
+
+- **Seed `settings.json` into temp config dir on `SessionStore` resume**: Resuming from a `SessionStore` now copies `settings.json` and `cowork_settings.json` into the temporary config directory, preserving `apiKeyHelper` auth, user hooks, env vars, and permissions. Previously, hosts authenticating solely via `apiKeyHelper` would fail with "Not logged in" on resume (#1197)
+- **Improved error messages for failed resume**: When the CLI rejects a resume (e.g. nonexistent session or `resume_drops_turn` guard failure), pending control requests like `initialize()` now receive the actual error text instead of a generic "Command failed with exit code 1" (#1198)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.229
+
+## 0.2.136
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.228
+
+## 0.2.135
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.227
+
+## 0.2.134
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.226
+
+## 0.2.133
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.225
+
+## 0.2.132
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.224
+
+## 0.2.131
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.223
+
+## 0.2.130
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.222
+
+## 0.2.129
+
+### Breaking Changes
+
+- **Skill name validation in `ClaudeAgentOptions.skills`**: Skill names containing parentheses, commas, control characters, wildcards (`*`, `:*`), leading `/`, surrounding whitespace, or surrogate code points now raise `ValueError` at connect time. `skills=["plugin:*"]` and `skills=["*"]` should be replaced with `skills="all"` or a `Skill(...)` rule in `allowed_tools`. Names with leading whitespace or `/` previously built rules that could never match (silently disabling the skill) and now raise explicitly (#1145)
+
+### Bug Fixes
+
+- **Validated skill names to prevent `--allowedTools` injection**: Skill names from `ClaudeAgentOptions(skills=[...])` were passed unchecked into the CLI's `--allowedTools` value, which splits on commas and spaces. A crafted name could inject extra permission rules. The transport now validates each name and rejects delimiter-carrying or malformed values (#1145)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.221
+
+## 0.2.128
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.220
+
+## 0.2.127
+
+### Bug Fixes
+
+- **Fixed premature stdin closure when background tasks are in flight**: `query()` no longer closes stdin on the first `result` frame when background tasks (e.g. `run_in_background: true` subagents) are still running. Previously, closing stdin too early caused SDK-MCP tool calls from background tasks to fail with `"Stream closed"` and silently bypassed PreToolUse hooks. Stdin now stays open until all in-flight tasks complete and the final result frame arrives (#1103)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.219
+
+## 0.2.126
+
+### New Features
+
+- **`terminal_reason` on ResultMessage**: `ResultMessage.terminal_reason` now surfaces why the query loop ended (`"completed"`, `"max_turns"`, `"aborted_streaming"`, `"aborted_tools"`, etc.). A value of `"aborted_streaming"` or `"aborted_tools"` means the turn was cancelled via `ClaudeSDKClient.interrupt()`. Mirrors the TypeScript SDK's `SDKResultMessage.terminal_reason` (#1142)
+- **Typed `model_usage` on ResultMessage**: `ResultMessage.model_usage` is now typed as `dict[str, ModelUsage]` instead of `dict[str, Any]`, with a new `ModelUsage` TypedDict that mirrors the TypeScript SDK's shape. Includes optional `canonicalModel` and `provider` fields for stable model identification across provider-specific aliases (#1143)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.218
+
+## 0.2.125
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.217
+
+## 0.2.124
+
+### Bug Fixes
+
+- **Refused batch script CLI spawning on Windows**: Blocked spawning `.bat`/`.cmd` CLI scripts (including npm's `claude.cmd` shim) on Windows to prevent command injection via cmd.exe metacharacter re-parsing (BatBadBut / CVE-2024-27980 class). Windows users relying on the npm shim should switch to the native installer, an explicit `claude.exe` path, or a platform wheel that bundles the CLI (#1127)
+- **Windows cmd.exe metacharacter rejection**: `resume` and `session_id` values containing cmd.exe metacharacters (`& | < > ^ % ! "`) or newlines now raise `ValueError` on Windows, preventing injection even if a cmd.exe hop is reintroduced. POSIX behavior is unchanged (#1127)
+- **Dash-prefixed `extra_args` value binding**: `extra_args` now uses `--flag=value` form when the value starts with `-`, preventing a dash-leading value from being misinterpreted as a separate CLI flag (#1127)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.216
+
+## 0.2.123
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.215
+
+## 0.2.122
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.214
+
+## 0.2.121
+
+### Bug Fixes
+
+- **Fixed argv flag injection via `resume` and `session_id` options**: `--resume` and `--session-id` are now passed as single `=`-joined argv tokens (e.g. `--resume=<value>`) so that a dash-prefixed value is never misinterpreted as an independent CLI flag (#1123)
+
+### Internal/Other Changes
+
+- **Hardened build scripts against command injection via `CLAUDE_CLI_VERSION`**: Added version validation (`_cli_version_validation.py`) and eliminated shell interpolation in `download_cli.py` and `update_cli_version.py` so that a malformed version string cannot inject shell or Python code during builds (#1117)
+- CI now lints and typechecks `scripts/` alongside `src/` and `tests/`
+- CI CLI install steps now fail properly when `curl` errors (added `shell: bash` for `pipefail`)
+- Updated bundled Claude CLI to version 2.1.212
+
+## 0.2.120
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.211
+
+## 0.2.119
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.210
+
+## 0.2.118
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.209
+
+## 0.2.117
+
+### Bug Fixes
+
+- **Escaped untrusted fields in Slack issue notification workflow**: Fixed the Slack notification workflow to properly escape issue titles and usernames using `jq` instead of bash substitution, preventing malformed JSON payloads and mrkdwn injection from specially crafted issue titles (#1116)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.208
+
+## 0.2.116
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.207
+- Fixed CI workspace trust so Claude Code honors project-scoped permission grants in checkout directories (#1085)
+
+## 0.2.115
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.206
+
+## 0.2.114
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.205
+
+## 0.2.113
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.204
+
+## 0.2.112
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.203
+
+## 0.2.111
+
+### Bug Fixes
+
+- **Zombie CLI subprocess prevention**: Shielded subprocess cleanup from asyncio cancellation so `SIGTERM`/`SIGKILL` teardown always runs, preventing orphaned `claude` child processes when the parent task is cancelled (#1082)
+- **Silent whitespace loss on large NDJSON lines**: Fixed the NDJSON parser silently dropping whitespace when a single line exceeded the 64 KiB stream buffer, which could corrupt tool output or assistant message content (#1083)
+- **TypeError on non-dict message content**: Fixed an uncaught `TypeError` when the CLI emits a message whose `content` field is a plain string or other non-dict value instead of the expected list of content blocks (#1058)
+- **`can_use_tool` shadowed by `allowed_tools`**: Added a runtime warning when a `can_use_tool` callback is registered alongside `allowed_tools` or `bypassPermissions`, which silently prevents the callback from ever firing (#1081)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.202
+- Fixed e2e stderr test flakiness by running the query from a clean working directory (#1084)
+
+## 0.2.110
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.191
+
+## 0.2.109
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.190
+
+## 0.2.108
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.187
+
+## 0.2.107
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.186
+
+## 0.2.106
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.185
+
+## 0.2.105
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.183
+
+## 0.2.104
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.181
+
+## 0.2.103
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.179
+
+## 0.2.102
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.178
+
 ## 0.2.101
 
 ### Bug Fixes

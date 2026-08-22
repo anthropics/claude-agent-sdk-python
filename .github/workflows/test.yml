@@ -26,6 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Confirm the newest mcp major is under test
+        # test-mcp-v1-floor covers mcp 1.x; this job must exercise 2.x or newer.
+        run: |
+          python -c "import importlib.metadata as m; v = m.version('mcp'); print('mcp', v); assert int(v.split('.')[0]) >= 2, v"
+
       - name: Run tests
         run: |
           python -m pytest tests/ -v --cov=claude_agent_sdk --cov-report=xml
@@ -34,6 +39,43 @@ jobs:
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0 (sha-pinned)
         with:
           file: ./coverage.xml
+          fail_ci_if_error: false
+
+  test-mcp-v1-floor:
+    # The main test job resolves the newest mcp the SDK allows (2.x). This one
+    # pins the oldest supported release so mcp 1.x support stays tested.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies with the mcp floor
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install "mcp==1.23.0"
+          python -c "import importlib.metadata as m; v = m.version('mcp'); print('mcp', v); assert v == '1.23.0', v"
+
+      - name: Run mypy against mcp 1.x
+        run: |
+          mypy src/ scripts/
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --cov=claude_agent_sdk --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        # Merged with the main job's report, so code that only runs on one
+        # mcp major is counted from whichever job exercises it.
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0 (sha-pinned)
+        with:
+          file: ./coverage.xml
+          flags: mcp-v1-floor
           fail_ci_if_error: false
 
   test-e2e:
@@ -60,6 +102,12 @@ jobs:
 
       - name: Install Claude Code (Linux/macOS)
         if: runner.os == 'Linux' || runner.os == 'macOS'
+        # `shell: bash` runs with -eo pipefail. Without pipefail the pipeline
+        # takes its status from `bash`, which exits 0 on an empty script, so a
+        # failed `curl` shows up later as a confusing "claude: not found" in a
+        # different step. With it, the step that actually broke is the one that
+        # fails.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -82,6 +130,16 @@ jobs:
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
+
+      # CI's fresh checkout is an untrusted workspace, so Claude Code drops
+      # the project-scoped permissions.allow grants in this repo's committed
+      # .claude/settings.json and warns on stderr about it. Record the trust a
+      # developer grants via the trust dialog once, so runs launched from the
+      # checkout exercise the real trusted-workspace settings path. Only
+      # affects CLI runs whose cwd is inside the checkout (some e2e tests
+      # deliberately use a temp cwd). See scripts/trust_workspace.py.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
 
       - name: Run end-to-end tests with real API
         env:
@@ -149,6 +207,8 @@ jobs:
 
       - name: Install Claude Code (Linux)
         if: runner.os == 'Linux'
+        # `shell: bash` runs with -eo pipefail; see the note in the test job.
+        shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -171,6 +231,11 @@ jobs:
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
+
+      # Same as in test-e2e: trust the fresh checkout so Claude Code honors the
+      # project-scoped grants in this repo's committed .claude/settings.json.
+      - name: Trust the workspace for Claude Code
+        run: python scripts/trust_workspace.py
 
       - name: Run example scripts (Linux)
         if: runner.os == 'Linux'

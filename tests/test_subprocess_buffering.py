@@ -383,3 +383,163 @@ class TestSubprocessBuffering:
             assert messages[1]["type"] == "result"
 
         anyio.run(_test)
+
+    def _collect(self, chunks: list[str], **opts: object) -> list[Any]:
+        """Drive read_messages() over a canned chunk stream and return messages."""
+        messages: list[Any] = []
+
+        async def _run() -> None:
+            transport = SubprocessCLITransport(prompt="t", options=make_options(**opts))
+            transport._process = MagicMock()
+            transport._process.wait = AsyncMock(return_value=0)
+            transport._stdout_stream = MockTextReceiveStream(chunks)
+            transport._stderr_stream = MockTextReceiveStream([])
+            async for m in transport.read_messages():
+                messages.append(m)
+
+        anyio.run(_run)
+        return messages
+
+    @pytest.mark.parametrize(
+        "ws",
+        [" ", "  ", "\xa0", "\u2009", "\u3000"],
+        ids=["space", "two-spaces", "nbsp", "thin-space", "ideographic-space"],
+    )
+    def test_whitespace_at_chunk_boundary_preserved(self, ws: str) -> None:
+        """Whitespace inside a JSON string value that lands on the boundary
+        between two TextReceiveStream chunks must not be stripped.
+
+        The reader used to ``.strip()`` each chunk before accumulating it, so a
+        64KiB read boundary falling inside a string value silently ate the
+        whitespace there. ``JSON.stringify`` escapes tab/newline/CR but passes
+        U+0020 and Unicode spaces through raw, and ``str.strip()`` eats them all.
+        """
+        content = "A" * 1000 + ws + "B" * 1000
+        # ensure_ascii=False so the whitespace goes on the wire raw, and compact
+        # separators so the only whitespace on the line is the one under test.
+        line = json.dumps(
+            {"type": "assistant", "data": content},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        ws_at = line.index(ws)
+        # Split the line exactly at the far edge of the whitespace run, the way
+        # a 64KiB read boundary would.
+        chunks = [line[: ws_at + len(ws)], line[ws_at + len(ws) :] + "\n"]
+        assert chunks[0].endswith(ws)
+
+        messages = self._collect(chunks)
+
+        assert len(messages) == 1
+        assert messages[0]["data"] == content, (
+            f"lost {ws!r} at a chunk boundary — strip() was applied to a chunk, "
+            f"not to a complete line"
+        )
+
+    def test_whitespace_preserved_across_realistic_64kib_chunking(self) -> None:
+        """A long whitespace run spanning several 64KiB reads must survive intact.
+
+        Whether the old code corrupted a payload depended on whether a read
+        boundary happened to land on whitespace, so a prose payload only fails
+        some of the time. Use a value that is almost entirely spaces: then every
+        interior boundary is guaranteed to land inside the run, and the old
+        reader stripped whole chunks away (losing ~400k characters).
+        """
+        content = "S" + " " * 400_000 + "E"
+        line = (
+            json.dumps({"type": "assistant", "data": content}, separators=(",", ":"))
+            + "\n"
+        )
+        chunks = [line[i : i + 65536] for i in range(0, len(line), 65536)]
+        assert len(chunks) > 6
+
+        # Every interior chunk boundary lands inside the whitespace run, so
+        # str.strip() on a chunk is guaranteed to eat characters.
+        for boundary in range(65536, len(line), 65536):
+            assert line[boundary - 1] == " " and line[boundary] == " "
+
+        messages = self._collect(chunks)
+
+        assert len(messages) == 1
+        assert messages[0]["data"] == content
+
+    def test_complete_oversized_line_still_raises(self) -> None:
+        """The buffer-size guard bounds a whole message, not just the tail left
+        over after complete lines are split off — an oversized line that arrives
+        with its trailing newline must still be rejected."""
+        limit = 512
+        line = json.dumps({"type": "x", "data": "y" * (limit + 100)}) + "\n"
+
+        with pytest.raises(CLIJSONDecodeError) as exc_info:
+            self._collect([line], max_buffer_size=limit)
+
+        assert f"maximum buffer size of {limit} bytes" in str(exc_info.value)
+
+    def test_malformed_complete_line_raises(self) -> None:
+        """A complete line that looks like JSON but doesn't parse is corrupt —
+        no later data can complete it — so it surfaces as CLIJSONDecodeError
+        rather than vanishing."""
+        chunks = ['{"type":"assistant","broken\n{"type":"result"}\n']
+
+        with pytest.raises(CLIJSONDecodeError):
+            self._collect(chunks)
+
+    def test_non_json_line_still_skipped(self) -> None:
+        """Non-JSON stdout noise (#347) is skipped, not raised on."""
+        chunks = [
+            "[SandboxDebug] starting up\n"
+            + json.dumps({"type": "result"})
+            + "\n"
+            + "plain text trailer\n"
+        ]
+
+        messages = self._collect(chunks)
+
+        assert messages == [{"type": "result"}]
+
+    def test_final_message_without_trailing_newline_is_yielded(self) -> None:
+        """A last message with no trailing newline must still be delivered when
+        the stream ends, including when it ends by closing the resource."""
+
+        messages: list[Any] = []
+
+        async def _run() -> None:
+            class ClosingStream:
+                def __init__(self, chunks: list[str]) -> None:
+                    self.chunks = chunks
+                    self.index = 0
+
+                def __aiter__(self) -> Any:
+                    return self
+
+                async def __anext__(self) -> str:
+                    if self.index >= len(self.chunks):
+                        # The subprocess went away mid-stream rather than the
+                        # iterator ending cleanly.
+                        raise anyio.ClosedResourceError
+                    chunk = self.chunks[self.index]
+                    self.index += 1
+                    return chunk
+
+            transport = SubprocessCLITransport(prompt="t", options=make_options())
+            transport._process = MagicMock()
+            transport._process.wait = AsyncMock(return_value=0)
+            transport._stdout_stream = ClosingStream(
+                [json.dumps({"type": "result", "subtype": "success"})]
+            )
+            transport._stderr_stream = MockTextReceiveStream([])
+            async for m in transport.read_messages():
+                messages.append(m)
+
+        anyio.run(_run)
+
+        assert messages == [{"type": "result", "subtype": "success"}]
+
+    def test_truncated_final_line_is_dropped_not_raised(self) -> None:
+        """A residual tail cut off mid-write is unrecoverable; drop it quietly
+        rather than raising on the way out of a stream that already ended."""
+        chunks = [json.dumps({"type": "result"}) + "\n" + '{"type":"assist']
+
+        messages = self._collect(chunks)
+
+        assert messages == [{"type": "result"}]

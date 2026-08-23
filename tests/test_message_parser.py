@@ -7,6 +7,7 @@ from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
     AssistantMessage,
+    ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
     RateLimitEvent,
@@ -55,6 +56,34 @@ class TestMessageParser:
         assert isinstance(message, UserMessage)
         assert message.uuid == "msg-abc123-def456"
         assert len(message.content) == 1
+
+    def test_parse_user_message_origin(self):
+        """origin is surfaced on user messages, for both content shapes, and
+        passed through with keys this SDK version doesn't model."""
+        peer = {
+            "kind": "peer",
+            "from": "peer-addr",
+            "name": "other-session",
+            "verifiedPeerPid": 4242,
+            "someFutureField": True,
+        }
+        for content in ("hi", [{"type": "text", "text": "hi"}]):
+            message = parse_message(
+                {"type": "user", "message": {"content": content}, "origin": peer}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin == peer
+            assert message.origin is not None and message.origin["kind"] == "peer"
+            assert message.origin["from"] == "peer-addr"
+
+    def test_parse_user_message_origin_absent_or_malformed(self):
+        """No origin, or a non-object / kind-less origin, parses to None."""
+        for extra in ({}, {"origin": None}, {"origin": "human"}, {"origin": {}}):
+            message = parse_message(
+                {"type": "user", "message": {"content": "hi"}, **extra}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin is None, extra
 
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
@@ -834,6 +863,68 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
 
+    def test_parse_result_message_with_terminal_reason(self):
+        """Test parsing a result message with terminal_reason field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "result": "",
+            "terminal_reason": "aborted_tools",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason == "aborted_tools"
+
+    def test_parse_result_message_origin(self):
+        """origin on a result identifies what triggered the turn."""
+        base = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(base)
+        assert isinstance(message, ResultMessage)
+        assert message.origin is None
+
+        message = parse_message({**base, "origin": {"kind": "human"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin == {"kind": "human"}
+
+        for subkind in ("scheduled-trigger", "peer-send-message"):
+            origin = {"kind": "task-notification", "subkind": subkind}
+            message = parse_message({**base, "origin": origin})
+            assert isinstance(message, ResultMessage)
+            assert message.origin == origin
+
+        message = parse_message({**base, "origin": {"kind": "unclassified"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin is not None
+        assert message.origin["kind"] == "unclassified"
+
+    def test_parse_result_message_missing_terminal_reason_is_none(self):
+        """A result message without terminal_reason parses to None."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason is None
+
     def test_parse_rate_limit_event(self):
         """Test parsing a rate_limit_event into a typed RateLimitEvent."""
         data = {
@@ -855,6 +946,28 @@ class TestMessageParser:
         assert message.rate_limit_info.resets_at == 1700000000
         assert message.rate_limit_info.rate_limit_type == "five_hour"
         assert message.rate_limit_info.utilization == 0.91
+
+    def test_parse_conversation_reset(self):
+        """conversation_reset parses into a typed ConversationResetMessage."""
+        data = {
+            "type": "conversation_reset",
+            "new_conversation_id": "d2f4a573-ca99-42a2-bb7a-905b40c908e8",
+            "uuid": "msg-1",
+            "session_id": "66694129-ce74-4ee1-9b0f-994155ac97ba",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ConversationResetMessage)
+        assert message.new_conversation_id == "d2f4a573-ca99-42a2-bb7a-905b40c908e8"
+        assert message.uuid == "msg-1"
+        assert message.session_id == "66694129-ce74-4ee1-9b0f-994155ac97ba"
+
+    def test_parse_conversation_reset_missing_field(self):
+        """conversation_reset without new_conversation_id raises."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(
+                {"type": "conversation_reset", "uuid": "u", "session_id": "s"}
+            )
+        assert "new_conversation_id" in str(exc_info.value)
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""

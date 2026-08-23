@@ -1,10 +1,11 @@
 """Type definitions for Claude SDK."""
 
 import sys
+import warnings
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeAlias
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, Required, TypedDict
@@ -30,6 +31,9 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
+
+# The ClaudeAgentOptions.skills value meaning "every discovered skill".
+_SKILLS_ALL: Final = "all"
 EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
@@ -625,7 +629,17 @@ class McpHttpServerConfig(TypedDict):
 
 
 class McpSdkServerConfig(TypedDict):
-    """SDK MCP server configuration."""
+    """SDK (in-process) MCP server configuration.
+
+    Usually produced by ``create_sdk_mcp_server()``. ``instance`` may also be
+    any ``mcp.server.Server`` you have built yourself; the SDK serves it to
+    Claude Code over an in-memory MCP transport (one ``Server.run`` per
+    query, so its lifespan runs once), and the requests it handles (tools,
+    resources, prompts, ...) all reach it. Requests and notifications the
+    server sends to the client (sampling, elicitation, roots, logging,
+    progress) are not forwarded yet, and on mcp 1.x its tools are not
+    cancelled when Claude Code abandons a call: they run to completion.
+    """
 
     type: Literal["sdk"]
     name: str
@@ -1011,6 +1025,81 @@ AssistantMessageError = Literal[
 ]
 
 
+MessageOriginKind = Literal[
+    "human",
+    "channel",
+    "peer",
+    "task-notification",
+    "coordinator",
+    "unclassified",
+    "observer",
+    "auto-continuation",
+    "observer-activity",
+]
+"""Known values of ``MessageOrigin["kind"]``. Newer CLI versions may emit
+kinds not listed here; treat anything unrecognized as "not human"."""
+
+TaskNotificationOriginSubkind = Literal["scheduled-trigger", "peer-send-message"]
+"""Values of ``MessageOrigin["subkind"]`` for ``kind == "task-notification"``."""
+
+# Functional syntax because ``from`` is a keyword.
+MessageOrigin = TypedDict(
+    "MessageOrigin",
+    {
+        # Discriminator. See MessageOriginKind.
+        "kind": Required[MessageOriginKind],
+        # kind == "channel": name of the MCP server the message arrived on.
+        "server": str,
+        # kind == "peer" / "observer": sender address. Sender-asserted — use it
+        # for reply routing / display, never as proof of identity.
+        "from": str,
+        # kind == "peer": sender display name, already normalized by the CLI
+        # (control characters stripped, trimmed, length-capped).
+        "name": str,
+        # kind == "peer": the sender's host-openable session id, if its host
+        # provided one. A navigation target only.
+        "fromSession": str,
+        # kind == "peer" / "observer": task id of the in-process background
+        # subagent that sent this message. Absent for cross-session peers.
+        "senderTaskId": str,
+        # kind == "peer": decoded message body with the peer envelope stripped
+        # (byte-exact with what the model saw). Render this instead of
+        # re-parsing the message text.
+        "body": str,
+        # kind == "peer": kernel-verified pid of the process that connected to
+        # this session's local messaging socket (the *connecting* process —
+        # for relayed traffic that is the relay). Absent when unverifiable.
+        "verifiedPeerPid": int,
+        # kind == "task-notification": present when the delivery is the fired
+        # prompt of a scheduled task ("scheduled-trigger") or a message sent
+        # from another of the user's sessions ("peer-send-message"). Absent for
+        # ordinary background-task notifications.
+        "subkind": TaskNotificationOriginSubkind,
+    },
+    total=False,
+)
+"""Provenance of a user-role message, and — on a :class:`ResultMessage` — of
+the message that triggered that turn.
+
+In streaming-input mode a single connection interleaves the turns you send
+with turns the session injects on its own (background-task notifications,
+scheduled-task prompts, MCP channel messages, messages relayed from peer
+sessions, ...). ``origin`` tells them apart, e.g. to decide whether a
+:class:`ResultMessage` answers *your* prompt::
+
+    if result.origin is None or result.origin["kind"] == "human":
+        ...  # a turn this application submitted
+
+Only ``kind`` is always present; the remaining keys depend on ``kind`` as
+noted on each field. ``None``/absent means the CLI did not attribute the
+message: prompts you send through :func:`query` or
+:meth:`ClaudeSDKClient.query` arrive that way unless you stamp
+``"origin": {"kind": "human"}`` on the message dict yourself (only the
+``human`` kind is honored from an SDK host). The dict is passed through from
+the CLI as-is and may carry additional undocumented keys.
+"""
+
+
 @dataclass
 class UserMessage:
     """User message."""
@@ -1019,6 +1108,11 @@ class UserMessage:
     uuid: str | None = None
     parent_tool_use_id: str | None = None
     tool_use_result: dict[str, Any] | None = None
+    origin: MessageOrigin | None = None
+    """Provenance of this message — see :class:`MessageOrigin`. ``None`` when
+    the CLI did not attribute it. Populated on injected turns (task
+    notifications, channel/peer messages, ...) and on user messages the CLI
+    replays; tool-result messages never carry it."""
 
 
 @dataclass
@@ -1196,6 +1290,31 @@ class DeferredToolUse:
     input: dict[str, Any]
 
 
+class ModelUsage(TypedDict):
+    """Per-model token usage and cost breakdown.
+
+    Keys match the TypeScript SDK's ``ModelUsage`` shape (camelCase), since
+    the value is passed through verbatim from the CLI's ``modelUsage`` field.
+    """
+
+    inputTokens: int
+    outputTokens: int
+    cacheReadInputTokens: int
+    cacheCreationInputTokens: int
+    webSearchRequests: int
+    costUSD: float
+    contextWindow: int
+    maxOutputTokens: int
+    canonicalModel: NotRequired[str]
+    """Canonical model id used for the pricing lookup (e.g.
+    ``'claude-opus-4-7'``). May differ from the raw model string this entry
+    is keyed by (provider-specific ids, aliases)."""
+    provider: NotRequired[str]
+    """API provider that served this model (``'firstParty'``, ``'bedrock'``,
+    ``'vertex'``, ``'foundry'``, ``'anthropicAws'``, ``'anthropicGoogleCloud'``,
+    ``'mantle'``, ``'gateway'``)."""
+
+
 @dataclass
 class ResultMessage:
     """Result message with cost and usage information."""
@@ -1211,7 +1330,7 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     result: str | None = None
     structured_output: Any = None
-    model_usage: dict[str, Any] | None = None
+    model_usage: dict[str, ModelUsage] | None = None
     permission_denials: list[Any] | None = None
     deferred_tool_use: DeferredToolUse | None = None
     errors: list[str] | None = None
@@ -1220,6 +1339,21 @@ class ResultMessage:
     # Emitted by the CLI since v2.1.110. Safe to log (no message content).
     api_error_status: int | None = None
     uuid: str | None = None
+    terminal_reason: str | None = None
+    """Why the query loop terminated (e.g. ``"completed"``, ``"max_turns"``,
+    ``"aborted_streaming"``). A value of ``"aborted_streaming"`` or
+    ``"aborted_tools"`` indicates the turn was cancelled (via
+    :meth:`ClaudeSDKClient.interrupt` or an ``interrupt`` control request).
+    ``None`` when the CLI did not report a terminal reason (older CLI
+    versions, or a result that bypassed the query loop such as a local
+    slash command). Mirrors the TypeScript SDK's
+    ``SDKResultMessage.terminal_reason``."""
+    origin: MessageOrigin | None = None
+    """Origin of the user message that triggered this turn — see
+    :class:`MessageOrigin`. Lets a streaming-input consumer distinguish the
+    result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
+    that) from results of injected turns such as background-task
+    notifications (``{"kind": "task-notification"}``)."""
 
 
 @dataclass
@@ -1280,6 +1414,33 @@ class RateLimitEvent:
 
 
 @dataclass
+class ConversationResetMessage:
+    """Emitted when the session's conversation is replaced without ending the
+    connection — e.g. after ``/clear`` or any other flow that discards the
+    transcript mid-session.
+
+    In streaming input mode a single connection can carry many user turns, and
+    a reset clears the conversation history *and* zeroes the running totals
+    reported on subsequent :class:`ResultMessage` objects (e.g.
+    ``total_cost_usd``). If you accumulate those totals across a long-lived
+    session, snapshot them when this message arrives.
+
+    Attributes:
+        new_conversation_id: Opaque identifier for the fresh conversation, for
+            UIs to key an empty transcript on (and discard any cached session
+            title). This is *not* the ``session_id`` of subsequent messages —
+            read that from the next message.
+        uuid: Unique ID of this message.
+        session_id: ID of the session that was reset (the outgoing session;
+            messages after the reset carry a new ``session_id``).
+    """
+
+    new_conversation_id: str
+    uuid: str
+    session_id: str
+
+
+@dataclass
 class HookEventMessage(SystemMessage):
     """Hook event emitted by the CLI when ``include_hook_events`` is enabled.
 
@@ -1320,6 +1481,7 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | ConversationResetMessage
 )
 
 
@@ -1596,15 +1758,25 @@ class SessionMessage:
         uuid: Unique message identifier.
         session_id: ID of the session this message belongs to.
         message: Raw Anthropic API message dict (role, content, etc.).
-        parent_tool_use_id: Always ``None`` for top-level conversation
-            messages (tool-use sidechain messages are filtered out).
+        parent_tool_use_id: For messages returned by ``get_subagent_messages()``
+            / ``get_subagent_messages_from_store()``, the id of the Agent
+            ``tool_use`` block in the parent session that spawned the subagent
+            (recovered from the subagent's metadata; ``None`` if that metadata
+            is unavailable). Always ``None`` for top-level
+            ``get_session_messages()`` / ``get_session_messages_from_store()``
+            results.
+        parent_agent_id: For subagent messages, the agent id of the subagent
+            that spawned this subagent, or ``None`` if it was spawned by the
+            main session (or the metadata is unavailable). Always ``None`` for
+            top-level session messages.
     """
 
     type: Literal["user", "assistant"]
     uuid: str
     session_id: str
     message: Any
-    parent_tool_use_id: None = None
+    parent_tool_use_id: str | None = None
+    parent_agent_id: str | None = None
 
 
 # Controls whether thinking text is returned summarized or omitted. Opus 4.7+
@@ -1628,6 +1800,141 @@ class ThinkingConfigDisabled(TypedDict):
 
 
 ThinkingConfig = ThinkingConfigAdaptive | ThinkingConfigEnabled | ThinkingConfigDisabled
+
+
+class CanUseToolShadowedWarning(UserWarning):
+    """can_use_tool is set but some tool calls are auto-approved before it runs.
+
+    The TypeScript SDK reports the same condition as a process warning with code
+    ``CLAUDE_SDK_CAN_USE_TOOL_SHADOWED``; suppress this one with
+    ``warnings.filterwarnings("ignore", category=CanUseToolShadowedWarning)``.
+    """
+
+
+def _whole_tool_allowed(entry: str) -> str | None:
+    """Return the tool an ``allowed_tools`` entry allows outright, else None.
+
+    Mirrors the CLI's rule parser: an entry allows a whole tool when it has no
+    ``(...)`` specifier (``"Read"``), or when the specifier is empty or a lone
+    wildcard (``"Read()"``, ``"Read(*)"``). A real specifier (``"Bash(ls:*)"``)
+    only allows matching invocations. Malformed entries fall back to the whole
+    string as a tool name in the CLI, so they match nothing and are ignored.
+    """
+    if not entry.strip():
+        return None
+    open_index = entry.find("(")
+    if open_index == -1:
+        return entry
+    if open_index == 0 or not entry.endswith(")"):
+        return None
+    return entry[:open_index] if entry[open_index + 1 : -1] in ("", "*") else None
+
+
+def _get_can_use_tool_shadowed_warning(
+    permission_mode: PermissionMode | None,
+    allowed_tools: list[str],
+) -> str | None:
+    """Return the shadowing warning message for these options, or None."""
+    if permission_mode == "bypassPermissions":
+        return (
+            "can_use_tool will not be invoked: permission_mode "
+            "'bypassPermissions' auto-approves every tool call (except "
+            "explicit deny rules) before the callback is consulted. To gate "
+            "every tool call, use a PreToolUse hook instead."
+        )
+    # dict.fromkeys dedupes while preserving order: redundant configs like
+    # ["Read", "Read()"] resolve to the same tool and must not report it twice.
+    shadowed = list(
+        dict.fromkeys(
+            tool
+            for entry in allowed_tools
+            if (tool := _whole_tool_allowed(entry)) is not None
+        )
+    )
+    if not shadowed:
+        return None
+    return (
+        f"can_use_tool will not be invoked for: {', '.join(shadowed)}. "
+        "An allowed_tools entry that allows a whole tool auto-approves it "
+        "before the callback is consulted. To gate every tool call, use a "
+        "PreToolUse hook; or narrow the entry so calls fall through to "
+        "can_use_tool. Allow rules from settings files can also shadow the "
+        "callback but are not visible here."
+    )
+
+
+def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
+    """Warn if can_use_tool is shadowed. Called once per query construction.
+
+    Advisory only (no raise): shadowing can be intentional, e.g. a callback
+    used solely for tools outside allowed_tools.
+
+    Emission is unconditional, but stacklevel=2 puts the warning registry in the
+    SDK entry point that calls this, not in user code -- so under Python's
+    default filter a given message is shown once per *process*, not once per
+    calling module. Two unrelated callers with the same shadowed config together
+    produce one warning, not one each. Distinct messages (naming different
+    tools) are each shown once.
+    """
+    if options.can_use_tool is None:
+        return
+    # skills="all" makes the transport append a bare "Skill" to the effective
+    # allowed_tools, so it shadows the callback just like a hand-written entry.
+    # skills=[names] appends Skill(name) specifiers, which do not.
+    allowed_tools = options.allowed_tools
+    if options.skills == _SKILLS_ALL and "Skill" not in allowed_tools:
+        allowed_tools = [*allowed_tools, "Skill"]
+    message = _get_can_use_tool_shadowed_warning(options.permission_mode, allowed_tools)
+    if message is not None:
+        # stacklevel=2 attributes the warning to the SDK connect()/query()
+        # internals that call this. The user's own call site sits at a
+        # different, async-frame-dependent depth for each entry point, so
+        # precise caller attribution isn't feasible here.
+        warnings.warn(message, CanUseToolShadowedWarning, stacklevel=2)
+
+
+def _configure_can_use_tool(options: "ClaudeAgentOptions") -> "ClaudeAgentOptions":
+    """Validate ``can_use_tool`` and route permission prompts over stdio.
+
+    Shared by ``query()`` and ``ClaudeSDKClient.connect()`` so both entry
+    points enforce the same rules. Returns ``options`` unchanged when no
+    callback is set; otherwise checks it is not combined with
+    ``permission_prompt_tool_name``, emits the shadowing advisory, and returns
+    a copy with ``permission_prompt_tool_name="stdio"`` so the CLI sends
+    permission requests over the control protocol.
+
+    Raises:
+        ValueError: If both ``can_use_tool`` and ``permission_prompt_tool_name``
+            are set.
+    """
+    if not options.can_use_tool:
+        return options
+    # canUseTool and permission_prompt_tool_name are mutually exclusive
+    if options.permission_prompt_tool_name:
+        raise ValueError(
+            "can_use_tool callback cannot be used with permission_prompt_tool_name. "
+            "Please use one or the other."
+        )
+    _warn_if_can_use_tool_shadowed(options)
+    return replace(options, permission_prompt_tool_name="stdio")
+
+
+def _hooks_to_internal_format(
+    hooks: "dict[HookEvent, list[HookMatcher]]",
+) -> dict[str, list[dict[str, Any]]]:
+    """Convert ``ClaudeAgentOptions.hooks`` to the dict shape ``Query`` expects."""
+    internal_hooks: dict[str, list[dict[str, Any]]] = {}
+    for event, matchers in hooks.items():
+        internal_hooks[event] = []
+        for matcher in matchers:
+            internal_matcher: dict[str, Any] = {
+                "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
+                "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
+            }
+            if hasattr(matcher, "timeout") and matcher.timeout is not None:
+                internal_matcher["timeout"] = matcher.timeout
+            internal_hooks[event].append(internal_matcher)
+    return internal_hooks
 
 
 @dataclass
@@ -1808,8 +2115,14 @@ class ClaudeAgentOptions:
     invoked for tool calls already permitted by ``allowed_tools``,
     ``permission_mode`` (e.g. ``"acceptEdits"`` / ``"bypassPermissions"``), or
     ``permissions.allow`` rules in settings, since those never reach a prompt.
+    A :class:`CanUseToolShadowedWarning` is emitted when the client connects
+    (or the query starts) if this callback is set alongside options that
+    visibly shadow it (``allowed_tools`` entries that allow a whole tool, such
+    as ``"Read"``, ``"Read()"`` or ``"Read(*)"``, or
+    ``permission_mode="bypassPermissions"``).
     To observe or gate *every* tool call regardless of permission rules, use a
-    ``PreToolUse`` hook via ``hooks`` instead.
+    ``PreToolUse`` hook via ``hooks`` instead — but note that a ``PreToolUse``
+    hook returning an *allow* decision also skips this callback.
     """
 
     hooks: dict[HookEvent, list[HookMatcher]] | None = None
@@ -1842,9 +2155,59 @@ class ClaudeAgentOptions:
     TypeScript SDK's ``includeHookEvents``.
     """
 
+    forward_subagent_text: bool = False
+    """Forward subagent text and thinking blocks as messages in the stream.
+
+    By default only ``tool_use`` / ``tool_result`` blocks from subagents
+    (spawned via the Agent tool) are emitted, as ``AssistantMessage`` /
+    ``UserMessage`` objects whose ``parent_tool_use_id`` is the spawning
+    Agent ``tool_use`` id — enough for a progress heartbeat. When true, the
+    subagent's text and thinking blocks are forwarded the same way, so
+    consumers can render the full nested transcript. Matches the TypeScript
+    SDK's ``forwardSubagentText``.
+    """
+
     fork_session: bool = False
     """When true, resumed sessions fork to a new session ID rather than
     continuing the previous session. Use with ``resume``."""
+
+    resume_session_at: str | None = None
+    """When resuming, only load the conversation up to and including the
+    message with this UUID. Use with ``resume`` (and usually ``fork_session``)
+    to branch from an earlier point in the conversation.
+
+    Accepts any transcript-entry UUID — typically an ``AssistantMessage.uuid``
+    observed live, or a ``SessionMessage.uuid`` from
+    :func:`get_session_messages`. See ``resume_drops_turn`` for guidance on
+    choosing the fork point. For an offline copy truncated at a message
+    (without resuming), see :func:`fork_session`.
+    """
+
+    resume_drops_turn: str | None = None
+    """With ``resume_session_at``: the UUID of the user prompt whose turn this
+    truncating resume intends to discard.
+
+    When set, the CLI validates at load time that every transcript entry after
+    the ``resume_session_at`` point is attributable to that turn, and refuses
+    the resume otherwise — e.g. when the discarded range contains a queued
+    user message or task notification the session absorbed mid-turn that the
+    caller had not yet observed. A refusal surfaces as an exception raised
+    from :func:`query` / :class:`ClaudeSDKClient` (currently a
+    ``ProcessError``) whose message contains
+    ``Resume rejected by --resume-drops-turn:`` — match on that text. Treat it
+    as deterministic: clear the pending fork target and resume plainly rather
+    than retrying the same request. Leave unset to keep the unvalidated
+    truncation behavior.
+
+    Rule of thumb: set ``resume_session_at`` to the *last* transcript entry of
+    the turn you are keeping (whatever its type), and ``resume_drops_turn`` to
+    the prompt UUID of the turn immediately after it (e.g. the next
+    ``SessionMessage`` of ``type == "user"`` from :func:`get_session_messages`,
+    or the ``uuid`` you supplied on a streamed user message). Note that with
+    structured output (``output_format``) or end-turn MCP tools, a kept turn
+    ends on entries *after* its last assistant message, so forking at the
+    assistant UUID is refused by design.
+    """
 
     agents: dict[str, AgentDefinition] | None = None
     """Programmatically define custom subagents invokable via the Agent tool.
@@ -1877,6 +2240,8 @@ class ClaudeAgentOptions:
     - ``"all"``: enable every discovered skill.
     - ``list[str]``: enable only the listed skills. Names match the SKILL.md
       ``name`` / directory name, or ``plugin:skill`` for plugin-qualified skills.
+      Names must be exact: wildcards, delimiters, and surrounding whitespace
+      raise at ``connect()``.
 
     This is a **context filter**, not a sandbox: unlisted skills are hidden
     from the model's listing and rejected by the Skill tool, but their files
@@ -2017,6 +2382,9 @@ class SDKControlInitializeRequest(TypedDict):
     subtype: Literal["initialize"]
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
+    excludeDynamicSections: NotRequired[bool]
+    skills: NotRequired[list[str]]
+    forwardSubagentText: NotRequired[bool]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):

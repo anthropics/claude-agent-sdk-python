@@ -224,6 +224,35 @@ class TestClaudeSDKClientStreaming:
             assert user_messages[0]["session_id"] == "default"
 
     @pytest.mark.anyio
+    async def test_forward_subagent_text_sent_in_initialize(self):
+        """ClaudeAgentOptions.forward_subagent_text is sent as the
+        forwardSubagentText initialize capability; omitted when False."""
+
+        async def initialize_request_for(options: ClaudeAgentOptions) -> dict:
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = create_mock_transport()
+                mock_transport_class.return_value = mock_transport
+                async with ClaudeSDKClient(options=options):
+                    pass
+            requests = [
+                json.loads(call.args[0].strip())
+                for call in mock_transport.write.call_args_list
+                if '"subtype": "initialize"' in call.args[0]
+            ]
+            assert len(requests) == 1
+            return requests[0]["request"]
+
+        enabled = await initialize_request_for(
+            ClaudeAgentOptions(forward_subagent_text=True)
+        )
+        assert enabled["forwardSubagentText"] is True
+
+        default = await initialize_request_for(ClaudeAgentOptions())
+        assert "forwardSubagentText" not in default
+
+    @pytest.mark.anyio
     async def test_connect_with_async_iterable(self):
         """Test connecting with an async iterable."""
 

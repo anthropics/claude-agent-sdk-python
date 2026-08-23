@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-agent-sdk"
-version = "0.2.110"
+version = "0.2.143"
 description = "Python SDK for Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,7 +28,8 @@ dependencies = [
     "anyio>=4.0.0",
     "sniffio>=1.0.0",
     "typing_extensions>=4.0.0; python_version<'3.11'",
-    "mcp>=1.23.0,<2.0.0",
+    "mcp>=1.23.0,<3.0.0",
+    "jsonschema>=4.20.0",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +67,10 @@ only-include = ["src/claude_agent_sdk"]
 include = [
     "/src",
     "/tests",
+    # tests/test_build_wheel.py, test_download_cli.py and test_update_cli_version.py
+    # load their subject out of scripts/ at import time, so an sdist that ships
+    # /tests without /scripts cannot even collect its own test suite.
+    "/scripts",
     "/examples",
     "/README.md",
     "/LICENSE",
@@ -99,6 +104,17 @@ strict_equality = true
 # opentelemetry-api is an optional dependency (the [otel] extra); the
 # import in subprocess_cli.py is guarded by try/except ImportError.
 module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# jsonschema ships without type information or a py.typed marker.
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# twine is not a declared dependency (not even in the [dev] extra); the
+# import in scripts/build_wheel.py is guarded by try/except ImportError.
+module = ["twine"]
 ignore_missing_imports = true
 
 [tool.ruff]

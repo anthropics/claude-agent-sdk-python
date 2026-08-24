@@ -338,27 +338,20 @@ See `python scripts/build_wheel.py --help` for all options.
 
 ### Release Workflow
 
-The package is published to PyPI via the GitHub Actions workflow in `.github/workflows/publish.yml`. To create a new release:
+The package is published to PyPI by the reusable `.github/workflows/build-and-publish.yml` workflow, called either automatically on a CLI version bump or manually from `.github/workflows/publish.yml`. To cut a release manually:
 
-1. **Trigger the workflow** manually from the Actions tab with two inputs:
+1. **Trigger the workflow** manually from the Actions tab with one input:
    - `version`: The package version to publish (e.g., `0.1.5`)
-   - `claude_code_version`: The Claude Code CLI version to bundle (e.g., `2.0.0` or `latest`)
 
 2. **The workflow will**:
    - Build platform-specific wheels for macOS, Linux, and Windows
-   - Bundle the specified Claude Code CLI version in each wheel
+   - Bundle the pinned Claude Code CLI version in each wheel
    - Build a source distribution
    - Publish all artifacts to PyPI
-   - Create a release branch with version updates
-   - Open a PR to main with:
-     - Updated `pyproject.toml` version
-     - Updated `src/claude_agent_sdk/_version.py`
-     - Updated `src/claude_agent_sdk/_cli_version.py` with bundled CLI version
-     - Auto-generated `CHANGELOG.md` entry
+   - Commit the version bump (`pyproject.toml`, `src/claude_agent_sdk/_version.py`), add a Claude-generated `CHANGELOG.md` entry in a second commit, and push both directly to `main`
+   - Create a `v<version>` tag and a GitHub Release
 
-3. **Review and merge** the release PR to update main with the new version information
-
-The workflow tracks both the package version and the bundled CLI version separately, allowing you to release a new package version with an updated CLI without code changes.
+The bundled CLI version is not a workflow input. It is pinned in `src/claude_agent_sdk/_cli_version.py`, which `scripts/build_wheel.py` reads at build time; bumping it on `main` with a `chore: bump bundled CLI version to X.Y.Z` commit cuts a patch release automatically once the Test workflow passes. See [RELEASING.md](RELEASING.md) for both release paths in full.
 
 ## License and terms
 

@@ -1731,6 +1731,87 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_connect_with_unknown_os_user_explains_user_option(self):
+        """A getpwnam failure for options.user must name the option and
+        explain that it is an OS account, not a session/user identifier."""
+        from claude_agent_sdk._errors import CLIConnectionError
+
+        async def _test():
+            options = make_options(user="customer-42")
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                # Version check succeeds; the main spawn fails the way
+                # subprocess.Popen(user=...) fails for an unknown account.
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    KeyError("getpwnam(): name not found: 'customer-42'"),
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                with pytest.raises(CLIConnectionError) as exc_info:
+                    await transport.connect()
+
+                message = str(exc_info.value)
+                assert "'customer-42'" in message
+                assert "operating-system account" in message
+                assert "not a session or user identifier" in message
+
+        anyio.run(_test)
+
+    def test_connect_spawn_failure_without_user_keeps_generic_error(self):
+        """The OS-user explanation must not leak into failures unrelated to
+        options.user."""
+        from claude_agent_sdk._errors import CLIConnectionError
+
+        async def _test():
+            options = make_options()  # user not set
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                # Mock version check process
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_open_process.side_effect = [
+                    mock_version_process,
+                    ValueError("embedded null byte"),
+                ]
+
+                transport = SubprocessCLITransport(
+                    prompt="test",
+                    options=options,
+                )
+
+                with pytest.raises(CLIConnectionError) as exc_info:
+                    await transport.connect()
+
+                message = str(exc_info.value)
+                assert "Failed to start Claude Code: embedded null byte" in message
+                assert "operating-system account" not in message
+
+        anyio.run(_test)
+
     def test_build_command_with_sandbox_only(self):
         """Test building CLI command with sandbox settings (no existing settings)."""
         import json

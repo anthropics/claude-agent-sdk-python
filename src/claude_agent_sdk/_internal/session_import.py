@@ -65,6 +65,10 @@ async def import_session_to_store(
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session JSONL cannot be found on disk.
+        OSError: If a transcript, sidecar, or subagent directory exists but
+            cannot be read. Import is not transactional: entries already
+            appended remain in the store, and can be safely deduplicated by
+            ``entry["uuid"]`` when the import is retried.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
@@ -148,12 +152,14 @@ async def _append_jsonl_file_in_batches(
 def _collect_jsonl_files(base_dir: Path) -> Iterator[Path]:
     """Recursively yield all ``*.jsonl`` file paths under ``base_dir``.
 
-    Yields nothing if ``base_dir`` does not exist. Sorted per directory so
-    import order is deterministic across platforms.
+    Yields nothing if ``base_dir`` does not exist. Other ``OSError``s (for
+    example, permission denied) propagate so callers cannot mistake a partial
+    import for a complete one. Sorted per directory so import order is
+    deterministic across platforms.
     """
     try:
         dirents = sorted(base_dir.iterdir(), key=lambda p: p.name)
-    except OSError:
+    except FileNotFoundError:
         return
     for entry in dirents:
         if entry.is_dir():

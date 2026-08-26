@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -285,6 +287,46 @@ class TestSubagents:
 
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == [_entry(0)]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_unreadable_subagents_dir_raises(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        monkeypatch: pytest.MonkeyPatch,
+        nested: bool,
+    ) -> None:
+        """A failed traversal at any depth must not look like a complete import."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        subagents_dir = claude_dir / SESSION_ID / "subagents"
+        _write_jsonl(subagents_dir / "agent-abc.jsonl", [_entry(10)])
+        blocked_dir = subagents_dir / "workflows" if nested else subagents_dir
+        if nested:
+            _write_jsonl(blocked_dir / "run-1" / "agent-def.jsonl", [_entry(20)])
+
+        original_iterdir = Path.iterdir
+
+        def fail_for_subagents(path: Path) -> Iterator[Path]:
+            if path == blocked_dir:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail_for_subagents)
+
+        store = InMemorySessionStore()
+        with pytest.raises(PermissionError, match="Permission denied"):
+            await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        main_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+        }
+        assert store.get_entries(main_key) == [_entry(0)]
+        assert await store.list_subkeys(main_key) == (
+            ["subagents/agent-abc"] if nested else []
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -152,9 +152,11 @@ async def _append_jsonl_file_in_batches(
 def _collect_jsonl_files(base_dir: Path) -> Iterator[Path]:
     """Recursively yield all ``*.jsonl`` file paths under ``base_dir``.
 
-    Yields nothing if ``base_dir`` does not exist. Other ``OSError``s (for
-    example, permission denied) propagate so callers cannot mistake a partial
-    import for a complete one. Sorted per directory so import order is
+    Yields nothing if ``base_dir`` does not exist. Symlinks below ``base_dir``
+    are skipped so they cannot re-enter the tree or import transcripts from
+    outside it; ``base_dir`` itself may still be a symlink. Other ``OSError``s
+    (for example, permission denied) propagate so callers cannot mistake a
+    partial import for a complete one. Sorted per directory so import order is
     deterministic across platforms.
     """
     try:
@@ -162,6 +164,8 @@ def _collect_jsonl_files(base_dir: Path) -> Iterator[Path]:
     except FileNotFoundError:
         return
     for entry in dirents:
+        if entry.is_symlink():
+            continue
         if entry.is_dir():
             yield from _collect_jsonl_files(entry)
         elif entry.is_file() and entry.name.endswith(".jsonl"):

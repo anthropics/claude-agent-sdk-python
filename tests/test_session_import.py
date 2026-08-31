@@ -242,6 +242,35 @@ class TestSubagents:
         }
 
     @pytest.mark.anyio
+    async def test_symlinked_meta_json_sidecar_is_not_followed(
+        self, claude_dir: Path, cwd: Path, project_key: str, tmp_path: Path
+    ) -> None:
+        """A derived sidecar link must not import metadata from outside the tree."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        sub_dir = claude_dir / SESSION_ID / "subagents"
+        _write_jsonl(sub_dir / "agent-abc.jsonl", [_entry(10)])
+        external_sidecar = tmp_path / "agent-abc.meta.json"
+        external_sidecar.write_text(
+            json.dumps({"agentType": "external", "worktreePath": "/outside"}),
+            encoding="utf-8",
+        )
+        _symlink_or_skip(
+            sub_dir / "agent-abc.meta.json",
+            external_sidecar,
+            target_is_directory=False,
+        )
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        sub_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+            "subpath": "subagents/agent-abc",
+        }
+        assert store.get_entries(sub_key) == [_entry(10)]
+
+    @pytest.mark.anyio
     @pytest.mark.parametrize("sidecar", ["not json {", "[1, 2]", "42"])
     async def test_unusable_meta_json_sidecar_is_treated_as_absent(
         self, claude_dir: Path, cwd: Path, project_key: str, sidecar: str

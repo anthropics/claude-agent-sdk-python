@@ -17,6 +17,7 @@ from typing import cast
 
 from ..types import SessionKey, SessionStore, SessionStoreEntry
 from .sessions import (
+    _agent_metadata_sidecar_path,
     _read_agent_metadata_sidecar,
     _resolve_session_file_path,
     _validate_uuid,
@@ -114,7 +115,12 @@ async def import_session_to_store(
         # recreate it and resumed subagents keep their agentType/worktreePath.
         # A missing, corrupt, or non-object sidecar is treated as absent (the
         # transcript is still imported); other read errors propagate.
-        meta = _read_agent_metadata_sidecar(file_path)
+        sidecar_path = _agent_metadata_sidecar_path(file_path)
+        meta = (
+            None
+            if sidecar_path.is_symlink()
+            else _read_agent_metadata_sidecar(file_path)
+        )
         if meta is not None:
             # Synthetic discriminator last so a stray "type" key in the
             # CLI-owned sidecar can never shadow it.

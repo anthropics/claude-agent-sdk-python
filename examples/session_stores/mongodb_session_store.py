@@ -62,7 +62,7 @@ Concurrency
 Per the :meth:`SessionStore.list_session_summaries` contract, stores
 maintaining sidecars inside ``append()`` must serialize the read-fold-write
 when ``append()`` calls can race for the same session. This adapter holds a
-per-session ``asyncio.Lock`` keyed by ``(project_key, session_id)`` for the
+per-session ``anyio.Lock`` keyed by ``(project_key, session_id)`` for the
 duration of the summary update. The SDK's own ``TranscriptMirrorBatcher``
 already sequences appends per session within one process, but a user could
 share one store instance across multiple concurrent batchers — the lock keeps
@@ -79,11 +79,12 @@ transcripts under ``CLAUDE_CONFIG_DIR`` are swept independently by the CLI's
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+import anyio
 
 from claude_agent_sdk import (
     SessionKey,
@@ -187,13 +188,13 @@ class MongoDBSessionStore(SessionStore):
         # (project_key, session_id); locks are created lazily and never
         # garbage-collected — this is reference code, not a long-running
         # service.
-        self._summary_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._summary_locks: dict[tuple[str, str], anyio.Lock] = {}
 
-    def _summary_lock(self, key: SessionKey) -> asyncio.Lock:
+    def _summary_lock(self, key: SessionKey) -> anyio.Lock:
         slot = (key["project_key"], key["session_id"])
         lock = self._summary_locks.get(slot)
         if lock is None:
-            lock = asyncio.Lock()
+            lock = anyio.Lock()
             self._summary_locks[slot] = lock
         return lock
 

@@ -93,7 +93,7 @@ through the relevant items below.
   sessions; don't share a pool with request-handler code that holds
   connections.
 - The summary sidecar is read-fold-written inside `append()`. The adapter
-  serializes per-session updates with an `asyncio.Lock`, but multi-process
+  serializes per-session updates with an `anyio.Lock`, but multi-process
   writers against the same session would still race — pin a session to a
   single writer or layer your own coordination on top.
 - Implement retention via a TTL index on `mtime` or a scheduled
@@ -513,7 +513,7 @@ place so a future relocation is a single-line fix.
 
 Per the `SessionStore.list_session_summaries` contract, sidecar updates
 inside `append()` must be serialized when calls can race for the same
-session. The adapter holds a per-session `asyncio.Lock` keyed by
+session. The adapter holds a per-session `anyio.Lock` keyed by
 `(project_key, session_id)` for the duration of the read-fold-write.
 
 ### Retention

@@ -24,13 +24,19 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 # The example adapter and these tests are optional — skip the whole module
 # if the [examples] dependency group isn't installed.
 pymongo = pytest.importorskip(
     "pymongo", reason="pymongo not installed (pip install .[examples])"
 )
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    # ``pymongo``'s async API has no trio backend.
+    return "asyncio"
+
 
 MONGODB_URL = os.environ.get("SESSION_STORE_MONGODB_URL")
 if not MONGODB_URL:
@@ -84,7 +90,7 @@ SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def client() -> AsyncIterator[AsyncMongoClient]:
     c: AsyncMongoClient = AsyncMongoClient(MONGODB_URL)
     try:
@@ -93,7 +99,7 @@ async def client() -> AsyncIterator[AsyncMongoClient]:
         await c.close()
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def db_name(client: AsyncMongoClient) -> AsyncIterator[str]:
     name = f"claude_test_{uuid.uuid4().hex[:8]}"
     try:
@@ -102,7 +108,7 @@ async def db_name(client: AsyncMongoClient) -> AsyncIterator[str]:
         await client.drop_database(name)
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def store(client: AsyncMongoClient, db_name: str) -> SessionStore:
     s = MongoDBSessionStore(
         options=MongoDBSessionStoreOptions(client=client, db_name=db_name)
@@ -117,7 +123,7 @@ async def store(client: AsyncMongoClient, db_name: str) -> SessionStore:
 
 
 class TestConformance:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance(self, client: AsyncMongoClient, db_name: str) -> None:
         # The harness calls make_store() once per contract for isolation.
         # Give each call its own collection pair so contracts don't see each
@@ -137,7 +143,8 @@ class TestConformance:
 
         await run_session_store_conformance(make_store)
 
-    def test_store_implements_required_methods(self, store: SessionStore) -> None:
+    @pytest.mark.anyio
+    async def test_store_implements_required_methods(self, store: SessionStore) -> None:
         """SessionStore is not @runtime_checkable; probe via _store_implements()."""
         from claude_agent_sdk._internal.session_store_validation import (
             _store_implements,
@@ -146,7 +153,10 @@ class TestConformance:
         assert _store_implements(store, "append")
         assert _store_implements(store, "load")
 
-    def test_rejects_unsafe_collection_name(self, client: AsyncMongoClient) -> None:
+    @pytest.mark.anyio
+    async def test_rejects_unsafe_collection_name(
+        self, client: AsyncMongoClient
+    ) -> None:
         with pytest.raises(ValueError, match="must match"):
             MongoDBSessionStore(
                 client=client,
@@ -165,7 +175,7 @@ class TestConformance:
 
 
 class TestAdapterSpecific:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_schema_is_idempotent(
         self, client: AsyncMongoClient, db_name: str
     ) -> None:
@@ -182,7 +192,7 @@ class TestAdapterSpecific:
         loaded = await s.load({"project_key": "p", "session_id": "s"})
         assert loaded == [{"type": "a"}]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_options_kwarg_path(
         self, client: AsyncMongoClient, db_name: str
     ) -> None:
@@ -199,7 +209,7 @@ class TestAdapterSpecific:
         await s.append({"project_key": "p", "session_id": "s"}, [{"type": "a"}])
         assert await s.load({"project_key": "p", "session_id": "s"}) == [{"type": "a"}]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_subpath_delete_preserves_summary(
         self, client: AsyncMongoClient, db_name: str
     ) -> None:
@@ -227,11 +237,11 @@ class TestAdapterSpecific:
         await s.delete(key)
         assert await s.list_session_summaries("p") == []
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_concurrent_appends_serialize_summary_fold(
         self, client: AsyncMongoClient, db_name: str
     ) -> None:
-        """The per-session asyncio.Lock must serialize the read-fold-write so
+        """The per-session anyio.Lock must serialize the read-fold-write so
         each fold sees the previous fold's output as ``prev``.
 
         Without the lock, two appends carrying *different* fields (one
@@ -244,7 +254,7 @@ class TestAdapterSpecific:
         Repeating across many trials makes a missing lock almost certain
         to produce at least one clobbered run.
         """
-        import asyncio
+        import anyio
 
         s = MongoDBSessionStore(
             client=client,
@@ -268,7 +278,9 @@ class TestAdapterSpecific:
             async def with_branch(k: dict[str, str] = key) -> None:
                 await s.append(k, [{"type": "user", "uuid": "b", "gitBranch": "main"}])
 
-            await asyncio.gather(with_title(), with_branch())
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(with_title)
+                tg.start_soon(with_branch)
 
             summaries = [
                 s2
@@ -293,7 +305,7 @@ class TestAdapterSpecific:
 
 
 class TestRoundTrip:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_mirror_then_resume(
         self,
         store: SessionStore,

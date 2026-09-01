@@ -72,6 +72,51 @@ async for message in query(
     pass
 ```
 
+### Per-spawn shell-command permissions
+
+The `Bash` tool runs a full shell command, which can be compositional (pipes,
+`&&`/`||`, subshells, command substitution, `cd` changing the working
+directory). Classifying such a command with a regex or a substring blocklist
+produces both false positives and false negatives. `create_bash_permission_evaluator`
+builds a `can_use_tool` callback that instead decomposes the command with
+[`bashlex`](https://pypi.org/project/bashlex/) into the individual processes it
+would spawn, tracks the working directory across the command, and evaluates each
+spawn against a per-binary safety function you supply. Any construct it cannot
+prove safe to decompose (heredocs, process substitution, backticks, `eval`, …)
+is **denied** (fail-safe).
+
+It is opt-in and requires the optional extra:
+
+```bash
+pip install "claude-agent-sdk[shell-permissions]"
+```
+
+```python
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    create_bash_permission_evaluator,
+)
+
+# A per-binary safety function returns True if the invocation (given its argv
+# and effective cwd) is safe to auto-approve.
+def read_only(argv: list[str], cwd: str) -> bool:
+    return True
+
+can_use_tool = create_bash_permission_evaluator(
+    policy={"grep": read_only, "awk": read_only, "cat": read_only},
+)
+
+options = ClaudeAgentOptions(
+    allowed_tools=["Bash"],
+    can_use_tool=can_use_tool,
+)
+```
+
+The evaluator only runs when the `CLAUDE_AGENT_SDK_SHELL_PERMISSIONS`
+environment variable is truthy; otherwise it defers to the callback's `fallback`
+(or allows), so wiring it in changes nothing until you enable it. See
+[`examples/shell_permission_evaluator.py`](examples/shell_permission_evaluator.py).
+
 ### Working Directory
 
 ```python

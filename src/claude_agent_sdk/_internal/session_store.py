@@ -69,22 +69,30 @@ class InMemorySessionStore(SessionStore):
         # ignore entries whose uuid is already stored. Entries without a uuid
         # (titles, tags, mode markers) are appended without dedup.
         seen_uuids = {
-            e["uuid"] for e in existing if isinstance(e, dict) and e.get("uuid") is not None
+            e["uuid"]
+            for e in existing
+            if isinstance(e, dict) and e.get("uuid") is not None
         }
+        appended: list[SessionStoreEntry] = []
         for entry in entries:
             uuid = entry.get("uuid") if isinstance(entry, dict) else None
             if uuid is not None:
                 if uuid in seen_uuids:
                     continue
                 seen_uuids.add(uuid)
-            existing.append(entry)
+            appended.append(entry)
+        existing.extend(appended)
         now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't
         # contribute to the main session's summary.
         if key.get("subpath") is None:
             sk = (key["project_key"], key["session_id"])
-            folded = fold_session_summary(self._summaries.get(sk), key, entries)
+            # Fold only what was actually appended. A skipped duplicate must
+            # not reach the sidecar either: every derived field is set-once or
+            # last-wins, so folding it would report metadata (gitBranch,
+            # customTitle, tag, ...) that the stored transcript doesn't contain.
+            folded = fold_session_summary(self._summaries.get(sk), key, appended)
             # Stamp the sidecar with this adapter's storage write time — the
             # SAME clock list_sessions() exposes below. SessionSummaryEntry.
             # mtime is contractually storage write time (not entry time), so

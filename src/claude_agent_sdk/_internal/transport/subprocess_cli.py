@@ -889,6 +889,26 @@ class SubprocessCLITransport(Transport):
             error = CLINotFoundError(f"Claude Code not found at: {self._cli_path}")
             self._exit_error = error
             raise error from e
+        except (KeyError, PermissionError, ValueError) as e:
+            # These three are how subprocess.Popen(user=...) fails when
+            # options.user is set: KeyError from getpwnam() for an unknown
+            # account, PermissionError when the process may not switch to it,
+            # and ValueError on platforms without setreuid() (e.g. Windows).
+            # Callers who mistake `user` for a session/user identifier hit the
+            # KeyError case, so explain what the option actually does.
+            if self._options.user is not None:
+                error = CLIConnectionError(
+                    f"Failed to start Claude Code as OS user"
+                    f" {self._options.user!r}: {e}. The `user` option runs the"
+                    " CLI subprocess as that operating-system account (it is"
+                    " not a session or user identifier). The account must"
+                    " exist and the current process needs permission to"
+                    " switch to it; the option is not supported on Windows."
+                )
+            else:
+                error = CLIConnectionError(f"Failed to start Claude Code: {e}")
+            self._exit_error = error
+            raise error from e
         except Exception as e:
             error = CLIConnectionError(f"Failed to start Claude Code: {e}")
             self._exit_error = error

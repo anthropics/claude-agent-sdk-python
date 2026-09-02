@@ -95,6 +95,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
     match message_type:
         case "user":
             try:
+                if not isinstance(data["message"], dict):
+                    raise MessageParseError(
+                        f"Invalid message field (expected dict, got "
+                        f"{type(data['message']).__name__})",
+                        data,
+                    )
                 parent_tool_use_id = data.get("parent_tool_use_id")
                 tool_use_result = data.get("tool_use_result")
                 uuid = data.get("uuid")
@@ -150,6 +156,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
         case "assistant":
             try:
+                if not isinstance(data["message"], dict):
+                    raise MessageParseError(
+                        f"Invalid message field (expected dict, got "
+                        f"{type(data['message']).__name__})",
+                        data,
+                    )
                 raw_content = data["message"]["content"]
                 if not isinstance(raw_content, list):
                     raise MessageParseError(

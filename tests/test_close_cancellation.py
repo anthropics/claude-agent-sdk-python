@@ -6,12 +6,14 @@ cleanup awaits are cancellable, the terminate/kill escalation is skipped and the
 child is left running -- an orphan that surfaces as `[claude] <defunct>` once
 nothing is left to wait() on it.
 
-Every test here runs under both asyncio and trio (``anyio_backend`` in
-conftest.py): the leak reproduces on both.
+Cancellation-scope tests run under both asyncio and trio. The raw
+``asyncio.wait_for`` regression runs only under asyncio.
 """
 
+import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -117,6 +119,29 @@ async def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> Non
     assert process.returncode is not None
     assert _process_state(pid) == "gone"
     assert process not in _ACTIVE_CHILDREN
+
+
+@posix_only
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_asyncio_timeout_still_reaps_child(tmp_path: Path) -> None:
+    script = _write_fake_cli(tmp_path)
+    script.write_text(FAKE_CLI + "\nimport time; time.sleep(60)\n")
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(script)),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(transport.close(), timeout=0.05)
+        assert process.returncode == -signal.SIGTERM
+        assert _process_state(process.pid) == "gone"
+        assert process not in _ACTIVE_CHILDREN
+    finally:
+        await transport.close()
 
 
 @posix_only

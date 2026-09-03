@@ -942,12 +942,9 @@ class SubprocessCLITransport(Transport):
     async def close(self) -> None:
         """Close the transport and clean up resources.
 
-        The whole body runs inside a shielded cancel scope. Cleanup is
-        routinely reached while the caller's task is being cancelled (e.g.
-        `async with ClaudeSDKClient()` unwinding on cancel), and an
-        unshielded close() would abort at the first await — before the
-        terminate/kill escalation ran — orphaning the CLI child, which then
-        surfaces as `<defunct>` once nothing is left to wait() on it.
+        Cleanup is retried after raw asyncio cancellation and runs inside a
+        shielded cancel scope for anyio cancellation. Both paths finish the
+        terminate/kill escalation before propagating cancellation.
 
         Every await in *this* scope is bounded (~20s worst case), so an anyio
         cancellation is delayed but never blocked: the stream `aclose()`s are a
@@ -956,17 +953,19 @@ class SubprocessCLITransport(Transport):
         stderr task is cancelled before it is awaited, and the lock acquire and
         every process `wait()` carry an explicit deadline.
 
-        Caveat: an anyio shield only defers cancellation that *originates from
-        an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
-        `asyncio.timeout` firing, a bare `task.cancel()`, loop shutdown) is
-        still delivered at the next await in here, and the escalation below only
-        catches `TimeoutError` — so it would be skipped. That is a pre-existing
-        limitation of the shield on the asyncio backend rather than something
-        this scope introduces, and it is still strictly better than before: the
-        `finally` keeps a still-running child in `_ACTIVE_CHILDREN` for the
-        atexit reaper instead of dropping it. Making the escalation robust to a
-        foreign `CancelledError` is a follow-up.
+        A raw asyncio cancellation is re-raised after cleanup completes.
         """
+        cancellation: BaseException | None = None
+        while True:
+            try:
+                await self._close_impl()
+                break
+            except anyio.get_cancelled_exc_class() as exc:
+                cancellation = exc
+        if cancellation is not None:
+            raise cancellation
+
+    async def _close_impl(self) -> None:
         if not self._process:
             self._ready = False
             return

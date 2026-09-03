@@ -110,3 +110,13 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+            assert error.hint is None
+
+    def test_json_decode_error_hint_survives_line_truncation(self):
+        """The hint must outlive the 100-char truncation of `line`."""
+        error = CLIJSONDecodeError("x" * 500, ValueError("boom"), hint="Do the thing.")
+        assert error.hint == "Do the thing."
+        assert str(error).endswith("Do the thing.")
+        # The line is still truncated; the hint is what stays readable.
+        assert "x" * 100 in str(error)
+        assert "x" * 101 not in str(error)

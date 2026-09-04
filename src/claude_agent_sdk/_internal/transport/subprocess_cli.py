@@ -1,5 +1,6 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import asyncio
 import atexit
 import json
 import logging
@@ -15,6 +16,7 @@ from subprocess import PIPE
 from typing import Any, cast
 
 import anyio
+import sniffio
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
@@ -942,9 +944,10 @@ class SubprocessCLITransport(Transport):
     async def close(self) -> None:
         """Close the transport and clean up resources.
 
-        Cleanup is retried after raw asyncio cancellation and runs inside a
-        shielded cancel scope for anyio cancellation. Both paths finish the
-        terminate/kill escalation before propagating cancellation.
+        On asyncio, cleanup runs in a separate task shielded from raw task
+        cancellation. On Trio, the anyio shield in `_close_impl()` handles
+        cancellation. Both paths finish the terminate/kill escalation before
+        propagating cancellation.
 
         Every await in *this* scope is bounded (~20s worst case), so an anyio
         cancellation is delayed but never blocked: the stream `aclose()`s are a
@@ -955,13 +958,18 @@ class SubprocessCLITransport(Transport):
 
         A raw asyncio cancellation is re-raised after cleanup completes.
         """
-        cancellation: BaseException | None = None
-        while True:
+        if sniffio.current_async_library() != "asyncio":
+            await self._close_impl()
+            return
+
+        cancellation: asyncio.CancelledError | None = None
+        cleanup_task: asyncio.Task[None] = asyncio.create_task(self._close_impl())
+        while not cleanup_task.done():
             try:
-                await self._close_impl()
-                break
-            except anyio.get_cancelled_exc_class() as exc:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
                 cancellation = exc
+        await cleanup_task
         if cancellation is not None:
             raise cancellation
 

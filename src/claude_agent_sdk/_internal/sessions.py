@@ -1299,9 +1299,9 @@ def list_subagents(
             searches all project directories under ``~/.claude/projects/``.
 
     Returns:
-        List of subagent ID strings. Returns an empty list if the session
-        is not found, the session_id is not a valid UUID, or the session
-        has no subagents.
+        List of unique subagent ID strings in discovery order. Returns an
+        empty list if the session is not found, the session_id is not a valid
+        UUID, or the session has no subagents.
 
     See Also:
         :func:`list_subagents_from_store` for the :class:`SessionStore`-backed
@@ -1322,7 +1322,9 @@ def list_subagents(
     if subagents_dir is None:
         return []
 
-    return [agent_id for agent_id, _ in _collect_agent_files(subagents_dir)]
+    return list(
+        dict.fromkeys(agent_id for agent_id, _ in _collect_agent_files(subagents_dir))
+    )
 
 
 def get_subagent_messages(

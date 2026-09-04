@@ -39,6 +39,47 @@ class ProcessError(ClaudeSDKError):
         super().__init__(message)
 
 
+class ControlRequestTimeoutError(ClaudeSDKError):
+    """Raised when the CLI does not answer a control request in time.
+
+    Control requests are the SDK's side channel to the CLI: ``initialize``,
+    ``interrupt``, ``set_permission_mode`` and friends. When one goes
+    unanswered within its timeout the request is abandoned.
+
+    Previously this surfaced as a bare :class:`Exception`, so callers could
+    not select it with ``except ClaudeSDKError:`` and had to match on the
+    message text. The subtype and timeout are also exposed as attributes so
+    retry logic does not have to parse the string.
+
+    Attributes:
+        subtype: The control request that timed out, e.g. ``"initialize"``.
+        timeout: The timeout in seconds that elapsed, when known.
+    """
+
+    def __init__(
+        self,
+        subtype: str | None = None,
+        timeout: float | None = None,
+    ):
+        self.subtype = subtype
+        self.timeout = timeout
+
+        message = f"Control request timeout: {subtype}"
+        if timeout is not None:
+            message = f"{message} (no response in {timeout:g}s)"
+
+        super().__init__(message)
+
+    def __reduce__(
+        self,
+    ) -> tuple[Any, tuple[str | None, float | None]]:
+        # ``args`` holds the *composed* message, so the default reconstruction
+        # protocol (``type(e)(*e.args)``, used by pickle/copy and therefore by
+        # multiprocessing) would pass it back as ``subtype`` and prefix it a
+        # second time. Rebuild from the structured fields instead.
+        return (type(self), (self.subtype, self.timeout))
+
+
 def _normalize_result_errors(raw: Any) -> list[str]:
     """Normalize the ``errors`` field of a ``result`` frame to clean strings.
 

@@ -19,6 +19,15 @@
           }
         ],
         "matcher": "Edit|Write|MultiEdit"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --extra dev python -m mypy src/ --no-error-summary"
+          }
+        ],
+        "matcher": "Edit|Write|MultiEdit"
       }
     ]
   }

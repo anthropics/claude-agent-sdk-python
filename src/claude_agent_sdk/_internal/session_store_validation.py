@@ -15,7 +15,10 @@ def _store_implements(store: SessionStore, method: str) -> bool:
     class-level ``def``.
     """
     impl = getattr(store, method, None)
-    if impl is None:
+    # A non-callable attribute is not an implementation: accepting it would
+    # defer the failure to the call site mid-session, which is exactly what
+    # this pre-flight check exists to prevent.
+    if not callable(impl):
         return False
     default = getattr(SessionStore, method, None)
     # Compare the underlying function so a bound method is matched against the

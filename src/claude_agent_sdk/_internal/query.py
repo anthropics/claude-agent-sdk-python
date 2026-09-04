@@ -55,6 +55,16 @@ logger = logging.getLogger(__name__)
 # or it will hang the query (see Query._track_task_lifecycle).
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
 
+# Cap on Query._deferred_result_ids. is_deferred_result() is the only thing
+# that retires an entry, and only ClaudeSDKClient.receive_response() calls
+# it — a caller reading raw frames via receive_messages() instead never
+# consults it, so nothing would otherwise bound this set for a long-lived
+# Query that sees many deferred results over its lifetime. Evicting the
+# oldest entry past this cap trades a vanishingly unlikely stale-turn
+# false negative for a hard memory bound; the real fix is calling
+# is_deferred_result(), this is just a backstop for callers who don't.
+_MAX_DEFERRED_RESULT_IDS = 128
+
 
 def _error_result_text(message: dict[str, Any]) -> str:
     """Pick the most informative text from a ``result`` frame with ``is_error``.
@@ -194,7 +204,10 @@ class Query:
         # API like ClaudeSDKClient.receive_response() can tell such a frame
         # apart from the run-ending result and keep reading instead of
         # returning early while delegated agent work is still in flight.
-        self._deferred_result_ids: set[str] = set()
+        #
+        # A plain dict, not a set: insertion order gives FIFO eviction in
+        # _read_messages once _MAX_DEFERRED_RESULT_IDS is exceeded.
+        self._deferred_result_ids: dict[str, None] = {}
         # Set to the result payload when the most recent message is a result
         # with is_error=True. Used to replace the generic "exit code 1"
         # ProcessError with a ResultError carrying what the CLI already
@@ -388,7 +401,14 @@ class Query:
                         )
                         result_uuid = message.get("uuid")
                         if isinstance(result_uuid, str):
-                            self._deferred_result_ids.add(result_uuid)
+                            self._deferred_result_ids[result_uuid] = None
+                            if (
+                                len(self._deferred_result_ids)
+                                > _MAX_DEFERRED_RESULT_IDS
+                            ):
+                                self._deferred_result_ids.pop(
+                                    next(iter(self._deferred_result_ids))
+                                )
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
@@ -986,7 +1006,7 @@ class Query:
         if result_uuid is None:
             return False
         was_deferred = result_uuid in self._deferred_result_ids
-        self._deferred_result_ids.discard(result_uuid)
+        self._deferred_result_ids.pop(result_uuid, None)
         return was_deferred
 
     def _has_bidirectional_needs(self) -> bool:

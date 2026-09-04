@@ -942,34 +942,24 @@ class SubprocessCLITransport(Transport):
             emit(framer.flush())
 
     async def close(self) -> None:
-        """Close the transport and clean up resources.
+        """Finish subprocess cleanup before cancellation reaches the caller.
 
-        On asyncio, cleanup runs in a separate task shielded from raw task
-        cancellation. On Trio, the anyio shield in `_close_impl()` handles
-        cancellation. Both paths finish the terminate/kill escalation before
-        propagating cancellation.
-
-        Every await in *this* scope is bounded (~20s worst case), so an anyio
-        cancellation is delayed but never blocked: the stream `aclose()`s are a
-        non-blocking `close()` plus a checkpoint on both anyio backends (they
-        never await `wait_closed()`, so undrained stdin cannot wedge them), the
-        stderr task is cancelled before it is awaited, and the lock acquire and
-        every process `wait()` carry an explicit deadline.
-
-        A raw asyncio cancellation is re-raised after cleanup completes.
+        Raw asyncio cancellation bypasses AnyIO shields, so cleanup runs in a
+        separate task and the cancellation is re-raised after that task ends.
         """
         if sniffio.current_async_library() != "asyncio":
             await self._close_impl()
             return
 
-        cancellation: asyncio.CancelledError | None = None
         cleanup_task: asyncio.Task[None] = asyncio.create_task(self._close_impl())
-        while not cleanup_task.done():
-            try:
-                await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError as exc:
-                cancellation = exc
-        await cleanup_task
+        cancellation: asyncio.CancelledError | None = None
+        with anyio.CancelScope(shield=True):
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+        cleanup_task.result()
         if cancellation is not None:
             raise cancellation
 

@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 # or it will hang the query (see Query._track_task_lifecycle).
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
 
+# Cap on Query._deferred_result_ids. is_deferred_result() is the only thing
+# that retires an entry, and only ClaudeSDKClient.receive_response() calls
+# it — a caller reading raw frames via receive_messages() instead never
+# consults it, so nothing would otherwise bound this set for a long-lived
+# Query that sees many deferred results over its lifetime. Evicting the
+# oldest entry past this cap trades a vanishingly unlikely stale-turn
+# false negative for a hard memory bound; the real fix is calling
+# is_deferred_result(), this is just a backstop for callers who don't.
+_MAX_DEFERRED_RESULT_IDS = 128
+
 
 def _error_result_text(message: dict[str, Any]) -> str:
     """Pick the most informative text from a ``result`` frame with ``is_error``.
@@ -188,6 +198,16 @@ class Query:
         # a result that arrives while this set is non-empty must not close
         # stdin.
         self._inflight_tasks: set[str] = set()
+        # UUIDs of "result" frames sent while _inflight_tasks was non-empty —
+        # i.e. a turn boundary, not the end of the run (see #1138). Consulted
+        # (and cleared) by is_deferred_result() so a higher-level convenience
+        # API like ClaudeSDKClient.receive_response() can tell such a frame
+        # apart from the run-ending result and keep reading instead of
+        # returning early while delegated agent work is still in flight.
+        #
+        # A plain dict, not a set: insertion order gives FIFO eviction in
+        # _read_messages once _MAX_DEFERRED_RESULT_IDS is exceeded.
+        self._deferred_result_ids: dict[str, None] = {}
         # Set to the result payload when the most recent message is a result
         # with is_error=True. Used to replace the generic "exit code 1"
         # ProcessError with a ResultError carrying what the CLI already
@@ -379,6 +399,16 @@ class Query:
                             "keeping stdin open",
                             len(self._inflight_tasks),
                         )
+                        result_uuid = message.get("uuid")
+                        if isinstance(result_uuid, str):
+                            self._deferred_result_ids[result_uuid] = None
+                            if (
+                                len(self._deferred_result_ids)
+                                > _MAX_DEFERRED_RESULT_IDS
+                            ):
+                                self._deferred_result_ids.pop(
+                                    next(iter(self._deferred_result_ids))
+                                )
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
@@ -815,6 +845,28 @@ class Query:
             status = patch.get("status") if isinstance(patch, dict) else None
             if status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
+
+    def is_deferred_result(self, result_uuid: str | None) -> bool:
+        """Whether a ``result`` frame was an intermediate turn boundary.
+
+        True means the frame arrived while delegated agent work
+        (``DEFERRING_TASK_TYPES``) was still in flight, so it ended one turn
+        but not the run — a later ``result`` frame with no tasks in flight is
+        still coming. Consulted by ``ClaudeSDKClient.receive_response()`` so
+        it can keep reading instead of returning on this frame and silently
+        missing the rest of the run (#1138).
+
+        Looks up (and clears) the marker recorded in ``_read_messages``.
+        Returns ``False`` — "this is the run-ending result" — for ``None`` or
+        an id this ``Query`` never marked as deferred, which is the correct
+        default for CLI versions that predate background agent tasks, where
+        every result already ended the run.
+        """
+        if result_uuid is None:
+            return False
+        was_deferred = result_uuid in self._deferred_result_ids
+        self._deferred_result_ids.pop(result_uuid, None)
+        return was_deferred
 
     def _has_bidirectional_needs(self) -> bool:
         """Whether the CLI may still send control requests that need a reply.

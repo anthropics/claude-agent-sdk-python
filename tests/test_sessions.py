@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import claude_agent_sdk._internal.sessions as sessions_module
 from claude_agent_sdk import (
     SDKSessionInfo,
     SessionMessage,
@@ -287,6 +288,110 @@ class TestListSessions:
         assert s.file_size > 0
         assert s.last_modified > 0
         assert s.custom_title is None
+
+    def test_long_path_fallback_verifies_transcript_cwd(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Hash-mismatch fallback distinguishes paths with the same prefix."""
+        shared = tmp_path / ("a" * 90) / ("b" * 90)
+        project_a = shared / "project-a"
+        project_b = shared / "project-b"
+        project_a.mkdir(parents=True)
+        project_b.mkdir()
+        canonical_a = os.path.realpath(project_a)
+        canonical_b = os.path.realpath(project_b)
+
+        prefix_a = _sanitize_path(canonical_a)[:200]
+        prefix_b = _sanitize_path(canonical_b)[:200]
+        assert prefix_a == prefix_b  # precondition: filename-prefix collision
+
+        projects_dir = claude_config_dir / "projects"
+        cli_dir_a = projects_dir / f"{prefix_a}-bun-hash-a"
+        cli_dir_b = projects_dir / f"{prefix_b}-bun-hash-b"
+        cli_dir_a.mkdir()
+        cli_dir_b.mkdir()
+        sid_a, _ = _make_session_file(
+            cli_dir_a, first_prompt="session A", cwd=canonical_a
+        )
+        sid_b, _ = _make_session_file(
+            cli_dir_b, first_prompt="session B", cwd=canonical_b
+        )
+
+        sessions_a = list_sessions(directory=canonical_a, include_worktrees=False)
+        sessions_b = list_sessions(directory=canonical_b, include_worktrees=False)
+
+        assert [session.session_id for session in sessions_a] == [sid_a]
+        assert [session.session_id for session in sessions_b] == [sid_b]
+
+    def test_long_path_fallback_rejects_unverified_single_candidate(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A lone shared-prefix directory is not proof of project identity."""
+        shared = tmp_path / ("a" * 90) / ("b" * 90)
+        requested = shared / "requested"
+        other = shared / "other"
+        requested.mkdir(parents=True)
+        other.mkdir()
+        canonical_requested = os.path.realpath(requested)
+        canonical_other = os.path.realpath(other)
+        prefix = _sanitize_path(canonical_requested)[:200]
+        assert prefix == _sanitize_path(canonical_other)[:200]
+
+        wrong_dir = claude_config_dir / "projects" / f"{prefix}-bun-hash-other"
+        wrong_dir.mkdir()
+        _make_session_file(wrong_dir, first_prompt="wrong", cwd=canonical_other)
+
+        assert (
+            list_sessions(directory=canonical_requested, include_worktrees=False) == []
+        )
+
+    def test_long_worktrees_use_verified_hash_fallback(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Worktree scanning includes only verified long-path candidates."""
+        shared = tmp_path / ("a" * 90) / ("b" * 90)
+        worktree_a = shared / "worktree-a"
+        worktree_b = shared / "worktree-b"
+        unrelated = shared / "unrelated"
+        worktree_a.mkdir(parents=True)
+        worktree_b.mkdir()
+        unrelated.mkdir()
+        canonical_a = os.path.realpath(worktree_a)
+        canonical_b = os.path.realpath(worktree_b)
+        canonical_unrelated = os.path.realpath(unrelated)
+        prefix = _sanitize_path(canonical_a)[:200]
+        assert prefix == _sanitize_path(canonical_b)[:200]
+        assert prefix == _sanitize_path(canonical_unrelated)[:200]
+
+        projects_dir = claude_config_dir / "projects"
+        cli_dir_a = projects_dir / f"{prefix}-bun-hash-a"
+        cli_dir_b = projects_dir / f"{prefix}-bun-hash-b"
+        cli_dir_unrelated = projects_dir / f"{prefix}-bun-hash-unrelated"
+        cli_dir_a.mkdir()
+        cli_dir_b.mkdir()
+        cli_dir_unrelated.mkdir()
+        sid_a, _ = _make_session_file(
+            cli_dir_a, first_prompt="worktree A", cwd=canonical_a
+        )
+        sid_b, _ = _make_session_file(
+            cli_dir_b, first_prompt="worktree B", cwd=canonical_b
+        )
+        _make_session_file(
+            cli_dir_unrelated, first_prompt="unrelated", cwd=canonical_unrelated
+        )
+
+        monkeypatch.setattr(
+            sessions_module,
+            "_get_worktree_paths",
+            lambda _cwd: [canonical_a, canonical_b],
+        )
+
+        sessions = list_sessions(directory=canonical_a)
+
+        assert {session.session_id for session in sessions} == {sid_a, sid_b}
 
     def test_custom_title_wins_summary(self, claude_config_dir: Path, tmp_path: Path):
         """custom_title takes precedence over summary and first_prompt."""

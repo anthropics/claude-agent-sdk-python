@@ -1,5 +1,6 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
+import asyncio
 import atexit
 import json
 import logging
@@ -15,6 +16,7 @@ from subprocess import PIPE
 from typing import Any, cast
 
 import anyio
+import sniffio
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
@@ -940,33 +942,33 @@ class SubprocessCLITransport(Transport):
             emit(framer.flush())
 
     async def close(self) -> None:
-        """Close the transport and clean up resources.
+        """Finish subprocess cleanup before cancellation reaches the caller.
 
-        The whole body runs inside a shielded cancel scope. Cleanup is
-        routinely reached while the caller's task is being cancelled (e.g.
-        `async with ClaudeSDKClient()` unwinding on cancel), and an
-        unshielded close() would abort at the first await — before the
-        terminate/kill escalation ran — orphaning the CLI child, which then
-        surfaces as `<defunct>` once nothing is left to wait() on it.
-
-        Every await in *this* scope is bounded (~20s worst case), so an anyio
-        cancellation is delayed but never blocked: the stream `aclose()`s are a
-        non-blocking `close()` plus a checkpoint on both anyio backends (they
-        never await `wait_closed()`, so undrained stdin cannot wedge them), the
-        stderr task is cancelled before it is awaited, and the lock acquire and
-        every process `wait()` carry an explicit deadline.
-
-        Caveat: an anyio shield only defers cancellation that *originates from
-        an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
-        `asyncio.timeout` firing, a bare `task.cancel()`, loop shutdown) is
-        still delivered at the next await in here, and the escalation below only
-        catches `TimeoutError` — so it would be skipped. That is a pre-existing
-        limitation of the shield on the asyncio backend rather than something
-        this scope introduces, and it is still strictly better than before: the
-        `finally` keeps a still-running child in `_ACTIVE_CHILDREN` for the
-        atexit reaper instead of dropping it. Making the escalation robust to a
-        foreign `CancelledError` is a follow-up.
+        Raw asyncio cancellation bypasses AnyIO shields, so cleanup runs in a
+        separate task and the cancellation is re-raised after that task ends.
         """
+        if sniffio.current_async_library() != "asyncio":
+            await self._close_impl()
+            return
+
+        cleanup_task: asyncio.Task[None] = asyncio.create_task(self._close_impl())
+        cancellation: asyncio.CancelledError | None = None
+        with anyio.CancelScope(shield=True):
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+                except Exception:
+                    break
+        if cancellation is not None:
+            cleanup_error = cleanup_task.exception()
+            if cleanup_error is not None:
+                raise cancellation from cleanup_error
+            raise cancellation
+        cleanup_task.result()
+
+    async def _close_impl(self) -> None:
         if not self._process:
             self._ready = False
             return

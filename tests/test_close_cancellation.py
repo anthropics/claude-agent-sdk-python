@@ -6,16 +6,19 @@ cleanup awaits are cancellable, the terminate/kill escalation is skipped and the
 child is left running -- an orphan that surfaces as `[claude] <defunct>` once
 nothing is left to wait() on it.
 
-Every test here runs under both asyncio and trio (``anyio_backend`` in
-conftest.py): the leak reproduces on both.
+Cancellation-scope tests run under both asyncio and trio. The raw
+``asyncio.wait_for`` regression runs only under asyncio.
 """
 
+import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -110,13 +113,166 @@ async def test_close_under_cancellation_still_reaps_child(tmp_path: Path) -> Non
     assert process is not None
     pid = process.pid
 
-    with anyio.CancelScope() as scope:
-        scope.cancel()  # every await inside close() would raise
-        await transport.close()
+    with patch.object(
+        transport, "_close_impl", wraps=transport._close_impl
+    ) as close_impl:
+        with anyio.CancelScope() as scope:
+            scope.cancel()  # every await inside close() would raise
+            await transport.close()
 
+    close_impl.assert_awaited_once()
     assert process.returncode is not None
     assert _process_state(pid) == "gone"
     assert process not in _ACTIVE_CHILDREN
+
+
+@posix_only
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_asyncio_timeout_still_reaps_child(tmp_path: Path) -> None:
+    script = _write_fake_cli(tmp_path)
+    script.write_text(FAKE_CLI + "\nimport time; time.sleep(60)\n")
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(script)),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+
+    try:
+        with (
+            patch.object(
+                transport, "_close_impl", wraps=transport._close_impl
+            ) as close_impl,
+            pytest.raises(TimeoutError),
+        ):
+            await asyncio.wait_for(transport.close(), timeout=0.05)
+        close_impl.assert_awaited_once()
+        assert process.returncode == -signal.SIGTERM
+        assert _process_state(process.pid) == "gone"
+        assert process not in _ACTIVE_CHILDREN
+    finally:
+        await transport.close()
+
+
+@posix_only
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_repeated_asyncio_cancellation_still_reaps_child(
+    tmp_path: Path,
+) -> None:
+    script = _write_fake_cli(tmp_path)
+    script.write_text(FAKE_CLI + "\nimport time; time.sleep(60)\n")
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(script)),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+
+    with patch.object(
+        transport, "_close_impl", wraps=transport._close_impl
+    ) as close_impl:
+        close_task: asyncio.Task[None] = asyncio.create_task(transport.close())
+        while close_impl.await_count == 0:
+            await anyio.sleep(0)
+        deadline = anyio.current_time() + 7
+        try:
+            while not close_task.done() and anyio.current_time() < deadline:
+                close_task.cancel()
+                await anyio.sleep(0.02)
+            assert close_task.done(), (
+                f"_close_impl restarted {close_impl.await_count} times"
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await close_task
+        finally:
+            if not close_task.done():
+                with suppress(asyncio.CancelledError):
+                    await close_task
+
+    close_impl.assert_awaited_once()
+    assert process.returncode == -signal.SIGTERM
+    assert _process_state(process.pid) == "gone"
+    assert process not in _ACTIVE_CHILDREN
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_does_not_swallow_asyncio_cancellation() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+    cleanup_started = asyncio.Event()
+    fail_cleanup = asyncio.Event()
+
+    async def failing_close() -> None:
+        cleanup_started.set()
+        await fail_cleanup.wait()
+        raise RuntimeError("cleanup failed")
+
+    with patch.object(
+        transport, "_close_impl", side_effect=failing_close
+    ) as close_impl:
+        close_task: asyncio.Task[None] = asyncio.create_task(transport.close())
+        await cleanup_started.wait()
+        close_task.cancel()
+        await anyio.sleep(0)
+        assert not close_task.done()
+        fail_cleanup.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await close_task
+
+    close_impl.assert_awaited_once()
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_does_not_break_asyncio_timeout() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+    cleanup_started = asyncio.Event()
+    fail_cleanup = asyncio.Event()
+
+    async def failing_close() -> None:
+        cleanup_started.set()
+        await fail_cleanup.wait()
+        raise RuntimeError("cleanup failed")
+
+    async def release_cleanup() -> None:
+        await cleanup_started.wait()
+        await anyio.sleep(0.05)
+        fail_cleanup.set()
+
+    release_task = asyncio.create_task(release_cleanup())
+    try:
+        with (
+            patch.object(transport, "_close_impl", side_effect=failing_close),
+            pytest.raises(TimeoutError),
+        ):
+            await asyncio.wait_for(transport.close(), timeout=0.01)
+    finally:
+        await release_task
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_surfaces_without_cancellation() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+
+    with (
+        patch.object(
+            transport,
+            "_close_impl",
+            side_effect=RuntimeError("cleanup failed"),
+        ),
+        pytest.raises(RuntimeError, match="cleanup failed"),
+    ):
+        await transport.close()
 
 
 @posix_only

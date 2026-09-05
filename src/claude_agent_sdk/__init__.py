@@ -133,6 +133,8 @@ from .types import (
     SessionKey,
     SessionListSubkeysKey,
     SessionMessage,
+    SessionStartHookInput,
+    SessionStartHookSpecificOutput,
     SessionStore,
     SessionStoreEntry,
     SessionStoreFlushMode,
@@ -706,6 +708,8 @@ __all__ = [
     "NotificationHookSpecificOutput",
     "SubagentStartHookSpecificOutput",
     "PermissionRequestHookSpecificOutput",
+    "SessionStartHookInput",
+    "SessionStartHookSpecificOutput",
     "HookJSONOutput",
     "HookMatcher",
     # Agent support

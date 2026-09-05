@@ -82,6 +82,47 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### Environment Variables
+
+The CLI runs as a subprocess. Its environment is built in this order
+(later entries win):
+
+1. **Everything from the parent process** (`os.environ`) is inherited, with a
+   single exception: `CLAUDECODE` is removed, so an SDK spawned from inside a
+   Claude Code session is not mistaken for a nested Claude Code instance.
+2. `CLAUDE_CODE_ENTRYPOINT=sdk-py` — identifies the entrypoint; can be
+   overridden via `options.env`.
+3. **Your `ClaudeAgentOptions.env`** — every key overrides the inherited value.
+4. `CLAUDE_AGENT_SDK_VERSION` — always set by the SDK (not overridable).
+
+Conditionally, the SDK also sets `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+(when `enable_file_checkpointing=True`), aligns `PWD` with `cwd`, and — when
+`opentelemetry-api` is installed and a span is active — injects fresh
+`TRACEPARENT`/`TRACESTATE` unless you set them explicitly in `options.env`.
+
+> **Note:** inheritance is allowlist-free. Any secret exported in the parent
+> shell (cloud credentials, tokens, …) is visible to the CLI subprocess and to
+> the tools it runs. If your agent processes untrusted input, start it from a
+> minimal environment or override sensitive keys via `options.env` — setting a
+> key to an empty string effectively blanks the inherited value:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, query
+
+options = ClaudeAgentOptions(
+    env={
+        "MY_SERVICE_URL": "https://staging.example.com",  # add/override for the CLI
+        "AWS_SECRET_ACCESS_KEY": "",  # blank an inherited secret
+    },
+)
+
+async for message in query(prompt="Deploy the docs site", options=options):
+    print(message)
+```
+
+The SDK itself honours `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK=1` to skip the
+CLI version compatibility check.
+
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude

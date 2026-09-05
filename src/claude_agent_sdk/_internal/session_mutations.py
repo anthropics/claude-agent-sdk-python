@@ -26,6 +26,7 @@ import shutil
 import unicodedata
 import uuid as uuid_mod
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -336,13 +337,40 @@ def fork_session(
     )
 
     fork_path = project_dir / f"{forked_session_id}.jsonl"
-    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
+    _write_new_file_atomically(fork_path, ("\n".join(lines) + "\n").encode("utf-8"))
 
     return ForkSessionResult(session_id=forked_session_id)
+
+
+def _write_new_file_atomically(path: Path, data: bytes) -> None:
+    """Create ``path`` atomically with ``data``.
+
+    The final path is only published after the complete payload has been written
+    to a temporary sibling file. This keeps failed fork_session() writes from
+    leaving partial transcripts behind.
+    """
+
+    if path.exists():
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(path))
+
+    tmp_path = path.with_name(f".{path.name}.{uuid_mod.uuid4().hex}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        offset = 0
+        while offset < len(data):
+            written = os.write(fd, data[offset:])
+            if written == 0:
+                raise OSError("os.write returned 0 bytes")
+            offset += written
+        os.close(fd)
+        fd = -1
+        tmp_path.replace(path)
+    except BaseException:
+        if fd != -1:
+            os.close(fd)
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
 
 
 def _build_fork_lines(

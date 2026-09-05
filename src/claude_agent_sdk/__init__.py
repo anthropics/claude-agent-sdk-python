@@ -68,6 +68,16 @@ from ._internal.transport import Transport
 from ._version import __version__
 from .client import ClaudeSDKClient
 from .query import query
+from .shell_permissions import (
+    DecomposeResult,
+    EvaluateResult,
+    PolicyFn,
+    Spawn,
+    create_bash_permission_evaluator,
+    decompose,
+    evaluate,
+    load_policy_from_module,
+)
 from .types import (
     TERMINAL_TASK_STATUSES,
     AgentDefinition,
@@ -686,6 +696,15 @@ __all__ = [
     "PermissionResultAllow",
     "PermissionResultDeny",
     "PermissionUpdate",
+    # Shell-command permission evaluator
+    "create_bash_permission_evaluator",
+    "decompose",
+    "evaluate",
+    "load_policy_from_module",
+    "Spawn",
+    "DecomposeResult",
+    "EvaluateResult",
+    "PolicyFn",
     # Hook support
     "HookCallback",
     "HookContext",

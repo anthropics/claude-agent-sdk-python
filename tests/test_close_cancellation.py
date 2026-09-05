@@ -197,6 +197,84 @@ async def test_repeated_asyncio_cancellation_still_reaps_child(
     assert process not in _ACTIVE_CHILDREN
 
 
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_does_not_swallow_asyncio_cancellation() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+    cleanup_started = asyncio.Event()
+    fail_cleanup = asyncio.Event()
+
+    async def failing_close() -> None:
+        cleanup_started.set()
+        await fail_cleanup.wait()
+        raise RuntimeError("cleanup failed")
+
+    with patch.object(
+        transport, "_close_impl", side_effect=failing_close
+    ) as close_impl:
+        close_task: asyncio.Task[None] = asyncio.create_task(transport.close())
+        await cleanup_started.wait()
+        close_task.cancel()
+        await anyio.sleep(0)
+        assert not close_task.done()
+        fail_cleanup.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await close_task
+
+    close_impl.assert_awaited_once()
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_does_not_break_asyncio_timeout() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+    cleanup_started = asyncio.Event()
+    fail_cleanup = asyncio.Event()
+
+    async def failing_close() -> None:
+        cleanup_started.set()
+        await fail_cleanup.wait()
+        raise RuntimeError("cleanup failed")
+
+    async def release_cleanup() -> None:
+        await cleanup_started.wait()
+        await anyio.sleep(0.05)
+        fail_cleanup.set()
+
+    release_task = asyncio.create_task(release_cleanup())
+    try:
+        with (
+            patch.object(transport, "_close_impl", side_effect=failing_close),
+            pytest.raises(TimeoutError),
+        ):
+            await asyncio.wait_for(transport.close(), timeout=0.01)
+    finally:
+        await release_task
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cleanup_failure_surfaces_without_cancellation() -> None:
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+
+    with (
+        patch.object(
+            transport,
+            "_close_impl",
+            side_effect=RuntimeError("cleanup failed"),
+        ),
+        pytest.raises(RuntimeError, match="cleanup failed"),
+    ):
+        await transport.close()
+
+
 @posix_only
 async def test_cancelled_client_context_leaves_no_child(tmp_path: Path) -> None:
     """A cancelled `async with ClaudeSDKClient()` must not leak the CLI child."""

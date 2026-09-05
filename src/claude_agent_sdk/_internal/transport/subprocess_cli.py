@@ -959,9 +959,14 @@ class SubprocessCLITransport(Transport):
                     await asyncio.shield(cleanup_task)
                 except asyncio.CancelledError as exc:
                     cancellation = exc
-        cleanup_task.result()
+                except Exception:
+                    break
         if cancellation is not None:
+            cleanup_error = cleanup_task.exception()
+            if cleanup_error is not None:
+                raise cancellation from cleanup_error
             raise cancellation
+        cleanup_task.result()
 
     async def _close_impl(self) -> None:
         if not self._process:

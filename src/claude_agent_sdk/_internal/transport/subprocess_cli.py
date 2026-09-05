@@ -168,23 +168,23 @@ class _LineFramer:
         # newline arrives is O(total) without relying on CPython's in-place
         # `str +=` realloc optimization, which other implementations lack.
         self._pending: list[str] = []
-        self.pending_len = 0
+        self.pending_bytes = 0
 
     def push(self, chunk: str) -> list[str]:
         """Add a chunk, returning any lines it completed."""
         self._pending.append(chunk)
-        self.pending_len += len(chunk)
+        self.pending_bytes += len(chunk.encode("utf-8"))
         if "\n" not in chunk:
             return []
 
         *lines, tail = "".join(self._pending).split("\n")
-        self._pending, self.pending_len = [tail], len(tail)
+        self._pending, self.pending_bytes = [tail], len(tail.encode("utf-8"))
         return lines
 
     def flush(self) -> str:
         """Take the trailing partial line, if any."""
         line = "".join(self._pending)
-        self._pending, self.pending_len = [], 0
+        self._pending, self.pending_bytes = [], 0
         return line
 
 
@@ -924,7 +924,7 @@ class SubprocessCLITransport(Transport):
                     emit(line)
                 # A producer that never emits a newline can't grow the buffer
                 # without bound; flush it as a partial line instead.
-                if framer.pending_len > self._max_buffer_size:
+                if framer.pending_bytes > self._max_buffer_size:
                     emit(framer.flush())
         except anyio.ClosedResourceError:
             pass  # Stream closed, exit normally
@@ -1100,11 +1100,11 @@ class SubprocessCLITransport(Transport):
         try:
             async for chunk in self._stdout_stream:
                 for line in framer.push(chunk):
-                    guard(len(line))
+                    guard(len(line.encode("utf-8")))
                     data = _parse_stdout_line(line)
                     if data is not None:
                         yield data
-                guard(framer.pending_len)
+                guard(framer.pending_bytes)
 
         except anyio.ClosedResourceError:
             pass

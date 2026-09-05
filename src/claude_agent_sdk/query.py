@@ -1,4 +1,4 @@
-"""Query function for one-shot interactions with Claude Code."""
+"""Query function for single-call interactions with Claude Code."""
 
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
@@ -15,24 +15,31 @@ async def query(
     transport: Transport | None = None,
 ) -> AsyncIterator[Message]:
     """
-    Query Claude Code for one-shot or unidirectional streaming interactions.
+    Query Claude Code for a one-shot or single-call streaming interaction.
 
     This function is ideal for simple, stateless queries where you don't need
-    bidirectional communication or conversation management. For interactive,
-    stateful conversations, use ClaudeSDKClient instead.
+    explicit connection or conversation management. For interactive, stateful
+    conversations with follow-up calls, use ClaudeSDKClient instead.
 
     Key differences from ClaudeSDKClient:
-    - **Unidirectional**: Send all messages upfront, receive all responses
-    - **Stateless**: Each query is independent, no conversation state
-    - **Simple**: Fire-and-forget style, no connection management
-    - **No interrupts**: Cannot interrupt or send follow-up messages
+    - **Single-call lifecycle**: An async prompt iterable is consumed in the
+      background while responses are received, so input and output may interleave
+    - **Invocation-scoped**: Each query() call owns one connection lifecycle
+    - **Simple**: No explicit connection management
+    - **No client controls**: Cannot call interrupt() or query() again on a client
+
+    Custom SDK MCP tools and hooks are supported through ClaudeAgentOptions.
+    A can_use_tool callback requires an AsyncIterable prompt so the control
+    protocol can exchange messages over the streaming connection.
+    The supplied prompt iterable is the only input channel for that call;
+    query() does not expose a separate send method after the call starts.
 
     When to use query():
     - Simple one-off questions ("What is 2+2?")
     - Batch processing of independent prompts
     - Code generation or analysis tasks
     - Automated scripts and CI/CD pipelines
-    - When you know all inputs upfront
+    - When the input producer can be supplied for the lifetime of the call
 
     When to use ClaudeSDKClient:
     - Interactive conversations with follow-ups
@@ -43,7 +50,8 @@ async def query(
 
     Args:
         prompt: The prompt to send to Claude. Can be a string for single-shot queries
-                or an AsyncIterable[dict] for streaming mode with continuous interaction.
+                or an AsyncIterable[dict] for input streamed during the same call.
+                Responses may arrive before that iterable is exhausted.
                 In streaming mode, each dict should have the structure:
                 {
                     "type": "user",
@@ -87,13 +95,13 @@ async def query(
             print(message)
         ```
 
-    Example - Streaming mode (still unidirectional):
+    Example - Streaming input and output:
         ```python
         async def prompts():
             yield {"type": "user", "message": {"role": "user", "content": "Hello"}}
             yield {"type": "user", "message": {"role": "user", "content": "How are you?"}}
 
-        # All prompts are sent, then all responses received
+        # Responses may arrive while prompts() is still producing messages.
         async for message in query(prompt=prompts()):
             print(message)
         ```

@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    ControlRequestTimeoutError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -640,7 +645,9 @@ class Query:
         except TimeoutError as e:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+            raise ControlRequestTimeoutError(
+                subtype=request.get("subtype"), timeout=timeout
+            ) from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

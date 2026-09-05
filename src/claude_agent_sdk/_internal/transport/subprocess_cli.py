@@ -510,9 +510,17 @@ class SubprocessCLITransport(Transport):
                 else:
                     logger.warning(f"Settings file not found: {settings_path}")
 
-        # Merge sandbox settings
+        # Merge sandbox settings. The CLI reads sandbox.failIfUnavailable as
+        # `?? false`, so an enabled sandbox that cannot start degrades to a
+        # warning and every command then runs unsandboxed. Default it to true
+        # for an enabled sandbox, matching the TypeScript SDK, so callers who
+        # asked for a sandbox fail loudly instead of silently losing it.
         if has_sandbox:
-            settings_obj["sandbox"] = self._options.sandbox
+            assert self._options.sandbox is not None
+            sandbox: dict[str, Any] = dict(self._options.sandbox)
+            if sandbox.get("enabled") is True and "failIfUnavailable" not in sandbox:
+                sandbox["failIfUnavailable"] = True
+            settings_obj["sandbox"] = sandbox
 
         return json.dumps(settings_obj)
 

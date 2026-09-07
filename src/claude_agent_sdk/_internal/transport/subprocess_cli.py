@@ -958,11 +958,9 @@ class SubprocessCLITransport(Transport):
         with anyio.CancelScope(shield=True):
             while not cleanup_task.done():
                 try:
-                    await asyncio.shield(cleanup_task)
+                    await asyncio.wait({cleanup_task})
                 except asyncio.CancelledError as exc:
                     cancellation = exc
-                except Exception:
-                    break
         if cancellation is not None:
             cleanup_error = cleanup_task.exception()
             if cleanup_error is not None:

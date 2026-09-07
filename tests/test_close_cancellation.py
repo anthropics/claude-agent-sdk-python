@@ -212,8 +212,6 @@ async def test_cleanup_failure_does_not_swallow_asyncio_cancellation() -> None:
         await fail_cleanup.wait()
         raise cleanup_error
 
-    # Python 3.14 reports a failed shielded task to the loop even when close()
-    # later retrieves and chains that failure.
     with (
         patch.object(asyncio.get_running_loop(), "call_exception_handler") as handler,
         patch.object(transport, "_close_impl", side_effect=failing_close) as close_impl,
@@ -229,10 +227,7 @@ async def test_cleanup_failure_does_not_swallow_asyncio_cancellation() -> None:
 
     close_impl.assert_awaited_once()
     assert raised.value.__cause__ is cleanup_error
-    assert all(
-        call.args[0].get("exception") is cleanup_error
-        for call in handler.call_args_list
-    )
+    handler.assert_not_called()
 
 
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
@@ -269,10 +264,7 @@ async def test_cleanup_failure_does_not_break_asyncio_timeout() -> None:
         await release_task
     assert isinstance(raised.value.__cause__, asyncio.CancelledError)
     assert raised.value.__cause__.__cause__ is cleanup_error
-    assert all(
-        call.args[0].get("exception") is cleanup_error
-        for call in handler.call_args_list
-    )
+    handler.assert_not_called()
 
 
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])

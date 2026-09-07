@@ -225,7 +225,6 @@ async def test_cleanup_failure_does_not_swallow_asyncio_cancellation() -> None:
             await close_task
     close_impl.assert_awaited_once()
     assert raised.value.__cause__ is cleanup_error
-    assert raised.value.__cause__ is cleanup_error
 
 
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])

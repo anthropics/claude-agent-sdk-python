@@ -246,6 +246,14 @@ class SdkMcpTool(Generic[T]):
     input_schema: type[T] | dict[str, Any]
     handler: Callable[[T], Awaitable[dict[str, Any]]]
     annotations: _McpToolAnnotations | None = None
+    strict: bool = False
+    """Require the model to produce input arguments that match the JSON schema.
+
+    Also known as strict tool use: the model is told to follow the schema
+    exactly instead of free-forming arguments. Recommended for tools with
+    array or enum parameters, where unparseable argument JSON would otherwise
+    fail at call time.
+    """
 
 
 def tool(
@@ -253,6 +261,7 @@ def tool(
     description: str,
     input_schema: type | dict[str, Any],
     annotations: _McpToolAnnotations | None = None,
+    strict: bool = False,
 ) -> Callable[[Callable[[Any], Awaitable[dict[str, Any]]]], SdkMcpTool[Any]]:
     """Decorator for defining MCP tools with type safety.
 
@@ -277,6 +286,11 @@ def tool(
             ``ToolAnnotations(maxResultSizeChars=N)`` additionally raises the
             size up to which Claude Code keeps this tool's result inline
             instead of persisting it to a file and showing a preview.
+        strict: Require the model to emit input arguments that match the
+            input schema exactly (strict tool use). This helps with tools
+            whose arguments are arrays or enums, where free-form arguments
+            often come back unparseable. Tools that do not opt in are listed
+            without a strict flag, so un-strict tools are unaffected.
 
     Returns:
         A decorator function that wraps the tool implementation and returns
@@ -330,6 +344,7 @@ def tool(
             input_schema=input_schema,
             handler=handler,
             annotations=annotations,
+            strict=strict,
         )
 
     return decorator
@@ -615,6 +630,13 @@ def create_sdk_mcp_server(
             return _tool_error_result(str(e))
 
     server = build_tool_server(name, version, wire_tools, run_tool)
+    strict_names = frozenset(tool_def.name for tool_def in tools if tool_def.strict)
+    if strict_names:
+        # ``strict`` is not a declared mcp Tool field (and mcp 2.x drops
+        # unknown keys entirely), so it cannot ride inside the Tool model.
+        # The bridge re-injects it into the tools/list response instead, and
+        # this is the per-server record of which tools opted in.
+        setattr(server, "_sdk_strict_tool_names", strict_names)  # noqa: B010
 
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 

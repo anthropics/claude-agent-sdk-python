@@ -374,7 +374,33 @@ class SdkMcpBridge:
         pending = await session.submit(message)
         if pending is None:
             return None
-        return await pending.wait()
+        response = await pending.wait()
+        if message.get("method") == "tools/list" and isinstance(response, dict):
+            self._reemit_strict_tools(response)
+        return response
+
+    def _reemit_strict_tools(self, response: dict[str, Any]) -> None:
+        """Put the tools that opted into strict tool use back on the wire.
+
+        ``strict`` is not a declared mcp Tool field, and mcp 2.x drops unknown
+        keys altogether, so the field cannot travel inside the ``Tool`` model.
+        The CLI, however, reads it at the top level of each listed tool, so it
+        is re-injected here on the way out. Only SDK-built servers carry the
+        strict-name record (``_sdk_strict_tool_names``); a hand-built mcp
+        server is left exactly as it lists itself.
+        """
+        strict_names = getattr(self._server, "_sdk_strict_tool_names", ())
+        if not strict_names:
+            return
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            return
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("name") in strict_names:
+                tool["strict"] = True
 
     async def aclose(self) -> None:
         """Stop the session, if any. Safe to call more than once."""

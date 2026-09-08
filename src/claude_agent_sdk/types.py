@@ -37,6 +37,8 @@ _SKILLS_ALL: Final = "all"
 EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
 
 
+EffortLevel: TypeAlias = EffortLevel
+
 class SystemPromptPreset(TypedDict):
     """System prompt preset configuration."""
 

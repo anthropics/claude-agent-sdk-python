@@ -82,6 +82,48 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### Custom Slash Commands
+
+Custom slash commands defined as Markdown files under `.claude/commands/` (or
+shipped inside a plugin) are loaded the same way as in the interactive CLI: by
+pointing the SDK at a project that has them and including the right setting
+source.
+
+For commands in your project's `.claude/commands/` directory, set `cwd` and
+include `"project"` in `setting_sources`:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, SystemMessage
+
+options = ClaudeAgentOptions(
+    cwd="/path/to/project",          # directory that contains .claude/commands/
+    setting_sources=["project"],     # required to load project settings/commands
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("/my-command")
+    async for msg in client.receive_response():
+        # The init SystemMessage lists the loaded commands under "slash_commands":
+        if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            print(msg.data.get("slash_commands", []))
+```
+
+For commands packaged inside a plugin, load the plugin instead - no
+`setting_sources` change needed:
+
+```python
+options = ClaudeAgentOptions(
+    plugins=[{"type": "local", "path": "/path/to/plugin"}],
+)
+```
+
+`setting_sources` defaults to `None`, which loads the CLI defaults (`user`,
+`project`, `local`); pass `[]` to opt out of all filesystem settings (the SDK's
+isolation mode), in which case no custom slash commands are loaded.
+
+See [examples/setting_sources.py](examples/setting_sources.py) and
+[examples/plugin_example.py](examples/plugin_example.py) for runnable demos.
+
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude

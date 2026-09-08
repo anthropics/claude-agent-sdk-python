@@ -1,4 +1,4 @@
-# End-to-End Tests for Claude Code SDK
+# End-to-End Tests for Claude Agent SDK
 
 This directory contains end-to-end tests that run against the actual Claude API to verify real-world functionality.
 

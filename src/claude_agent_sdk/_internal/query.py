@@ -347,8 +347,18 @@ class Query:
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
-                        errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
+                        # An is_error result with subtype "success" carries the
+                        # error text (e.g. an API error body) in `result`, not
+                        # `errors`; every other error subtype uses `errors`.
+                        # Mirrors the TypeScript SDK (Query.ts readMessages).
+                        if message.get("subtype") == "success":
+                            error_text = str(message.get("result") or "")
+                        else:
+                            errors = message.get("errors") or []
+                            error_text = "; ".join(
+                                e.strip() for e in errors if e and e.strip()
+                            )
+                        self._last_error_result_text = error_text or str(
                             message.get("subtype", "unknown error")
                         )
                     else:

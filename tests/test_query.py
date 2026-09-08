@@ -1370,6 +1370,68 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_process_error_after_is_error_success_result_uses_result_text(self):
+        """An API error (e.g. an unknown model) surfaces as a result with
+        subtype="success", is_error=True and the error message in `result`
+        rather than `errors`. The improved exception must carry that text,
+        not the literal word "success"."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="success",
+                        result="API Error: 404 model not found",
+                        errors=[],
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: "
+                r"API Error: 404 model not found",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_process_error_after_error_result_skips_blank_errors(self):
+        """Blank entries in errors[] are dropped and the rest trimmed, so the
+        message doesn't end up with stray separators or whitespace."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    self._error_result(
+                        subtype="error_during_execution",
+                        errors=["", "  tool timed out  ", ""],
+                    )
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(
+                Exception,
+                match=r"Claude Code returned an error result: tool timed out$",
+            ):
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+        anyio.run(_test)
+
     def test_pending_initialize_gets_result_error_text(self):
         """An error result emitted during CLI startup (e.g. a refused resume)
         arrives before the initialize response. The in-flight initialize must

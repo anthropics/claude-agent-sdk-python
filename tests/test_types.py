@@ -4,15 +4,19 @@ from typing import get_args
 
 from claude_agent_sdk import (
     AssistantMessage,
+    AssistantMessageError,
     ClaudeAgentOptions,
     EffortLevel,
     NotificationHookInput,
     NotificationHookSpecificOutput,
+    PermissionBehavior,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
+    PermissionUpdateDestination,
     ResultMessage,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
+    ThinkingDisplay,
 )
 from claude_agent_sdk.types import (
     PermissionRuleValue,
@@ -30,6 +34,38 @@ from claude_agent_sdk.types import (
 def test_effort_level_is_exported():
     """EffortLevel is part of the public package API for downstream wrappers."""
     assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
+
+
+def test_assistant_message_error_is_exported():
+    """AssistantMessageError is part of the public package API for downstream wrappers."""
+    assert set(get_args(AssistantMessageError)) == {
+        "authentication_failed",
+        "billing_error",
+        "rate_limit",
+        "invalid_request",
+        "server_error",
+        "unknown",
+    }
+
+
+def test_permission_behavior_is_exported():
+    """PermissionBehavior is part of the public package API for downstream wrappers."""
+    assert set(get_args(PermissionBehavior)) == {"allow", "deny", "ask"}
+
+
+def test_permission_update_destination_is_exported():
+    """PermissionUpdateDestination is part of the public package API for downstream wrappers."""
+    assert set(get_args(PermissionUpdateDestination)) == {
+        "userSettings",
+        "projectSettings",
+        "localSettings",
+        "session",
+    }
+
+
+def test_thinking_display_is_exported():
+    """ThinkingDisplay is part of the public package API for downstream wrappers."""
+    assert set(get_args(ThinkingDisplay)) == {"summarized", "omitted"}
 
 
 class TestPermissionUpdate:

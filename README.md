@@ -295,13 +295,57 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 ## Development
 
-If you're contributing to this project, run the initial setup script to install git hooks:
+Install the package in editable mode with development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Then, if you're contributing to this project, run the initial setup script to install git hooks:
 
 ```bash
 ./scripts/initial-setup.sh
 ```
 
 This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
+### Running Tests and Lint Checks
+
+Run the test suite:
+
+```bash
+python -m pytest tests/ -v
+```
+
+Run lint and type checks (matching what CI runs):
+
+```bash
+ruff check src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
+mypy src/ scripts/
+```
+
+```bash
+./scripts/initial-setup.sh
+```
+
+This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
+
+### Running Tests and Lint Checks
+
+Run the test suite:
+
+```bash
+python -m pytest tests/ -v
+```
+
+Run lint and type checks (matching what CI runs):
+
+```bash
+ruff check src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
+mypy src/ scripts/
+```
 
 ### Building Wheels Locally
 

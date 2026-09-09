@@ -325,28 +325,6 @@ ruff format --check src/ tests/ scripts/
 mypy src/ scripts/
 ```
 
-```bash
-./scripts/initial-setup.sh
-```
-
-This installs a pre-push hook that runs lint checks before pushing, matching the CI workflow. To skip the hook temporarily, use `git push --no-verify`.
-
-### Running Tests and Lint Checks
-
-Run the test suite:
-
-```bash
-python -m pytest tests/ -v
-```
-
-Run lint and type checks (matching what CI runs):
-
-```bash
-ruff check src/ tests/ scripts/
-ruff format --check src/ tests/ scripts/
-mypy src/ scripts/
-```
-
 ### Building Wheels Locally
 
 To build wheels with the bundled Claude Code CLI:

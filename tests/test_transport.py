@@ -633,6 +633,24 @@ class TestSubprocessCLITransport:
         assert "--allowedTools" not in cmd
         assert not any(a.startswith("--setting-sources") for a in cmd)
 
+    def test_build_command_allowed_tools_none_omits_flag(self):
+        """Regression: allowed_tools=None used to raise TypeError in _apply_skills_defaults."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(allowed_tools=None),
+        )
+        cmd = transport._build_command()
+        assert "--allowedTools" not in cmd
+
+    def test_build_command_allowed_tools_none_with_skills_all(self):
+        """skills='all' still appends the Skill entry when allowed_tools is None."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(allowed_tools=None, skills="all"),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+
     def test_build_command_skills_all_enables_skill_tool(self):
         """skills='all' enables the bare Skill tool and defaults setting_sources."""
         transport = SubprocessCLITransport(

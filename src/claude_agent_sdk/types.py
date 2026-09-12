@@ -1981,10 +1981,13 @@ class ClaudeAgentOptions:
     to an MCP config JSON file.
     """
 
-    strict_mcp_config: bool = False
+    strict_mcp_config: bool = True
     """When ``True``, only use MCP servers passed via :attr:`mcp_servers`,
     ignoring all other MCP configurations the CLI would otherwise load (e.g.
     project ``.mcp.json``, user/global settings, plugin-provided servers).
+    Defaults to ``True`` so SDK applications do not implicitly execute MCP
+    servers discovered from their working directory. Set this to ``False`` to
+    retain Claude Code's ambient MCP discovery behavior.
     Maps to the CLI's ``--strict-mcp-config`` flag and matches the TypeScript
     SDK's ``strictMcpConfig`` option."""
 

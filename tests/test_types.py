@@ -2,6 +2,8 @@
 
 from typing import get_args
 
+import pytest
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -227,6 +229,16 @@ class TestOptions:
             "type": "file",
             "path": "/path/to/prompt.md",
         }
+
+    def test_claude_code_options_with_system_prompt_list_rejected(self):
+        """Test Options rejects list-form system prompt with a clear error."""
+        with pytest.raises(ValueError, match="does not accept a list"):
+            ClaudeAgentOptions(
+                system_prompt=[
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "world"},
+                ],
+            )
 
     def test_claude_code_options_with_session_continuation(self):
         """Test Options with session continuation."""

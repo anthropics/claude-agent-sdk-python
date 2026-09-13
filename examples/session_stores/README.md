@@ -33,7 +33,7 @@ Install the optional `[examples]` dependency group, then run the unit tests
 (they `importorskip` so default CI is unaffected if the group isn't installed):
 
 ```bash
-pip install -e '.[dev,examples]'
+pip install -e . --group dev --group examples
 pytest tests/test_example_s3_session_store.py \
        tests/test_example_redis_session_store.py \
        tests/test_example_postgres_session_store.py -v

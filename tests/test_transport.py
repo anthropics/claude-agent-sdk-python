@@ -2474,6 +2474,57 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_close_reads_stderr_written_while_the_cli_shuts_down(
+        self, backend: str
+    ) -> None:
+        """close() waits for the CLI to exit after stdin EOF so it can flush its
+        session file. Stderr written in that window must still reach the
+        callback, and more output than the pipe holds must not block the CLI's
+        exit into the terminate/kill escalation."""
+        import sys
+        import time
+        from subprocess import PIPE
+
+        from anyio.streams.text import TextReceiveStream, TextSendStream
+
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        line_count = 4000  # ~250 KiB, well past a pipe buffer
+        script = (
+            "import sys\n"
+            "sys.stdin.read()\n"
+            f"for i in range({line_count}):\n"
+            "    sys.stderr.write(f'shutdown log {i} ' + 'x' * 48 + '\\n')\n"
+            "sys.stderr.flush()\n"
+        )
+
+        async def _test() -> None:
+            received: list[str] = []
+            process = await anyio.open_process(
+                [sys.executable, "-c", script], stdin=PIPE, stdout=PIPE, stderr=PIPE
+            )
+            transport = SubprocessCLITransport(
+                prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+            )
+            transport._process = process
+            transport._stdin_stream = TextSendStream(process.stdin)
+            assert process.stderr is not None
+            transport._stderr_stream = TextReceiveStream(process.stderr)
+            transport._stderr_task = spawn_detached(transport._handle_stderr())
+            transport._ready = True
+
+            started = time.monotonic()
+            await transport.close()
+            elapsed = time.monotonic() - started
+
+            assert len(received) == line_count
+            assert received[-1].startswith(f"shutdown log {line_count - 1} ")
+            assert process.returncode == 0  # exited on its own, not terminated
+            assert elapsed < 5
+
+        anyio.run(_test, backend=backend)
+
 
 class TestAtexitChildCleanup:
     """Tests for the atexit handler that terminates orphaned CLI subprocesses."""

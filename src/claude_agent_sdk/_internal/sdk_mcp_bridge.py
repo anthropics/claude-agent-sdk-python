@@ -384,8 +384,13 @@ class SdkMcpBridge:
 
         ``strict`` is not a declared mcp Tool field, and mcp 2.x drops unknown
         keys altogether, so the field cannot travel inside the ``Tool`` model.
-        The CLI, however, reads it at the top level of each listed tool, so it
-        is re-injected here on the way out. Only SDK-built servers carry the
+        A namespaced ``_meta`` key is not an alternative: the CLI has no
+        ``anthropic/strict`` ``_meta`` key at all (issue #1243), so the only
+        remaining transport is a top-level key on each listed tool, re-injected
+        here on the way out. Whether a given CLI version maps that top-level
+        key into its internal tool object is CLI-side and version-dependent;
+        the SDK-side gap this closes is that the field no longer dies inside
+        the tools/list reconstruction. Only SDK-built servers carry the
         strict-name record (``_sdk_strict_tool_names``); a hand-built mcp
         server is left exactly as it lists itself.
         """

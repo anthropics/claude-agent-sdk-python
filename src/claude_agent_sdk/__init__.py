@@ -451,6 +451,11 @@ def _build_meta(tool_def: SdkMcpTool[Any]) -> dict[str, Any] | None:
     # the size up to which Claude Code keeps a tool result inline rather than
     # persisting it and showing a preview; it rides on the annotations object
     # as an extra (or subclass-declared) field.
+    #
+    # ``strict`` deliberately does NOT ride _meta: a namespaced key only works
+    # if the client knows it, and the CLI has no ``anthropic/strict`` key (see
+    # issue #1243). It is re-emitted at the top level of each listed tool by
+    # SdkMcpBridge._reemit_strict_tools instead.
     max_size = getattr(tool_def.annotations, "maxResultSizeChars", None)
     if max_size is None:
         return None

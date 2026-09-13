@@ -953,8 +953,9 @@ class SubprocessCLITransport(Transport):
         cancellation is delayed but never blocked: the stream `aclose()`s are a
         non-blocking `close()` plus a checkpoint on both anyio backends (they
         never await `wait_closed()`, so undrained stdin cannot wedge them), the
-        stderr task is cancelled before it is awaited, and the lock acquire and
-        every process `wait()` carry an explicit deadline.
+        stderr task is only waited on for a moment after the process exits
+        before it is cancelled, and the lock acquire and every process `wait()`
+        carry an explicit deadline.
 
         Caveat: an anyio shield only defers cancellation that *originates from
         an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
@@ -972,12 +973,9 @@ class SubprocessCLITransport(Transport):
             return
 
         with anyio.CancelScope(shield=True):
-            # Cancel stderr reader if active
-            if self._stderr_task is not None and not self._stderr_task.done():
-                self._stderr_task.cancel()
-                with suppress(Exception):
-                    await self._stderr_task.wait()
-            self._stderr_task = None
+            # The stderr reader keeps running until the process has exited (see
+            # below): what the CLI writes while it shuts down still reaches the
+            # callback, and a full stderr pipe can't block its exit.
 
             # Close stdin stream (hold the write lock to prevent a race with
             # concurrent writes). Bounded: a writer blocked on a full stdin
@@ -995,11 +993,6 @@ class SubprocessCLITransport(Transport):
             finally:
                 if lock_held:
                     self._write_lock.release()
-
-            if self._stderr_stream:
-                with suppress(Exception):
-                    await self._stderr_stream.aclose()
-                self._stderr_stream = None
 
             # Wait for graceful shutdown after stdin EOF, then terminate if
             # needed. The subprocess needs time to flush its session file after
@@ -1033,6 +1026,24 @@ class SubprocessCLITransport(Transport):
                 # not one that survived SIGKILL.
                 if self._process.returncode is not None:
                     _ACTIVE_CHILDREN.discard(self._process)
+
+            # Once the process is gone the reader reaches EOF on its own. Give it
+            # a moment to deliver the last lines, then cancel it in case something
+            # else still holds the pipe open.
+            if self._stderr_task is not None:
+                if not self._stderr_task.done():
+                    with anyio.move_on_after(1):
+                        await self._stderr_task.wait()
+                if not self._stderr_task.done():
+                    self._stderr_task.cancel()
+                with suppress(Exception):
+                    await self._stderr_task.wait()
+            self._stderr_task = None
+
+            if self._stderr_stream:
+                with suppress(Exception):
+                    await self._stderr_stream.aclose()
+                self._stderr_stream = None
 
             self._process = None
             self._stdout_stream = None

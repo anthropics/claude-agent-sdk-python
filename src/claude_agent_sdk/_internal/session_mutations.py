@@ -25,7 +25,7 @@ import re
 import shutil
 import unicodedata
 import uuid as uuid_mod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +54,7 @@ def rename_session(
     session_id: str,
     title: str,
     directory: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Rename a session by appending a custom-title entry.
 
@@ -68,6 +69,10 @@ def rename_session(
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
 
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``title``
             is empty/whitespace-only.
@@ -106,13 +111,14 @@ def rename_session(
         + "\n"
     )
 
-    _append_to_session(session_id, data, directory)
+    _append_to_session(session_id, data, directory, env)
 
 
 def tag_session(
     session_id: str,
     tag: str | None,
     directory: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Tag a session. Pass ``None`` to clear the tag.
 
@@ -134,6 +140,10 @@ def tag_session(
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
 
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
             empty/whitespace-only after sanitization.
@@ -176,12 +186,13 @@ def tag_session(
         + "\n"
     )
 
-    _append_to_session(session_id, data, directory)
+    _append_to_session(session_id, data, directory, env)
 
 
 def delete_session(
     session_id: str,
     directory: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Delete a session by removing its JSONL file and subagent transcripts.
 
@@ -197,6 +208,10 @@ def delete_session(
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
 
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session file cannot be found.
@@ -213,7 +228,7 @@ def delete_session(
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
 
-    path = _find_session_file(session_id, directory)
+    path = _find_session_file(session_id, directory, env)
     if path is None:
         raise FileNotFoundError(
             f"Session {session_id} not found"
@@ -242,6 +257,7 @@ def fork_session(
     directory: str | None = None,
     up_to_message_id: str | None = None,
     title: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> ForkSessionResult:
     """Fork a session into a new branch with fresh UUIDs.
 
@@ -263,6 +279,10 @@ def fork_session(
         title: Custom title for the fork. If omitted, derives from
             the original title + " (fork)".
 
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
     Returns:
         ``ForkSessionResult`` with the new session's UUID.
 
@@ -295,7 +315,7 @@ def fork_session(
     if up_to_message_id and not _validate_uuid(up_to_message_id):
         raise ValueError(f"Invalid up_to_message_id: {up_to_message_id}")
 
-    source = _find_session_file_with_dir(session_id, directory)
+    source = _find_session_file_with_dir(session_id, directory, env)
     if source is None:
         raise FileNotFoundError(
             f"Session {session_id} not found"
@@ -492,18 +512,20 @@ def _build_fork_lines(
 def _find_session_file(
     session_id: str,
     directory: str | None,
+    env: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Find the path to a session's JSONL file.
 
     Returns the path if found, None otherwise.
     """
-    result = _find_session_file_with_dir(session_id, directory)
+    result = _find_session_file_with_dir(session_id, directory, env)
     return result[0] if result else None
 
 
 def _find_session_file_with_dir(
     session_id: str,
     directory: str | None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[Path, Path] | None:
     """Find a session file and its containing project directory.
 
@@ -524,7 +546,7 @@ def _find_session_file_with_dir(
 
     if directory:
         canonical = _canonicalize_path(directory)
-        project_dir = _find_project_dir(canonical)
+        project_dir = _find_project_dir(canonical, env)
         if project_dir is not None:
             result = _try_dir(project_dir)
             if result:
@@ -537,14 +559,14 @@ def _find_session_file_with_dir(
         for wt in worktree_paths:
             if wt == canonical:
                 continue
-            wt_project_dir = _find_project_dir(wt)
+            wt_project_dir = _find_project_dir(wt, env)
             if wt_project_dir is not None:
                 result = _try_dir(wt_project_dir)
                 if result:
                     return result
         return None
 
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         dirents = list(projects_dir.iterdir())
     except OSError:
@@ -625,6 +647,7 @@ def _append_to_session(
     session_id: str,
     data: str,
     directory: str | None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Append data to an existing session file.
 
@@ -638,7 +661,7 @@ def _append_to_session(
         canonical = _canonicalize_path(directory)
 
         # Try the exact/prefix-matched project directory first.
-        project_dir = _find_project_dir(canonical)
+        project_dir = _find_project_dir(canonical, env)
         if project_dir is not None and _try_append(project_dir / file_name, data):
             return
 
@@ -651,7 +674,7 @@ def _append_to_session(
         for wt in worktree_paths:
             if wt == canonical:
                 continue  # already tried above
-            wt_project_dir = _find_project_dir(wt)
+            wt_project_dir = _find_project_dir(wt, env)
             if wt_project_dir is not None and _try_append(
                 wt_project_dir / file_name, data
             ):
@@ -662,7 +685,7 @@ def _append_to_session(
         )
 
     # No directory — search all project directories by trying each directly.
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         dirents = list(projects_dir.iterdir())
     except OSError as e:

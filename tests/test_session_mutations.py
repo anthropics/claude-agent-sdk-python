@@ -815,3 +815,80 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+
+# ---------------------------------------------------------------------------
+# env override — mutate sessions in a config dir other than os.environ's
+# ---------------------------------------------------------------------------
+
+
+class TestEnvOverride:
+    """``env=`` targets the config dir a subprocess was given via ``options.env``.
+
+    A host process running several agents, each with its own
+    ``CLAUDE_CONFIG_DIR`` in ``ClaudeAgentOptions.env``, has one
+    ``os.environ`` but many config dirs. Without ``env=`` every mutation
+    resolves the host's own directory — and, for a session that only exists in
+    the agent's dir, raises ``FileNotFoundError``.
+    """
+
+    @pytest.fixture
+    def other_config_dir(self, tmp_path: Path) -> Path:
+        """A second config dir that os.environ does NOT point at."""
+        other = tmp_path / "other-claude"
+        (other / "projects").mkdir(parents=True)
+        return other
+
+    def _project(self, config_dir: Path, tmp_path: Path) -> tuple[str, Path]:
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True, exist_ok=True)
+        return project_path, _make_project_dir(
+            config_dir, os.path.realpath(project_path)
+        )
+
+    def test_rename_and_tag_follow_env(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        project_path, project_dir = self._project(other_config_dir, tmp_path)
+        sid, file_path = _make_session_file(project_dir)
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        with pytest.raises(FileNotFoundError):
+            rename_session(sid, "renamed", directory=project_path)
+        rename_session(sid, "renamed", directory=project_path, env=env)
+        tag_session(sid, "important", directory=project_path, env=env)
+
+        content = file_path.read_text()
+        assert (
+            '"customTitle":"renamed"' in content
+            or '"customTitle": "renamed"' in content
+        )
+        assert "important" in content
+        assert [s.custom_title for s in list_sessions(env=env)] == ["renamed"]
+
+    def test_delete_follows_env(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        _, project_dir = self._project(other_config_dir, tmp_path)
+        sid, file_path = _make_session_file(project_dir)
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        with pytest.raises(FileNotFoundError):
+            delete_session(sid)
+        assert file_path.exists(), "a lookup in the wrong dir must not touch the file"
+        delete_session(sid, env=env)
+        assert not file_path.exists()
+
+    def test_fork_follows_env(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        project_path, project_dir = self._project(other_config_dir, tmp_path)
+        sid, _, _ = _make_transcript_session(project_dir)
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        with pytest.raises(FileNotFoundError):
+            fork_session(sid, directory=project_path)
+        result = fork_session(sid, directory=project_path, env=env)
+        assert (project_dir / f"{result.session_id}.jsonl").exists()
+        # nothing leaked into the config dir os.environ points at
+        assert list(claude_config_dir.glob("projects/**/*.jsonl")) == []

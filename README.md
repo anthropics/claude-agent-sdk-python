@@ -82,6 +82,25 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### Filesystem Settings and CLAUDE.md
+
+By default, the SDK loads filesystem settings the same way the CLI does: the user (`~/.claude`), project (`.claude/` in the working directory), and local (`.claude/settings.local.json`) sources are all read — including `CLAUDE.md` memory files, custom slash commands, and subagents. Your project's `CLAUDE.md` is picked up automatically; no extra configuration is needed.
+
+The flip side is that a deployed agent inherits whatever settings exist on its host machine, so behavior can differ between your laptop and CI, Docker, or Kubernetes. Use `setting_sources` to make this explicit:
+
+```python
+# Hermetic (recommended for production/CI): ignore all filesystem settings
+options = ClaudeAgentOptions(setting_sources=[])
+
+# Load only project settings and CLAUDE.md — nothing user- or machine-specific
+options = ClaudeAgentOptions(
+    cwd="/path/to/project",
+    setting_sources=["project"],
+)
+```
+
+When passing an explicit list, include `"project"` if you want `CLAUDE.md` loaded. See the `setting_sources` docstring in [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for details.
+
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude

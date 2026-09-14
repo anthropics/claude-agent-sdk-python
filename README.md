@@ -190,6 +190,10 @@ A **hook** is a Python function that the Claude Code _application_ (_not_ Claude
 
 For more examples, see examples/hooks.py.
 
+For a fail-closed Bash safety hook backed by HOL Guard, see
+[examples/hol_guard.py](examples/hol_guard.py). It requires `hol-guard` on
+`PATH` and classifies commands without executing them.
+
 #### Example
 
 ```python

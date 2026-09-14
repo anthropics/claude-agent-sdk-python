@@ -8,7 +8,7 @@ import platform
 import re
 import shutil
 import signal
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from contextlib import suppress
 from pathlib import Path
 from subprocess import PIPE
@@ -211,6 +211,19 @@ def _parse_stdout_line(line: str) -> dict[str, Any] | None:
     except json.JSONDecodeError as e:
         raise SDKJSONDecodeError(line, e) from e
     return data
+
+
+def _sandbox_with_fail_closed(sandbox: Mapping[str, Any]) -> dict[str, Any]:
+    """Return sandbox settings that fail closed when the backend is missing.
+
+    The TypeScript SDK (0.2.91) defaults ``failIfUnavailable`` to true when
+    ``enabled`` is true, so a missing sandbox backend errors instead of
+    silently running unsandboxed. An explicit ``failIfUnavailable`` value
+    is left unchanged (set it to false for graceful degradation).
+    """
+    if sandbox.get("enabled") and "failIfUnavailable" not in sandbox:
+        return {**sandbox, "failIfUnavailable": True}
+    return dict(sandbox)
 
 
 class SubprocessCLITransport(Transport):
@@ -510,9 +523,11 @@ class SubprocessCLITransport(Transport):
                 else:
                     logger.warning(f"Settings file not found: {settings_path}")
 
-        # Merge sandbox settings
+        # Merge sandbox settings. Copy so fail-closed defaulting cannot
+        # mutate the caller's ClaudeAgentOptions.sandbox dict.
         if has_sandbox:
-            settings_obj["sandbox"] = self._options.sandbox
+            assert self._options.sandbox is not None
+            settings_obj["sandbox"] = _sandbox_with_fail_closed(self._options.sandbox)
 
         return json.dumps(settings_obj)
 

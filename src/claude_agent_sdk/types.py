@@ -906,6 +906,11 @@ class SandboxSettings(TypedDict, total=False):
         ignoreViolations: Violations to ignore.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
+        failIfUnavailable: When True, the session errors instead of silently
+            running unsandboxed if the sandbox backend cannot start. The SDK
+            defaults this to True when ``enabled`` is True and the field is
+            omitted (TypeScript SDK 0.2.91 parity). Set False for graceful
+            degradation.
 
     Example:
         ```python
@@ -928,6 +933,7 @@ class SandboxSettings(TypedDict, total=False):
     network: SandboxNetworkConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool
+    failIfUnavailable: bool
 
 
 # Content block types
@@ -2253,10 +2259,15 @@ class ClaudeAgentOptions:
     """Sandbox settings for command execution isolation.
 
     When enabled, commands execute in a sandboxed environment that restricts
-    filesystem and network access. Filesystem and network restrictions are
-    configured via permission rules (Read/Edit for filesystem, WebFetch for
-    network), not via these sandbox settings — sandbox settings control
-    sandbox behavior (enabled, auto-allow, etc.).
+    filesystem and network access. If the sandbox backend cannot start, the
+    SDK defaults ``failIfUnavailable`` to True so the session errors rather
+    than silently running unsandboxed. Set ``failIfUnavailable`` to False to
+    allow graceful degradation.
+
+    Filesystem and network restrictions are configured via permission rules
+    (Read/Edit for filesystem, WebFetch for network), not via these sandbox
+    settings — sandbox settings control sandbox behavior (enabled,
+    auto-allow, etc.).
 
     See https://docs.anthropic.com/en/docs/claude-code/settings#sandbox-settings.
     """

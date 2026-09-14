@@ -23,6 +23,32 @@ def make_options(**kwargs: object) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(cli_path=cli_path, **kwargs)
 
 
+class TestSandboxFailClosed:
+    """Direct tests for ``_sandbox_with_fail_closed``."""
+
+    def test_injects_when_enabled_and_omitted(self):
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            _sandbox_with_fail_closed,
+        )
+
+        original = {"enabled": True, "excludedCommands": ["git"]}
+        out = _sandbox_with_fail_closed(original)
+        assert out["failIfUnavailable"] is True
+        assert out["excludedCommands"] == ["git"]
+        assert "failIfUnavailable" not in original
+        assert out is not original
+
+    def test_copy_when_already_set(self):
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            _sandbox_with_fail_closed,
+        )
+
+        original = {"enabled": True, "failIfUnavailable": False}
+        out = _sandbox_with_fail_closed(original)
+        assert out == original
+        assert out is not original
+
+
 class TestSubprocessCLITransport:
     """Test subprocess transport implementation."""
 
@@ -1841,7 +1867,56 @@ class TestSubprocessCLITransport:
         settings_value = cmd[settings_idx + 1]
 
         parsed = json.loads(settings_value)
-        assert parsed == {"sandbox": {"enabled": True}}
+        assert parsed == {"sandbox": {"enabled": True, "failIfUnavailable": True}}
+
+    def test_sandbox_fail_if_unavailable_defaults_true_when_enabled(self):
+        """enabled sandbox without failIfUnavailable fails closed (TS 0.2.91)."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "autoAllowBashIfSandboxed": True,
+        }
+        options = make_options(sandbox=sandbox)
+        transport = SubprocessCLITransport(prompt="test", options=options)
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed["sandbox"]["failIfUnavailable"] is True
+        # Caller dict must not be mutated.
+        assert "failIfUnavailable" not in sandbox
+        assert options.sandbox is sandbox
+
+    def test_sandbox_fail_if_unavailable_explicit_false_preserved(self):
+        """Hosts may opt into graceful unsandboxed fallback."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True, "failIfUnavailable": False}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed["sandbox"]["failIfUnavailable"] is False
+
+    def test_sandbox_fail_if_unavailable_not_injected_when_disabled(self):
+        """A disabled sandbox must not grow failIfUnavailable."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": False}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+        cmd = transport._build_command()
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed["sandbox"] == {"enabled": False}
 
     def test_sandbox_network_config(self):
         """Test sandbox with full network configuration."""

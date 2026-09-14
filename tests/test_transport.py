@@ -2419,7 +2419,8 @@ class TestSubprocessCLITransport:
     def test_stderr_line_without_newline_is_flushed_at_buffer_limit(self) -> None:
         """A producer that never emits a newline must not grow the pending
         buffer without bound: once it passes ``max_buffer_size`` the partial
-        line is flushed to the callback and the buffer resets."""
+        line is flushed to the callback and the buffer resets. The limit is
+        measured in UTF-8 bytes, not Python characters."""
 
         async def _test() -> None:
             received: list[str] = []
@@ -2430,18 +2431,19 @@ class TestSubprocessCLITransport:
             )
 
             async def mock_iter() -> AsyncIterator[str]:
-                # 15 chars with no newline in sight, then a normal line.
-                yield "aaaaa"
-                yield "aaaaa"
-                yield "aaaaa"
+                # Each emoji is four UTF-8 bytes. The third chunk takes the
+                # pending line from 8 to 12 bytes despite being only 3 chars.
+                yield "🚀"
+                yield "🚀"
+                yield "🚀"
                 yield "bbb\n"
 
             transport._stderr_stream = mock_iter()  # type: ignore[assignment]
             await transport._handle_stderr()
 
-            # Flushed once the 15 chars passed the 10-char limit, rather than
+            # Flushed once the 12 bytes passed the 10-byte limit, rather than
             # buffering forever waiting for a newline.
-            assert received == ["a" * 15, "bbb"]
+            assert received == ["🚀" * 3, "bbb"]
 
         anyio.run(_test)
 

@@ -577,7 +577,7 @@ class Query:
                     "response": response_data,
                 },
             }
-            await self.transport.write(json.dumps(success_response) + "\n")
+            await self._send_control_response(success_response)
 
         except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
@@ -593,7 +593,32 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            await self._send_control_response(error_response)
+
+    async def _send_control_response(self, response: SDKControlResponse) -> None:
+        """Write a control response, tolerating a transport that has gone away.
+
+        This runs in a detached task (see ``_spawn_control_request_handler``),
+        so an exception leaving it reaches no caller and surfaces as an
+        unhandled-task error instead: a warning from ``_task_compat`` on trio,
+        "Task exception was never retrieved" on asyncio. The write fails when
+        the CLI has exited, or stdin has been closed, while a hook, permission
+        or SDK-MCP request was still in flight. Nobody is left to answer at
+        that point, and the read loop reports the same transport failure to the
+        consumer, so log it and return.
+
+        Keeping this out of ``_handle_control_request``'s ``except`` clause
+        also stops a failed *success* write from being reported to the CLI as
+        a handler error for a request the handler actually completed.
+        """
+        try:
+            await self.transport.write(json.dumps(response) + "\n")
+        except Exception as e:
+            logger.debug(
+                "Could not send control response for %s: %s",
+                response["response"]["request_id"],
+                e,
+            )
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0
@@ -622,7 +647,17 @@ class Query:
             "request": request,
         }
 
-        await self.transport.write(json.dumps(control_request) + "\n")
+        try:
+            await self.transport.write(json.dumps(control_request) + "\n")
+        except BaseException:
+            # The request never reached the CLI, so no response can ever
+            # arrive for it. Drop the slot here: the write error already goes
+            # to the caller, and an entry left behind stays for the life of
+            # the Query (only the wait below and the read loop's failure path
+            # clean these up, and neither runs now). On a long-lived client
+            # a repeatedly failing interrupt() would grow both dicts.
+            self.pending_control_responses.pop(request_id, None)
+            raise
 
         # Wait for response
         try:

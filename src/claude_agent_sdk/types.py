@@ -2139,7 +2139,15 @@ class ClaudeAgentOptions:
     """
 
     user: str | None = None
-    """Optional user identifier associated with the session."""
+    """Run the Claude Code subprocess as this operating-system user.
+
+    The value is passed to ``subprocess.Popen(user=...)``, which resolves it
+    via ``getpwnam()`` and switches the child process to that account before
+    the CLI starts. It is **not** a session or analytics identifier.
+
+    Requires the account to exist and the current process to have permission
+    to switch users (typically root). Not supported on Windows.
+    """
 
     include_partial_messages: bool = False
     """Include partial/streaming message events in the output.

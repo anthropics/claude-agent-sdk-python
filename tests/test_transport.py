@@ -2525,6 +2525,66 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test, backend=backend)
 
+    def test_raw_cancel_during_close_grace_wait_stops_the_stderr_reader(self) -> None:
+        """A raw asyncio cancellation still reaches close() inside its shielded
+        scope (see the docstring). If it lands during the grace wait, the stderr
+        reader must be stopped anyway, so the callback doesn't keep firing after
+        close() has given up."""
+        import asyncio
+        import sys
+        from subprocess import PIPE
+
+        from anyio.streams.text import TextReceiveStream, TextSendStream
+
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        # Ignores stdin EOF and keeps logging, so close() stays in its grace wait.
+        script = (
+            "import sys, time\n"
+            "sys.stdin.read()\n"
+            "while True:\n"
+            "    sys.stderr.write('still running\\n')\n"
+            "    sys.stderr.flush()\n"
+            "    time.sleep(0.05)\n"
+        )
+
+        async def _test() -> None:
+            received: list[str] = []
+            process = await anyio.open_process(
+                [sys.executable, "-c", script], stdin=PIPE, stdout=PIPE, stderr=PIPE
+            )
+            try:
+                transport = SubprocessCLITransport(
+                    prompt="x", options=ClaudeAgentOptions(stderr=received.append)
+                )
+                transport._process = process
+                transport._stdin_stream = TextSendStream(process.stdin)
+                assert process.stderr is not None
+                transport._stderr_stream = TextReceiveStream(process.stderr)
+                reader = spawn_detached(transport._handle_stderr())
+                transport._stderr_task = reader
+                transport._ready = True
+
+                closing = asyncio.ensure_future(transport.close())
+                await asyncio.sleep(0.5)
+                closing.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await closing
+
+                await asyncio.sleep(0.1)
+                assert reader.done()
+                lines_after_cancel = len(received)
+                await asyncio.sleep(0.5)
+                assert len(received) == lines_after_cancel
+            finally:
+                subprocess_cli._ACTIVE_CHILDREN.discard(process)
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+
+        anyio.run(_test, backend="asyncio")
+
 
 class TestAtexitChildCleanup:
     """Tests for the atexit handler that terminates orphaned CLI subprocesses."""

@@ -199,6 +199,7 @@ class ClaudeSDKClient:
             exclude_dynamic_sections=exclude_dynamic_sections,
             skills=self.options.skills,
             forward_subagent_text=self.options.forward_subagent_text,
+            is_resuming=bool(options.resume or options.continue_conversation),
         )
 
         if self.options.session_store is not None:

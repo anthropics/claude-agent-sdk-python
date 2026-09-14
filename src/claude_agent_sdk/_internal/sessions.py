@@ -1779,34 +1779,37 @@ async def list_sessions_from_store(
                     if e["session_id"] not in fresh_summary_ids
                 )
 
-            # Paginate BEFORE per-session load so gap-fill load() count is
-            # bounded by page size, not total missing — 500 sessions lacking
-            # sidecars with limit=10 issues at most 10 load()s, not 500.
             slots.sort(key=lambda sl: sl["mtime"], reverse=True)
-            # Mirror _apply_sort_limit_offset's guards so negative/zero
-            # offset and non-positive limit behave identically to the slow
-            # and disk paths.
-            page = slots[offset:] if offset > 0 else slots
+
+            # Resolve unknown slots incrementally in sorted order until enough
+            # VALID rows exist to satisfy offset + limit. A page-sized chunk
+            # preserves the common-case load bound (limit=10 loads at most 10
+            # missing sidecars), while invalid placeholders trigger only the
+            # additional chunks needed to backfill a full filtered page.
             if limit is not None and limit > 0:
-                page = page[:limit]
+                target_count: int | None = max(offset, 0) + limit
+                chunk_size = limit
+            else:
+                target_count = None
+                chunk_size = _STORE_LIST_LOAD_CONCURRENCY
+            resolved: list[SDKSessionInfo] = []
 
-            to_fill = [sl for sl in page if sl["info"] is None]
-            if to_fill:
-                filled = await _derive_infos_via_load(
-                    session_store, to_fill, directory, project_path
-                )
-                by_sid = {f.session_id: f for f in filled}
-                for sl in to_fill:
-                    sl["info"] = by_sid.get(sl["session_id"])
+            for start in range(0, len(slots), chunk_size):
+                chunk = slots[start : start + chunk_size]
+                to_fill = [sl for sl in chunk if sl["info"] is None]
+                if to_fill:
+                    filled = await _derive_infos_via_load(
+                        session_store, to_fill, directory, project_path
+                    )
+                    by_sid = {f.session_id: f for f in filled}
+                    for sl in to_fill:
+                        sl["info"] = by_sid.get(sl["session_id"])
 
-            # Gap-fill placeholders that resolved to None (sidechain / no
-            # extractable summary after load) are dropped here, AFTER
-            # pagination — that case alone can short-page. Summary-backed
-            # slots were already pre-filtered above, so a store with complete
-            # and fresh sidecars never short-pages; a present-but-stale
-            # sidecar is routed through gap-fill (same as a missing one) and
-            # can short-page if load() yields no extractable summary.
-            return [sl["info"] for sl in page if sl["info"] is not None]
+                resolved.extend(sl["info"] for sl in chunk if sl["info"] is not None)
+                if target_count is not None and len(resolved) >= target_count:
+                    break
+
+            return _apply_sort_limit_offset(resolved, limit, offset)
 
     if not has_list_sessions:
         raise ValueError(

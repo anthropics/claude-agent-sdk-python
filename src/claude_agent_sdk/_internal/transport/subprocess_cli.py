@@ -8,8 +8,8 @@ import platform
 import re
 import shutil
 import signal
-from collections.abc import AsyncIterable, AsyncIterator
-from contextlib import suppress
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any, cast
@@ -939,6 +939,24 @@ class SubprocessCLITransport(Transport):
             # synchronous, so it is safe to run during cancellation unwind.
             emit(framer.flush())
 
+    @contextmanager
+    def _stop_stderr_reader_on_error(self) -> Iterator[None]:
+        """Cancel the stderr reader if close() is interrupted.
+
+        close() lets the reader run until the process has exited. If a raw
+        cancellation (see the caveat in close()) unwinds out before that, stop
+        the reader without awaiting, so the callback doesn't keep firing after
+        close() has given up. The stream is left for a later close() to
+        aclose().
+        """
+        try:
+            yield
+        except BaseException:
+            if self._stderr_task is not None:
+                self._stderr_task.cancel()
+                self._stderr_task = None
+            raise
+
     async def close(self) -> None:
         """Close the transport and clean up resources.
 
@@ -972,7 +990,7 @@ class SubprocessCLITransport(Transport):
             self._ready = False
             return
 
-        with anyio.CancelScope(shield=True):
+        with anyio.CancelScope(shield=True), self._stop_stderr_reader_on_error():
             # The stderr reader keeps running until the process has exited (see
             # below): what the CLI writes while it shuts down still reaches the
             # callback, and a full stderr pipe can't block its exit.
@@ -1029,7 +1047,8 @@ class SubprocessCLITransport(Transport):
 
             # Once the process is gone the reader reaches EOF on its own. Give it
             # a moment to deliver the last lines, then cancel it in case something
-            # else still holds the pipe open.
+            # else still holds the pipe open (e.g. a stdio MCP server the CLI
+            # started inherited its stderr), which costs close() up to 1s.
             if self._stderr_task is not None:
                 if not self._stderr_task.done():
                     with anyio.move_on_after(1):

@@ -147,6 +147,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in user message: {e}", data
                 ) from e
+            except (TypeError, AttributeError) as e:
+                # e.g. data["message"] is not a dict, so indexing into it fails
+                raise MessageParseError(f"Malformed user message: {e}", data) from e
 
         case "assistant":
             try:
@@ -221,6 +224,11 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data
+                ) from e
+            except (TypeError, AttributeError) as e:
+                # e.g. data["message"] is not a dict, so indexing into it fails
+                raise MessageParseError(
+                    f"Malformed assistant message: {e}", data
                 ) from e
 
         case "system":

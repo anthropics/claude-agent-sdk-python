@@ -23,7 +23,13 @@ from claude_agent_sdk import (
     query,
     tool,
 )
-from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
+from claude_agent_sdk._errors import (
+    ClaudeSDKError,
+    CLIConnectionError,
+    ControlRequestTimeoutError,
+    ProcessError,
+    ResultError,
+)
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk.types import HookMatcher
 
@@ -2026,3 +2032,45 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestControlRequestTimeout:
+    """A control request the CLI never answers raises a typed, selectable error."""
+
+    @pytest.mark.anyio
+    async def test_unanswered_control_request_raises_typed_error(self):
+        """`except ClaudeSDKError` must catch a control request timeout.
+
+        Reproduces the shape of anthropics/claude-agent-sdk-python#541, where
+        an unanswered `initialize` surfaced as a bare `Exception` that callers
+        could only identify by string-matching its message.
+        """
+        transport = _make_mock_transport(messages=[])
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        # The transport accepts the write but never delivers a control_response.
+        with pytest.raises(ControlRequestTimeoutError) as excinfo:
+            await q._send_control_request({"subtype": "interrupt"}, timeout=0.05)
+
+        error = excinfo.value
+        assert isinstance(error, ClaudeSDKError)
+        assert error.subtype == "interrupt"
+        assert error.timeout == 0.05
+        assert isinstance(error.__cause__, TimeoutError)
+
+        # The abandoned request must not leak into the pending maps.
+        assert q.pending_control_responses == {}
+        assert q.pending_control_results == {}
+
+    @pytest.mark.anyio
+    async def test_control_request_timeout_reports_its_subtype(self):
+        """The timed-out request is identifiable without parsing the message."""
+        transport = _make_mock_transport(messages=[])
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        with pytest.raises(ControlRequestTimeoutError) as excinfo:
+            await q._send_control_request(
+                {"subtype": "set_permission_mode", "mode": "plan"}, timeout=0.05
+            )
+
+        assert excinfo.value.subtype == "set_permission_mode"

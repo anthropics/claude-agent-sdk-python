@@ -15,6 +15,7 @@ from ..types import (
     MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
+    RawContentBlock,
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
@@ -129,6 +130,17 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                         is_error=block.get("is_error"),
                                     )
                                 )
+                            case _:
+                                logger.debug(
+                                    "Unknown content block type in user message: %s",
+                                    block.get("type"),
+                                )
+                                user_content_blocks.append(
+                                    RawContentBlock(
+                                        type=block.get("type", "unknown"),
+                                        data=block,
+                                    )
+                                )
                     return UserMessage(
                         content=user_content_blocks,
                         uuid=uuid,
@@ -204,6 +216,17 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                 ServerToolResultBlock(
                                     tool_use_id=block["tool_use_id"],
                                     content=block["content"],
+                                )
+                            )
+                        case _:
+                            logger.debug(
+                                "Unknown content block type in assistant message: %s",
+                                block.get("type"),
+                            )
+                            content_blocks.append(
+                                RawContentBlock(
+                                    type=block.get("type", "unknown"),
+                                    data=block,
                                 )
                             )
 

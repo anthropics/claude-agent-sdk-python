@@ -54,8 +54,9 @@ async def test_set_model():
             print(f"Default model response: {message}")
             pass
 
-        # Switch to Haiku model
-        await client.set_model("claude-3-5-haiku-20241022")
+        # The CLI checks a model ID with the API, so a retired ID fails here.
+        # An alias is not checked, and the CLI maps it to a current model.
+        await client.set_model("haiku")
 
         await client.query("What is 2+2? Just the number.")
 

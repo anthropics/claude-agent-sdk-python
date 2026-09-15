@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from copy import deepcopy
 from pathlib import Path
 
 from ..types import (
@@ -37,7 +38,8 @@ class InMemorySessionStore(SessionStore):
 
     Stores entries in a ``dict`` keyed by a composite ``project_key/session_id``
     string (with an optional ``/subpath`` suffix). Not suitable for production —
-    data is lost when the process exits.
+    data is lost when the process exits. Transcript entries and summary results
+    are copied so caller mutations cannot modify the stored session.
     """
 
     def __init__(self) -> None:
@@ -63,7 +65,7 @@ class InMemorySessionStore(SessionStore):
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
-        self._store.setdefault(k, []).extend(entries)
+        self._store.setdefault(k, []).extend(deepcopy(entries))
         now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't
@@ -82,7 +84,7 @@ class InMemorySessionStore(SessionStore):
 
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         entries = self._store.get(_key_to_string(key))
-        return None if entries is None else list(entries)
+        return None if entries is None else deepcopy(entries)
 
     async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
         results: list[SessionStoreListEntry] = []
@@ -100,7 +102,9 @@ class InMemorySessionStore(SessionStore):
     async def list_session_summaries(
         self, project_key: str
     ) -> list[SessionSummaryEntry]:
-        return [s for (pk, _), s in self._summaries.items() if pk == project_key]
+        return [
+            deepcopy(s) for (pk, _), s in self._summaries.items() if pk == project_key
+        ]
 
     async def delete(self, key: SessionKey) -> None:
         k = _key_to_string(key)
@@ -126,7 +130,7 @@ class InMemorySessionStore(SessionStore):
 
     def get_entries(self, key: SessionKey) -> list[SessionStoreEntry]:
         """Test helper — get all entries for a key (empty list if absent)."""
-        return list(self._store.get(_key_to_string(key), []))
+        return deepcopy(self._store.get(_key_to_string(key), []))
 
     @property
     def size(self) -> int:

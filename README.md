@@ -309,7 +309,7 @@ To build wheels with the bundled Claude Code CLI:
 
 ```bash
 # Install build dependencies
-pip install build twine
+pip install build twine wheel
 
 # Build wheel with bundled CLI
 python scripts/build_wheel.py

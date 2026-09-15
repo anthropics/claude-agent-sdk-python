@@ -168,14 +168,19 @@ class ClaudeSDKClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Extract exclude_dynamic_sections from preset system prompt for the
-        # initialize request (older CLIs ignore unknown initialize fields).
+        # Extract exclude_dynamic_sections and snapshot from the system prompt
+        # for the initialize request (older CLIs ignore unknown initialize fields).
         exclude_dynamic_sections: bool | None = None
+        system_prompt_snapshot: bool | None = None
         sp = self.options.system_prompt
         if isinstance(sp, dict) and sp.get("type") == "preset":
             eds = sp.get("exclude_dynamic_sections")
             if isinstance(eds, bool):
                 exclude_dynamic_sections = eds
+        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+            snapshot = sp.get("snapshot")
+            if isinstance(snapshot, bool):
+                system_prompt_snapshot = snapshot
 
         # Convert agents to dict format for initialize request
         agents_dict: dict[str, dict[str, Any]] | None = None
@@ -197,6 +202,7 @@ class ClaudeSDKClient:
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
             forward_subagent_text=self.options.forward_subagent_text,
         )

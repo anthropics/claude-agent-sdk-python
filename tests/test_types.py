@@ -218,6 +218,38 @@ class TestOptions:
             "exclude_dynamic_sections": True,
         }
 
+    def test_claude_code_options_with_system_prompt_preset_snapshot(self):
+        """Test Options with system prompt preset and snapshot."""
+        options = ClaudeAgentOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": "Be concise.",
+                "snapshot": False,
+            },
+        )
+        assert options.system_prompt == {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": "Be concise.",
+            "snapshot": False,
+        }
+
+    def test_claude_code_options_with_system_prompt_custom(self):
+        """Test Options with the custom system prompt form."""
+        options = ClaudeAgentOptions(
+            system_prompt={
+                "type": "custom",
+                "prompt": "You are a release bot.",
+                "snapshot": True,
+            },
+        )
+        assert options.system_prompt == {
+            "type": "custom",
+            "prompt": "You are a release bot.",
+            "snapshot": True,
+        }
+
     def test_claude_code_options_with_system_prompt_file(self):
         """Test Options with system prompt file."""
         options = ClaudeAgentOptions(

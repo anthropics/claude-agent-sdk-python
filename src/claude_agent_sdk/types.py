@@ -55,6 +55,27 @@ class SystemPromptPreset(TypedDict):
     Requires a Claude Code CLI version that supports this option; older
     CLIs silently ignore it.
     """
+    snapshot: NotRequired[bool]
+    """Whether the session keeps the system prompt it recorded on its first
+    request. When True, every later request, including after resume, sends
+    the recorded prompt, so changing `append` has no effect until the session
+    is compacted or you start a new session. When False, the prompt is rebuilt
+    on every request, for example while you iterate on `append` text across
+    calls that resume the same session. When omitted, it acts as True, except
+    in bare mode (`--bare`), where it acts as False.
+
+    Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with
+    an `append` or custom prompt recorded it only when `snapshot` was True.
+    """
+
+
+class SystemPromptCustom(TypedDict):
+    """A custom system prompt, in the form that can also set `snapshot`."""
+
+    type: Literal["custom"]
+    prompt: str
+    snapshot: NotRequired[bool]
+    """Same as `SystemPromptPreset.snapshot`, applied to `prompt`."""
 
 
 class SystemPromptFile(TypedDict):
@@ -1964,7 +1985,9 @@ class ClaudeAgentOptions:
         ``Skill`` tool).
     """
 
-    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    system_prompt: (
+        str | SystemPromptPreset | SystemPromptCustom | SystemPromptFile | None
+    ) = None
     """System prompt configuration.
 
     - ``str`` — Use a custom system prompt.
@@ -1972,6 +1995,8 @@ class ClaudeAgentOptions:
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
       prompt with appended instructions.
+    - ``{"type": "custom", "prompt": "..."}`` — Same as ``str``; this form can
+      also set ``snapshot`` (see :class:`SystemPromptCustom`).
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
@@ -2383,6 +2408,7 @@ class SDKControlInitializeRequest(TypedDict):
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
     excludeDynamicSections: NotRequired[bool]
+    systemPromptSnapshot: NotRequired[bool]
     skills: NotRequired[list[str]]
     forwardSubagentText: NotRequired[bool]
 

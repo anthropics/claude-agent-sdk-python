@@ -24,6 +24,7 @@ from ..._version import __version__
 from ...types import (
     _SKILLS_ALL,
     ClaudeAgentOptions,
+    SystemPromptCustom,
     SystemPromptFile,
     SystemPromptPreset,
 )
@@ -573,6 +574,8 @@ class SubprocessCLITransport(Transport):
             sp = self._options.system_prompt
             if sp.get("type") == "file":
                 cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+            elif sp.get("type") == "custom":
+                cmd.extend(["--system-prompt", cast(SystemPromptCustom, sp)["prompt"]])
             elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
                     ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]

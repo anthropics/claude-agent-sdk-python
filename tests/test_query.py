@@ -62,6 +62,20 @@ def test_initialize_omits_exclude_dynamic_sections_when_unset():
     assert "excludeDynamicSections" not in sent
 
 
+def test_initialize_sends_system_prompt_snapshot():
+    """Query.initialize() includes systemPromptSnapshot, even when it is False."""
+    sent = _capture_initialize_request(system_prompt_snapshot=False)
+    assert sent["subtype"] == "initialize"
+    assert sent["systemPromptSnapshot"] is False
+
+
+def test_initialize_omits_system_prompt_snapshot_when_unset():
+    """systemPromptSnapshot is absent from initialize when not configured."""
+    sent = _capture_initialize_request()
+    assert sent["subtype"] == "initialize"
+    assert "systemPromptSnapshot" not in sent
+
+
 def test_initialize_sends_skills_list():
     """Query.initialize() includes skills only when it is a list."""
     sent = _capture_initialize_request(skills=["pdf", "docx"])

@@ -489,6 +489,217 @@ class TestClaudeSDKClientStreaming:
                 assert isinstance(messages[1], ResultMessage)
 
     @pytest.mark.anyio
+    async def test_receive_response_waits_for_deferred_result(self):
+        """receive_response() must not stop on a result that only ends one
+        turn while delegated agent work is still in flight (#1138) — it
+        should keep reading through to the run-ending result."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            async def mock_receive():
+                await anyio.sleep(0.01)
+                written = mock_transport.write.call_args_list
+                for call in written:
+                    data = call[0][0]
+                    try:
+                        msg = json.loads(data.strip())
+                        if (
+                            msg.get("type") == "control_request"
+                            and msg.get("request", {}).get("subtype") == "initialize"
+                        ):
+                            yield {
+                                "type": "control_response",
+                                "response": {
+                                    "request_id": msg.get("request_id"),
+                                    "subtype": "success",
+                                    "commands": [],
+                                    "output_style": "default",
+                                },
+                            }
+                            break
+                    except (json.JSONDecodeError, KeyError, AttributeError):
+                        pass
+
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "First turn"}],
+                        "model": "claude-opus-4-1-20250805",
+                    },
+                }
+                yield {
+                    "type": "system",
+                    "subtype": "task_started",
+                    "task_id": "task-1",
+                    "task_type": "local_agent",
+                    "description": "background subagent",
+                    "uuid": "uuid-ts1",
+                    "session_id": "test",
+                }
+                # Turn boundary: this result ends the first turn, but the
+                # background agent task is still running.
+                yield {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1000,
+                    "duration_api_ms": 800,
+                    "is_error": False,
+                    "num_turns": 1,
+                    "session_id": "test",
+                    "total_cost_usd": 0.001,
+                    "uuid": "uuid-r1",
+                }
+                # The background task settles, waking the parent for a
+                # follow-up turn.
+                yield {
+                    "type": "system",
+                    "subtype": "task_notification",
+                    "task_id": "task-1",
+                    "status": "completed",
+                    "output_file": "/tmp/task-1.output",
+                    "summary": "done",
+                    "uuid": "uuid-tn1",
+                    "session_id": "test",
+                }
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Follow-up after the task"}
+                        ],
+                        "model": "claude-opus-4-1-20250805",
+                    },
+                }
+                # Run-ending result: no tasks in flight.
+                yield {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 500,
+                    "duration_api_ms": 400,
+                    "is_error": False,
+                    "num_turns": 2,
+                    "session_id": "test",
+                    "total_cost_usd": 0.002,
+                    "uuid": "uuid-r2",
+                }
+                # This should not be yielded — receive_response() must have
+                # already returned after the run-ending result above.
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Should not see this"}],
+                    },
+                    "model": "claude-opus-4-1-20250805",
+                }
+
+            mock_transport.read_messages = mock_receive
+
+            async with ClaudeSDKClient() as client:
+                messages = []
+                async for msg in client.receive_response():
+                    messages.append(msg)
+
+                assert [type(m).__name__ for m in messages] == [
+                    "AssistantMessage",
+                    "TaskStartedMessage",
+                    "ResultMessage",
+                    "TaskNotificationMessage",
+                    "AssistantMessage",
+                    "ResultMessage",
+                ]
+                results = [m for m in messages if isinstance(m, ResultMessage)]
+                assert len(results) == 2
+                assert results[0].uuid == "uuid-r1"
+                assert results[1].uuid == "uuid-r2"
+
+    @pytest.mark.anyio
+    async def test_deferred_result_ids_bounded_via_receive_messages(self):
+        """Query._deferred_result_ids is only retired by is_deferred_result(),
+        which only receive_response() calls. A caller reading raw frames via
+        receive_messages() instead never retires an entry, so a long-lived
+        Query that sees many deferred results must still bound the set
+        itself rather than leaking one entry per deferred result forever."""
+        from claude_agent_sdk._internal.query import _MAX_DEFERRED_RESULT_IDS
+
+        num_deferred_results = _MAX_DEFERRED_RESULT_IDS + 50
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            async def mock_receive():
+                await anyio.sleep(0.01)
+                written = mock_transport.write.call_args_list
+                for call in written:
+                    data = call[0][0]
+                    try:
+                        msg = json.loads(data.strip())
+                        if (
+                            msg.get("type") == "control_request"
+                            and msg.get("request", {}).get("subtype") == "initialize"
+                        ):
+                            yield {
+                                "type": "control_response",
+                                "response": {
+                                    "request_id": msg.get("request_id"),
+                                    "subtype": "success",
+                                    "commands": [],
+                                    "output_style": "default",
+                                },
+                            }
+                            break
+                    except (json.JSONDecodeError, KeyError, AttributeError):
+                        pass
+
+                # One background task that never settles, so every result
+                # frame below arrives with _inflight_tasks non-empty and is
+                # marked deferred.
+                yield {
+                    "type": "system",
+                    "subtype": "task_started",
+                    "task_id": "task-1",
+                    "task_type": "local_agent",
+                    "description": "background subagent",
+                    "uuid": "uuid-ts1",
+                    "session_id": "test",
+                }
+                for i in range(num_deferred_results):
+                    yield {
+                        "type": "result",
+                        "subtype": "success",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "test",
+                        "total_cost_usd": 0.0,
+                        "uuid": f"uuid-r{i}",
+                    }
+
+            mock_transport.read_messages = mock_receive
+
+            async with ClaudeSDKClient() as client:
+                result_count = 0
+                async for msg in client.receive_messages():
+                    if isinstance(msg, ResultMessage):
+                        result_count += 1
+                        if result_count == num_deferred_results:
+                            break
+
+                assert (
+                    len(client._query._deferred_result_ids) <= _MAX_DEFERRED_RESULT_IDS
+                )
+
+    @pytest.mark.anyio
     async def test_interrupt(self):
         """Test interrupt functionality."""
 

@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 # CLAUDE_CONFIG_DIR is unset (production OAUTH_FILE_SUFFIX is empty).
 _KEYCHAIN_SERVICE_NAME = "Claude Code-credentials"
 
+# The macOS ``security`` tool, by absolute path on purpose (G1 in
+# _internal/executable.py): it is a SIP-protected system binary at this fixed
+# location on every supported macOS, so nothing is looked up on PATH -- or in
+# the working directory -- to read the Keychain.
+_SECURITY_BIN = "/usr/bin/security"
+
 
 @dataclass
 class MaterializedResume:
@@ -508,7 +514,7 @@ def _read_keychain_credentials() -> str | None:
     try:
         result = subprocess.run(
             [
-                "security",
+                _SECURITY_BIN,
                 "find-generic-password",
                 "-a",
                 user,

@@ -120,26 +120,37 @@ def _sanitize_path(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _get_claude_config_home_dir() -> Path:
-    """Returns the Claude config directory (respects CLAUDE_CONFIG_DIR)."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+def _get_claude_config_home_dir(
+    env_override: Mapping[str, str] | None = None,
+) -> Path:
+    """Returns the Claude config directory the CLI would use.
+
+    Mirrors how the subprocess sees its environment
+    (``{**os.environ, **options.env}``): ``CLAUDE_CONFIG_DIR`` from
+    ``env_override`` wins, then ``CLAUDE_CONFIG_DIR`` from ``os.environ``;
+    without either, the default is ``~/.claude`` under the home directory
+    the subprocess would see -- ``HOME`` (``USERPROFILE`` on Windows) from
+    ``env_override`` if given, else the caller's own home.
+    """
+    override = env_override or {}
+    config_dir = override.get("CLAUDE_CONFIG_DIR") or os.environ.get(
+        "CLAUDE_CONFIG_DIR"
+    )
     if config_dir:
         return Path(unicodedata.normalize("NFC", config_dir))
-    return Path(unicodedata.normalize("NFC", str(Path.home() / ".claude")))
+    home = override.get("HOME") or override.get("USERPROFILE")
+    home_dir = Path(home) if home else Path.home()
+    return Path(unicodedata.normalize("NFC", str(home_dir / ".claude")))
 
 
 def _get_projects_dir(env_override: Mapping[str, str] | None = None) -> Path:
     """Returns the projects directory.
 
     ``env_override`` is consulted before ``os.environ`` so callers that pass
-    ``CLAUDE_CONFIG_DIR`` to the subprocess via ``options.env`` resolve the
-    same directory the subprocess will write to.
+    ``CLAUDE_CONFIG_DIR`` (or a different ``HOME``) to the subprocess via
+    ``options.env`` resolve the same directory the subprocess will write to.
     """
-    if env_override:
-        override = env_override.get("CLAUDE_CONFIG_DIR")
-        if override:
-            return Path(unicodedata.normalize("NFC", override)) / "projects"
-    return _get_claude_config_home_dir() / "projects"
+    return _get_claude_config_home_dir(env_override) / "projects"
 
 
 def _get_project_dir(project_path: str, env: Mapping[str, str] | None = None) -> Path:
@@ -710,9 +721,11 @@ def list_sessions(
             worktree paths. Defaults to ``True``.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
 
@@ -768,9 +781,11 @@ def get_session_info(
             directories are searched for the session file.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         ``SDKSessionInfo`` for the session, or ``None`` if the session file
         is not found, is a sidechain session, or has no extractable summary.
@@ -1096,9 +1111,11 @@ def get_session_messages(
         offset: Number of messages to skip from the start.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
         an empty list if the session is not found, the session_id is not a
@@ -1329,9 +1346,11 @@ def list_subagents(
             searches all project directories under ``~/.claude/projects/``.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         List of subagent ID strings. Returns an empty list if the session
         is not found, the session_id is not a valid UUID, or the session
@@ -1386,9 +1405,11 @@ def get_subagent_messages(
         offset: Number of messages to skip from the start.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
         an empty list if the session or subagent is not found, the

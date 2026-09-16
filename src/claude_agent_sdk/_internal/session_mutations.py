@@ -70,9 +70,11 @@ def rename_session(
             directories are searched for the session file.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``title``
             is empty/whitespace-only.
@@ -141,9 +143,11 @@ def tag_session(
             directories are searched for the session file.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
             empty/whitespace-only after sanitization.
@@ -209,9 +213,11 @@ def delete_session(
             directories are searched for the session file.
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session file cannot be found.
@@ -280,9 +286,11 @@ def fork_session(
             the original title + " (fork)".
 
         env: Optional environment mapping consulted before ``os.environ``
-            for ``CLAUDE_CONFIG_DIR``. Pass the same mapping given to
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
             ``ClaudeAgentOptions.env`` so the lookup resolves the config
             directory that subprocess writes to, instead of the caller's.
+
     Returns:
         ``ForkSessionResult`` with the new session's UUID.
 

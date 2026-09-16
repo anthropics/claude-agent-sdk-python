@@ -23,6 +23,7 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _get_projects_dir,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -2101,3 +2102,38 @@ class TestEnvOverride:
         Path(project).mkdir()
         sid = self._session_in(claude_config_dir, project)
         assert [s.session_id for s in list_sessions(env={"OTHER": "x"})] == [sid]
+
+    def test_env_home_moves_the_default_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A host that isolates agents by giving each one its own ``HOME``
+        (no CLAUDE_CONFIG_DIR) moves the CLI's config dir to ``$HOME/.claude``;
+        the lookup has to follow the same key, or it reads the host's home."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        agent_home = tmp_path / "agent-a-home"
+        assert _get_projects_dir({"HOME": str(agent_home)}) == (
+            agent_home / ".claude" / "projects"
+        )
+        assert _get_projects_dir({"USERPROFILE": str(agent_home)}) == (
+            agent_home / ".claude" / "projects"
+        )
+        # Same precedence the subprocess sees ({**os.environ, **options.env}):
+        # CLAUDE_CONFIG_DIR, from either side, beats an overridden HOME.
+        explicit = tmp_path / "explicit"
+        assert _get_projects_dir(
+            {"HOME": str(agent_home), "CLAUDE_CONFIG_DIR": str(explicit)}
+        ) == (explicit / "projects")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(explicit))
+        assert _get_projects_dir({"HOME": str(agent_home)}) == (explicit / "projects")
+
+    def test_list_sessions_follows_env_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        agent_home = tmp_path / "agent-a-home"
+        (agent_home / ".claude" / "projects").mkdir(parents=True)
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        sid = self._session_in(agent_home / ".claude", project)
+        found = list_sessions(env={"HOME": str(agent_home)})
+        assert [s.session_id for s in found] == [sid]

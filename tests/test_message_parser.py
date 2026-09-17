@@ -14,6 +14,7 @@ from claude_agent_sdk.types import (
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -1356,3 +1357,81 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+
+class TestUserMessageAttribution:
+    @pytest.mark.parametrize("message_type", ["assistant", "stream_event"])
+    @pytest.mark.parametrize(
+        "attribution",
+        [
+            {},
+            {"user_message_uuid": "user-1"},
+            {
+                "user_message_uuid": "user-2",
+                "user_message_uuids": ["user-1", "user-2"],
+            },
+        ],
+    )
+    def test_first_reply_attribution(self, message_type, attribution):
+        data = {
+            "type": message_type,
+            "uuid": "reply-1",
+            "session_id": "session-1",
+            **attribution,
+        }
+        if message_type == "assistant":
+            data["message"] = {"content": [], "model": "claude-opus-4-6"}
+        else:
+            data["event"] = {"type": "message_start", "message": {"id": "msg-1"}}
+
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage | StreamEvent)
+        assert message.uuid == "reply-1"
+        assert message.user_message_uuid == attribution.get("user_message_uuid")
+        assert message.user_message_uuids == attribution.get("user_message_uuids")
+
+        # Later frames carry no attribution; don't propagate the first frame's stamp.
+        data.pop("user_message_uuid", None)
+        data.pop("user_message_uuids", None)
+        later_message = parse_message(data)
+        assert isinstance(later_message, AssistantMessage | StreamEvent)
+        assert later_message.user_message_uuid is None
+        assert later_message.user_message_uuids is None
+
+    @pytest.mark.parametrize("subtype", ["success", "error_during_execution"])
+    @pytest.mark.parametrize(
+        "attribution",
+        [
+            {},
+            {"user_message_uuid": "user-1"},
+            {
+                "user_message_uuid": "user-2",
+                "user_message_uuids": ["user-1", "user-2", "user-3"],
+                "queued_turn_count": 0,
+            },
+            {
+                "user_message_uuid": "user-2",
+                "user_message_uuids": ["user-1", "user-2"],
+                "queued_turn_count": 2,
+            },
+        ],
+    )
+    def test_result_attribution(self, subtype, attribution):
+        message = parse_message(
+            {
+                "type": "result",
+                "subtype": subtype,
+                "duration_ms": 100,
+                "duration_api_ms": 50,
+                "is_error": subtype != "success",
+                "num_turns": 1,
+                "session_id": "session-1",
+                "uuid": "result-1",
+                **attribution,
+            }
+        )
+        assert isinstance(message, ResultMessage)
+        assert message.uuid == "result-1"
+        assert message.user_message_uuid == attribution.get("user_message_uuid")
+        assert message.user_message_uuids == attribution.get("user_message_uuids")
+        assert message.queued_turn_count == attribution.get("queued_turn_count")

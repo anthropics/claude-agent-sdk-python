@@ -2209,7 +2209,9 @@ class ClaudeAgentOptions:
     per-turn control, leave the option off and set ``"client_composed": True``
     on individual streamed messages instead.
 
-    Requires Claude Code 2.1.248 or later; older versions ignore the field.
+    Requires Claude Code 2.1.248 or later; older versions ignore the field, so
+    prompts are still expanded there. The SDK logs a warning when it connects to
+    an older CLI with this option on. The option is read when the session starts.
     """
 
     fork_session: bool = False

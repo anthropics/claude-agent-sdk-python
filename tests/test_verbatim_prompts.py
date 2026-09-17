@@ -14,6 +14,7 @@ import pytest
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, query
 from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 _RESULT = {
     "type": "result",
@@ -195,3 +196,62 @@ class TestClaudeSDKClient:
             True if enabled else None
         ] * 2
         assert "client_composed" not in first
+
+    @pytest.mark.anyio
+    async def test_option_is_captured_at_connect(self):
+        """Toggling options after connect() must not split one session's prompts
+        between stamped and unstamped."""
+        async with _ClientHarness(ClaudeAgentOptions(verbatim_prompts=False)) as h:
+            await h.client.connect(_stream(_user_message("streamed")))
+            await _wait_for_user_frames(h.transport, 1)
+            h.client.options.verbatim_prompts = True
+            await h.client.query("later")
+            await h.client.query(_stream(_user_message("later streamed")))
+            frames = _user_frames(h.transport)
+        assert len(frames) == 3
+        assert all("client_composed" not in f for f in frames)
+
+
+class TestOlderCliWarning:
+    @staticmethod
+    async def _check_version(verbatim_prompts: bool, version: bytes) -> Mock:
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=ClaudeAgentOptions(
+                cli_path="/usr/bin/claude", verbatim_prompts=verbatim_prompts
+            ),
+        )
+        process = Mock()
+        process.stdout.receive = AsyncMock(return_value=version)
+        process.terminate = Mock()
+        process.wait = AsyncMock()
+        with (
+            patch("anyio.open_process", AsyncMock(return_value=process)),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+            ) as logger,
+        ):
+            await transport._check_claude_version()
+        return logger
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("version", [b"2.1.247 (Claude Code)", b"2.0.5"])
+    async def test_warns_when_cli_predates_client_composed(self, version):
+        logger = await self._check_version(True, version)
+        logger.warning.assert_called_once()
+        message = logger.warning.call_args.args[0]
+        assert "verbatim_prompts" in message
+        assert logger.warning.call_args.args[-1] == "2.1.248"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "version", [b"2.1.248", b"2.1.273 (Claude Code)", b"3.0.0"]
+    )
+    async def test_no_warning_when_cli_supports_client_composed(self, version):
+        logger = await self._check_version(True, version)
+        logger.warning.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_no_warning_when_option_is_off(self):
+        logger = await self._check_version(False, b"2.1.100 (Claude Code)")
+        logger.warning.assert_not_called()

@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+# First Claude Code version that honors `client_composed` on user messages,
+# which `ClaudeAgentOptions.verbatim_prompts` relies on.
+VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = "2.1.248"
 
 # cmd.exe metacharacters (plus the quote character cmd.exe uses to toggle
 # its quoting state, and "!", which expands like "%" when delayed expansion
@@ -1177,6 +1180,25 @@ class SubprocessCLITransport(Transport):
                                 version,
                                 self._cli_path,
                                 MINIMUM_CLAUDE_CODE_VERSION,
+                            )
+
+                        verbatim_min_parts = [
+                            int(x)
+                            for x in VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION.split(
+                                "."
+                            )
+                        ]
+                        if self._options.verbatim_prompts and (
+                            version_parts < verbatim_min_parts
+                        ):
+                            logger.warning(
+                                "verbatim_prompts is enabled, but Claude Code "
+                                "version %s at %s ignores it: prompts will still "
+                                "have @path mentions expanded and slash commands "
+                                "dispatched. Claude Code %s or later is required.",
+                                version,
+                                self._cli_path,
+                                VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION,
                             )
         except Exception:
             pass

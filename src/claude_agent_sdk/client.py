@@ -76,6 +76,9 @@ class ClaudeSDKClient:
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+        # Captured at connect() so every prompt in a session is stamped
+        # consistently, matching the value Query uses for streamed prompts.
+        self._verbatim_prompts = False
         self._materialized: MaterializedResume | None = None
 
     async def connect(
@@ -190,6 +193,8 @@ class ClaudeSDKClient:
                 for name, agent_def in self.options.agents.items()
             }
 
+        self._verbatim_prompts = self.options.verbatim_prompts
+
         # Create Query to handle control protocol
         self._query = Query(
             transport=self._transport,
@@ -205,7 +210,7 @@ class ClaudeSDKClient:
             system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
             forward_subagent_text=self.options.forward_subagent_text,
-            verbatim_prompts=self.options.verbatim_prompts,
+            verbatim_prompts=self._verbatim_prompts,
         )
 
         if self.options.session_store is not None:
@@ -237,8 +242,7 @@ class ClaudeSDKClient:
                 "session_id": "default",
             }
             await self._transport.write(
-                json.dumps(stamp_user_message(message, self.options.verbatim_prompts))
-                + "\n"
+                json.dumps(stamp_user_message(message, self._verbatim_prompts)) + "\n"
             )
         elif prompt is not None and isinstance(prompt, AsyncIterable):
             self._query.spawn_task(self._query.stream_input(prompt))
@@ -279,8 +283,7 @@ class ClaudeSDKClient:
                 "session_id": session_id,
             }
             await self._transport.write(
-                json.dumps(stamp_user_message(message, self.options.verbatim_prompts))
-                + "\n"
+                json.dumps(stamp_user_message(message, self._verbatim_prompts)) + "\n"
             )
         else:
             # Handle AsyncIterable prompts - stream them
@@ -289,8 +292,7 @@ class ClaudeSDKClient:
                 if "session_id" not in msg:
                     msg["session_id"] = session_id
                 await self._transport.write(
-                    json.dumps(stamp_user_message(msg, self.options.verbatim_prompts))
-                    + "\n"
+                    json.dumps(stamp_user_message(msg, self._verbatim_prompts)) + "\n"
                 )
 
     async def interrupt(self) -> None:

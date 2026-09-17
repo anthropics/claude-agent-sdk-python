@@ -2192,6 +2192,26 @@ class ClaudeAgentOptions:
     SDK's ``forwardSubagentText``.
     """
 
+    verbatim_prompts: bool = False
+    """Deliver every prompt to Claude as written.
+
+    When true, every user message the SDK sends (a string prompt or a message
+    from a streamed prompt, including those passed to
+    ``ClaudeSDKClient.query()``) is marked ``client_composed``. Claude Code
+    then delivers the text exactly as given: no ``@path`` file-mention
+    expansion and no slash-command dispatch. Use this when the prompt text is
+    assembled from content the end user did not type (prior turns, tool
+    results, third-party text), so an ``@/absolute/path`` inside it cannot make
+    Claude Code read a local file.
+
+    While this option is on there is no per-message opt-out: any
+    ``client_composed`` value on a streamed message is overwritten. For
+    per-turn control, leave the option off and set ``"client_composed": True``
+    on individual streamed messages instead.
+
+    Requires Claude Code 2.1.248 or later; older versions ignore the field.
+    """
+
     fork_session: bool = False
     """When true, resumed sessions fork to a new session ID rather than
     continuing the previous session. Use with ``resume``."""

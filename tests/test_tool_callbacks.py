@@ -150,6 +150,58 @@ class TestToolPermissionCallbacks:
         assert sent == [wire_suggestion]
 
     @pytest.mark.anyio
+    async def test_permission_callback_suggestion_without_rule_content(self):
+        """A suggestion whose rule has no ruleContent is echoed back without it.
+
+        The CLI omits ruleContent for a whole-tool rule (WebSearch suggests
+        {"toolName": "WebSearch"}), and its control protocol types the field as
+        an optional string. Echoing it back as null makes the CLI discard the
+        entire updatedPermissions array, so the rule is never persisted.
+        """
+
+        async def always_allow(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            persist = [
+                s for s in context.suggestions if s.destination == "localSettings"
+            ]
+            return PermissionResultAllow(
+                updated_input=input_data, updated_permissions=persist
+            )
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=always_allow,
+            hooks=None,
+        )
+
+        wire_suggestion = {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [{"toolName": "WebSearch"}],
+        }
+        request = {
+            "type": "control_request",
+            "request_id": "test-no-rule-content",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "WebSearch",
+                "input": {"query": "claude agent sdk"},
+                "permission_suggestions": [wire_suggestion],
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(transport.written_messages) == 1
+        response = json.loads(transport.written_messages[0])
+        sent = response["response"]["response"]["updatedPermissions"]
+        assert sent == [wire_suggestion]
+
+    @pytest.mark.anyio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""
 

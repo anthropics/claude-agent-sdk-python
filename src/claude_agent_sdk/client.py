@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from . import Transport
@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
-    HookEvent,
-    HookMatcher,
     McpStatusResponse,
     Message,
     PermissionMode,
     ResultMessage,
+    _configure_can_use_tool,
+    _hooks_to_internal_format,
 )
 
 
@@ -77,24 +77,6 @@ class ClaudeSDKClient:
         self._transport: Transport | None = None
         self._query: Any | None = None
         self._materialized: MaterializedResume | None = None
-
-    def _convert_hooks_to_internal_format(
-        self, hooks: dict[HookEvent, list[HookMatcher]]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Convert HookMatcher format to internal Query format."""
-        internal_hooks: dict[str, list[dict[str, Any]]] = {}
-        for event, matchers in hooks.items():
-            internal_hooks[event] = []
-            for matcher in matchers:
-                # Convert HookMatcher to internal dict format
-                internal_matcher: dict[str, Any] = {
-                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
-                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
-                }
-                if hasattr(matcher, "timeout") and matcher.timeout is not None:
-                    internal_matcher["timeout"] = matcher.timeout
-                internal_hooks[event].append(internal_matcher)
-        return internal_hooks
 
     async def connect(
         self, prompt: str | AsyncIterable[dict[str, Any]] | None = None
@@ -157,25 +139,7 @@ class ClaudeSDKClient:
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        if self.options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
-                )
-
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if self.options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
-        else:
-            options = self.options
+        options = _configure_can_use_tool(self.options)
 
         if self._materialized is not None:
             options = apply_materialized_options(options, self._materialized)
@@ -188,13 +152,7 @@ class ClaudeSDKClient:
                 prompt=actual_prompt,
                 options=options,
             )
-
-        # --- Pre-compute all Query parameters BEFORE connect() ---
-        # This eliminates the window between subprocess startup and hook
-        # registration. On session resume the CLI replays deferred tools
-        # during startup; if hooks aren't registered by then the deferred
-        # tool executes without calling the resumed PreToolUse callback.
-        # See https://github.com/anthropics/claude-agent-sdk-python/issues/993
+        await self._transport.connect()
 
         # Extract SDK MCP servers from options
         sdk_mcp_servers = {}
@@ -210,14 +168,19 @@ class ClaudeSDKClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Extract exclude_dynamic_sections from preset system prompt for the
-        # initialize request (older CLIs ignore unknown initialize fields).
+        # Extract exclude_dynamic_sections and snapshot from the system prompt
+        # for the initialize request (older CLIs ignore unknown initialize fields).
         exclude_dynamic_sections: bool | None = None
+        system_prompt_snapshot: bool | None = None
         sp = self.options.system_prompt
         if isinstance(sp, dict) and sp.get("type") == "preset":
             eds = sp.get("exclude_dynamic_sections")
             if isinstance(eds, bool):
                 exclude_dynamic_sections = eds
+        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+            snapshot = sp.get("snapshot")
+            if isinstance(snapshot, bool):
+                system_prompt_snapshot = snapshot
 
         # Convert agents to dict format for initialize request
         agents_dict: dict[str, dict[str, Any]] | None = None
@@ -227,28 +190,23 @@ class ClaudeSDKClient:
                 for name, agent_def in self.options.agents.items()
             }
 
-        # Convert hooks once (registers callback IDs into hook_callbacks dict)
-        hooks = (
-            self._convert_hooks_to_internal_format(self.options.hooks)
-            if self.options.hooks
-            else None
-        )
-
-        # Create Query BEFORE connect so no work remains between
-        # the subprocess starting and hooks being registered.
+        # Create Query to handle control protocol
         self._query = Query(
             transport=self._transport,
             is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
             can_use_tool=self.options.can_use_tool,
-            hooks=hooks,
+            hooks=_hooks_to_internal_format(self.options.hooks)
+            if self.options.hooks
+            else None,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
+            forward_subagent_text=self.options.forward_subagent_text,
         )
 
-        # Session store setup (attribute-only, no subprocess dependency)
         if self.options.session_store is not None:
             q = self._query
 
@@ -265,15 +223,7 @@ class ClaudeSDKClient:
                 )
             )
 
-        # Connect (starts the CLI subprocess)
-        await self._transport.connect()
-
-        # Start reading messages and register hooks IMMEDIATELY.
-        # This is the earliest possible point to send the initialize
-        # request (with hook callback IDs) to the CLI. On session
-        # resume the CLI may replay deferred tools during startup;
-        # sending hooks before any other stdin message ensures the
-        # PreToolUse callback is available when the tool is replayed.
+        # Start reading messages and initialize
         await self._query.start()
         await self._query.initialize()
 
@@ -287,7 +237,9 @@ class ClaudeSDKClient:
             }
             await self._transport.write(json.dumps(message) + "\n")
         elif prompt is not None and isinstance(prompt, AsyncIterable):
-            self._query.spawn_task(self._query.stream_input(prompt))
+            self._query.spawn_task(
+                self._query.stream_input(prompt, is_resuming=bool(self.options.resume))
+            )
 
     async def receive_messages(self) -> AsyncIterator[Message]:
         """Receive all messages from Claude."""
@@ -627,7 +579,12 @@ class ClaudeSDKClient:
                 return
 
     async def disconnect(self) -> None:
-        """Disconnect from Claude."""
+        """Disconnect from Claude.
+
+        Any SDK MCP tool call still running is cancelled first; a tool that
+        does not react to cancellation (one blocked in a worker thread, say)
+        is given up on after a grace period of a few seconds per server.
+        """
         if self._query:
             await self._query.close()
             self._query.close_receive_stream()

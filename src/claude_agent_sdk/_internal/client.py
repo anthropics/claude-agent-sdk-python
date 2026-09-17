@@ -3,14 +3,14 @@
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import Any
 
 from ..types import (
     ClaudeAgentOptions,
-    HookEvent,
-    HookMatcher,
     Message,
+    _configure_can_use_tool,
+    _hooks_to_internal_format,
 )
 from .message_parser import parse_message
 from .query import Query
@@ -30,24 +30,6 @@ class InternalClient:
 
     def __init__(self) -> None:
         """Initialize the internal client."""
-
-    def _convert_hooks_to_internal_format(
-        self, hooks: dict[HookEvent, list[HookMatcher]]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Convert HookMatcher format to internal Query format."""
-        internal_hooks: dict[str, list[dict[str, Any]]] = {}
-        for event, matchers in hooks.items():
-            internal_hooks[event] = []
-            for matcher in matchers:
-                # Convert HookMatcher to internal dict format
-                internal_matcher: dict[str, Any] = {
-                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
-                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
-                }
-                if hasattr(matcher, "timeout") and matcher.timeout is not None:
-                    internal_matcher["timeout"] = matcher.timeout
-                internal_hooks[event].append(internal_matcher)
-        return internal_hooks
 
     async def process_query(
         self,
@@ -96,24 +78,7 @@ class InternalClient:
         materialized: MaterializedResume | None,
     ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        configured_options = options
-        if options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
-                )
-
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            configured_options = replace(options, permission_prompt_tool_name="stdio")
+        configured_options = _configure_can_use_tool(options)
 
         if materialized is not None:
             configured_options = apply_materialized_options(
@@ -129,15 +94,11 @@ class InternalClient:
                 options=configured_options,
             )
 
-        # --- Pre-compute all Query parameters BEFORE connect() ---
-        # This eliminates the window between subprocess startup and hook
-        # registration. On session resume the CLI replays deferred tools
-        # during startup; if hooks aren't registered by then the deferred
-        # tool executes without calling the resumed PreToolUse callback.
-        # See https://github.com/anthropics/claude-agent-sdk-python/issues/993
+        # Connect transport
+        await chosen_transport.connect()
 
         # Extract SDK MCP servers from configured options
-        sdk_mcp_servers: dict[str, Any] = {}
+        sdk_mcp_servers = {}
         if configured_options.mcp_servers and isinstance(
             configured_options.mcp_servers, dict
         ):
@@ -145,14 +106,19 @@ class InternalClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Extract exclude_dynamic_sections from preset system prompt for the
-        # initialize request (older CLIs ignore unknown initialize fields).
+        # Extract exclude_dynamic_sections and snapshot from the system prompt
+        # for the initialize request (older CLIs ignore unknown initialize fields).
         exclude_dynamic_sections: bool | None = None
+        system_prompt_snapshot: bool | None = None
         sp = configured_options.system_prompt
         if isinstance(sp, dict) and sp.get("type") == "preset":
             eds = sp.get("exclude_dynamic_sections")
             if isinstance(eds, bool):
                 exclude_dynamic_sections = eds
+        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+            snapshot = sp.get("snapshot")
+            if isinstance(snapshot, bool):
+                system_prompt_snapshot = snapshot
 
         # Convert agents to dict format for initialize request
         agents_dict = None
@@ -168,28 +134,25 @@ class InternalClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Convert hooks once (registers callback IDs into hook_callbacks dict)
-        hooks = (
-            self._convert_hooks_to_internal_format(configured_options.hooks)
-            if configured_options.hooks
-            else None
-        )
-
-        # Create Query BEFORE connect so no work remains between
-        # the subprocess starting and hooks being registered.
+        # Create Query to handle control protocol
+        # Always use streaming mode internally (matching TypeScript SDK)
+        # This ensures agents are always sent via initialize request
         query = Query(
             transport=chosen_transport,
             is_streaming_mode=True,  # Always streaming internally
             can_use_tool=configured_options.can_use_tool,
-            hooks=hooks,
+            hooks=_hooks_to_internal_format(configured_options.hooks)
+            if configured_options.hooks
+            else None,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            system_prompt_snapshot=system_prompt_snapshot,
             skills=configured_options.skills,
+            forward_subagent_text=configured_options.forward_subagent_text,
         )
 
-        # Session store setup (attribute-only, no subprocess dependency)
         if configured_options.session_store is not None:
 
             async def _on_mirror_error(key: Any, error: str) -> None:
@@ -205,17 +168,11 @@ class InternalClient:
                 )
             )
 
-        # Connect transport (starts the CLI subprocess)
-        await chosen_transport.connect()
-
         try:
-            # Start reading messages and register hooks IMMEDIATELY.
-            # This is the earliest possible point to send the initialize
-            # request (with hook callback IDs) to the CLI. On session
-            # resume the CLI may replay deferred tools during startup;
-            # sending hooks before any other stdin message ensures the
-            # PreToolUse callback is available when the tool is replayed.
+            # Start reading messages
             await query.start()
+
+            # Always initialize to send agents via stdin (matching TypeScript SDK)
             await query.initialize()
 
             # Handle prompt input
@@ -232,7 +189,11 @@ class InternalClient:
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables
-                query.spawn_task(query.stream_input(prompt))
+                query.spawn_task(
+                    query.stream_input(
+                        prompt, is_resuming=bool(configured_options.resume)
+                    )
+                )
 
             # Yield parsed messages, skipping unknown message types
             async for data in query.receive_messages():

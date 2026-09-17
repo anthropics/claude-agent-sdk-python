@@ -11,7 +11,7 @@ Example::
     import pytest
     from claude_agent_sdk.testing import run_session_store_conformance
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_my_store_conformance():
         await run_session_store_conformance(MyRedisStore)
 """

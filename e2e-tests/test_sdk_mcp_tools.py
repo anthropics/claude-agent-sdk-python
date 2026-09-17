@@ -17,7 +17,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_sdk_mcp_tool_execution():
     """Test that SDK MCP tools can be called and executed with allowed_tools."""
     executions = []
@@ -50,7 +50,7 @@ async def test_sdk_mcp_tool_execution():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_sdk_mcp_permission_enforcement():
     """Test that disallowed_tools prevents SDK MCP tool execution."""
     executions = []
@@ -95,7 +95,7 @@ async def test_sdk_mcp_permission_enforcement():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_sdk_mcp_multiple_tools():
     """Test that multiple SDK MCP tools can be called in sequence."""
     executions = []
@@ -137,7 +137,7 @@ async def test_sdk_mcp_multiple_tools():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_sdk_mcp_without_permissions():
     """Test SDK MCP tool behavior without explicit allowed_tools."""
     executions = []

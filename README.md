@@ -82,6 +82,18 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### System Prompt
+
+By default, Claude Code builds the system prompt on a session's first request, records it, and reuses it on every later request, including after you resume the session. A changed custom prompt, or changed `append` text on the `claude_code` preset, then has no effect until the session is compacted or you start a new session. To rebuild the prompt on every request instead, for example while you iterate on its wording, set `snapshot` to `False` in the `{"type": "preset", ...}` or `{"type": "custom", ...}` dict:
+
+```python
+options = ClaudeAgentOptions(
+    system_prompt={"type": "custom", "prompt": "You are a release bot.", "snapshot": False}
+)
+```
+
+Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with an `append` or custom prompt recorded it only when `snapshot` was True. See [Modifying system prompts](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts#change-the-prompt-of-an-existing-session) for details.
+
 ## ClaudeSDKClient
 
 `ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
@@ -252,6 +264,7 @@ from claude_agent_sdk import (
     CLINotFoundError,    # Claude Code not installed
     CLIConnectionError,  # Connection issues
     ProcessError,        # Process failed
+    ResultError,         # Run ended with an error result (subclass of ProcessError)
     CLIJSONDecodeError,  # JSON parsing issues
 )
 
@@ -260,6 +273,11 @@ try:
         pass
 except CLINotFoundError:
     print("Please install Claude Code")
+except ResultError as e:
+    # The CLI reported a terminal error result (also yielded as the final
+    # ResultMessage) and exited. Structured fields are on the exception.
+    print(f"Run failed: {e.subtype=} {e.terminal_reason=} {e.api_error_status=}")
+    print(e.result or e.errors)
 except ProcessError as e:
     print(f"Process failed with exit code: {e.exit_code}")
 except CLIJSONDecodeError as e:

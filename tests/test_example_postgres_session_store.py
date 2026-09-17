@@ -23,13 +23,19 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 # The example adapter and these tests are optional — skip the whole module
 # if the [examples] dependency group isn't installed.
 asyncpg = pytest.importorskip(
     "asyncpg", reason="asyncpg not installed (pip install .[examples])"
 )
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    # ``asyncpg`` has no trio backend.
+    return "asyncio"
+
 
 POSTGRES_URL = os.environ.get("SESSION_STORE_POSTGRES_URL")
 if not POSTGRES_URL:
@@ -81,7 +87,7 @@ SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def pool() -> AsyncIterator[asyncpg.Pool]:
     p = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=4)
     try:
@@ -90,7 +96,7 @@ async def pool() -> AsyncIterator[asyncpg.Pool]:
         await p.close()
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def live_table(pool: asyncpg.Pool) -> AsyncIterator[str]:
     """Per-test random table; CREATE on setup, DROP on teardown."""
     table = f"cas_test_{uuid.uuid4().hex[:8]}"
@@ -102,7 +108,7 @@ async def live_table(pool: asyncpg.Pool) -> AsyncIterator[str]:
         await pool.execute(f"DROP TABLE IF EXISTS {table}")
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def store(pool: asyncpg.Pool, live_table: str) -> SessionStore:
     return PostgresSessionStore(
         options=PostgresSessionStoreOptions(pool=pool, table=live_table)
@@ -115,7 +121,7 @@ async def store(pool: asyncpg.Pool, live_table: str) -> SessionStore:
 
 
 class TestConformance:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance(self, pool: asyncpg.Pool) -> None:
         # The harness calls make_store() once per contract for isolation. Give
         # each call its own table so contracts don't see each other's rows;
@@ -158,7 +164,7 @@ class TestConformance:
 class TestJsonbOrdering:
     """Postgres JSONB reorders object keys; the contract is deep-equal only."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_load_is_deep_equal_not_byte_equal(self, store: SessionStore) -> None:
         # Intentionally non-sorted key order on input. JSONB will reorder
         # (shorter keys first), but dict equality is order-insensitive — so
@@ -180,7 +186,7 @@ class TestJsonbOrdering:
 
 
 class TestRoundTrip:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_mirror_then_resume(
         self,
         store: SessionStore,

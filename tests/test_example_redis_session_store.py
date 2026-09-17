@@ -35,6 +35,13 @@ fakeredis = pytest.importorskip(
     "fakeredis", reason="fakeredis not installed (pip install .[examples])"
 )
 
+
+@pytest.fixture
+def anyio_backend() -> str:
+    # ``redis.asyncio`` has no trio backend.
+    return "asyncio"
+
+
 # ---------------------------------------------------------------------------
 # Import the example adapter without polluting sys.path globally.
 # ---------------------------------------------------------------------------
@@ -76,7 +83,7 @@ def store(client: fakeredis.FakeAsyncRedis) -> SessionStore:
 
 
 class TestConformance:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance(self) -> None:
         # Fresh fake server per make_store() call so each contract is isolated.
         await run_session_store_conformance(
@@ -108,7 +115,7 @@ class TestAppend:
     assert on the resulting key types/values rather than spying on calls.
     """
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_rpushes_json_and_zadds_session_index(
         self, client: fakeredis.FakeAsyncRedis, store: SessionStore
     ) -> None:
@@ -130,7 +137,7 @@ class TestAppend:
         # No subkey set is touched for main-transcript appends.
         assert await client.exists("p:proj:sess:__subkeys") == 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_subpath_sadds_subkeys_and_skips_session_index(
         self, client: fakeredis.FakeAsyncRedis, store: SessionStore
     ) -> None:
@@ -144,7 +151,7 @@ class TestAppend:
         # Subpath appends do NOT bump the session index.
         assert await client.exists("p:proj:__sessions") == 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_noop_on_empty_entries(
         self, client: fakeredis.FakeAsyncRedis, store: SessionStore
     ) -> None:
@@ -154,11 +161,11 @@ class TestAppend:
 
 
 class TestLoad:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_returns_none_for_unknown_key(self, store: SessionStore) -> None:
         assert await store.load({"project_key": "proj", "session_id": "nope"}) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_round_trips_in_append_order(self, store: SessionStore) -> None:
         k: SessionKey = {"project_key": "proj", "session_id": "sess"}
         await store.append(k, [{"type": "x", "n": 0}, {"type": "x", "n": 1}])
@@ -169,7 +176,7 @@ class TestLoad:
             {"type": "x", "n": 2},
         ]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_skips_malformed_json(
         self, client: fakeredis.FakeAsyncRedis, store: SessionStore
     ) -> None:
@@ -183,7 +190,7 @@ class TestLoad:
 
 
 class TestListSessions:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_scoped_by_project_with_mtime(self, store: SessionStore) -> None:
         await store.append({"project_key": "proj", "session_id": "a"}, [{"type": "x"}])
         await store.append({"project_key": "proj", "session_id": "b"}, [{"type": "x"}])
@@ -195,7 +202,7 @@ class TestListSessions:
 
 
 class TestDelete:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cascade_without_subpath(self, store: SessionStore) -> None:
         base: SessionKey = {"project_key": "proj", "session_id": "sess"}
         await store.append(base, [{"type": "x", "m": 1}])
@@ -210,7 +217,7 @@ class TestDelete:
         assert await store.list_subkeys(base) == []
         assert await store.list_sessions("proj") == []
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_targeted_with_subpath(self, store: SessionStore) -> None:
         base: SessionKey = {"project_key": "proj", "session_id": "sess"}
         await store.append(base, [{"type": "x", "m": 1}])
@@ -226,7 +233,7 @@ class TestDelete:
 
 
 class TestListSubkeys:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_scoped_by_session(self, store: SessionStore) -> None:
         base: SessionKey = {"project_key": "proj", "session_id": "sess"}
         await store.append(base, [{"type": "x"}])
@@ -241,7 +248,7 @@ class TestListSubkeys:
 
 
 class TestPrefixNormalization:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     @pytest.mark.parametrize("raw", ["", "p", "p:", "p:::"])
     async def test_no_double_colon_artifact(self, raw: str) -> None:
         client = fakeredis.FakeAsyncRedis(decode_responses=True)
@@ -267,7 +274,7 @@ SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
 
 
 class TestRoundTrip:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_mirror_then_resume(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

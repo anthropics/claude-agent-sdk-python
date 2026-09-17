@@ -1,0 +1,35 @@
+name: Set up Claude API auth
+description: >-
+  Fetches a GitHub OIDC identity token for Claude API workload identity
+  federation, writes it to a file, and exports ANTHROPIC_IDENTITY_TOKEN_FILE
+  pointing at it. A detached background process keeps the file fresh for the
+  rest of the job. Requires the `id-token: write` permission and the
+  ANTHROPIC_FEDERATION_RULE_ID / ANTHROPIC_ORGANIZATION_ID /
+  ANTHROPIC_SERVICE_ACCOUNT_ID environment variables on the steps that call
+  the Claude API.
+
+runs:
+  using: composite
+  steps:
+    - name: Mint identity token
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        script: |
+          const fs = require("fs");
+          const path = require("path");
+          const { spawn } = require("child_process");
+
+          // The audience must match the federation rule's expected audience.
+          const token = await core.getIDToken("https://api.anthropic.com");
+          core.setSecret(token);
+
+          const tokenFile = path.join(process.env.RUNNER_TEMP, "claude-identity-token");
+          fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+          core.exportVariable("ANTHROPIC_IDENTITY_TOKEN_FILE", tokenFile);
+
+          // GitHub OIDC tokens are short-lived, so a token minted here would
+          // expire before CLI invocations late in the job exchange it. A
+          // detached refresher keeps the file fresh; the runner reaps the
+          // process when the job ends.
+          const refresher = path.join(process.env.GITHUB_ACTION_PATH, "refresh-identity-token.js");
+          spawn(process.execPath, [refresher, tokenFile], { detached: true, stdio: "ignore" }).unref();

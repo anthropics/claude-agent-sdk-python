@@ -105,7 +105,10 @@ jobs:
           import urllib.request
 
           QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
-          THRESHOLD_BYTES = 47.5 * 1024**3  # Fail above 95% (2.5 GiB buffer)
+          # Temporary: fail above 99% (0.5 GiB buffer). Safe only if QUOTA_BYTES is
+          # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
+          # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          THRESHOLD_BYTES = 49.5 * 1024**3
 
           version = os.environ.get("VERSION", "")
 

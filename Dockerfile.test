@@ -3,6 +3,11 @@
 
 FROM python:3.12-slim
 
+# Docker's default `RUN` shell is `/bin/sh -c`, which reports only the last
+# status of a pipeline: a failed `curl` would be masked by a successful `bash`,
+# leaving a green build with no CLI installed. Fail on any element instead.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Install dependencies for Claude CLI and git (needed for some tests)
 RUN apt-get update && apt-get install -y \
     curl \
@@ -24,6 +29,15 @@ RUN pip install -e ".[dev]"
 
 # Verify CLI installation
 RUN claude -v
+
+# Trust the workspace so Claude Code honors this repo's project-scoped
+# permission grants and does not emit untrusted-workspace diagnostics on
+# stderr. Must come after `claude -v`, which is the last step that writes
+# ~/.claude.json. Trust is keyed on the WORKDIR (/app; .dockerignore omits
+# .git), so it only applies when the container runs the source baked in here
+# from /app -- a bind-mounted checkout at another path is not covered.
+# See scripts/trust_workspace.py.
+RUN python scripts/trust_workspace.py
 
 # Default: run unit tests
 CMD ["python", "-m", "pytest", "tests/", "-v"]

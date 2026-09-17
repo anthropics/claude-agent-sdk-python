@@ -44,14 +44,16 @@ you call ``delete_session_via_store()`` from the SDK.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import re
 import secrets
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
+
+import anyio
 
 from claude_agent_sdk.types import (
     SessionKey,
@@ -93,7 +95,7 @@ class S3SessionStore(SessionStore):
     concat. Monotonic ms orders same-instance same-ms appends; rand suffix
     disambiguates instances.
 
-    All ``boto3`` calls are wrapped in :func:`asyncio.to_thread` so the event
+    All ``boto3`` calls are wrapped in :func:`anyio.to_thread.run_sync` so the event
     loop is never blocked. ``boto3`` clients are thread-safe.
     """
 
@@ -147,20 +149,28 @@ class S3SessionStore(SessionStore):
         return f"part-{ms:013d}-{rand}.jsonl"
 
     # ------------------------------------------------------------------
-    # boto3 wrappers (sync → asyncio.to_thread)
+    # boto3 wrappers (sync → anyio worker thread)
     # ------------------------------------------------------------------
 
     async def _put_object(self, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._client.put_object, **kwargs)
+        return await anyio.to_thread.run_sync(
+            partial(self._client.put_object, **kwargs)
+        )
 
     async def _list_objects_v2(self, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._client.list_objects_v2, **kwargs)
+        return await anyio.to_thread.run_sync(
+            partial(self._client.list_objects_v2, **kwargs)
+        )
 
     async def _get_object(self, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._client.get_object, **kwargs)
+        return await anyio.to_thread.run_sync(
+            partial(self._client.get_object, **kwargs)
+        )
 
     async def _delete_objects(self, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._client.delete_objects, **kwargs)
+        return await anyio.to_thread.run_sync(
+            partial(self._client.delete_objects, **kwargs)
+        )
 
     # ------------------------------------------------------------------
     # SessionStore protocol
@@ -214,19 +224,24 @@ class S3SessionStore(SessionStore):
         keys.sort()
 
         # Bounded-parallel GetObject (serial is N×RTT); preserves sorted-key
-        # order via slot-indexed result list.
+        # order via slot-indexed result list. Unlike asyncio.gather, a task
+        # group wraps fetch failures in an ExceptionGroup, so a plain
+        # `except ClientError` around load() won't match — use `except*`
+        # (Python 3.11+) or the `exceptiongroup` backport's catch() on 3.10.
         bodies: list[str | None] = [None] * len(keys)
-        sem = asyncio.Semaphore(_LOAD_CONCURRENCY)
+        sem = anyio.Semaphore(_LOAD_CONCURRENCY)
 
         async def fetch(i: int, object_key: str) -> None:
             async with sem:
                 result = await self._get_object(Bucket=self._bucket, Key=object_key)
-                raw = await asyncio.to_thread(result["Body"].read)
+                raw = await anyio.to_thread.run_sync(result["Body"].read)
                 bodies[i] = (
                     raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
                 )
 
-        await asyncio.gather(*(fetch(i, k) for i, k in enumerate(keys)))
+        async with anyio.create_task_group() as tg:
+            for i, k in enumerate(keys):
+                tg.start_soon(fetch, i, k)
 
         all_entries: list[SessionStoreEntry] = []
         for body in bodies:

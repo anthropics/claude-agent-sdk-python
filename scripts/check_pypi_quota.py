@@ -15,12 +15,13 @@ import os
 import sys
 import urllib.request
 from pathlib import Path
+from typing import Any, cast
 
 PYPI_PROJECT_LIMIT_BYTES = 50 * 1024**3  # 50 GiB (increased from PyPI default 10 GiB)
 PYPI_FILE_LIMIT_BYTES = 100 * 1024**2  # 100 MiB
 
 
-def fetch_project_files(package: str) -> list[dict]:
+def fetch_project_files(package: str) -> list[dict[str, Any]]:
     req = urllib.request.Request(
         f"https://pypi.org/simple/{package}/",
         headers={
@@ -30,15 +31,16 @@ def fetch_project_files(package: str) -> list[dict]:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.load(resp)
-    return data.get("files", [])
+    return cast("list[dict[str, Any]]", data.get("files", []))
 
 
 def human(n: int) -> str:
+    size = float(n)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if abs(n) < 1024 or unit == "TiB":
-            return f"{n:.2f} {unit}"
-        n /= 1024
-    return f"{n:.2f} TiB"
+        if abs(size) < 1024 or unit == "TiB":
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TiB"
 
 
 def main() -> int:

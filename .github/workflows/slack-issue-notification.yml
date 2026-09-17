@@ -4,33 +4,66 @@ on:
   issues:
     types: [opened]
 
+# No step in this workflow uses GITHUB_TOKEN (no checkout, no gh/API calls); the only
+# credential is the Slack bot token, passed as a secret. So the job needs no scopes at all.
+permissions: {}
+
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Build Slack payload
+        id: build
+        env:
+          # Attacker-controlled values reach the shell ONLY through env, never through
+          # ${{ }} interpolation inside a run body or a payload string literal.
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SLACK_CHANNEL: C09HY5E0K60
+        run: |
+          set -euo pipefail
+
+          # The mrkdwn escape lives in jq, not in bash. A bash `${var//pat/repl}` escape
+          # is only correct while `patsub_replacement` is off -- bash 5.2 turns it ON by
+          # default, which rewrites `<` -> `&lt;` as `<lt;` -- so its correctness would
+          # hang on a `shopt` line that a future edit could silently drop. jq has no such
+          # option, so the escape cannot degrade. `&` MUST be escaped first: escaping it
+          # after `<`/`>` would double-escape the `&` in `&lt;`/`&gt;`.
+          ESC='def esc:
+                 gsub("&";"&amp;")
+                 | gsub("<";"&lt;")
+                 | gsub(">";"&gt;")
+                 | gsub("[[:cntrl:]]";" ");'
+
+          # Self-test the exact definition the payload below uses, so a broken escape
+          # fails the job loudly instead of posting unescaped text to Slack.
+          probe=$(jq -rn "$ESC"' "<&>" | esc')
+          if [ "$probe" != '&lt;&amp;&gt;' ]; then
+            echo "::error::mrkdwn escape self-test failed (got '$probe'); refusing to post"
+            exit 1
+          fi
+
+          # jq -c guarantees the payload contains no literal newline, so the key=value
+          # framing of $GITHUB_OUTPUT is safe by construction.
+          payload=$(jq -nc "$ESC"'
+            {
+              channel: env.SLACK_CHANNEL,
+              text: ("New issue opened in " + env.GITHUB_REPOSITORY),
+              blocks: [
+                {type:"section", text:{type:"mrkdwn",
+                  text:("*New Issue:* <" + env.ISSUE_URL + "|#" + env.ISSUE_NUMBER
+                        + " " + (env.ISSUE_TITLE|esc) + ">")}},
+                {type:"section", text:{type:"mrkdwn",
+                  text:("*Author:* " + (env.ISSUE_AUTHOR|esc))}}
+              ]
+            }')
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+
       - name: Post to Slack
         uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1 (sha-pinned)
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
-          payload: |
-            {
-              "channel": "C09HY5E0K60",
-              "text": "New issue opened in ${{ github.repository }}",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*New Issue:* <${{ github.event.issue.html_url }}|#${{ github.event.issue.number }} ${{ github.event.issue.title }}>"
-                  }
-                },
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Author:* ${{ github.event.issue.user.login }}"
-                  }
-                }
-              ]
-            }
+          payload: ${{ steps.build.outputs.payload }}

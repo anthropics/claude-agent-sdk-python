@@ -1127,6 +1127,19 @@ class TestSessionMessageType:
         assert msg.session_id == "sess"
         assert msg.message == {"role": "user", "content": "hi"}
         assert msg.parent_tool_use_id is None
+        assert msg.parent_agent_id is None
+
+    def test_parent_ids(self):
+        msg = SessionMessage(
+            type="assistant",
+            uuid="abc",
+            session_id="sess",
+            message=None,
+            parent_tool_use_id="toolu_1",
+            parent_agent_id="agent-1",
+        )
+        assert msg.parent_tool_use_id == "toolu_1"
+        assert msg.parent_agent_id == "agent-1"
 
 
 # ---------------------------------------------------------------------------
@@ -1803,6 +1816,114 @@ class TestGetSubagentMessages:
         assert len(messages) == 2
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
+
+    def _write_agent(
+        self,
+        subagents_dir: Path,
+        agent_id: str,
+        sid: str,
+        meta: dict | str | None,
+    ) -> None:
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hi"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hello"),
+        ]
+        (subagents_dir / f"agent-{agent_id}.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+        )
+        if meta is not None:
+            (subagents_dir / f"agent-{agent_id}.meta.json").write_text(
+                meta if isinstance(meta, str) else json.dumps(meta),
+                encoding="utf-8",
+            )
+
+    def test_parent_ids_recovered_from_meta_sidecar(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """toolUseId / parentAgentId from agent-<id>.meta.json are stamped on
+        every returned message as parent_tool_use_id / parent_agent_id."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        self._write_agent(
+            subagents_dir,
+            "abc",
+            sid,
+            {
+                "agentType": "general-purpose",
+                "toolUseId": "toolu_01ABC",
+                "parentAgentId": "a-parent",
+                "spawnDepth": 2,
+            },
+        )
+
+        messages = get_subagent_messages(sid, "abc", directory=project_path)
+        assert len(messages) == 2
+        assert all(m.parent_tool_use_id == "toolu_01ABC" for m in messages)
+        assert all(m.parent_agent_id == "a-parent" for m in messages)
+
+    def test_parent_ids_from_nested_meta_sidecar(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """The sidecar is read from beside the transcript even when nested."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        nested = subagents_dir / "workflows" / "run-1"
+        nested.mkdir(parents=True)
+        self._write_agent(nested, "deep", sid, {"toolUseId": "toolu_nested"})
+
+        messages = get_subagent_messages(sid, "deep", directory=project_path)
+        assert [m.parent_tool_use_id for m in messages] == ["toolu_nested"] * 2
+        assert all(m.parent_agent_id is None for m in messages)
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            None,  # no sidecar
+            "not json {",  # unreadable sidecar
+            {"agentType": "general-purpose"},  # sidecar without ids
+            {"toolUseId": 42, "parentAgentId": ["x"]},  # wrong types
+        ],
+    )
+    def test_parent_ids_none_when_sidecar_missing_or_unusable(
+        self, claude_config_dir: Path, tmp_path: Path, meta
+    ):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        self._write_agent(subagents_dir, "x", sid, meta)
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert len(messages) == 2
+        assert all(m.parent_tool_use_id is None for m in messages)
+        assert all(m.parent_agent_id is None for m in messages)
+
+    def test_unreadable_sidecar_degrades_to_none(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A sidecar that exists but cannot be read (here: a directory) must
+        not make the best-effort read helper raise."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        self._write_agent(subagents_dir, "x", sid, None)
+        (subagents_dir / "agent-x.meta.json").mkdir()
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert len(messages) == 2
+        assert all(m.parent_tool_use_id is None for m in messages)
+        assert all(m.parent_agent_id is None for m in messages)
 
     def test_skips_corrupt_lines(self, claude_config_dir: Path, tmp_path: Path):
         """Corrupt JSONL lines are skipped."""

@@ -5,7 +5,9 @@ import pytest
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
+    TERMINAL_TASK_STATUSES,
     AssistantMessage,
+    ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
     RateLimitEvent,
@@ -16,6 +18,7 @@ from claude_agent_sdk.types import (
     TaskNotificationMessage,
     TaskProgressMessage,
     TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -53,6 +56,34 @@ class TestMessageParser:
         assert isinstance(message, UserMessage)
         assert message.uuid == "msg-abc123-def456"
         assert len(message.content) == 1
+
+    def test_parse_user_message_origin(self):
+        """origin is surfaced on user messages, for both content shapes, and
+        passed through with keys this SDK version doesn't model."""
+        peer = {
+            "kind": "peer",
+            "from": "peer-addr",
+            "name": "other-session",
+            "verifiedPeerPid": 4242,
+            "someFutureField": True,
+        }
+        for content in ("hi", [{"type": "text", "text": "hi"}]):
+            message = parse_message(
+                {"type": "user", "message": {"content": content}, "origin": peer}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin == peer
+            assert message.origin is not None and message.origin["kind"] == "peer"
+            assert message.origin["from"] == "peer-addr"
+
+    def test_parse_user_message_origin_absent_or_malformed(self):
+        """No origin, or a non-object / kind-less origin, parses to None."""
+        for extra in ({}, {"origin": None}, {"origin": "human"}, {"origin": {}}):
+            message = parse_message(
+                {"type": "user", "message": {"content": "hi"}, **extra}
+            )
+            assert isinstance(message, UserMessage)
+            assert message.origin is None, extra
 
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
@@ -533,6 +564,155 @@ class TestMessageParser:
         assert message.usage is None
         assert message.tool_use_id is None
 
+    def test_parse_task_updated_message_terminal(self):
+        """task_updated with a terminal patch.status yields a TaskUpdatedMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+            "uuid": "uuid-4",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "task-abc"
+        assert message.patch == {"status": "completed", "end_time": 1780405729183}
+        assert message.status == "completed"
+        assert message.uuid == "uuid-4"
+        assert message.session_id == "session-1"
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_minimal(self):
+        """task_updated with only task_id and patch (no uuid/session_id) still parses.
+
+        Mirrors the observed CLI shape where terminal completion arrives as a
+        bare task_updated patch — parsing must never raise on a lifecycle event.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "b1m21w89v",
+            "patch": {"status": "completed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.task_id == "b1m21w89v"
+        assert message.status == "completed"
+        assert message.uuid is None
+        assert message.session_id is None
+
+    @pytest.mark.parametrize("status", ["pending", "running", "paused"])
+    def test_parse_task_updated_message_non_terminal_statuses(self, status):
+        """Non-terminal task_updated statuses parse and are not treated as done."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": status},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == status
+        assert message.status not in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_message_no_patch(self):
+        """task_updated with no patch parses with an empty patch and status None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    def test_parse_task_updated_message_patch_without_status(self):
+        """A patch lacking 'status' is preserved verbatim; status is None."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {"end_time": 1780405729183}
+        assert message.status is None
+
+    @pytest.mark.parametrize("patch", ["completed", ["completed"], 42, None])
+    def test_parse_task_updated_message_non_dict_patch(self, patch):
+        """A non-dict (or missing) patch never raises; patch falls back to {}."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": patch,
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.patch == {}
+        assert message.status is None
+
+    @pytest.mark.parametrize("status", ["completed", "failed", "killed"])
+    def test_parse_task_updated_message_terminal_statuses(self, status):
+        """Every terminal task_updated patch.status is surfaced as terminal.
+
+        ``task_updated`` reports the raw ``killed`` (not the ``stopped`` form
+        the CLI maps to on ``task_notification``).
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-abc",
+            "patch": {"status": status},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == status
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_parse_task_updated_killed_is_terminal(self):
+        """A task stopped via TaskStop reports status='killed' and is terminal.
+
+        In some kill paths no task_notification is emitted, so this task_updated
+        patch is the only terminal signal — it must clear a tracked active id.
+        """
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "bs2r8eew4",
+            "patch": {"status": "killed", "end_time": 1780405729183},
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert message.status == "killed"
+        assert message.status in TERMINAL_TASK_STATUSES
+
+    def test_task_updated_backward_compat_isinstance(self):
+        """Backward-compat: TaskUpdatedMessage is still a SystemMessage."""
+        data = {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t1",
+            "patch": {"status": "failed"},
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+        message = parse_message(data)
+        assert isinstance(message, TaskUpdatedMessage)
+        assert isinstance(message, SystemMessage)
+        # Base class fields still populated for legacy code paths.
+        assert message.subtype == "task_updated"
+        assert message.data == data
+        # match-case against SystemMessage still works.
+        matched = False
+        match message:
+            case SystemMessage():
+                matched = True
+        assert matched
+
     def test_task_message_backward_compat_isinstance(self):
         """Backward-compat: typed task messages are still SystemMessage instances."""
         started_data = {
@@ -603,6 +783,7 @@ class TestMessageParser:
         assert not isinstance(message, TaskStartedMessage)
         assert not isinstance(message, TaskProgressMessage)
         assert not isinstance(message, TaskNotificationMessage)
+        assert not isinstance(message, TaskUpdatedMessage)
         assert message.subtype == "some_future_subtype"
         assert message.data == data
 
@@ -682,6 +863,68 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.stop_reason is None
 
+    def test_parse_result_message_with_terminal_reason(self):
+        """Test parsing a result message with terminal_reason field."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+            "result": "",
+            "terminal_reason": "aborted_tools",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason == "aborted_tools"
+
+    def test_parse_result_message_origin(self):
+        """origin on a result identifies what triggered the turn."""
+        base = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(base)
+        assert isinstance(message, ResultMessage)
+        assert message.origin is None
+
+        message = parse_message({**base, "origin": {"kind": "human"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin == {"kind": "human"}
+
+        for subkind in ("scheduled-trigger", "peer-send-message"):
+            origin = {"kind": "task-notification", "subkind": subkind}
+            message = parse_message({**base, "origin": origin})
+            assert isinstance(message, ResultMessage)
+            assert message.origin == origin
+
+        message = parse_message({**base, "origin": {"kind": "unclassified"}})
+        assert isinstance(message, ResultMessage)
+        assert message.origin is not None
+        assert message.origin["kind"] == "unclassified"
+
+    def test_parse_result_message_missing_terminal_reason_is_none(self):
+        """A result message without terminal_reason parses to None."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 2,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.terminal_reason is None
+
     def test_parse_rate_limit_event(self):
         """Test parsing a rate_limit_event into a typed RateLimitEvent."""
         data = {
@@ -703,6 +946,28 @@ class TestMessageParser:
         assert message.rate_limit_info.resets_at == 1700000000
         assert message.rate_limit_info.rate_limit_type == "five_hour"
         assert message.rate_limit_info.utilization == 0.91
+
+    def test_parse_conversation_reset(self):
+        """conversation_reset parses into a typed ConversationResetMessage."""
+        data = {
+            "type": "conversation_reset",
+            "new_conversation_id": "d2f4a573-ca99-42a2-bb7a-905b40c908e8",
+            "uuid": "msg-1",
+            "session_id": "66694129-ce74-4ee1-9b0f-994155ac97ba",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ConversationResetMessage)
+        assert message.new_conversation_id == "d2f4a573-ca99-42a2-bb7a-905b40c908e8"
+        assert message.uuid == "msg-1"
+        assert message.session_id == "66694129-ce74-4ee1-9b0f-994155ac97ba"
+
+    def test_parse_conversation_reset_missing_field(self):
+        """conversation_reset without new_conversation_id raises."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(
+                {"type": "conversation_reset", "uuid": "u", "session_id": "s"}
+            )
+        assert "new_conversation_id" in str(exc_info.value)
 
     def test_parse_invalid_data_type(self):
         """Test that non-dict data raises MessageParseError."""
@@ -733,6 +998,22 @@ class TestMessageParser:
         with pytest.raises(MessageParseError) as exc_info:
             parse_message({"type": "assistant"})
         assert "Missing required field in assistant message" in str(exc_info.value)
+
+    def test_parse_assistant_string_content_raises(self):
+        """Assistant content as a bare string raises MessageParseError, not a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message(
+                {"type": "assistant", "message": {"model": "m", "content": "hi"}}
+            )
+
+    @pytest.mark.parametrize("role", ["assistant", "user"])
+    def test_non_dict_content_block_raises_documented_error(self, role: str) -> None:
+        """A non-dict block raises MessageParseError, never a raw TypeError."""
+        message: dict[str, object] = {"content": ["oops"]}
+        if role == "assistant":
+            message["model"] = "m"
+        with pytest.raises(MessageParseError):
+            parse_message({"type": role, "message": message})
 
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""

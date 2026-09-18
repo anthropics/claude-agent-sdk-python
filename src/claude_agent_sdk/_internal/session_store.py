@@ -25,6 +25,15 @@ __all__ = [
 ]
 
 
+def _snapshot_summary(summary: SessionSummaryEntry) -> SessionSummaryEntry:
+    """Shallow-copy a summary sidecar.
+
+    ``fold_session_summary`` only writes scalars into ``data``, so a new
+    dict plus ``dict(data)`` isolates callers without a generic deepcopy.
+    """
+    return {**summary, "data": dict(summary["data"])}
+
+
 def _key_to_string(key: SessionKey) -> str:
     parts = [key["project_key"], key["session_id"]]
     subpath = key.get("subpath")
@@ -65,14 +74,17 @@ class InMemorySessionStore(SessionStore):
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
         k = _key_to_string(key)
-        self._store.setdefault(k, []).extend(deepcopy(entries))
+        copied = deepcopy(entries)
+        self._store.setdefault(k, []).extend(copied)
         now_ms = self._next_mtime()
         # Maintain the per-session summary sidecar incrementally so
         # list_session_summaries() never re-reads. Subagent subpaths don't
         # contribute to the main session's summary.
         if key.get("subpath") is None:
             sk = (key["project_key"], key["session_id"])
-            folded = fold_session_summary(self._summaries.get(sk), key, entries)
+            # Fold the copied batch, not the caller's list, so a future fold
+            # that keeps a nested object cannot alias caller-owned data.
+            folded = fold_session_summary(self._summaries.get(sk), key, copied)
             # Stamp the sidecar with this adapter's storage write time — the
             # SAME clock list_sessions() exposes below. SessionSummaryEntry.
             # mtime is contractually storage write time (not entry time), so
@@ -103,7 +115,9 @@ class InMemorySessionStore(SessionStore):
         self, project_key: str
     ) -> list[SessionSummaryEntry]:
         return [
-            deepcopy(s) for (pk, _), s in self._summaries.items() if pk == project_key
+            _snapshot_summary(s)
+            for (pk, _), s in self._summaries.items()
+            if pk == project_key
         ]
 
     async def delete(self, key: SessionKey) -> None:

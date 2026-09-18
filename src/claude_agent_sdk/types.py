@@ -1641,6 +1641,11 @@ class SessionStore(Protocol):
         was appended — byte-equal serialization is NOT required (e.g. Postgres
         ``JSONB`` may reorder object keys); the SDK never hashes or
         byte-compares entries.
+
+        ``load()`` must return data independent of the ``append()`` input and
+        of previous ``load()`` results. Caller mutations must not change
+        stored entries. Serializing backends get this for free; in-process
+        adapters (a dict or LRU cache) must copy.
         """
         ...
 

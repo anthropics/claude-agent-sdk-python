@@ -217,6 +217,8 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data["message"].get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
+                    user_message_uuid=data.get("user_message_uuid"),
+                    user_message_uuids=data.get("user_message_uuids"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -334,6 +336,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     uuid=data.get("uuid"),
                     terminal_reason=data.get("terminal_reason"),
                     origin=_parse_origin(data),
+                    user_message_uuid=data.get("user_message_uuid"),
+                    user_message_uuids=data.get("user_message_uuids"),
+                    queued_turn_count=data.get("queued_turn_count"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -347,6 +352,8 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     session_id=data["session_id"],
                     event=data["event"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
+                    user_message_uuid=data.get("user_message_uuid"),
+                    user_message_uuids=data.get("user_message_uuids"),
                 )
             except KeyError as e:
                 raise MessageParseError(

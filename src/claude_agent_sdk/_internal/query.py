@@ -127,6 +127,7 @@ class Query:
         system_prompt_snapshot: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
         forward_subagent_text: bool = False,
+        is_resuming: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -146,6 +147,7 @@ class Query:
                 can filter which skills are loaded into the system prompt
             forward_subagent_text: Ask the CLI (via initialize) to forward
                 subagent text/thinking blocks, not just tool_use/tool_result
+            is_resuming: Whether the CLI is resuming an existing conversation
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -162,6 +164,7 @@ class Query:
         self._system_prompt_snapshot = system_prompt_snapshot
         self._skills = skills
         self._forward_subagent_text = forward_subagent_text
+        self._is_resuming = is_resuming
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -871,9 +874,14 @@ class Query:
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
         waits for a run-ending result before closing stdin to allow
-        bidirectional control protocol communication.
+        bidirectional control protocol communication. A resumed conversation
+        may issue those control requests without a new prompt message (for
+        example, when continuing a deferred SDK MCP tool call), so an empty
+        resumed stream also waits for its result. A prompt stream that fails
+        before writing anything still closes immediately.
         """
         written = 0
+        failed = False
         try:
             async for message in stream:
                 if self._closed:
@@ -885,14 +893,17 @@ class Query:
             # leave stdin open — the CLI would wait for input forever and the
             # consumer's `async for` would never finish — fall through and
             # close it like a normal end of input.
+            failed = True
             logger.error("Prompt stream failed; closing stdin: %s", e)
         try:
-            if written:
+            if written or (
+                not failed and self._is_resuming and self._has_bidirectional_needs()
+            ):
                 await self.wait_for_result_and_end_input()
             else:
-                # Nothing was sent, so no result will arrive to release the
-                # hold; close immediately (mirrors the TypeScript SDK's
-                # messageCount guard).
+                # A new conversation with no input cannot produce a result to
+                # release the hold; close immediately (mirrors the TypeScript
+                # SDK's messageCount guard).
                 await self.transport.end_input()
         except Exception as e:
             logger.debug(f"Error closing input stream: {e}")

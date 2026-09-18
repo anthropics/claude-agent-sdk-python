@@ -205,6 +205,7 @@ class ClaudeSDKClient:
             system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
             forward_subagent_text=self.options.forward_subagent_text,
+            is_resuming=bool(options.resume or options.continue_conversation),
         )
 
         if self.options.session_store is not None:

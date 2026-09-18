@@ -151,6 +151,9 @@ class InternalClient:
             system_prompt_snapshot=system_prompt_snapshot,
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
+            is_resuming=bool(
+                configured_options.resume or configured_options.continue_conversation
+            ),
         )
 
         if configured_options.session_store is not None:

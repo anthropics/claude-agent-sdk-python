@@ -41,6 +41,7 @@ from .sessions import (
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
+    _lite_head_bytes,
     _validate_uuid,
     project_key_for_directory,
 )
@@ -311,9 +312,7 @@ def fork_session(
 
     def _derive_title() -> str | None:
         buf_len = len(content)
-        head = content[: min(buf_len, LITE_READ_BUF_SIZE)].decode(
-            "utf-8", errors="replace"
-        )
+        head = _lite_head_bytes(content).decode("utf-8", errors="replace")
         tail = content[max(0, buf_len - LITE_READ_BUF_SIZE) :].decode(
             "utf-8", errors="replace"
         )

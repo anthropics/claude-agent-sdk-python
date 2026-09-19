@@ -176,6 +176,56 @@ class TestHelpers:
         result = _extract_json_string_field(text, "foo")
         assert result == 'bar"baz'
 
+    def test_extract_json_string_field_mixed_spacing_returns_the_earliest(self):
+        # The two spellings must be scored by position, not by which pattern
+        # is tried first: a spaced occurrence earlier in the text is the first
+        # match even though the compact pattern is searched first.
+        text = (
+            '{"type":"summary"}\n'
+            '{"type":"user","cwd": "/spaced/earlier"}\n'
+            '{"type":"user","cwd":"/compact/later"}\n'
+        )
+        assert _extract_json_string_field(text, "cwd") == "/spaced/earlier"
+
+    def test_extract_json_string_field_mixed_spacing_reverse(self):
+        text = (
+            '{"type":"user","cwd":"/compact/earlier"}\n'
+            '{"type":"user","cwd": "/spaced/later"}\n'
+        )
+        assert _extract_json_string_field(text, "cwd") == "/compact/earlier"
+
+    def test_created_at_uses_the_first_timestamp_not_the_first_compact_one(
+        self, claude_config_dir: Path
+    ):
+        # End-to-end shape of the regression: _parse_session_info_from_lite
+        # derives created_at from the FIRST timestamp in the head. A spaced
+        # first entry followed by a compact one must not report the later
+        # timestamp as the session's creation time.
+        project_dir = _make_project_dir(claude_config_dir, "/tmp/created-at-project")
+        sid, file_path = _make_session_file(project_dir, first_prompt="Hello")
+        spaced_first = json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {"role": "user", "content": "Hello"},
+            }
+        )
+        compact_later = json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-01T00:00:00.000Z",
+                "message": {"role": "assistant", "content": "Hi"},
+            },
+            separators=(",", ":"),
+        )
+        file_path.write_text(
+            spaced_first + "\n" + compact_later + "\n", encoding="utf-8"
+        )
+
+        info = get_session_info(sid)
+        assert info is not None
+        assert info.created_at == 1767225600000  # 2026-01-01T00:00:00.000Z
+
     def test_extract_last_json_string_field(self):
         text = '{"summary":"first"}\n{"summary":"second"}\n{"summary":"third"}'
         assert _extract_last_json_string_field(text, "summary") == "third"

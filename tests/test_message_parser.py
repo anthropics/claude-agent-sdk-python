@@ -10,6 +10,7 @@ from claude_agent_sdk.types import (
     ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
+    ImageBlock,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
@@ -183,6 +184,51 @@ class TestMessageParser:
         assert isinstance(message.content[1], ToolUseBlock)
         assert isinstance(message.content[2], ToolResultBlock)
         assert isinstance(message.content[3], TextBlock)
+
+    def test_parse_user_message_with_image(self):
+        """A pasted image arrives as a top-level image block and must not be
+        silently dropped from the parsed content."""
+        source = {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUg==",
+        }
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "What is in this screenshot?"},
+                    {"type": "image", "source": source},
+                ]
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], TextBlock)
+        assert isinstance(message.content[1], ImageBlock)
+        assert message.content[1].source == source
+
+    def test_parse_user_message_skips_unknown_block_with_log(self, caplog):
+        """An unrecognized content block type is skipped (forward-compatible,
+        like unknown message types), not raised on, and the skip is logged."""
+        data = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {"type": "some_future_block", "payload": 1},
+                ]
+            },
+        }
+        with caplog.at_level(
+            "DEBUG", logger="claude_agent_sdk._internal.message_parser"
+        ):
+            message = parse_message(data)
+        assert isinstance(message, UserMessage)
+        assert len(message.content) == 1
+        assert isinstance(message.content[0], TextBlock)
+        assert "some_future_block" in caplog.text
 
     def test_parse_user_message_inside_subagent(self):
         """Test parsing a valid user message."""

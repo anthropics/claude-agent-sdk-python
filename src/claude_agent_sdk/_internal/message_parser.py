@@ -10,6 +10,7 @@ from ..types import (
     ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
+    ImageBlock,
     Message,
     MessageOrigin,
     MirrorErrorMessage,
@@ -113,6 +114,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                 user_content_blocks.append(
                                     TextBlock(text=block["text"])
                                 )
+                            case "image":
+                                user_content_blocks.append(
+                                    ImageBlock(source=block["source"])
+                                )
                             case "tool_use":
                                 user_content_blocks.append(
                                     ToolUseBlock(
@@ -128,6 +133,13 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                         content=block.get("content"),
                                         is_error=block.get("is_error"),
                                     )
+                                )
+                            case _:
+                                # Forward-compatible, matching the unknown
+                                # message type handling below.
+                                logger.debug(
+                                    "Skipping unknown content block type: %s",
+                                    block["type"],
                                 )
                     return UserMessage(
                         content=user_content_blocks,
@@ -205,6 +217,15 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     tool_use_id=block["tool_use_id"],
                                     content=block["content"],
                                 )
+                            )
+                        case "image":
+                            content_blocks.append(ImageBlock(source=block["source"]))
+                        case _:
+                            # Forward-compatible, matching the unknown message
+                            # type handling below.
+                            logger.debug(
+                                "Skipping unknown content block type: %s",
+                                block["type"],
                             )
 
                 return AssistantMessage(

@@ -2209,6 +2209,14 @@ class ClaudeAgentOptions:
     per-turn control, leave the option off and set ``"client_composed": True``
     on individual streamed messages instead.
 
+    On current Claude Code versions a turn delivered this way also skips the
+    turn-start attachment pass as a whole: ``@server:resource`` MCP mentions are
+    not expanded either, and the prompt is sent without the context Claude Code
+    normally attaches alongside it (nested ``CLAUDE.md`` and rules files, skill
+    and tool listings, and other per-turn reminders). The pass Claude Code runs
+    between tool calls is unaffected, so most of that context arrives after the
+    turn's first tool call rather than with the prompt.
+
     Requires Claude Code 2.1.248 or later; older versions ignore the field, so
     prompts are still expanded there. The SDK logs a warning when it connects to
     an older CLI with this option on. The option is read when the session starts.

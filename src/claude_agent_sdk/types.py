@@ -1902,7 +1902,7 @@ def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
     # skills="all" makes the transport append a bare "Skill" to the effective
     # allowed_tools, so it shadows the callback just like a hand-written entry.
     # skills=[names] appends Skill(name) specifiers, which do not.
-    allowed_tools = options.allowed_tools
+    allowed_tools = options.allowed_tools or []
     if options.skills == _SKILLS_ALL and "Skill" not in allowed_tools:
         allowed_tools = [*allowed_tools, "Skill"]
     message = _get_can_use_tool_shadowed_warning(options.permission_mode, allowed_tools)
@@ -1973,11 +1973,14 @@ class ClaudeAgentOptions:
     ``allowed_tools`` instead.
     """
 
-    allowed_tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] | None = field(default_factory=list)
     """Tool names that are auto-allowed without prompting for permission.
 
     These tools execute automatically without asking the user for approval.
     To restrict which tools are available at all, use ``tools``.
+    ``None`` is accepted and treated the same as an empty list, matching
+    the other optional list fields (``tools``, ``skills``,
+    ``setting_sources``).
 
     .. deprecated::
         Passing ``"Skill"`` here is deprecated. Use the :attr:`skills` option

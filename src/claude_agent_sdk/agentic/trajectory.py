@@ -1,7 +1,7 @@
 """Imscriptive trajectory accumulation — the agent's world model.
 
 Implements D_ω (self-referential state space) and H₂ (two-step chirality).
-The trajectory is NEVER truncated — it provides Ω_z topological protection.
+The trajectory is NEVER truncated — it provides 𐑭 topological protection.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class AgentTrajectory:
     Structural properties:
     - D_ω: The trajectory IS the state space; there is no external context.
     - H₂: Each cycle references the prior two windings for chirality.
-    - Ω_z: The winding counter is NEVER reset during a session.
+    - 𐑭: The winding counter is NEVER reset during a session.
     """
 
     def __init__(self) -> None:
@@ -50,7 +50,7 @@ class AgentTrajectory:
     def frobenius_ratio(self) -> float:
         """Fraction of cycles that are Frobenius-closed.
 
-        Used for structural health: ≥0.75 claims Φ_}, below degrades to Φ_υ.
+        Used for structural health: ≥0.75 claims 𐑹, below degrades to 𐑿.
         """
         if not self._cycles:
             return 1.0
@@ -79,9 +79,9 @@ class AgentTrajectory:
     def structural_health(self) -> dict[str, Any]:
         """Report the agent's structural integrity."""
         frob_ratio = self.frobenius_ratio
-        achieved_p = "Φ_}" if frob_ratio >= 0.75 else "Φ_υ"
+        achieved_p = "𐑹" if frob_ratio >= 0.75 else "𐑿"
         return {
-            "ouroboricity": "O_inf" if achieved_p == "Φ_}" else "O_2",
+            "ouroboricity": "O_∞" if achieved_p == "𐑹" else "O₂",
             "frobenius_ratio": round(frob_ratio, 4),
             "winding_count": self._winding_counter,
             "total_cycles": len(self._cycles),

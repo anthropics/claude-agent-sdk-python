@@ -3,7 +3,7 @@
 > **Reference implementations for interface validation. Not packaged, not maintained as production code.**
 
 Reference [`SessionStore`](../../src/claude_agent_sdk/types.py) implementations
-— copy into your project, install the backend client, validate with
+- copy into your project, install the backend client, validate with
 `run_session_store_conformance`.
 
 These adapters live in `examples/` (not `src/`) so the SDK package stays free
@@ -41,7 +41,7 @@ pytest tests/test_example_s3_session_store.py \
 
 S3 and Redis have in-process mocks (`moto`, `fakeredis`); Postgres is
 live-only. The live e2e suites for all three skip unless the corresponding
-`SESSION_STORE_*` env vars are set — see each section below.
+`SESSION_STORE_*` env vars are set see each section below.
 
 ## Production checklist
 
@@ -50,7 +50,7 @@ through the relevant items below.
 
 ### All adapters
 
-- `run_session_store_conformance` proves *correctness*, not *resilience* —
+- `run_session_store_conformance` proves *correctness*, not *resilience* -
   load-test your adapter under your expected throughput.
 - `append()` failures are logged and emit a `MirrorErrorMessage`; they never
   block the conversation. Monitor for these so silent mirror gaps don't go
@@ -63,19 +63,19 @@ through the relevant items below.
 - Part-file ordering uses the **client-side wall clock**. Multiple writer
   instances with clock skew >1s may produce out-of-order `load()` results. Use
   NTP or a single writer per session.
-- Consider S3 lifecycle policies for retention — the SDK never auto-deletes.
+- Consider S3 lifecycle policies for retention the SDK never auto-deletes.
 - For sessions with >1000 part files, `load()` paginates correctly but latency
   grows linearly; consider periodic compaction.
 
 ### Redis
 
-- Set `maxmemory-policy noeviction` (or use a dedicated DB) — eviction will
+- Set `maxmemory-policy noeviction` (or use a dedicated DB) eviction will
   silently drop session data.
 - Lists are unbounded; implement TTL via `EXPIRE` in a subclass if needed.
 - Redis Cluster: keys with the same `{project_key}:{session_id}` prefix should
-  hash to the same slot — wrap in `{...}` hash tags if using Cluster.
+  hash to the same slot wrap in `{...}` hash tags if using Cluster.
 - If you derive `project_key` or `session_id` outside the SDK, ensure they
-  cannot contain `:` (the key separator) — collisions would mix data across
+  cannot contain `:` (the key separator) collisions would mix data across
   keys. The SDK's own `project_key_for_directory()` and UUID session IDs are
   already safe.
 
@@ -83,13 +83,13 @@ through the relevant items below.
 
 - Size the `asyncpg` pool ≥ expected concurrent sessions; don't share a pool
   with request-handler code that holds connections.
-- `jsonb` reorders keys — contract-safe, but don't byte-compare entries.
-- Add a retention job (`DELETE WHERE mtime < ...`) — the table grows
+- `jsonb` reorders keys contract-safe, but don't byte-compare entries.
+- Add a retention job (`DELETE WHERE mtime < ...`) the table grows
   unbounded.
 
 ---
 
-## S3 — `s3_session_store.py`
+## S3 `s3_session_store.py`
 
 Stores transcripts as JSONL part files:
 
@@ -102,7 +102,7 @@ them.
 
 ### Installation
 
-`boto3` is **not** a dependency of `claude-agent-sdk` — install it yourself:
+`boto3` is **not** a dependency of `claude-agent-sdk` install it yourself:
 
 ```bash
 pip install claude-agent-sdk boto3
@@ -199,7 +199,7 @@ This mirrors the S3 reference adapter in the TypeScript SDK's
 
 ---
 
-## Redis — `redis_session_store.py`
+## Redis `redis_session_store.py`
 
 Backed by [`redis-py`](https://github.com/redis/redis-py)'s `redis.asyncio`
 client.
@@ -231,16 +231,16 @@ async for message in query(
         print(message.result)
 ```
 
-The client **must** be created with `decode_responses=True` — the adapter
+The client **must** be created with `decode_responses=True` the adapter
 `json.loads` each `LRANGE` element and expects `str`, not `bytes`.
 
 ### Key scheme
 
 ```
-{prefix}:{project_key}:{session_id}             list   — main transcript entries (JSON each)
-{prefix}:{project_key}:{session_id}:{subpath}   list   — subagent transcript entries
-{prefix}:{project_key}:{session_id}:__subkeys   set    — subpaths under this session
-{prefix}:{project_key}:__sessions               zset   — session_id → mtime(ms)
+{prefix}:{project_key}:{session_id}             list   main transcript entries (JSON each)
+{prefix}:{project_key}:{session_id}:{subpath}   list   subagent transcript entries
+{prefix}:{project_key}:{session_id}:__subkeys   set    subpaths under this session
+{prefix}:{project_key}:__sessions               zset   session_id → mtime(ms)
 ```
 
 Each `append()` is an `RPUSH` plus an index update in a single `MULTI`;
@@ -300,7 +300,7 @@ TypeScript SDK.
 
 ---
 
-## Postgres — `postgres_session_store.py`
+## Postgres `postgres_session_store.py`
 
 Backed by [`asyncpg`](https://github.com/MagicStack/asyncpg), the native
 asyncio Postgres driver.
@@ -363,7 +363,7 @@ the two SDKs requires aligning on a single schema first.
 
 Entries are stored as `jsonb`, which **reorders object keys** on read-back
 (shorter keys first, then by byte order). This is explicitly allowed by the
-`SessionStore` contract — `load()` requires *deep-equal*, not *byte-equal*,
+`SessionStore` contract `load()` requires *deep-equal*, not *byte-equal*,
 returns. The SDK never byte-compares stored entries, and the `*_from_store`
 read helpers hoist `"type"` to the first key when re-serializing so the SDK's
 lite-parse tag scan still works. If you need byte-stable storage, switch the column

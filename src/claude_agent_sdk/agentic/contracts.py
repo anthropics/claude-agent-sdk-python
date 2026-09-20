@@ -1,6 +1,6 @@
 """Dual-tool Frobenius verification contracts.
 
-Implements Φ_} (Frobenius-special) condition: μ(δ(query)) ≈ query.
+Implements 𐑹 (Frobenius-special) condition: μ(δ(query)) ≈ query.
 Every tool call is paired with a verification step that checks whether
 the output addresses the original input.
 """
@@ -27,7 +27,7 @@ class DualToolResult:
     verify_output: str
     frobenius_closed: bool = False
     """True iff μ(δ(query)) ≈ query — the verification confirms the output
-    addresses the input. This is the structural marker of Φ_}."""
+    addresses the input. This is the structural marker of 𐑹."""
 
     @classmethod
     def from_tool_call(
@@ -41,7 +41,7 @@ class DualToolResult:
         """Create a DualToolResult with optional inline verification.
 
         If no verify_fn is provided, frobenius_closed defaults to True
-        (trust mode). For Φ_}, always provide a verify_fn.
+        (trust mode). For 𐑹, always provide a verify_fn.
         """
         if verify_fn is not None:
             verify_output, closed = verify_fn(tool_input, tool_output)

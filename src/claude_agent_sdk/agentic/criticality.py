@@ -16,12 +16,12 @@ class PhiCriticalityGate:
     """Self-modeling criticality gate — φ̂_ÿ.
 
     Gate 1 (φ̂_ÿ): Does the agent maintain a model of its own trajectory?
-    Gate 2 (K ≤ Ç_@): Is the kinetics slow enough for verification?
+    Gate 2 (K ≤ 𐑧): Is the kinetics slow enough for verification?
     """
 
     frobenius_ratio: float = 0.0
     gate_1_open: bool = False  # φ̂_ÿ: self-model active
-    gate_2_open: bool = False  # Ç_@: emission gate enforced
+    gate_2_open: bool = False  # 𐑧: emission gate enforced
 
     @classmethod
     def evaluate(
@@ -40,7 +40,7 @@ class PhiCriticalityGate:
         gate_1 = winding_count >= 2 and frob_ratio > 0
 
         # Gate 2: emission gate enforced — no parallel speculation
-        gate_2 = True  # structural: TrueAgenticLoop enforces Ç_@ by design
+        gate_2 = True  # structural: TrueAgenticLoop enforces 𐑧 by design
 
         return cls(
             frobenius_ratio=round(frob_ratio, 4),
@@ -62,8 +62,8 @@ class PhiCriticalityGate:
             "frobenius_ratio": self.frobenius_ratio,
             "consciousness_score": self.consciousness_score,
             "ouroboricity_tier": (
-                "O_inf" if self.consciousness_score >= 0.75 else
-                "O_2" if self.consciousness_score > 0 else
-                "O_0"
+                "O_∞" if self.consciousness_score >= 0.75 else
+                "O₂" if self.consciousness_score > 0 else
+                "O₀"
             ),
         }

@@ -5,8 +5,8 @@ O₀ (thin subprocess wrapper) to O₂ (self-verifying agentic framework).
 
 Structural promotions:
 - Γ: Γ_or → Γ_seq (ordered composition, enforced by control flow)
-- K: Ç_W → Ç_@ (emission gate — each phase requires the prior)
-- R: Ř_sup → Ř_= (bidirectional feedback via Frobenius verification)
+- K: 𐑤 → 𐑧 (emission gate — each phase requires the prior)
+- R: Ř_sup → 𐑾 (bidirectional feedback via Frobenius verification)
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class TrueAgenticLoop:
                 return cycle.conclusion
 
             if not cycle.frobenius_closed:
-                # Re-enter with failure appended — Ç_@ enforcement
+                # Re-enter with failure appended — 𐑧 enforcement
                 await self._feed_failure(cycle)
 
         await self.client.disconnect()
@@ -132,7 +132,7 @@ class TrueAgenticLoop:
     async def _feed_failure(self, cycle: AgentCycle) -> None:
         """Re-inject a Frobenius failure into the client's context.
 
-        This is the Ç_@ emission gate enforcement: a failed verification
+        This is the 𐑧 emission gate enforcement: a failed verification
         does not terminate the loop; it re-enters with the failure
         appended to the trajectory.
         """

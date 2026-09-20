@@ -194,6 +194,15 @@ class TestHelpers:
         )
         assert _extract_json_string_field(text, "cwd") == "/compact/earlier"
 
+    def test_extract_json_string_field_only_recognizes_two_spellings(self):
+        # Guard for the scope the helper's docstring states: the only
+        # candidates are "key":"v" and "key": "v". A colon followed by more
+        # than one space is neither, so that field is not seen at all and the
+        # earliest recognized spelling remains the compact one.
+        assert _extract_json_string_field('{"cwd":  "/two/spaces"}', "cwd") is None
+        text = '{"cwd":  "/two/spaces"}\n{"cwd":"/compact/later"}'
+        assert _extract_json_string_field(text, "cwd") == "/compact/later"
+
     def test_created_at_uses_the_first_timestamp_not_the_first_compact_one(
         self, claude_config_dir: Path
     ):

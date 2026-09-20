@@ -13,7 +13,7 @@ from ..types import (
     _hooks_to_internal_format,
 )
 from .message_parser import parse_message
-from .query import Query
+from .query import Query, stamp_user_message
 from .session_resume import (
     MaterializedResume,
     apply_materialized_options,
@@ -151,6 +151,7 @@ class InternalClient:
             system_prompt_snapshot=system_prompt_snapshot,
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
+            verbatim_prompts=configured_options.verbatim_prompts,
         )
 
         if configured_options.session_store is not None:
@@ -185,7 +186,14 @@ class InternalClient:
                     "message": {"role": "user", "content": prompt},
                     "parent_tool_use_id": None,
                 }
-                await chosen_transport.write(json.dumps(user_message) + "\n")
+                await chosen_transport.write(
+                    json.dumps(
+                        stamp_user_message(
+                            user_message, configured_options.verbatim_prompts
+                        )
+                    )
+                    + "\n"
+                )
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables

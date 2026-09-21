@@ -82,6 +82,18 @@ jobs:
           fi
           echo "Bundled CLI found in wheel ✓"
 
+      - name: Build OpenSSL for cryptography (Windows ARM64)
+        # cryptography publishes no win_arm64 wheel, so pip builds it from
+        # source here and its openssl-sys build needs a native OpenSSL to link.
+        # WoA support has been added in https://github.com/pyca/cryptography/pull/15350
+        # This step can be removed when they publish a release.
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          vcpkg install --triplet arm64-windows-static-md --clean-after-build openssl
+          "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\arm64-windows-static-md" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Smoke-test install and import
         shell: bash
         run: |

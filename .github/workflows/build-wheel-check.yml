@@ -33,6 +33,8 @@ jobs:
             expected_tag: macosx_11_0_x86_64
           - os: windows-latest
             expected_tag: win_amd64
+          - os: windows-11-arm
+            expected_tag: win_arm64
     steps:
       - uses: actions/checkout@v4
 

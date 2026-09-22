@@ -111,8 +111,36 @@ jobs:
           # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
           # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
           THRESHOLD_BYTES = 49.9 * 1024**3
+          # PyPI's default per-file limit. If PyPI raises it for this project, update this
+          # and PYPI_FILE_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          FILE_LIMIT_BYTES = 100 * 1024**2
 
           version = os.environ.get("VERSION", "")
+
+          # The upload step sends the files one at a time, so if PyPI rejected one for its
+          # size, only some of the release's files would be public. Keep this check above the
+          # PyPI fetch, so that it still runs and names the file when the fetch fails.
+          sizes = []
+          for d in ("dist", "sdist"):
+              if os.path.isdir(d):
+                  for fn in sorted(os.listdir(d)):
+                      sizes.append((os.path.getsize(os.path.join(d, fn)), fn))
+          if sizes:
+              size, fn = max(sizes)
+              print(f"Largest file:       {size / 1024**2:.2f} MiB of the {FILE_LIMIT_BYTES / 1024**2:.0f} MiB PyPI per-file limit ({size:,} bytes, {fn})")
+          oversized = [(size, fn) for size, fn in sizes if size > FILE_LIMIT_BYTES]
+          if oversized:
+              names = ", ".join(f"{fn} ({size:,} bytes)" for size, fn in oversized)
+              print(
+                  f"::error::Too large for PyPI: {names}. PyPI's per-file limit is "
+                  f"{FILE_LIMIT_BYTES:,} bytes ({FILE_LIMIT_BYTES / 1024**2:.0f} MiB), as recorded in "
+                  "FILE_LIMIT_BYTES in .github/workflows/build-and-publish.yml. "
+                  "This run uploaded nothing to PyPI. Make each listed file smaller, or ask "
+                  "PyPI to raise this project's per-file limit "
+                  "(https://docs.pypi.org/project-management/storage-limits/) and then raise "
+                  "FILE_LIMIT_BYTES to match."
+              )
+              sys.exit(1)
 
           # Fetch current usage from PyPI JSON API
           try:

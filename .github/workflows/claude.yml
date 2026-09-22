@@ -42,6 +42,8 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_MENTION }}
         with:
           # Authenticate to the Claude API via Workload Identity Federation
           # (the workflow's OIDC token is exchanged for a short-lived access

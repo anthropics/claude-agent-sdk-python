@@ -189,6 +189,8 @@ jobs:
       - name: Update changelog with Claude
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_CHANGELOG }}
         with:
           prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ inputs.previous_tag }}"
           # Authenticate to the Claude API via Workload Identity Federation

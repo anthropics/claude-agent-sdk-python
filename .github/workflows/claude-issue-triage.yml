@@ -24,6 +24,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         env:
           CLAUDE_CODE_SCRIPT_CAPS: '{"edit-issue-labels.sh":2}'
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_TRIAGE }}
         with:
           prompt: "/label-issue REPO: ${{ github.repository }} ISSUE_NUMBER: ${{ github.event.issue.number }}"
           # Authenticate to the Claude API via Workload Identity Federation

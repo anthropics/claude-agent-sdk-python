@@ -146,6 +146,7 @@ jobs:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_E2E }}
         run: |
           python -m pytest e2e-tests/ -v -m e2e
 
@@ -175,6 +176,7 @@ jobs:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_E2E }}
         # Bind-mount the identity token file so the background refresher on
         # the host keeps the in-container copy fresh too
         run: |
@@ -182,6 +184,7 @@ jobs:
             -e ANTHROPIC_FEDERATION_RULE_ID \
             -e ANTHROPIC_ORGANIZATION_ID \
             -e ANTHROPIC_SERVICE_ACCOUNT_ID \
+            -e ANTHROPIC_CUSTOM_HEADERS \
             -e ANTHROPIC_IDENTITY_TOKEN_FILE=/run/claude-identity-token \
             -v "$ANTHROPIC_IDENTITY_TOKEN_FILE:/run/claude-identity-token:ro" \
             claude-sdk-test python -m pytest e2e-tests/ -v -m e2e
@@ -243,6 +246,7 @@ jobs:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_E2E }}
           PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py
@@ -256,6 +260,7 @@ jobs:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS_E2E }}
           PYTHONUNBUFFERED: "1"
         run: |
           python examples/quick_start.py

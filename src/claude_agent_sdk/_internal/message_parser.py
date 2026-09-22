@@ -115,9 +115,18 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     TextBlock(text=block["text"])
                                 )
                             case "image":
-                                user_content_blocks.append(
-                                    ImageBlock(source=block["source"])
-                                )
+                                source = block.get("source")
+                                if source is not None:
+                                    user_content_blocks.append(
+                                        ImageBlock(source=source)
+                                    )
+                                else:
+                                    # degrade like an unknown block type
+                                    # rather than failing the whole message
+                                    logger.debug(
+                                        "Skipping image content block"
+                                        " without a source field"
+                                    )
                             case "tool_use":
                                 user_content_blocks.append(
                                     ToolUseBlock(
@@ -219,7 +228,16 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                 )
                             )
                         case "image":
-                            content_blocks.append(ImageBlock(source=block["source"]))
+                            source = block.get("source")
+                            if source is not None:
+                                content_blocks.append(ImageBlock(source=source))
+                            else:
+                                # degrade like an unknown block type rather
+                                # than failing the whole message
+                                logger.debug(
+                                    "Skipping image content block without a"
+                                    " source field"
+                                )
                         case _:
                             # Forward-compatible, matching the unknown message
                             # type handling below.

@@ -277,10 +277,15 @@ async def prompt_messages():
 Pass `prompt_messages()` as the prompt. `AssistantMessage`, `StreamEvent`, and
 `ResultMessage` expose `user_message_uuid` and `user_message_uuids`. When the CLI
 merges several inputs into one turn, match against `user_message_uuids` (up to
-64 UUIDs), falling back to `user_message_uuid` if the list is absent.
-The first reply carries the attribution; later assistant messages and
-stream events omit it. The result's list can also include inputs consumed after
-that first reply.
+64 UUIDs), falling back to `user_message_uuid` if the list is absent. The list
+may be incomplete when more than 64 inputs are consumed, so a missing UUID does
+not prove that its input was not consumed.
+
+Attribution usually appears on the first reply of each kind (assistant message
+and non-ping stream event). Synthetic turns may report new attribution after
+consuming queued user messages. Frames without attribution leave these fields
+as `None`; the SDK does not carry an earlier stamp forward. The result's list can
+also include inputs consumed after the first reply.
 
 `ResultMessage.queued_turn_count` reports pending user sends when the result was
 produced, not the number of remaining results: queued sends may merge into fewer

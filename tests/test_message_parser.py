@@ -1360,7 +1360,10 @@ class TestMessageParser:
 
 
 class TestUserMessageAttribution:
-    @pytest.mark.parametrize("message_type", ["assistant", "stream_event"])
+    @pytest.mark.parametrize(
+        ("message_type", "expected_type"),
+        [("assistant", AssistantMessage), ("stream_event", StreamEvent)],
+    )
     @pytest.mark.parametrize(
         "attribution",
         [
@@ -1372,7 +1375,7 @@ class TestUserMessageAttribution:
             },
         ],
     )
-    def test_first_reply_attribution(self, message_type, attribution):
+    def test_reply_attribution(self, message_type, expected_type, attribution):
         data = {
             "type": message_type,
             "uuid": "reply-1",
@@ -1385,18 +1388,26 @@ class TestUserMessageAttribution:
             data["event"] = {"type": "message_start", "message": {"id": "msg-1"}}
 
         message = parse_message(data)
-        assert isinstance(message, AssistantMessage | StreamEvent)
+        assert isinstance(message, expected_type)
         assert message.uuid == "reply-1"
         assert message.user_message_uuid == attribution.get("user_message_uuid")
         assert message.user_message_uuids == attribution.get("user_message_uuids")
 
-        # Later frames carry no attribution; don't propagate the first frame's stamp.
+        # Frames without attribution must not inherit an earlier frame's stamp.
         data.pop("user_message_uuid", None)
         data.pop("user_message_uuids", None)
         later_message = parse_message(data)
-        assert isinstance(later_message, AssistantMessage | StreamEvent)
+        assert isinstance(later_message, expected_type)
         assert later_message.user_message_uuid is None
         assert later_message.user_message_uuids is None
+
+        # A later frame may report new attribution after a queued input is consumed.
+        data["user_message_uuid"] = "user-3"
+        data["user_message_uuids"] = ["user-1", "user-2", "user-3"]
+        updated_message = parse_message(data)
+        assert isinstance(updated_message, expected_type)
+        assert updated_message.user_message_uuid == "user-3"
+        assert updated_message.user_message_uuids == ["user-1", "user-2", "user-3"]
 
     @pytest.mark.parametrize("subtype", ["success", "error_during_execution"])
     @pytest.mark.parametrize(

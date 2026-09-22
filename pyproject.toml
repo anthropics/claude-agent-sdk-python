@@ -117,6 +117,13 @@ ignore_missing_imports = true
 module = ["twine"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# zopfli is installed only by the wheel-building workflows (pinned in
+# scripts/requirements-recompress.txt); build_wheel.py imports it only for
+# --recompress zopfli. It ships without type information.
+module = ["zopfli", "zopfli.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88

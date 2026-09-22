@@ -27,11 +27,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install build dependencies
-        run: pip install build twine wheel
+        run: |
+          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli
         shell: bash
 
       - uses: actions/upload-artifact@v4

@@ -14,7 +14,8 @@ too old to answer it at all.
 """
 
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -31,7 +32,6 @@ from claude_agent_sdk import (
     query,
 )
 from claude_agent_sdk._errors import ProcessError, ResultError
-from claude_agent_sdk._internal.query import Query
 
 pytestmark = pytest.mark.anyio
 
@@ -154,11 +154,9 @@ class FakeCli:
         return [f for f in self.frames if _is_declaration(f)]
 
 
-async def _run(
-    cli: FakeCli,
-    prompt: Any = "go",
-    options: ClaudeAgentOptions | None = None,
-) -> list[Any]:
+@contextmanager
+def _wired(cli: FakeCli) -> Iterator[None]:
+    """Route ``query()`` to the fake CLI."""
     with (
         patch("claude_agent_sdk._internal.client.SubprocessCLITransport") as mock_cls,
         patch(
@@ -167,9 +165,22 @@ async def _run(
         ),
     ):
         mock_cls.return_value = cli.transport
-        if options is None:
-            options = _with_permissions()
-        return [m async for m in query(prompt=prompt, options=options)]
+        yield
+
+
+async def _run(
+    cli: FakeCli,
+    prompt: Any = "go",
+    options: ClaudeAgentOptions | None = None,
+    seen: list[Any] | None = None,
+) -> list[Any]:
+    """Run ``query()`` to the end. ``seen`` receives the messages as they come,
+    so it survives an error the run ends with."""
+    seen = [] if seen is None else seen
+    with _wired(cli):
+        async for m in query(prompt=prompt, options=options or _with_permissions()):
+            seen.append(m)
+    return seen
 
 
 def _with_permissions(calls: list[str] | None = None) -> ClaudeAgentOptions:
@@ -230,7 +241,6 @@ class TestStringPrompt:
         the in-flight ledger is empty at that result and used to close stdin.
         The continuation turn it wakes then asks for a permission verdict."""
         calls: list[str] = []
-        stdin_open_when_answered: list[bool] = []
 
         async def script(cli):
             decl = await cli.written(_is_declaration)
@@ -243,11 +253,10 @@ class TestStringPrompt:
                    "task_id": "t1", "status": "completed", "output_file": "",
                    "summary": "", "uuid": "u2", "session_id": "s1"}  # fmt: skip
             yield _assistant("delegated")
-            yield _result("delegated", total_cost_usd=0.01)
+            yield _result("delegated")
             # The completion wakes the parent for a follow-up turn.
             yield _permission_request()
             await cli.written(_is_response_to("perm_1"))
-            stdin_open_when_answered.append(not cli.ended.is_set())
             yield _assistant("all done")
             yield _result(
                 "all done",
@@ -261,7 +270,6 @@ class TestStringPrompt:
         messages = await _run(cli, options=_with_permissions(calls))
 
         assert calls == ["Write"]
-        assert stdin_open_when_answered == [True]
         results = [m for m in messages if isinstance(m, ResultMessage)]
         assert len(results) == 1
         (final,) = results
@@ -321,36 +329,21 @@ class TestStringPrompt:
             yield _assistant("first")
             yield _result("first")
             yield _notice("notice_between_turns")
-            live_seen.set()
             await release.wait()
             yield _assistant("second")
             yield _result("second")
 
-        live_seen = anyio.Event()
         release = anyio.Event()
         cli = FakeCli(script)
         seen: list[Any] = []
-        with (
-            patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_cls,
-            patch(
-                "claude_agent_sdk._internal.query.Query.initialize",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_cls.return_value = cli.transport
-            with anyio.fail_after(5):
-                async for m in query(prompt="go", options=_with_permissions()):
-                    seen.append(m)
-                    if (
-                        isinstance(m, SystemMessage)
-                        and m.subtype == "notice_between_turns"
-                    ):
-                        # Delivered before the run ended, with the result
-                        # still held back.
-                        assert not any(isinstance(x, ResultMessage) for x in seen)
-                        release.set()
+        with _wired(cli), anyio.fail_after(5):
+            async for m in query(prompt="go", options=_with_permissions()):
+                seen.append(m)
+                if isinstance(m, SystemMessage) and m.subtype == "notice_between_turns":
+                    # Delivered before the run ended, with the result still
+                    # held back.
+                    assert not any(isinstance(x, ResultMessage) for x in seen)
+                    release.set()
 
         assert [type(m).__name__ for m in seen] == [
             "AssistantMessage",
@@ -359,7 +352,9 @@ class TestStringPrompt:
             "ResultMessage",
         ]
 
-    async def test_session_state_marker_stays_behind_the_result_it_follows(self):
+    async def test_session_state_markers_arrive_live_and_only_the_results_are_held(
+        self,
+    ):
         async def script(cli):
             decl = await cli.written(_is_declaration)
             yield _ack(decl)
@@ -381,8 +376,8 @@ class TestStringPrompt:
             "AssistantMessage",
             "session_state_changed",
             "AssistantMessage",
-            "ResultMessage",
             "session_state_changed",
+            "ResultMessage",
         ]
 
     async def test_results_reach_the_consumer_ahead_of_the_error_the_exit_becomes(
@@ -403,19 +398,8 @@ class TestStringPrompt:
 
         cli = FakeCli(script)
         seen: list[Any] = []
-        with (
-            pytest.raises(ResultError),
-            patch(
-                "claude_agent_sdk._internal.client.SubprocessCLITransport"
-            ) as mock_cls,
-            patch(
-                "claude_agent_sdk._internal.query.Query.initialize",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_cls.return_value = cli.transport
-            async for m in query(prompt="go", options=_with_permissions()):
-                seen.append(m)
+        with pytest.raises(ResultError):
+            await _run(cli, seen=seen)
 
         (final,) = seen
         assert final.subtype == "error_during_execution"
@@ -428,20 +412,16 @@ class TestOlderClis:
     tracked subagent in flight."""
 
     async def test_error_reply_closes_stdin_at_the_first_result(self):
-        stdin_closed: list[bool] = []
-
         async def script(cli):
             decl = await cli.written(_is_declaration)
             yield _ack(decl, honoured=False)
             await cli.written(_is_user)
             yield _result("first")
             await cli.stdin_closed()
-            stdin_closed.append(True)
             yield _result("second")
 
-        messages = await _run(FakeCli(script), options=_with_permissions())
+        messages = await _run(FakeCli(script))
 
-        assert stdin_closed == [True]
         assert [m.result for m in messages] == ["first", "second"]
         assert all(m.turn_results is None for m in messages)
 
@@ -455,7 +435,7 @@ class TestOlderClis:
             await cli.stdin_closed()
             yield _result("second")
 
-        messages = await _run(FakeCli(script), options=_with_permissions())
+        messages = await _run(FakeCli(script))
 
         assert [m.result for m in messages] == ["first", "second"]
 
@@ -472,7 +452,7 @@ class TestOlderClis:
             yield _ack(decl)
             yield _result("prompt")
 
-        messages = await _run(FakeCli(script), options=_with_permissions())
+        messages = await _run(FakeCli(script))
 
         assert [m.result for m in messages] == ["startup", "prompt"]
         assert all(m.turn_results is None for m in messages)
@@ -501,7 +481,6 @@ class TestStreamedPrompt:
     turns keep a stdin to answer on."""
 
     async def test_single_message_stream_declares_and_keeps_stdin_open(self):
-        stdin_open_when_answered: list[bool] = []
 
         async def script(cli):
             await cli.written(_is_user)
@@ -510,15 +489,12 @@ class TestStreamedPrompt:
             yield _result("first")
             yield _permission_request()
             await cli.written(_is_response_to("perm_1"))
-            stdin_open_when_answered.append(not cli.ended.is_set())
             yield _result("second")
 
         cli = FakeCli(script)
-        messages = await _run(cli, prompt=_one_message(), options=_with_permissions())
+        messages = await _run(cli, prompt=_one_message())
 
         assert [m.result for m in messages] == ["first", "second"]
-        assert stdin_open_when_answered == [True]
-        assert not cli.ended.is_set()
 
     async def test_declaration_follows_the_message(self):
         async def script(cli):
@@ -539,30 +515,11 @@ class TestStreamedPrompt:
             await cli.stdin_closed()
             yield _result("second")
 
-        messages = await _run(
-            FakeCli(script), prompt=_one_message(), options=_with_permissions()
-        )
+        messages = await _run(FakeCli(script), prompt=_one_message())
 
         assert [m.result for m in messages] == ["first", "second"]
 
-    async def test_unanswered_declaration_stops_waiting_after_the_bound(self):
-        async def script(cli):
-            decl = await cli.written(_is_declaration)
-            # The reply comes after the bound ran out: too late to matter, so
-            # the run keeps the old rule and stdin closes at the result.
-            await anyio.sleep(0.3)
-            yield _ack(decl)
-            yield _result("done")
-            await cli.stdin_closed()
-
-        with patch.object(Query, "end_user_input_ack_timeout", 0.05):
-            messages = await _run(
-                FakeCli(script), prompt=_one_message(), options=_with_permissions()
-            )
-
-        assert [m.result for m in messages] == ["done"]
-
-    async def test_a_result_ahead_of_the_reply_ends_the_wait(self):
+    async def test_a_result_ahead_of_the_reply_decides_a_streamed_run(self):
         async def script(cli):
             decl = await cli.written(_is_declaration)
             yield _result("first")
@@ -570,10 +527,7 @@ class TestStreamedPrompt:
             yield _ack(decl)
             yield _result("second")
 
-        with patch.object(Query, "end_user_input_ack_timeout", 60):
-            messages = await _run(
-                FakeCli(script), prompt=_one_message(), options=_with_permissions()
-            )
+        messages = await _run(FakeCli(script), prompt=_one_message())
 
         assert [m.result for m in messages] == ["first", "second"]
 

@@ -24,7 +24,6 @@ from ..types import (
     ToolPermissionContext,
 )
 from ._task_compat import TaskHandle, spawn_detached
-from .result_fold import fold_turn_results, is_turn_content, is_turn_end_marker
 from .sdk_mcp_bridge import SdkMcpBridge
 from .transport import Transport
 
@@ -143,7 +142,6 @@ class Query:
         skills: list[str] | Literal["all"] | None = None,
         forward_subagent_text: bool = False,
         verbatim_prompts: bool = False,
-        one_shot: Literal["string", "stream"] | None = None,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -166,15 +164,6 @@ class Query:
             verbatim_prompts: Mark every outgoing user message
                 ``client_composed`` so the CLI delivers it as written (no
                 ``@path`` expansion, no slash-command dispatch)
-            one_shot: Set by :func:`query` for a run whose input is fully
-                known up front: ``"string"`` for a string prompt, ``"stream"``
-                for an async-iterable prompt (which declares the end of input
-                only if it yields exactly one message). Such a run tells the
-                CLI no further user message is coming
-                (:meth:`declare_end_user_input`); a CLI that honours that ends
-                the run itself, and this Query reads to that end instead of
-                closing stdin at the first result. ``None`` (the default, and
-                what :class:`ClaudeSDKClient` uses) declares nothing.
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -192,7 +181,6 @@ class Query:
         self._skills = skills
         self._forward_subagent_text = forward_subagent_text
         self._verbatim_prompts = verbatim_prompts
-        self._one_shot = one_shot
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -213,9 +201,9 @@ class Query:
         self._initialization_result: dict[str, Any] | None = None
 
         # Set when a run-ending result arrives (a result frame with no tasks
-        # in flight) so the stdin-closing waiter can wake; see #1088 and
-        # _inflight_tasks below. Named for history — it once tracked the
-        # literal first result.
+        # in flight) or stdout closes, so the stdin-closing waiter can wake;
+        # see #1088 and _inflight_tasks below. Named for history — it once
+        # tracked the literal first result.
         self._first_result_event = anyio.Event()
         # Task IDs of started-but-not-finished tasks. A result frame only ends
         # one turn, not the run: background tasks keep running past it and
@@ -236,19 +224,6 @@ class Query:
         # one), then whether the CLI honoured it. Set once, then sticky.
         self._end_user_input_request_id: str | None = None
         self._end_user_input_honoured: bool | None = None
-        # Set once the declaration is settled either way (or the read loop
-        # ends), so a stream_input waiting on the reply can stop waiting.
-        self._end_user_input_settled = anyio.Event()
-        # A string prompt's per-turn results on a CLI that honoured the
-        # declaration, released at the run's end as one folded result.
-        self._held_turn_results: list[dict[str, Any]] = []
-        # Messages that followed the newest held result without starting a
-        # turn (a prompt suggestion, a task notification), released after the
-        # fold — or ahead of the next turn's content, whichever comes first.
-        self._held_trailers: list[dict[str, Any]] = []
-        # True from a held result until the next turn's content: only then do
-        # non-content messages trail a result rather than belong to a turn.
-        self._trailing_held_result = False
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -430,23 +405,14 @@ class Query:
                     # SessionStore being up to date for this turn.
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
-                    if self._end_user_input_honoured is None and (
-                        self._one_shot == "string"
-                        or self._end_user_input_request_id is not None
-                    ):
-                        # The declaration's reply precedes the prompt's result
-                        # on the wire (the CLI answers requests in order), so a
-                        # result with the reply still outstanding — a CLI that
-                        # drops the request, or one that produced this result
-                        # before reading it, as a resumed session's startup
-                        # notices do — decides "not honoured" for the run: the
-                        # old rule below, results yielded as they stand.
-                        self._settle_end_user_input(False)
+                    # The CLI answers requests in order, so a result with the
+                    # declaration's reply still outstanding means it was not
+                    # honoured (see declare_end_user_input).
+                    self._settle_end_user_input(False)
                     if self._end_user_input_honoured:
-                        # The CLI ends this run itself (closing stdout) once
-                        # nothing is left to wait for, and stdin has to stay
-                        # open until then for the hook / permission / SDK-MCP
-                        # requests of the turns still to come (#1190).
+                        # The CLI ends the run itself by closing stdout; stdin
+                        # stays open until then for the requests of the turns
+                        # still to come (#1190).
                         logger.debug(
                             "Result received on an end_user_input run; "
                             "keeping stdin open until the CLI ends the run"
@@ -470,15 +436,6 @@ class Query:
                         self._last_error_result = message
                     else:
                         self._last_error_result = None
-                    if self._one_shot == "string" and self._end_user_input_honoured:
-                        # A string prompt's run on a CLI that honoured the
-                        # declaration may have several turns, each with a
-                        # result on the wire: hold them, and yield the fold
-                        # once stdout closes (_release_held_turn_results).
-                        await self._release_held_trailers()
-                        self._held_turn_results.append(message)
-                        self._trailing_held_result = True
-                        continue
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -490,9 +447,7 @@ class Query:
                     self._last_error_result = None
 
                 # Regular SDK messages go to the stream
-                await self._emit(message)
-
-            await self._release_held_turn_results()
+                await self._message_send.send(message)
 
         except anyio.get_cancelled_exc_class():
             # Task was cancelled - this is expected behavior
@@ -507,9 +462,6 @@ class Query:
             # reported so the exception is actionable and typed. Mirrors the
             # TypeScript SDK (Query.ts readMessages).
             pending_error: Exception = e
-            # The run's results reach the consumer ahead of the error the
-            # exit becomes: a CLI exits 1 after an error result.
-            await self._release_held_turn_results()
             if isinstance(e, ProcessError) and self._last_error_result is not None:
                 error_text = (
                     f"Claude Code returned an error result: "
@@ -555,7 +507,6 @@ class Query:
             # Unblock any waiters (e.g. string-prompt path waiting for first
             # result) so they don't stall for the full timeout on early exit.
             self._first_result_event.set()
-            self._end_user_input_settled.set()
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
@@ -695,6 +646,17 @@ class Query:
             }
             await self.transport.write(json.dumps(error_response) + "\n")
 
+    def _new_control_request(self, request: dict[str, Any]) -> tuple[str, str]:
+        """Build a control request under a fresh id: ``(request_id, wire line)``."""
+        self._request_counter += 1
+        request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
+        frame = {
+            "type": "control_request",
+            "request_id": request_id,
+            "request": request,
+        }
+        return request_id, json.dumps(frame) + "\n"
+
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0
     ) -> dict[str, Any]:
@@ -707,22 +669,13 @@ class Query:
         if not self.is_streaming_mode:
             raise Exception("Control requests require streaming mode")
 
-        # Generate unique request ID
-        self._request_counter += 1
-        request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
+        request_id, frame = self._new_control_request(request)
 
         # Create event for response
         event = anyio.Event()
         self.pending_control_responses[request_id] = event
 
-        # Build and send request
-        control_request = {
-            "type": "control_request",
-            "request_id": request_id,
-            "request": request,
-        }
-
-        await self.transport.write(json.dumps(control_request) + "\n")
+        await self.transport.write(frame)
 
         # Wait for response
         try:
@@ -869,12 +822,10 @@ class Query:
         idempotent.
 
         This is the fallback for a CLI that does not honour ``end_user_input``
-        (see :meth:`declare_end_user_input`), which is the run-boundary signal
-        that answers #1088 properly; a run that CLI ends reads to the end and
-        never consults this ledger. Against an older CLI it stays a
-        mitigation, not a complete answer. An empty set
-        means "nothing we know of is running", which is not the same as "the
-        run is over": a task that settles *before* the turn's result frame
+        (see :meth:`declare_end_user_input`); a run that CLI ends never
+        consults this ledger. An empty set means "nothing we know of is
+        running", which is not the same as "the run is over": a task that
+        settles *before* the turn's result frame
         leaves the set empty at that result, so stdin closes even though the
         completion may still wake the parent for a continuation turn. No
         ledger can close that gap, because the ledger cannot distinguish a
@@ -920,12 +871,6 @@ class Query:
             if status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
 
-    # How long stream_input waits for the reply to an end_user_input
-    # declaration before it closes stdin by the old rule. A CLI answers the
-    # request inline, so the reply normally arrives in milliseconds; the bound
-    # covers a CLI too old to know the request, which drops it without a reply.
-    end_user_input_ack_timeout = 15.0
-
     async def declare_end_user_input(self) -> None:
         """Tell the CLI no further user message is coming (``end_user_input``).
 
@@ -947,31 +892,22 @@ class Query:
         open stdin to serve, and the run stays exactly as it was (stdin closed
         at once, every result yielded as it arrives).
         """
-        if (
-            self._end_user_input_request_id is not None
-            or self._closed
-            or not self._has_bidirectional_needs()
-        ):
+        if self._closed or not self._has_bidirectional_needs():
             return
-        self._request_counter += 1
-        request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
+        request_id, frame = self._new_control_request({"subtype": "end_user_input"})
         self._end_user_input_request_id = request_id
         try:
-            await self.transport.write(
-                json.dumps(
-                    {
-                        "type": "control_request",
-                        "request_id": request_id,
-                        "request": {"subtype": "end_user_input"},
-                    }
-                )
-                + "\n"
-            )
+            await self.transport.write(frame)
         except Exception as e:
-            # Not honoured: the run keeps the old rule. Whatever broke the
-            # write will surface again on the prompt's own write.
+            # The run keeps the old rule (the first result settles it as not
+            # honoured); whatever broke the write will surface again on the
+            # prompt's own write.
             logger.debug("Could not send end_user_input: %s", e)
-            self._settle_end_user_input(False)
+
+    @property
+    def end_user_input_honoured(self) -> bool:
+        """Whether the CLI honoured the ``end_user_input`` declaration."""
+        return bool(self._end_user_input_honoured)
 
     def _settle_end_user_input(self, honoured: bool) -> None:
         """Record what the CLI said to the declaration; the first word sticks.
@@ -982,54 +918,6 @@ class Query:
         """
         if self._end_user_input_honoured is None:
             self._end_user_input_honoured = honoured
-            if not honoured:
-                logger.debug("end_user_input not honoured; closing stdin as before")
-        self._end_user_input_settled.set()
-
-    async def _end_user_input_honoured_within(self, timeout: float) -> bool:
-        """Declare the end of input and wait (bounded) for the CLI's reply."""
-        if not self._has_bidirectional_needs():
-            return False
-        await self.declare_end_user_input()
-        with anyio.move_on_after(timeout):
-            await self._end_user_input_settled.wait()
-        if self._end_user_input_honoured is None:
-            # Unanswered: a CLI that drops the request. Decide, so a late
-            # reply cannot turn this run into one that reads to the end.
-            self._settle_end_user_input(False)
-        return bool(self._end_user_input_honoured)
-
-    async def _emit(self, message: dict[str, Any]) -> None:
-        """Queue a message for the consumer.
-
-        After a held result, the session-state marker that follows a turn is
-        held behind it and released after the fold; the next turn's content
-        releases it first, then goes out itself. Every other message goes out
-        at once, so a consumer keeps seeing a background subagent's progress
-        and the rate-limit events live while a held result waits.
-        """
-        if self._trailing_held_result:
-            if is_turn_content(message):
-                await self._release_held_trailers()
-            elif is_turn_end_marker(message):
-                self._held_trailers.append(message)
-                return
-        await self._message_send.send(message)
-
-    async def _release_held_trailers(self) -> None:
-        self._trailing_held_result = False
-        trailers, self._held_trailers = self._held_trailers, []
-        for trailer in trailers:
-            await self._message_send.send(trailer)
-
-    async def _release_held_turn_results(self) -> None:
-        """Queue the held per-turn results as the run's one folded result,
-        then the messages that trailed the last of them."""
-        if self._closed or not self._held_turn_results:
-            return
-        held, self._held_turn_results = self._held_turn_results, []
-        await self._message_send.send(fold_turn_results(held))
-        await self._release_held_trailers()
 
     def _has_bidirectional_needs(self) -> bool:
         """Whether the CLI may still send control requests that need a reply.
@@ -1061,8 +949,9 @@ class Query:
         a result: the CLI ends the run itself, and the hold lasts until the
         read loop's ``finally`` at the end of stdout.
 
-        Known limitation (a CLI that does not honour ``end_user_input``): the event is one-shot and is not aware of prompt
-        messages still queued CLI-side, so an ``AsyncIterable`` prompt that
+        Known limitation (a CLI that does not honour ``end_user_input``): the
+        event is one-shot and is not aware of prompt messages still queued
+        CLI-side, so an ``AsyncIterable`` prompt that
         yields several user messages (several turns) releases the hold at the
         first turn boundary with no tracked tasks; control requests from later
         turns can then find stdin closed. Single-message and string prompts —
@@ -1079,15 +968,23 @@ class Query:
 
         await self.transport.end_input()
 
-    async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
+    async def stream_input(
+        self,
+        stream: AsyncIterable[dict[str, Any]],
+        *,
+        declare_end_of_input: bool = False,
+    ) -> None:
         """Stream input messages to transport.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
         waits for a run-ending result before closing stdin to allow
         bidirectional control protocol communication.
+
+        ``declare_end_of_input`` (set by :func:`query`, whose prompt is the
+        whole input) declares the end of input to the CLI when the stream
+        yields exactly one message; see :meth:`declare_end_user_input`.
         """
         written = 0
-        stream_failed = False
         try:
             async for message in stream:
                 if self._closed:
@@ -1097,32 +994,15 @@ class Query:
                     + "\n"
                 )
                 written += 1
+            if declare_end_of_input and written == 1:
+                await self.declare_end_user_input()
         except Exception as e:
             # A user-supplied prompt iterable (or the write) failed. Don't
             # leave stdin open — the CLI would wait for input forever and the
             # consumer's `async for` would never finish — fall through and
             # close it like a normal end of input.
             logger.error("Prompt stream failed; closing stdin: %s", e)
-            stream_failed = True
         try:
-            if (
-                written == 1
-                and self._one_shot == "stream"
-                and not stream_failed
-                and not self._closed
-                and await self._end_user_input_honoured_within(
-                    self.end_user_input_ack_timeout
-                )
-            ):
-                # One message and no more coming, and the CLI honoured the
-                # declaration: it ends the run itself once the turn's
-                # background work is done, and this Query's read loop ends
-                # with its stdout. Leave stdin open until then.
-                logger.debug(
-                    "end_user_input honoured; leaving stdin open until the "
-                    "CLI ends the run"
-                )
-                return
             if written:
                 await self.wait_for_result_and_end_input()
             else:

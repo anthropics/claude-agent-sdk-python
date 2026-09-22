@@ -1378,17 +1378,12 @@ class ResultMessage:
     turn_results: "list[ResultMessage] | None" = None
     """The per-turn results this one was folded from, oldest first.
 
-    A string-prompt :func:`query` can span several turns: the prompt's own, then
-    the turns that a background subagent's completion wakes. With a CLI that
-    reports each turn's result, ``query()`` yields one final ``ResultMessage``
-    for the whole run: text, subtype and error fields come from the first failed
-    turn (or else the last), ``usage``, ``num_turns`` and ``duration_ms`` are
-    summed, ``permission_denials`` are concatenated, and the cumulative fields
-    (``total_cost_usd``, ``model_usage``) are the last turn's. This field carries
-    the individual results behind it. ``None`` for a one-turn run, which is
-    yielded unchanged, and for every other way of receiving messages
-    (:class:`ClaudeSDKClient`, streamed prompts), which yield each turn's
-    result as its own message."""
+    A string-prompt :func:`query` on a CLI that reports each turn's result
+    yields one ``ResultMessage`` for the whole run, folded from them (text and
+    error fields from the first failed turn, else the last; usage, ``num_turns``
+    and ``duration_ms`` summed). ``None`` for a one-turn run, which is yielded
+    unchanged, and for :class:`ClaudeSDKClient` and streamed prompts, which
+    yield each turn's result as its own message."""
 
 
 @dataclass

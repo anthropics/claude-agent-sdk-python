@@ -55,13 +55,15 @@ class ClaudeSDKClient:
     See examples/streaming_mode.py for full examples of ClaudeSDKClient in
     different scenarios.
 
-    Caveat: As of v0.0.20, you cannot use a ClaudeSDKClient instance across
-    different async runtime contexts (e.g., different trio nurseries or asyncio
-    task groups). The client internally maintains a persistent anyio task group
-    for reading messages that remains active from connect() until disconnect().
-    This means you must complete all operations with the client within the same
-    async context where it was connected. Ideally, this limitation should not
-    exist.
+    Caveat: a client is bound to the event loop it connected on, not to the
+    task that connected it. Moving it between tasks, task groups or nurseries
+    on that loop is supported — the read loop is a detached task, so nothing
+    holds a cancel scope open across your code. A second event loop is not: a
+    later asyncio.run() or trio.run() has no read task and no live pipes, so
+    query(), receive_messages() and the control methods raise
+    CLIConnectionError there. Connect again on the new loop, or use a new
+    client; disconnect() stays usable from anywhere, so a client left behind
+    on a dead loop can still be torn down.
     """
 
     def __init__(
@@ -271,6 +273,9 @@ class ClaudeSDKClient:
         """
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
+        # This one writes straight to the transport instead of going through
+        # Query, so it needs the event-loop check of its own.
+        self._query.ensure_same_loop()
 
         from ._internal.query import stamp_user_message
 

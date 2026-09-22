@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -23,7 +28,7 @@ from ..types import (
     SDKHookCallbackRequest,
     ToolPermissionContext,
 )
-from ._task_compat import TaskHandle, spawn_detached
+from ._task_compat import TaskHandle, current_loop_token, spawn_detached
 from .sdk_mcp_bridge import SdkMcpBridge
 from .transport import Transport
 
@@ -194,6 +199,9 @@ class Query:
             dict[str, Any]
         ](max_buffer_size=100)
         self._read_task: TaskHandle | None = None
+        # Identity of the event loop start() spawned the read task on; the
+        # transport's pipes belong to it too. See ensure_same_loop().
+        self._loop_token: object | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
@@ -310,7 +318,35 @@ class Query:
     async def start(self) -> None:
         """Start reading messages from transport."""
         if self._read_task is None:
+            self._loop_token = current_loop_token()
             self._read_task = spawn_detached(self._read_messages())
+
+    def ensure_same_loop(self) -> None:
+        """Reject use from an event loop other than the one ``start()`` ran on.
+
+        Tasks and nurseries are free to move — the read loop is detached, so
+        nothing holds a cancel scope open across the caller's code. Event
+        loops are not: the read task and the subprocess pipes die with the
+        loop they were created on, and reusing the client on a second one is
+        otherwise silent. The write still goes through, but
+        ``receive_messages()`` ends immediately with nothing in it — the dead
+        read task's ``finally`` already closed the send side — which is
+        indistinguishable from a turn that produced no output, and control
+        requests only wait out their timeout.
+
+        Teardown is deliberately not guarded: a client stranded on a dead
+        loop still has a subprocess to reap. Under asyncio that costs
+        close()'s full escalation (~15s measured) because none of its
+        ``process.wait()`` calls can return on a closed loop; the child is
+        still killed.
+        """
+        if self._loop_token is None or current_loop_token() is self._loop_token:
+            return
+        raise CLIConnectionError(
+            "This client was connected on a different event loop. A client is "
+            "bound to the event loop that connect() ran on — connect() again "
+            "on this loop, or use a new client."
+        )
 
     def spawn_task(self, coro: Any) -> TaskHandle:
         """Spawn a child task that will be cancelled on close()."""
@@ -631,6 +667,7 @@ class Query:
         """
         if not self.is_streaming_mode:
             raise Exception("Control requests require streaming mode")
+        self.ensure_same_loop()
 
         # Generate unique request ID
         self._request_counter += 1
@@ -921,6 +958,7 @@ class Query:
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
+        self.ensure_same_loop()
         async for message in self._message_receive:
             # Check for special messages
             if message.get("type") == "end":

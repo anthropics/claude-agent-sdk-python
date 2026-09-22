@@ -77,14 +77,31 @@ def _parse_result_message(data: dict[str, Any]) -> ResultMessage:
             uuid=data.get("uuid"),
             terminal_reason=data.get("terminal_reason"),
             origin=_parse_origin(data),
-            turn_results=[_parse_result_message(turn) for turn in turn_results]
-            if isinstance(turn_results, list)
-            else None,
+            turn_results=_parse_turn_results(turn_results),
         )
     except KeyError as e:
         raise MessageParseError(
             f"Missing required field in result message: {e}", data
         ) from e
+
+
+def _parse_turn_results(turn_results: Any) -> list[ResultMessage] | None:
+    """Parse the per-turn results the SDK's own fold attaches to a result.
+
+    Lenient: the key is read from CLI output, so an entry that is not a
+    complete result frame is skipped instead of failing the whole result.
+    """
+    if not isinstance(turn_results, list):
+        return None
+    parsed: list[ResultMessage] = []
+    for turn in turn_results:
+        if not isinstance(turn, dict):
+            continue
+        try:
+            parsed.append(_parse_result_message(turn))
+        except (MessageParseError, TypeError, AttributeError, ValueError):
+            continue
+    return parsed or None
 
 
 def parse_message(data: dict[str, Any]) -> Message | None:

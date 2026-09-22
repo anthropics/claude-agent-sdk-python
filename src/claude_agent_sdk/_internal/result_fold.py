@@ -12,7 +12,7 @@ from typing import Any
 
 # Wire-message types that make up a turn's output. A message of any other type
 # that follows a held result (a prompt suggestion, a task notification, a
-# rate-limit event) trails that result instead of belonging to the next turn.
+# rate-limit event) is a notice between turns, not part of the next one.
 _TURN_CONTENT_TYPES = frozenset({"assistant", "user", "stream_event", "tool_progress"})
 
 # Cumulative over the session, so the last turn's value already covers the
@@ -29,6 +29,18 @@ _CUMULATIVE_KEYS = (
 def is_turn_content(message: dict[str, Any]) -> bool:
     """Whether ``message`` is output of a turn (as opposed to a between-turns notice)."""
     return message.get("type") in _TURN_CONTENT_TYPES
+
+
+def is_turn_end_marker(message: dict[str, Any]) -> bool:
+    """Whether ``message`` is the session-state marker that follows a turn.
+
+    It reports the state after the turn's result, so it stays behind that
+    result; every other notice is delivered as it arrives.
+    """
+    return (
+        message.get("type") == "system"
+        and message.get("subtype") == "session_state_changed"
+    )
 
 
 def add_usage(total: Any, part: Any) -> Any:

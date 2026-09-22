@@ -167,6 +167,8 @@ async def _run(
         ),
     ):
         mock_cls.return_value = cli.transport
+        if options is None:
+            options = _with_permissions()
         return [m async for m in query(prompt=prompt, options=options)]
 
 
@@ -309,19 +311,65 @@ class TestStringPrompt:
             "success",
         ]
 
-    async def test_messages_between_turns_stay_ahead_of_the_next_turn_and_after_the_last(
-        self,
-    ):
+    async def test_notices_are_delivered_live_while_a_result_is_held(self):
+        """Progress from a background subagent must not wait for the fold."""
+
         async def script(cli):
             decl = await cli.written(_is_declaration)
             yield _ack(decl)
             await cli.written(_is_user)
             yield _assistant("first")
             yield _result("first")
-            yield _notice("between_turns")
+            yield _notice("notice_between_turns")
+            live_seen.set()
+            await release.wait()
             yield _assistant("second")
             yield _result("second")
-            yield _notice("after_last_turn")
+
+        live_seen = anyio.Event()
+        release = anyio.Event()
+        cli = FakeCli(script)
+        seen: list[Any] = []
+        with (
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_cls,
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_cls.return_value = cli.transport
+            with anyio.fail_after(5):
+                async for m in query(prompt="go", options=_with_permissions()):
+                    seen.append(m)
+                    if (
+                        isinstance(m, SystemMessage)
+                        and m.subtype == "notice_between_turns"
+                    ):
+                        # Delivered before the run ended, with the result
+                        # still held back.
+                        assert not any(isinstance(x, ResultMessage) for x in seen)
+                        release.set()
+
+        assert [type(m).__name__ for m in seen] == [
+            "AssistantMessage",
+            "SystemMessage",
+            "AssistantMessage",
+            "ResultMessage",
+        ]
+
+    async def test_session_state_marker_stays_behind_the_result_it_follows(self):
+        async def script(cli):
+            decl = await cli.written(_is_declaration)
+            yield _ack(decl)
+            await cli.written(_is_user)
+            yield _assistant("first")
+            yield _result("first")
+            yield _notice("session_state_changed")
+            yield _assistant("second")
+            yield _result("second")
+            yield _notice("session_state_changed")
 
         messages = await _run(FakeCli(script))
 
@@ -331,10 +379,10 @@ class TestStringPrompt:
         ]
         assert shape == [
             "AssistantMessage",
-            "between_turns",
+            "session_state_changed",
             "AssistantMessage",
             "ResultMessage",
-            "after_last_turn",
+            "session_state_changed",
         ]
 
     async def test_results_reach_the_consumer_ahead_of_the_error_the_exit_becomes(
@@ -366,7 +414,7 @@ class TestStringPrompt:
             ),
         ):
             mock_cls.return_value = cli.transport
-            async for m in query(prompt="go"):
+            async for m in query(prompt="go", options=_with_permissions()):
                 seen.append(m)
 
         (final,) = seen
@@ -429,16 +477,22 @@ class TestOlderClis:
         assert [m.result for m in messages] == ["startup", "prompt"]
         assert all(m.turn_results is None for m in messages)
 
-    async def test_no_bidirectional_needs_still_closes_stdin_immediately(self):
+    async def test_no_bidirectional_needs_declares_nothing_and_changes_nothing(self):
+        """With nothing for an open stdin to serve, the run is what it always
+        was: no declaration, stdin closed at once, every result as it arrives."""
+
         async def script(cli):
-            decl = await cli.written(_is_declaration)
-            yield _ack(decl)
+            await cli.written(_is_user)
             await cli.stdin_closed()
-            yield _result("done")
+            yield _result("first")
+            yield _result("second")
 
-        messages = await _run(FakeCli(script))
+        cli = FakeCli(script)
+        messages = await _run(cli, options=ClaudeAgentOptions())
 
-        assert [m.result for m in messages] == ["done"]
+        assert cli.declarations == []
+        assert [m.result for m in messages] == ["first", "second"]
+        assert all(m.turn_results is None for m in messages)
 
 
 class TestStreamedPrompt:
@@ -493,14 +547,18 @@ class TestStreamedPrompt:
 
     async def test_unanswered_declaration_stops_waiting_after_the_bound(self):
         async def script(cli):
-            await cli.written(_is_declaration)
-            # Nothing else will arrive to end the wait: stdin closes because
-            # the bound ran out, not because a result came.
-            await cli.stdin_closed()
+            decl = await cli.written(_is_declaration)
+            # The reply comes after the bound ran out: too late to matter, so
+            # the run keeps the old rule and stdin closes at the result.
+            await anyio.sleep(0.3)
+            yield _ack(decl)
             yield _result("done")
+            await cli.stdin_closed()
 
         with patch.object(Query, "end_user_input_ack_timeout", 0.05):
-            messages = await _run(FakeCli(script), prompt=_one_message())
+            messages = await _run(
+                FakeCli(script), prompt=_one_message(), options=_with_permissions()
+            )
 
         assert [m.result for m in messages] == ["done"]
 
@@ -524,8 +582,11 @@ class TestStreamedPrompt:
         async def script(cli):
             if stream is _two_messages:
                 await cli.written(lambda f: _is_user(f) and "two" in json.dumps(f))
-            await cli.stdin_closed()
-            yield _result("done")
+                yield _result("done")
+                await cli.stdin_closed()
+            else:
+                await cli.stdin_closed()
+                yield _result("done")
 
         cli = FakeCli(script)
         messages = await _run(cli, prompt=stream())
@@ -540,8 +601,9 @@ class TestStreamedPrompt:
             raise RuntimeError("prompt source broke")
 
         async def script(cli):
-            await cli.stdin_closed()
+            await cli.written(_is_user)
             yield _result("done")
+            await cli.stdin_closed()
 
         cli = FakeCli(script)
         await _run(cli, prompt=failing())

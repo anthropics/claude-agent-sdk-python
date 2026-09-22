@@ -215,3 +215,17 @@ class TestFoldedResultParsing:
 
     def test_a_plain_result_has_no_turn_results(self):
         assert parse_message(_result()).turn_results is None
+
+    def test_malformed_turn_results_from_a_cli_never_fail_the_result(self):
+        """The key is read off the wire, so entries that are not complete result
+        frames are skipped instead of raising."""
+        frame = _result()
+        frame["turn_results"] = ["nope", {"subtype": "success"}, _result(result="ok")]
+
+        parsed = parse_message(frame)
+
+        assert [t.result for t in parsed.turn_results] == ["ok"]
+        for junk in ("nope", 3, {}, [{"subtype": "success"}]):
+            assert (
+                parse_message({**_result(), "turn_results": junk}).turn_results is None
+            )

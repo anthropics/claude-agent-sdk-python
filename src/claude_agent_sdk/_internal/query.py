@@ -24,7 +24,7 @@ from ..types import (
     ToolPermissionContext,
 )
 from ._task_compat import TaskHandle, spawn_detached
-from .result_fold import fold_turn_results, is_turn_content
+from .result_fold import fold_turn_results, is_turn_content, is_turn_end_marker
 from .sdk_mcp_bridge import SdkMcpBridge
 from .transport import Transport
 
@@ -941,8 +941,17 @@ class Query:
         Send it once, before a string prompt's ``user`` message or after a
         single-message stream's one message. The reply is recorded by the read
         loop and never awaited here, so the prompt can follow at once.
+
+        Only a run that keeps stdin open for control requests declares it: with
+        no hooks, ``can_use_tool`` or SDK MCP servers there is nothing for the
+        open stdin to serve, and the run stays exactly as it was (stdin closed
+        at once, every result yielded as it arrives).
         """
-        if self._end_user_input_request_id is not None or self._closed:
+        if (
+            self._end_user_input_request_id is not None
+            or self._closed
+            or not self._has_bidirectional_needs()
+        ):
             return
         self._request_counter += 1
         request_id = f"req_{self._request_counter}_{os.urandom(4).hex()}"
@@ -979,6 +988,8 @@ class Query:
 
     async def _end_user_input_honoured_within(self, timeout: float) -> bool:
         """Declare the end of input and wait (bounded) for the CLI's reply."""
+        if not self._has_bidirectional_needs():
+            return False
         await self.declare_end_user_input()
         with anyio.move_on_after(timeout):
             await self._end_user_input_settled.wait()
@@ -991,14 +1002,16 @@ class Query:
     async def _emit(self, message: dict[str, Any]) -> None:
         """Queue a message for the consumer.
 
-        After a held result, a message that is not turn content is held behind
-        it and released after the fold; the next turn's content releases those
-        held trailers first, then goes out itself.
+        After a held result, the session-state marker that follows a turn is
+        held behind it and released after the fold; the next turn's content
+        releases it first, then goes out itself. Every other message goes out
+        at once, so a consumer keeps seeing a background subagent's progress
+        and the rate-limit events live while a held result waits.
         """
         if self._trailing_held_result:
             if is_turn_content(message):
                 await self._release_held_trailers()
-            else:
+            elif is_turn_end_marker(message):
                 self._held_trailers.append(message)
                 return
         await self._message_send.send(message)

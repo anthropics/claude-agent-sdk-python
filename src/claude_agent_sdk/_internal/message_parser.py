@@ -47,6 +47,46 @@ def _parse_origin(data: dict[str, Any]) -> MessageOrigin | None:
     return None
 
 
+def _parse_result_message(data: dict[str, Any]) -> ResultMessage:
+    try:
+        deferred = data.get("deferred_tool_use")
+        turn_results = data.get("turn_results")
+        return ResultMessage(
+            subtype=data["subtype"],
+            duration_ms=data["duration_ms"],
+            duration_api_ms=data["duration_api_ms"],
+            is_error=data["is_error"],
+            num_turns=data["num_turns"],
+            session_id=data["session_id"],
+            stop_reason=data.get("stop_reason"),
+            total_cost_usd=data.get("total_cost_usd"),
+            usage=data.get("usage"),
+            result=data.get("result"),
+            structured_output=data.get("structured_output"),
+            model_usage=data.get("modelUsage"),
+            permission_denials=data.get("permission_denials"),
+            deferred_tool_use=DeferredToolUse(
+                id=deferred["id"],
+                name=deferred["name"],
+                input=deferred["input"],
+            )
+            if deferred
+            else None,
+            errors=data.get("errors"),
+            api_error_status=data.get("api_error_status"),
+            uuid=data.get("uuid"),
+            terminal_reason=data.get("terminal_reason"),
+            origin=_parse_origin(data),
+            turn_results=[_parse_result_message(turn) for turn in turn_results]
+            if isinstance(turn_results, list)
+            else None,
+        )
+    except KeyError as e:
+        raise MessageParseError(
+            f"Missing required field in result message: {e}", data
+        ) from e
+
+
 def parse_message(data: dict[str, Any]) -> Message | None:
     """
     Parse message from CLI output into typed Message objects.
@@ -306,39 +346,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 ) from e
 
         case "result":
-            try:
-                deferred = data.get("deferred_tool_use")
-                return ResultMessage(
-                    subtype=data["subtype"],
-                    duration_ms=data["duration_ms"],
-                    duration_api_ms=data["duration_api_ms"],
-                    is_error=data["is_error"],
-                    num_turns=data["num_turns"],
-                    session_id=data["session_id"],
-                    stop_reason=data.get("stop_reason"),
-                    total_cost_usd=data.get("total_cost_usd"),
-                    usage=data.get("usage"),
-                    result=data.get("result"),
-                    structured_output=data.get("structured_output"),
-                    model_usage=data.get("modelUsage"),
-                    permission_denials=data.get("permission_denials"),
-                    deferred_tool_use=DeferredToolUse(
-                        id=deferred["id"],
-                        name=deferred["name"],
-                        input=deferred["input"],
-                    )
-                    if deferred
-                    else None,
-                    errors=data.get("errors"),
-                    api_error_status=data.get("api_error_status"),
-                    uuid=data.get("uuid"),
-                    terminal_reason=data.get("terminal_reason"),
-                    origin=_parse_origin(data),
-                )
-            except KeyError as e:
-                raise MessageParseError(
-                    f"Missing required field in result message: {e}", data
-                ) from e
+            return _parse_result_message(data)
 
         case "stream_event":
             try:

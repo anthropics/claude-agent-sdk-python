@@ -152,6 +152,13 @@ class InternalClient:
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
             verbatim_prompts=configured_options.verbatim_prompts,
+            # A prompt whose input is known up front lets the CLI run it to
+            # the end of the run instead of stopping at the first result.
+            one_shot="string"
+            if isinstance(prompt, str)
+            else "stream"
+            if isinstance(prompt, AsyncIterable)
+            else None,
         )
 
         if configured_options.session_store is not None:
@@ -179,7 +186,9 @@ class InternalClient:
             # Handle prompt input
             if isinstance(prompt, str):
                 # For string prompts, write user message to stdin after initialize
-                # (matching TypeScript SDK behavior)
+                # (matching TypeScript SDK behavior). Tell the CLI first that
+                # this is the only message (see Query.declare_end_user_input).
+                await query.declare_end_user_input()
                 user_message = {
                     "type": "user",
                     "session_id": "",

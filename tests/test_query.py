@@ -322,10 +322,10 @@ class TestStringPromptWithSdkMcpServers:
             assert isinstance(messages[1], ResultMessage)
             assert any(c[0] == "end_input" for c in call_order)
 
-            write_calls = [c for c in call_order if c[0] == "write"]
-            assert len(write_calls) >= 1
-            written_data = json.loads(write_calls[0][1])
-            assert written_data["type"] == "user"
+            frames = [json.loads(c[1]) for c in call_order if c[0] == "write"]
+            # The end_user_input declaration precedes the prompt itself.
+            assert frames[0]["request"] == {"subtype": "end_user_input"}
+            written_data = next(f for f in frames if f["type"] == "user")
             assert written_data["message"]["content"] == "Hello"
 
         anyio.run(_test)

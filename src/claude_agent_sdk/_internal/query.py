@@ -338,14 +338,19 @@ class Query:
         loop still has a subprocess to reap. Under asyncio that costs
         close()'s full escalation (~15s measured) because none of its
         ``process.wait()`` calls can return on a closed loop; the child is
-        still killed.
+        still killed. That is why the message below sends callers through
+        ``disconnect()`` before reconnecting: ``connect()`` replaces the
+        transport without closing the old one, so skipping it strands the
+        first child until the interpreter's atexit handler signals it.
         """
         if self._loop_token is None or current_loop_token() is self._loop_token:
             return
         raise CLIConnectionError(
             "This client was connected on a different event loop. A client is "
-            "bound to the event loop that connect() ran on — connect() again "
-            "on this loop, or use a new client."
+            "bound to the event loop that connect() ran on — await disconnect() "
+            "first, then connect() again on this loop. Connecting without the "
+            "disconnect() leaves the first subprocess running until the "
+            "interpreter exits."
         )
 
     def spawn_task(self, coro: Any) -> TaskHandle:

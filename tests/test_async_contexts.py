@@ -20,6 +20,7 @@ import sys
 import textwrap
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import anyio
 import pytest
@@ -205,6 +206,9 @@ async def test_query_from_the_parent_while_a_child_task_reads(
 def test_reuse_on_a_second_event_loop_raises(backend: str, tmp_path: Path) -> None:
     """Reusing a client on a second event loop must say so, not go quiet.
 
+    get_server_info() is the documented exception and is checked here too, so
+    the class docstring's carve-out fails loudly if that ever changes.
+
     Sync, unlike the rest of the module: it needs two loops of its own, so it
     runs the backend matrix itself instead of taking ``anyio_backend``.
     """
@@ -223,6 +227,9 @@ def test_reuse_on_a_second_event_loop_raises(backend: str, tmp_path: Path) -> No
     async def control() -> None:
         await client.set_model("other")
 
+    async def server_info() -> dict[str, Any] | None:
+        return await client.get_server_info()
+
     assert anyio.run(first, backend=backend) == ["echo:first"]
     transport = client._transport
     assert isinstance(transport, SubprocessCLITransport)
@@ -236,6 +243,13 @@ def test_reuse_on_a_second_event_loop_raises(backend: str, tmp_path: Path) -> No
         # Before the guard: this sat waiting out the control-request timeout.
         with pytest.raises(CLIConnectionError, match="different event loop"):
             anyio.run(control, backend=backend)
+        # Unguarded on purpose: it answers from the initialization result
+        # cached at connect() and never touches the loop, so there is nothing
+        # to fail silently.
+        assert anyio.run(server_info, backend=backend) == {
+            "commands": [],
+            "output_style": "default",
+        }
     finally:
         # disconnect() is deliberately unguarded, but it cannot help here:
         # the child belongs to a loop that is gone, so nothing can await it

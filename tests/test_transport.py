@@ -268,6 +268,21 @@ class TestSubprocessCLITransport:
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
 
+    @pytest.mark.parametrize("prompt", ["Be helpful", "", "--help"])
+    def test_build_command_with_system_prompt_custom(self, prompt):
+        """The custom form reaches the CLI the same way a plain string does."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                system_prompt={"type": "custom", "prompt": prompt, "snapshot": False},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--system-prompt") + 1] == prompt
+        assert "--append-system-prompt" not in cmd
+        assert "--system-prompt-snapshot" not in cmd
+
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
         transport = SubprocessCLITransport(

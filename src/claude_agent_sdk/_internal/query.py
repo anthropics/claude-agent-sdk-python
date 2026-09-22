@@ -99,6 +99,20 @@ def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     return converted
 
 
+def stamp_user_message(
+    message: dict[str, Any], verbatim_prompts: bool
+) -> dict[str, Any]:
+    """Apply ``ClaudeAgentOptions.verbatim_prompts`` to an outgoing user message.
+
+    Returns ``message`` unchanged when the option is off; otherwise a copy with
+    ``client_composed`` set to ``True`` (overwriting any caller-supplied value)
+    so the CLI delivers the text as written.
+    """
+    if not verbatim_prompts:
+        return message
+    return {**message, "client_composed": True}
+
+
 class Query:
     """Handles bidirectional control protocol on top of Transport.
 
@@ -124,8 +138,10 @@ class Query:
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
+        system_prompt_snapshot: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
         forward_subagent_text: bool = False,
+        verbatim_prompts: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -139,10 +155,15 @@ class Query:
             agents: Optional agent definitions to send via initialize
             exclude_dynamic_sections: Optional preset-prompt flag to send via
                 initialize (see ``SystemPromptPreset``)
+            system_prompt_snapshot: Optional system-prompt flag to send via
+                initialize (see ``SystemPromptPreset.snapshot``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
             forward_subagent_text: Ask the CLI (via initialize) to forward
                 subagent text/thinking blocks, not just tool_use/tool_result
+            verbatim_prompts: Mark every outgoing user message
+                ``client_composed`` so the CLI delivers it as written (no
+                ``@path`` expansion, no slash-command dispatch)
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -156,8 +177,10 @@ class Query:
         }
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
+        self._system_prompt_snapshot = system_prompt_snapshot
         self._skills = skills
         self._forward_subagent_text = forward_subagent_text
+        self._verbatim_prompts = verbatim_prompts
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -267,6 +290,8 @@ class Query:
             request["agents"] = self._agents
         if self._exclude_dynamic_sections is not None:
             request["excludeDynamicSections"] = self._exclude_dynamic_sections
+        if self._system_prompt_snapshot is not None:
+            request["systemPromptSnapshot"] = self._system_prompt_snapshot
         # 'all' and omitted are equivalent at the wire level (no filter), so
         # only send the field when it's an explicit list.
         if isinstance(self._skills, list):
@@ -872,7 +897,10 @@ class Query:
             async for message in stream:
                 if self._closed:
                     break
-                await self.transport.write(json.dumps(message) + "\n")
+                await self.transport.write(
+                    json.dumps(stamp_user_message(message, self._verbatim_prompts))
+                    + "\n"
+                )
                 written += 1
         except Exception as e:
             # A user-supplied prompt iterable (or the write) failed. Don't

@@ -55,6 +55,27 @@ class SystemPromptPreset(TypedDict):
     Requires a Claude Code CLI version that supports this option; older
     CLIs silently ignore it.
     """
+    snapshot: NotRequired[bool]
+    """Whether the session keeps the system prompt it recorded on its first
+    request. When True, every later request, including after resume, sends
+    the recorded prompt, so changing `append` has no effect until the session
+    is compacted or you start a new session. When False, the prompt is rebuilt
+    on every request, for example while you iterate on `append` text across
+    calls that resume the same session. When omitted, it acts as True, except
+    in bare mode (`--bare`), where it acts as False.
+
+    Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with
+    an `append` or custom prompt recorded it only when `snapshot` was True.
+    """
+
+
+class SystemPromptCustom(TypedDict):
+    """A custom system prompt, in the form that can also set `snapshot`."""
+
+    type: Literal["custom"]
+    prompt: str
+    snapshot: NotRequired[bool]
+    """Same as `SystemPromptPreset.snapshot`, applied to `prompt`."""
 
 
 class SystemPromptFile(TypedDict):
@@ -1964,7 +1985,9 @@ class ClaudeAgentOptions:
         ``Skill`` tool).
     """
 
-    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    system_prompt: (
+        str | SystemPromptPreset | SystemPromptCustom | SystemPromptFile | None
+    ) = None
     """System prompt configuration.
 
     - ``str`` — Use a custom system prompt.
@@ -1972,6 +1995,8 @@ class ClaudeAgentOptions:
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
       prompt with appended instructions.
+    - ``{"type": "custom", "prompt": "..."}`` — Same as ``str``; this form can
+      also set ``snapshot`` (see :class:`SystemPromptCustom`).
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
@@ -2165,6 +2190,36 @@ class ClaudeAgentOptions:
     subagent's text and thinking blocks are forwarded the same way, so
     consumers can render the full nested transcript. Matches the TypeScript
     SDK's ``forwardSubagentText``.
+    """
+
+    verbatim_prompts: bool = False
+    """Deliver every prompt to Claude as written.
+
+    When true, every user message the SDK sends (a string prompt or a message
+    from a streamed prompt, including those passed to
+    ``ClaudeSDKClient.query()``) is marked ``client_composed``. Claude Code
+    then delivers the text exactly as given: no ``@path`` file-mention
+    expansion and no slash-command dispatch. Use this when the prompt text is
+    assembled from content the end user did not type (prior turns, tool
+    results, third-party text), so an ``@/absolute/path`` inside it cannot make
+    Claude Code read a local file.
+
+    While this option is on there is no per-message opt-out: any
+    ``client_composed`` value on a streamed message is overwritten. For
+    per-turn control, leave the option off and set ``"client_composed": True``
+    on individual streamed messages instead.
+
+    On current Claude Code versions a turn delivered this way also skips the
+    turn-start attachment pass as a whole: ``@server:resource`` MCP mentions are
+    not expanded either, and the prompt is sent without the context Claude Code
+    normally attaches alongside it (nested ``CLAUDE.md`` and rules files, skill
+    and tool listings, and other per-turn reminders). The pass Claude Code runs
+    between tool calls is unaffected, so most of that context arrives after the
+    turn's first tool call rather than with the prompt.
+
+    Requires Claude Code 2.1.248 or later; older versions ignore the field, so
+    prompts are still expanded there. The SDK logs a warning when it connects to
+    an older CLI with this option on. The option is read when the session starts.
     """
 
     fork_session: bool = False
@@ -2383,6 +2438,7 @@ class SDKControlInitializeRequest(TypedDict):
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
     excludeDynamicSections: NotRequired[bool]
+    systemPromptSnapshot: NotRequired[bool]
     skills: NotRequired[list[str]]
     forwardSubagentText: NotRequired[bool]
 

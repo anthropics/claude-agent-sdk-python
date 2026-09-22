@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.156
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.276
+
+## 0.2.155
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.275
+
+## 0.2.154
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.274
+
+## 0.2.153
+
+### New Features
+
+- **`snapshot` option for system prompts**: Added a `snapshot` field to `SystemPromptPreset` and a new `SystemPromptCustom` typed dict. When `snapshot` is True, the session keeps the system prompt recorded on its first request, improving prompt-caching behavior across resumed sessions. When False, the prompt is rebuilt on every request, useful for iterating on `append` text. Requires CLI 2.1.257+ (#1268)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.273
+
 ## 0.2.152
 
 ### Internal/Other Changes

@@ -13,7 +13,7 @@ from ..types import (
     _hooks_to_internal_format,
 )
 from .message_parser import parse_message
-from .query import Query
+from .query import Query, stamp_user_message
 from .session_resume import (
     MaterializedResume,
     apply_materialized_options,
@@ -106,14 +106,19 @@ class InternalClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Extract exclude_dynamic_sections from preset system prompt for the
-        # initialize request (older CLIs ignore unknown initialize fields).
+        # Extract exclude_dynamic_sections and snapshot from the system prompt
+        # for the initialize request (older CLIs ignore unknown initialize fields).
         exclude_dynamic_sections: bool | None = None
+        system_prompt_snapshot: bool | None = None
         sp = configured_options.system_prompt
         if isinstance(sp, dict) and sp.get("type") == "preset":
             eds = sp.get("exclude_dynamic_sections")
             if isinstance(eds, bool):
                 exclude_dynamic_sections = eds
+        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+            snapshot = sp.get("snapshot")
+            if isinstance(snapshot, bool):
+                system_prompt_snapshot = snapshot
 
         # Convert agents to dict format for initialize request
         agents_dict = None
@@ -143,8 +148,10 @@ class InternalClient:
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            system_prompt_snapshot=system_prompt_snapshot,
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
+            verbatim_prompts=configured_options.verbatim_prompts,
         )
 
         if configured_options.session_store is not None:
@@ -179,7 +186,14 @@ class InternalClient:
                     "message": {"role": "user", "content": prompt},
                     "parent_tool_use_id": None,
                 }
-                await chosen_transport.write(json.dumps(user_message) + "\n")
+                await chosen_transport.write(
+                    json.dumps(
+                        stamp_user_message(
+                            user_message, configured_options.verbatim_prompts
+                        )
+                    )
+                    + "\n"
+                )
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables

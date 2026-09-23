@@ -196,6 +196,26 @@ jobs:
               sys.exit(1)
           EOF
 
+      - name: Stop if main has moved since this run checked it out
+        # This run's version number, CLI pin and release commit all come from the commit it
+        # checked out, and the release commit is pushed to main only after the upload. If main
+        # has moved on since (a merge, another release, another CLI bump), that push is rejected
+        # after the files are already public, and a second run can compute the same version
+        # again and have its uploads silently skipped. Stop here, before anything is uploaded.
+        run: |
+          set -euo pipefail
+          checked_out=$(git rev-parse HEAD)
+          main_tip=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ -z "$main_tip" ]; then
+            echo "::error::Could not read main's current commit from origin. Nothing was uploaded."
+            exit 1
+          fi
+          if [ "$checked_out" != "$main_tip" ]; then
+            echo "::error::main has moved since this run started: it checked out $checked_out, and main is now at $main_tip. Nothing was uploaded to PyPI. Check what main and the latest release contain now, then run the Publish to PyPI workflow from main with the version you want."
+            exit 1
+          fi
+          echo "main is still at $main_tip"
+
       - name: Publish to PyPI (sdist first, then wheels)
         # Upload the tiny sdist first so `pip install` has a universal fallback
         # even if wheel uploads fail partway. --skip-existing makes re-runs

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.159
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.281
+- Pinned default model for e2e tests to `claude-opus-5` to work around CI failures with the CLI's new default model (#1287)
+
 ## 0.2.158
 
 ### New Features

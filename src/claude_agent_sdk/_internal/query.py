@@ -233,8 +233,9 @@ class Query:
     def report_mirror_error(self, key: "SessionKey | None", error: str) -> None:
         """Surface a :meth:`SessionStore.append` failure as a system message.
 
-        Called from the batcher's ``on_error``; the dropped batch is not
-        retried (at-most-once delivery), so this is the consumer's only signal.
+        Called from the batcher's ``on_error`` once a batch has been dropped
+        (after its retries, or after a single timed-out attempt), so this is
+        the consumer's only signal.
         Non-blocking — if the message buffer is full the error is logged and
         dropped rather than back-pressuring the read loop.
         """

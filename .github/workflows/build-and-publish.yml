@@ -111,8 +111,9 @@ jobs:
           # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
           # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
           THRESHOLD_BYTES = 49.9 * 1024**3
-          # PyPI's default per-file limit. If PyPI raises it for this project, update this
-          # and PYPI_FILE_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          # PyPI's default per-file limit. If PyPI raises it for this project, update this,
+          # PYPI_FILE_LIMIT_BYTES in scripts/check_pypi_quota.py and FILE_LIMIT_BYTES in
+          # .github/workflows/build-wheel-check.yml.
           FILE_LIMIT_BYTES = 100 * 1024**2
 
           version = os.environ.get("VERSION", "")

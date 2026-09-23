@@ -111,19 +111,19 @@ class TranscriptMirrorBatcher:
             logger.debug(f"[TranscriptMirrorBatcher] close flush failed: {e}")
 
     async def _drain(self) -> None:
-        """Detach the pending buffer, await any prior flush, then send.
+        """Await any prior flush, detach the pending buffer, then send.
 
-        Detaching happens before acquiring the lock so ``enqueue`` can keep
-        accumulating into a fresh buffer while a prior flush is in flight.
-        Never raises — adapter and ``on_error`` callback errors are caught
-        and logged.
+        Keep entries queued until the lock is acquired so cancelling a
+        waiting flush cannot discard them. Once detached, ``enqueue`` can
+        accumulate into a fresh buffer while this append is in flight.
+        Adapter and ``on_error`` callback errors are caught and logged.
         """
-        items = self._pending
-        self._pending = []
-        self._pending_entries = 0
-        self._pending_bytes = 0
         errors: list[tuple[SessionKey, str]] = []
         async with self._lock:
+            items = self._pending
+            self._pending = []
+            self._pending_entries = 0
+            self._pending_bytes = 0
             if not items:
                 return
             try:

@@ -51,6 +51,48 @@ jobs:
         run: python scripts/build_wheel.py --skip-sdist --clean --recompress zopfli
         shell: bash
 
+      - name: Verify wheel is under PyPI's per-file size limit
+        # PyPI rejects any file over its per-file limit, and the release uploads files
+        # one at a time, so an oversized wheel would leave a release only partly published.
+        # Failing here catches a wheel that has outgrown the limit before a release does.
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import glob
+          import os
+          import sys
+
+          # PyPI's default per-file limit. If PyPI raises it for this project, update this,
+          # FILE_LIMIT_BYTES in .github/workflows/build-and-publish.yml and
+          # PYPI_FILE_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          FILE_LIMIT_BYTES = 100 * 1024**2
+
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              print("::error::No wheel found in dist/")
+              sys.exit(1)
+          failed = False
+          for path in wheels:
+              size = os.path.getsize(path)
+              headroom = FILE_LIMIT_BYTES - size
+              print(
+                  f"{os.path.basename(path)}: {size:,} bytes ({size / 1024**2:.2f} MiB); "
+                  f"{headroom:+,} bytes ({headroom / 1024**2:+.2f} MiB) of headroom under the "
+                  f"{FILE_LIMIT_BYTES / 1024**2:.0f} MiB PyPI per-file limit"
+              )
+              if size > FILE_LIMIT_BYTES:
+                  failed = True
+                  print(
+                      f"::error::{os.path.basename(path)} is {size:,} bytes, over PyPI's "
+                      f"per-file limit of {FILE_LIMIT_BYTES:,} bytes "
+                      f"({FILE_LIMIT_BYTES / 1024**2:.0f} MiB). A release built from this "
+                      "commit would fail to upload it. Make the wheel smaller, or ask PyPI to "
+                      "raise this project's per-file limit "
+                      "(https://docs.pypi.org/project-management/storage-limits/)."
+                  )
+          sys.exit(1 if failed else 0)
+          EOF
+
       - name: Verify wheel filename contains expected platform tag
         shell: bash
         run: |

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-agent-sdk"
-version = "0.2.156"
+version = "0.2.157"
 description = "Python SDK for Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -115,6 +115,13 @@ ignore_missing_imports = true
 # twine is not a declared dependency (not even in the [dev] extra); the
 # import in scripts/build_wheel.py is guarded by try/except ImportError.
 module = ["twine"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# zopfli is installed only by the wheel-building workflows (pinned in
+# scripts/requirements-recompress.txt); build_wheel.py imports it only for
+# --recompress zopfli. It ships without type information.
+module = ["zopfli", "zopfli.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

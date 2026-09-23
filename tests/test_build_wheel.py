@@ -1,7 +1,8 @@
-"""Tests for scripts/build_wheel.py platform tagging and CLI-pin reading."""
+"""Tests for scripts/build_wheel.py: platform tags, the CLI pin, recompression."""
 
 import importlib.util
 import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -150,3 +151,119 @@ class TestSdistShipsTheScriptsItsTestsImport:
 
         assert "/tests" in include
         assert "/scripts" in include
+
+
+def _make_wheel(path: Path) -> None:
+    """Write a small stand-in wheel to path."""
+    members = [
+        ("pkg/__init__.py", b"print('hello')\n" * 200, 0o644, zipfile.ZIP_DEFLATED),
+        ("pkg/_bundled/tool", bytes(range(256)) * 400, 0o755, zipfile.ZIP_DEFLATED),
+        ("pkg/stored.bin", b"kept as it is", 0o644, zipfile.ZIP_STORED),
+        ("pkg/py.typed", b"", 0o644, zipfile.ZIP_DEFLATED),
+        (
+            "pkg-1.0.dist-info/RECORD",
+            b"pkg/__init__.py,,\n",
+            0o664,
+            zipfile.ZIP_DEFLATED,
+        ),
+    ]
+    with zipfile.ZipFile(path, "w") as wheel:
+        for name, data, mode, method in members:
+            info = zipfile.ZipInfo(name, date_time=(2020, 2, 2, 13, 37, 58))
+            info.external_attr = (0o100000 | mode) << 16
+            wheel.writestr(info, data, compress_type=method, compresslevel=1)
+
+
+def _describe(path: Path) -> list[tuple[object, ...]]:
+    """Each member's name, date, file mode, compression method and contents."""
+    with zipfile.ZipFile(path) as wheel:
+        assert wheel.testzip() is None
+        return [
+            (i.filename, i.date_time, i.external_attr, i.compress_type, wheel.read(i))
+            for i in wheel.infolist()
+        ]
+
+
+class TestRecompressWheel:
+    """recompress_wheel() may change only how well the members are compressed."""
+
+    def test_zlib_keeps_every_member_and_shrinks_the_file(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        before, old_size = _describe(wheel), wheel.stat().st_size
+
+        build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert _describe(wheel) == before
+        assert wheel.stat().st_size < old_size
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_zlib_output_is_what_zipfile_writes_at_level_9(
+        self, tmp_path: Path
+    ) -> None:
+        """Compares whole files: a wrong header byte can still read back fine."""
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        reference = tmp_path / "reference.zip"
+        with zipfile.ZipFile(wheel) as old, zipfile.ZipFile(reference, "w") as new:
+            for info in old.infolist():
+                new.writestr(info, old.read(info), info.compress_type, compresslevel=9)
+
+        build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert wheel.read_bytes() == reference.read_bytes()
+
+    def test_zopfli_keeps_every_member(self, tmp_path: Path) -> None:
+        pytest.importorskip("zopfli")
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        before, old_size = _describe(wheel), wheel.stat().st_size
+
+        build_wheel.recompress_wheel(wheel, "zopfli")
+
+        assert _describe(wheel) == before
+        assert wheel.stat().st_size < old_size
+
+    def test_unsupported_method_stops_the_build(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w", zipfile.ZIP_BZIP2) as archive:
+            archive.writestr("pkg/__init__.py", b"x = 1\n" * 100)
+        original = wheel.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert exc_info.value.code == 1
+        assert wheel.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_corrupt_output_stops_the_build(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        original = wheel.read_bytes()
+        deflate = build_wheel._deflate
+
+        def wrong_contents(data: bytes, encoder: str) -> bytes:
+            return deflate(data[::-1], encoder)
+
+        with (
+            patch.object(build_wheel, "_deflate", wrong_contents),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert exc_info.value.code == 1
+        assert wheel.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_missing_zopfli_stops_the_build(self) -> None:
+        with (
+            patch.dict(sys.modules, {"zopfli": None, "zopfli.zlib": None}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            build_wheel.require_encoder("zopfli")
+        assert exc_info.value.code == 1
+
+    def test_zlib_needs_no_extra_package(self) -> None:
+        with patch.dict(sys.modules, {"zopfli": None, "zopfli.zlib": None}):
+            build_wheel.require_encoder("zlib")

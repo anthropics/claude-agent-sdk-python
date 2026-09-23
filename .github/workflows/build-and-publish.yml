@@ -104,6 +104,7 @@ jobs:
           import json
           import os
           import sys
+          import time
           import urllib.request
 
           QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
@@ -142,18 +143,29 @@ jobs:
               )
               sys.exit(1)
 
-          # Fetch current usage from PyPI JSON API
-          try:
-              with urllib.request.urlopen(
-                  "https://pypi.org/pypi/claude-agent-sdk/json", timeout=30
-              ) as r:
-                  data = json.load(r)
-          except Exception as exc:
-              # Fail closed: without the current size, an upload could run into PyPI's
-              # quota part-way and leave only some of the release's files public.
-              print(f"::error::Could not read this project's current size from PyPI: {exc}")
-              print("Nothing was uploaded. Re-run this job once pypi.org responds.")
-              sys.exit(1)
+          # Fetch current usage from PyPI JSON API. This is one request to a public
+          # service, made after the wheels have been built, so retry it with a growing
+          # delay: a brief PyPI hiccup should not cost a release its whole build.
+          FETCH_ATTEMPTS = 4
+          FETCH_RETRY_DELAY_SECONDS = 5  # doubled after each failed attempt
+          data = None
+          for attempt in range(1, FETCH_ATTEMPTS + 1):
+              try:
+                  with urllib.request.urlopen(
+                      "https://pypi.org/pypi/claude-agent-sdk/json", timeout=30
+                  ) as r:
+                      data = json.load(r)
+                  break
+              except Exception as exc:
+                  print(f"PyPI fetch attempt {attempt}/{FETCH_ATTEMPTS} failed: {exc}")
+                  if attempt == FETCH_ATTEMPTS:
+                      # Fail closed: without the current size, an upload could run into
+                      # PyPI's quota part-way and leave only some of the release's files
+                      # public.
+                      print(f"::error::Could not read this project's current size from PyPI: {exc}")
+                      print("Nothing was uploaded. Re-run this job once pypi.org responds.")
+                      sys.exit(1)
+                  time.sleep(FETCH_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
 
           current_total = sum(
               f["size"]

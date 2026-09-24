@@ -69,7 +69,16 @@ class ClaudeSDKClient:
         options: ClaudeAgentOptions | None = None,
         transport: Transport | None = None,
     ):
-        """Initialize Claude SDK client."""
+        """Initialize Claude SDK client.
+
+        Args:
+            options: Configuration for the session (defaults to
+                `ClaudeAgentOptions()` if None).
+            transport: Optional custom `Transport`. When provided it is used
+                instead of the default subprocess transport, and the CLI-flag
+                options in `options` are not applied to it; see `query()` for
+                what the SDK does and does not configure on a custom transport.
+        """
         if options is None:
             options = ClaudeAgentOptions()
         self.options = options
@@ -333,9 +342,8 @@ class ClaudeSDKClient:
 
         Args:
             model: The model to use, or None to use default. Examples:
-                - 'claude-sonnet-4-5'
-                - 'claude-opus-4-1-20250805'
-                - 'claude-opus-4-20250514'
+                - 'claude-sonnet-5'
+                - 'claude-opus-5'
 
         Example:
             ```python
@@ -344,7 +352,7 @@ class ClaudeSDKClient:
                 await client.query("Help me understand this problem")
 
                 # Switch to a different model for implementation
-                await client.set_model('claude-sonnet-4-5')
+                await client.set_model('claude-sonnet-5')
                 await client.query("Now implement the solution")
             ```
         """
@@ -355,10 +363,9 @@ class ClaudeSDKClient:
     async def rewind_files(self, user_message_id: str) -> None:
         """Rewind tracked files to their state at a specific user message.
 
-        Requires:
-            - `enable_file_checkpointing=True` to track file changes
-            - `extra_args={"replay-user-messages": None}` to receive UserMessage
-              objects with `uuid` in the response stream
+        Requires `enable_file_checkpointing=True` to track file changes, and
+        `extra_args={"replay-user-messages": None}` to receive UserMessage
+        objects with `uuid` in the response stream.
 
         Args:
             user_message_id: UUID of the user message to rewind to. This should be
@@ -435,20 +442,25 @@ class ClaudeSDKClient:
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task (only works with streaming mode).
 
-        After this resolves, a `task_notification` system message with
-        status `'stopped'` will be emitted by the CLI in the message stream.
+        After this resolves, the CLI reports the task's end in the message
+        stream as a `TaskUpdatedMessage` whose `status` is terminal (`"killed"`
+        for a stopped task). A `TaskNotificationMessage` with status
+        `"stopped"` may follow, but is sometimes suppressed, so clear the task
+        id on a terminal status from either message (see `TERMINAL_TASK_STATUSES`).
 
         Args:
-            task_id: The task ID from `task_notification` events.
+            task_id: The task ID from `TaskStartedMessage` (the `task_started`
+                system message).
 
         Example:
             ```python
             async with ClaudeSDKClient() as client:
                 await client.query("Start a long-running task")
 
-                # Listen for task_notification to get task_id, then:
+                # Read task_id from the TaskStartedMessage, then:
                 await client.stop_task("task-abc123")
-                # A task_notification with status 'stopped' will follow
+                # A TaskUpdatedMessage with a terminal status follows
+                # (a TaskNotificationMessage may too)
             ```
         """
         if not self._query:
@@ -533,7 +545,8 @@ class ClaudeSDKClient:
         - Server capabilities
 
         Returns:
-            Dictionary with server info, or None if not in streaming mode
+            Dictionary with server info from the initialize response, or None
+            while `connect()` is still in progress
 
         Example:
             ```python

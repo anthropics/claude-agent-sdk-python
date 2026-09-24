@@ -927,6 +927,11 @@ class SandboxSettings(TypedDict, total=False):
         ignoreViolations: Violations to ignore.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
+        failIfUnavailable: Fail with an error instead of running commands
+            unsandboxed when the sandbox cannot start (for example, a missing
+            dependency such as bubblewrap on Linux). Defaults to True when
+            ``enabled`` is True and this key is absent, matching the
+            TypeScript SDK. Set to False to allow the unsandboxed fallback.
 
     Example:
         ```python
@@ -949,6 +954,7 @@ class SandboxSettings(TypedDict, total=False):
     network: SandboxNetworkConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool
+    failIfUnavailable: bool
 
 
 # Content block types

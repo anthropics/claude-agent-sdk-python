@@ -9,6 +9,7 @@ closing stdin until the CLI's run-ending result arrives.
 """
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
@@ -19,6 +20,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     PermissionResultAllow,
     ResultMessage,
+    SystemMessage,
     create_sdk_mcp_server,
     query,
     tool,
@@ -322,10 +324,10 @@ class TestStringPromptWithSdkMcpServers:
             assert isinstance(messages[1], ResultMessage)
             assert any(c[0] == "end_input" for c in call_order)
 
-            frames = [json.loads(c[1]) for c in call_order if c[0] == "write"]
-            # The end_user_input declaration precedes the prompt itself.
-            assert frames[0]["request"] == {"subtype": "end_user_input"}
-            written_data = next(f for f in frames if f["type"] == "user")
+            write_calls = [c for c in call_order if c[0] == "write"]
+            assert len(write_calls) >= 1
+            written_data = json.loads(write_calls[0][1])
+            assert written_data["type"] == "user"
             assert written_data["message"]["content"] == "Hello"
 
         anyio.run(_test)
@@ -758,6 +760,211 @@ class TestStdinStaysOpenWithInflightTasks:
         anyio.run(_test)
 
 
+def _session_state(state):
+    return {
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": state,
+        "uuid": f"uuid-state-{state}",
+        "session_id": "test",
+    }
+
+
+async def _let_waiter_run():
+    for _ in range(20):
+        await anyio.sleep(0)
+
+
+def _run_query_over(
+    frames_fn, *, enables_session_state_events=True, prompt: Any = "Hello"
+):
+    """Run query() with a hook over a scripted CLI.
+
+    ``frames_fn(end_input_calls)`` is an async generator producing the CLI's
+    stdout; it can inspect ``end_input_calls`` between frames. Returns the
+    messages query() yielded.
+    """
+
+    async def _test():
+        end_input_calls: list[bool] = []
+
+        mock_transport = AsyncMock()
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.write = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        mock_transport.enables_session_state_events = enables_session_state_events
+
+        async def tracking_end_input():
+            end_input_calls.append(True)
+
+        mock_transport.end_input = tracking_end_input
+        mock_transport.read_messages = lambda: frames_fn(end_input_calls)
+
+        async def hook(input_data, tool_use_id, context):
+            return {}
+
+        with (
+            patch("claude_agent_sdk._internal.client.SubprocessCLITransport") as cls,
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            cls.return_value = mock_transport
+            return [
+                msg
+                async for msg in query(
+                    prompt=prompt,
+                    options=ClaudeAgentOptions(
+                        hooks={"PreToolUse": [HookMatcher(hooks=[hook])]}
+                    ),
+                )
+            ]
+
+    return anyio.run(_test)
+
+
+class TestStdinStaysOpenUntilIdle:
+    """With session state reported, the run ends at "idle", not a result (#1190).
+
+    A background agent that finishes just before the turn's result leaves
+    nothing in flight at that result, yet its completion still wakes the
+    parent for a follow-up turn whose hook, permission and SDK MCP requests
+    need stdin. The CLI reports "running" until no such turn is owed.
+    """
+
+    def test_task_settled_before_result_keeps_stdin_open_until_idle(self):
+        checks = {}
+
+        async def frames(end_input_calls):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield dict(_TASK_NOTIFICATION)
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_first_result"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            await _let_waiter_run()
+            checks["open_after_second_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        messages = _run_query_over(frames)
+
+        assert checks == {
+            "open_after_first_result": True,
+            "open_after_second_result": True,
+            "closed_at_idle": True,
+        }
+        assert len([m for m in messages if isinstance(m, ResultMessage)]) == 2
+        # The transport turned the events on, so the caller never sees them.
+        assert not [
+            m
+            for m in messages
+            if getattr(m, "subtype", None) == "session_state_changed"
+        ]
+
+    def test_state_frames_reach_the_caller_who_enabled_them(self):
+        async def frames(end_input_calls):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            yield _session_state("idle")
+
+        messages = _run_query_over(frames, enables_session_state_events=False)
+
+        states = [
+            m.data["state"]
+            for m in messages
+            if isinstance(m, SystemMessage) and m.subtype == "session_state_changed"
+        ]
+        assert states == ["running", "idle"]
+
+    def test_idle_just_before_result_ends_the_run_at_the_result(self):
+        checks = {}
+
+        async def frames(end_input_calls):
+            yield _session_state("running")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["open_before_result"] = not end_input_calls
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["closed_at_result"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {"open_before_result": True, "closed_at_result": True}
+
+    def test_idle_before_any_result_does_not_end_the_run(self):
+        checks = {}
+
+        async def frames(end_input_calls):
+            yield _session_state("idle")
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {"open_after_result": True, "closed_at_idle": True}
+
+    def test_idle_with_a_tracked_task_in_flight_keeps_stdin_open(self):
+        """A CLI that reports "idle" at every turn end still defers to the
+        task ledger (#1088)."""
+        checks = {}
+
+        async def frames(end_input_calls):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield _make_result("uuid-r1")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["open_with_task_in_flight"] = not end_input_calls
+            yield dict(_TASK_NOTIFICATION)
+            yield _session_state("running")
+            yield _make_result("uuid-r2")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_after_task_settled"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {
+            "open_with_task_in_flight": True,
+            "closed_after_task_settled": True,
+        }
+
+    def test_async_iterable_prompt_waits_for_idle(self):
+        checks = {}
+
+        async def prompt():
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": "Hello"},
+                "parent_tool_use_id": None,
+                "session_id": "",
+            }
+
+        async def frames(end_input_calls):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, prompt=prompt())
+
+        assert checks == {"open_after_result": True, "closed_at_idle": True}
+
+
 class TestAsyncIterablePromptWithSdkMcpServers:
     """Test that AsyncIterable prompts keep stdin open for SDK MCP servers."""
 
@@ -895,7 +1102,7 @@ class TestNoTimeoutForHooksAndMcpServers:
                 async def wait_then_check():
                     await anyio.sleep(0.05)
                     assert not end_input_called.is_set()
-                    q._first_result_event.set()
+                    q._run_ended_event.set()
                     await anyio.sleep(0.05)
                     assert end_input_called.is_set()
 
@@ -948,7 +1155,7 @@ class TestNoTimeoutForHooksAndMcpServers:
                 async def wait_then_check():
                     await anyio.sleep(0.05)
                     assert not end_input_called.is_set()
-                    q._first_result_event.set()
+                    q._run_ended_event.set()
                     await anyio.sleep(0.05)
                     assert end_input_called.is_set()
 

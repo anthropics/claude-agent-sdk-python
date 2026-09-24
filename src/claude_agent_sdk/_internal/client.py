@@ -9,13 +9,11 @@ from typing import Any
 from ..types import (
     ClaudeAgentOptions,
     Message,
-    ResultMessage,
     _configure_can_use_tool,
     _hooks_to_internal_format,
 )
 from .message_parser import parse_message
 from .query import Query, stamp_user_message
-from .result_fold import fold_turn_results
 from .session_resume import (
     MaterializedResume,
     apply_materialized_options,
@@ -136,6 +134,12 @@ class InternalClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
+        # Only a transport that turned session_state_changed on itself hides
+        # the frames from the caller.
+        hides_session_state_events = (
+            getattr(chosen_transport, "enables_session_state_events", False) is True
+        )
+
         # Create Query to handle control protocol
         # Always use streaming mode internally (matching TypeScript SDK)
         # This ensures agents are always sent via initialize request
@@ -154,6 +158,7 @@ class InternalClient:
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
             verbatim_prompts=configured_options.verbatim_prompts,
+            hides_session_state_events=hides_session_state_events,
         )
 
         if configured_options.session_store is not None:
@@ -181,9 +186,7 @@ class InternalClient:
             # Handle prompt input
             if isinstance(prompt, str):
                 # For string prompts, write user message to stdin after initialize
-                # (matching TypeScript SDK behavior). Tell the CLI first that
-                # this is the only message (see Query.declare_end_user_input).
-                await query.declare_end_user_input()
+                # (matching TypeScript SDK behavior)
                 user_message = {
                     "type": "user",
                     "session_id": "",
@@ -201,32 +204,13 @@ class InternalClient:
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables
-                query.spawn_task(query.stream_input(prompt, declare_end_of_input=True))
+                query.spawn_task(query.stream_input(prompt))
 
-            # Yield parsed messages, skipping unknown message types. A string
-            # prompt's run on a CLI that honoured the end_user_input declaration
-            # can span several turns, each with a result on the wire: hold those
-            # and yield the fold once the run ends, ahead of any error it ends
-            # with (a CLI exits 1 after an error result).
-            fold = isinstance(prompt, str)
-            turn_results: list[ResultMessage] = []
-            try:
-                async for data in query.receive_messages():
-                    message = parse_message(data)
-                    if (
-                        fold
-                        and isinstance(message, ResultMessage)
-                        and query.end_user_input_honoured
-                    ):
-                        turn_results.append(message)
-                    elif message is not None:
-                        yield message
-            except Exception:
-                if turn_results:
-                    yield fold_turn_results(turn_results)
-                raise
-            if turn_results:
-                yield fold_turn_results(turn_results)
+            # Yield parsed messages, skipping unknown message types
+            async for data in query.receive_messages():
+                message = parse_message(data)
+                if message is not None:
+                    yield message
 
         finally:
             await query.close()

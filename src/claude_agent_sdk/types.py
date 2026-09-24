@@ -1375,15 +1375,6 @@ class ResultMessage:
     result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
     that) from results of injected turns such as background-task
     notifications (``{"kind": "task-notification"}``)."""
-    turn_results: "list[ResultMessage] | None" = None
-    """The per-turn results this one was folded from, oldest first.
-
-    A string-prompt :func:`query` on a CLI that reports each turn's result
-    yields one ``ResultMessage`` for the whole run, folded from them (text and
-    error fields from the first failed turn, else the last; usage, ``num_turns``
-    and ``duration_ms`` summed). ``None`` for a one-turn run, which is yielded
-    unchanged, and for :class:`ClaudeSDKClient` and streamed prompts, which
-    yield each turn's result as its own message."""
 
 
 @dataclass

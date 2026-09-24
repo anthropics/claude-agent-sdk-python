@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.159
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.281
+- Pinned default model for e2e tests to `claude-opus-5` to work around CI failures with the CLI's new default model (#1287)
+
+## 0.2.158
+
+### New Features
+
+- **`verbatim_prompts` option**: Added `ClaudeAgentOptions.verbatim_prompts` (default `False`). When `True`, user messages are delivered to the CLI exactly as written — no `@path` file expansion and no slash-command dispatch. This prevents untrusted text inlined into prompts from triggering unintended file reads or command execution. Works with `query()`, `ClaudeSDKClient.connect()`, and `ClaudeSDKClient.query()` for both string and async-iterable prompts. Requires CLI 2.1.248+; a warning is logged on older CLIs. (#1269)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.280
+- CI improvements: recompressed wheels and raised the PyPI pre-flight threshold (#1283)
+
 ## 0.2.156
 
 ### Internal/Other Changes

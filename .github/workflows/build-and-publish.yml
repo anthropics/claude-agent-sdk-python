@@ -27,11 +27,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install build dependencies
-        run: pip install build twine wheel
+        run: |
+          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -105,12 +107,40 @@ jobs:
           import urllib.request
 
           QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
-          # Temporary: fail above 99% (0.5 GiB buffer). Safe only if QUOTA_BYTES is
+          # Temporary: fail above 49.9 GiB (0.1 GiB buffer). Safe only if QUOTA_BYTES is
           # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
           # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
-          THRESHOLD_BYTES = 49.5 * 1024**3
+          THRESHOLD_BYTES = 49.9 * 1024**3
+          # PyPI's default per-file limit. If PyPI raises it for this project, update this
+          # and PYPI_FILE_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          FILE_LIMIT_BYTES = 100 * 1024**2
 
           version = os.environ.get("VERSION", "")
+
+          # The upload step sends the files one at a time, so if PyPI rejected one for its
+          # size, only some of the release's files would be public. Keep this check above the
+          # PyPI fetch, so that it still runs and names the file when the fetch fails.
+          sizes = []
+          for d in ("dist", "sdist"):
+              if os.path.isdir(d):
+                  for fn in sorted(os.listdir(d)):
+                      sizes.append((os.path.getsize(os.path.join(d, fn)), fn))
+          if sizes:
+              size, fn = max(sizes)
+              print(f"Largest file:       {size / 1024**2:.2f} MiB of the {FILE_LIMIT_BYTES / 1024**2:.0f} MiB PyPI per-file limit ({size:,} bytes, {fn})")
+          oversized = [(size, fn) for size, fn in sizes if size > FILE_LIMIT_BYTES]
+          if oversized:
+              names = ", ".join(f"{fn} ({size:,} bytes)" for size, fn in oversized)
+              print(
+                  f"::error::Too large for PyPI: {names}. PyPI's per-file limit is "
+                  f"{FILE_LIMIT_BYTES:,} bytes ({FILE_LIMIT_BYTES / 1024**2:.0f} MiB), as recorded in "
+                  "FILE_LIMIT_BYTES in .github/workflows/build-and-publish.yml. "
+                  "This run uploaded nothing to PyPI. Make each listed file smaller, or ask "
+                  "PyPI to raise this project's per-file limit "
+                  "(https://docs.pypi.org/project-management/storage-limits/) and then raise "
+                  "FILE_LIMIT_BYTES to match."
+              )
+              sys.exit(1)
 
           # Fetch current usage from PyPI JSON API
           try:
@@ -119,9 +149,11 @@ jobs:
               ) as r:
                   data = json.load(r)
           except Exception as exc:
-              print(f"::warning::Could not fetch PyPI metadata: {exc}")
-              print("Skipping quota pre-flight check.")
-              sys.exit(0)
+              # Fail closed: without the current size, an upload could run into PyPI's
+              # quota part-way and leave only some of the release's files public.
+              print(f"::error::Could not read this project's current size from PyPI: {exc}")
+              print("Nothing was uploaded. Re-run this job once pypi.org responds.")
+              sys.exit(1)
 
           current_total = sum(
               f["size"]

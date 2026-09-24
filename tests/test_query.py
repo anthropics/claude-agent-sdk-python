@@ -2040,3 +2040,105 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestControlRequestErrors:
+    """Control-request failures raise a ClaudeSDKError subclass (#1304)."""
+
+    @staticmethod
+    def _transport_answering(reply):
+        transport = AsyncMock()
+        sent = anyio.Event()
+        request_ids: list[str] = []
+
+        async def write(data):
+            frame = json.loads(data)
+            if frame.get("type") == "control_request":
+                request_ids.append(frame["request_id"])
+                sent.set()
+
+        async def read_messages():
+            await sent.wait()
+            if reply is None:
+                await anyio.sleep_forever()
+            yield {
+                "type": "control_response",
+                "response": {**reply, "request_id": request_ids[0]},
+            }
+            await anyio.sleep_forever()
+
+        transport.write = write
+        transport.read_messages = read_messages
+        transport.is_ready = Mock(return_value=True)
+        return transport
+
+    def test_error_response_raises_control_request_error(self):
+        from claude_agent_sdk import ClaudeSDKError, ControlRequestError
+
+        async def _test():
+            transport = self._transport_answering(
+                {"subtype": "error", "error": "server not found"}
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+            try:
+                with pytest.raises(ClaudeSDKError) as exc_info:
+                    await q._send_control_request(
+                        {"subtype": "mcp_toggle", "serverName": "srv"}
+                    )
+            finally:
+                await q.close()
+            err = exc_info.value
+            assert isinstance(err, ControlRequestError)
+            assert str(err) == "server not found"
+            assert err.error == "server not found"
+            assert err.subtype == "mcp_toggle"
+
+        anyio.run(_test)
+
+    def test_error_response_without_error_text(self):
+        from claude_agent_sdk import ControlRequestError
+
+        async def _test():
+            transport = self._transport_answering({"subtype": "error"})
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+            try:
+                with pytest.raises(ControlRequestError, match="Unknown error"):
+                    await q._send_control_request({"subtype": "interrupt"})
+            finally:
+                await q.close()
+
+        anyio.run(_test)
+
+    def test_timeout_raises_control_request_error(self):
+        from claude_agent_sdk import ControlRequestError
+
+        async def _test():
+            transport = self._transport_answering(None)
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+            try:
+                with pytest.raises(ControlRequestError) as exc_info:
+                    await q._send_control_request(
+                        {"subtype": "set_model", "model": "x"}, timeout=0.05
+                    )
+            finally:
+                await q.close()
+            assert exc_info.value.subtype == "set_model"
+            assert "timeout" in str(exc_info.value)
+            assert isinstance(exc_info.value.__cause__, TimeoutError)
+            assert q.pending_control_responses == {}
+
+        anyio.run(_test)
+
+    def test_control_request_error_pickles(self):
+        import pickle
+
+        from claude_agent_sdk import ControlRequestError
+
+        clone = pickle.loads(
+            pickle.dumps(ControlRequestError("boom", subtype="mcp_toggle"))
+        )
+        assert isinstance(clone, ControlRequestError)
+        assert (clone.error, clone.subtype) == ("boom", "mcp_toggle")

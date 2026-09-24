@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    ControlRequestError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -346,8 +351,10 @@ class Query:
                     if request_id in self.pending_control_responses:
                         event = self.pending_control_responses[request_id]
                         if response.get("subtype") == "error":
-                            self.pending_control_results[request_id] = Exception(
-                                response.get("error", "Unknown error")
+                            self.pending_control_results[request_id] = (
+                                ControlRequestError(
+                                    str(response.get("error", "Unknown error"))
+                                )
                             )
                         else:
                             self.pending_control_results[request_id] = response
@@ -657,6 +664,8 @@ class Query:
             result = self.pending_control_results.pop(request_id)
             self.pending_control_responses.pop(request_id, None)
 
+            if isinstance(result, ControlRequestError) and result.subtype is None:
+                result.subtype = request.get("subtype")
             if isinstance(result, Exception):
                 raise result
 
@@ -665,7 +674,10 @@ class Query:
         except TimeoutError as e:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+            raise ControlRequestError(
+                f"Control request timeout: {request.get('subtype')}",
+                subtype=request.get("subtype"),
+            ) from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

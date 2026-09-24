@@ -729,7 +729,12 @@ class SubprocessCLITransport(Transport):
         if self._options.plugins:
             for plugin in self._options.plugins:
                 if plugin["type"] == "local":
-                    cmd.extend(["--plugin-dir", plugin["path"]])
+                    flag = (
+                        "--plugin-dir-no-mcp"
+                        if plugin.get("skipMcpDiscovery")
+                        else "--plugin-dir"
+                    )
+                    cmd.extend([flag, plugin["path"]])
                 else:
                     raise ValueError(f"Unsupported plugin type: {plugin['type']}")
 

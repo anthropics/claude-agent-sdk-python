@@ -16,6 +16,8 @@ Both flows call the same reusable `build-and-publish.yml` workflow, which builds
 
 PRs that touch the build scripts, `pyproject.toml`, or the publish workflow trigger `build-wheel-check.yml`, which dry-runs the full build matrix and verifies each wheel contains the bundled CLI before merge.
 
+PyPI rejects any file over 100 MiB. A wheel over that limit does not block the release: the publish job leaves it out, shows a warning on the run, and publishes the sdist and the other wheels. `pip install` on the platform that was left out gets the sdist, which has no bundled CLI, so the SDK there uses a separately installed Claude Code. The wheel stays in the run's build artifacts. The release still fails if the sdist or every wheel is over the limit.
+
 ## Versioning
 
 The project tracks two separate version numbers:

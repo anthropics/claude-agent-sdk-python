@@ -117,30 +117,50 @@ jobs:
 
           version = os.environ.get("VERSION", "")
 
-          # The upload step sends the files one at a time, so if PyPI rejected one for its
-          # size, only some of the release's files would be public. Keep this check above the
-          # PyPI fetch, so that it still runs and names the file when the fetch fails.
+          # PyPI rejects any file above its per-file limit, and the upload step sends the
+          # files one at a time, so an oversized file would stop the upload part-way. A wheel
+          # that is too large is left out of the upload, with a warning, so that the rest of
+          # the release still goes out. `pip install` on that platform then gets the sdist,
+          # which has no bundled CLI. Keep this check above the PyPI fetch, so that it still
+          # runs and names the file when the fetch fails.
           sizes = []
           for d in ("dist", "sdist"):
               if os.path.isdir(d):
                   for fn in sorted(os.listdir(d)):
-                      sizes.append((os.path.getsize(os.path.join(d, fn)), fn))
+                      sizes.append((os.path.getsize(os.path.join(d, fn)), d, fn))
           if sizes:
-              size, fn = max(sizes)
+              size, _, fn = max(sizes)
               print(f"Largest file:       {size / 1024**2:.2f} MiB of the {FILE_LIMIT_BYTES / 1024**2:.0f} MiB PyPI per-file limit ({size:,} bytes, {fn})")
-          oversized = [(size, fn) for size, fn in sizes if size > FILE_LIMIT_BYTES]
-          if oversized:
-              names = ", ".join(f"{fn} ({size:,} bytes)" for size, fn in oversized)
+          limit = (
+              f"PyPI's per-file limit is {FILE_LIMIT_BYTES:,} bytes "
+              f"({FILE_LIMIT_BYTES / 1024**2:.0f} MiB), as recorded in FILE_LIMIT_BYTES in "
+              ".github/workflows/build-and-publish.yml."
+          )
+          fix = (
+              "Make each listed file smaller, or ask PyPI to raise this project's per-file "
+              "limit (https://docs.pypi.org/project-management/storage-limits/) and then "
+              "raise FILE_LIMIT_BYTES to match."
+          )
+          oversized = [(size, d, fn) for size, d, fn in sizes if size > FILE_LIMIT_BYTES]
+          names = ", ".join(f"{fn} ({size:,} bytes)" for size, _, fn in oversized)
+          # Only wheels can be left out. Without the sdist there is nothing to fall back to,
+          # and without any wheel the release would bundle the CLI for nobody.
+          wheels_left = [fn for size, d, fn in sizes if d == "dist" and size <= FILE_LIMIT_BYTES]
+          if any(d != "dist" for _, d, _ in oversized) or (oversized and not wheels_left):
               print(
-                  f"::error::Too large for PyPI: {names}. PyPI's per-file limit is "
-                  f"{FILE_LIMIT_BYTES:,} bytes ({FILE_LIMIT_BYTES / 1024**2:.0f} MiB), as recorded in "
-                  "FILE_LIMIT_BYTES in .github/workflows/build-and-publish.yml. "
-                  "This run uploaded nothing to PyPI. Make each listed file smaller, or ask "
-                  "PyPI to raise this project's per-file limit "
-                  "(https://docs.pypi.org/project-management/storage-limits/) and then raise "
-                  "FILE_LIMIT_BYTES to match."
+                  f"::error::Too large for PyPI: {names}. {limit} "
+                  f"This run uploaded nothing to PyPI. {fix}"
               )
               sys.exit(1)
+          if oversized:
+              for _, d, fn in oversized:
+                  os.remove(os.path.join(d, fn))
+              print(
+                  f"::warning::Not published to PyPI, too large: {names}. {limit} "
+                  "The rest of this release goes ahead without them. `pip install` on each platform "
+                  "listed gets the sdist, which has no bundled CLI. The wheels are still in "
+                  f"this run's build artifacts. {fix}"
+              )
 
           # Fetch current usage from PyPI JSON API
           try:

@@ -2350,9 +2350,10 @@ class ClaudeAgentOptions:
     max_thinking_tokens: int | None = None
     """Maximum tokens the model may use for its thinking/reasoning process.
 
-    Deprecated. Use ``thinking`` instead. On newer models, this value is treated
-    as on/off (0 = disabled, any other value = adaptive). For explicit control,
-    use ``thinking={"type": "adaptive"}`` or ``thinking={"type": "disabled"}``.
+    Deprecated. Use ``thinking`` instead: ``thinking={"type": "adaptive"}``,
+    ``thinking={"type": "enabled", "budget_tokens": N}``, or
+    ``thinking={"type": "disabled"}``. On newer models, this value is treated
+    as on/off (0 = disabled, any other value = adaptive).
     """
 
     thinking: ThinkingConfig | None = None

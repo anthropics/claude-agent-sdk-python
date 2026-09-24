@@ -443,9 +443,10 @@ class ClaudeSDKClient:
         """Stop a running task (only works with streaming mode).
 
         After this resolves, the CLI reports the task's end in the message
-        stream: watch for a `TaskUpdatedMessage` with a terminal status, and
-        for a `TaskNotificationMessage`, which is not emitted for every
-        terminal task.
+        stream as a `TaskUpdatedMessage` whose `status` is terminal (`"killed"`
+        for a stopped task). A `TaskNotificationMessage` with status
+        `"stopped"` may follow, but is sometimes suppressed, so clear the task
+        id on a terminal status from either message (see `TERMINAL_TASK_STATUSES`).
 
         Args:
             task_id: The task ID from `TaskStartedMessage` (the `task_started`

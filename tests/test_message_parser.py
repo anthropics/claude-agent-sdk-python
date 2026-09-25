@@ -976,6 +976,13 @@ class TestMessageParser:
         assert "Invalid message data type" in str(exc_info.value)
         assert "expected dict, got str" in str(exc_info.value)
 
+    def test_parse_non_dict_message_field(self):
+        """A non-dict 'message' field raises MessageParseError, not a bare TypeError."""
+        for message_type in ("user", "assistant"):
+            with pytest.raises(MessageParseError) as exc_info:
+                parse_message({"type": message_type, "message": "not a dict"})
+            assert f"Malformed {message_type} message" in str(exc_info.value)
+
     def test_parse_missing_type_field(self):
         """Test that missing 'type' field raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

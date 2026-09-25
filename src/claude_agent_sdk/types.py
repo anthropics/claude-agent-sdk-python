@@ -2436,6 +2436,15 @@ class ClaudeAgentOptions:
     header.
     """
 
+    def __post_init__(self) -> None:
+        # ClaudeAgentOptions is a plain dataclass, so type hints are not enforced
+        # at runtime: an explicit allowed_tools=None (or disallowed_tools=None) is
+        # accepted here and then crashes far downstream when the list is iterated
+        # (e.g. list(options.allowed_tools) in the transport). Collapse a None (or
+        # any falsy value) to the unset default of an empty list.
+        self.allowed_tools = self.allowed_tools or []
+        self.disallowed_tools = self.disallowed_tools or []
+
 
 # SDK Control Protocol
 class SDKControlInterruptRequest(TypedDict):

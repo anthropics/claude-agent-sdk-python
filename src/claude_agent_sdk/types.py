@@ -1024,6 +1024,14 @@ class ServerToolResultBlock:
     content: dict[str, Any]
 
 
+@dataclass
+class RawContentBlock:
+    """Unrecognized content block preserved for forward compatibility."""
+
+    type: str
+    data: dict[str, Any]
+
+
 ContentBlock = (
     TextBlock
     | ThinkingBlock
@@ -1031,6 +1039,7 @@ ContentBlock = (
     | ToolResultBlock
     | ServerToolUseBlock
     | ServerToolResultBlock
+    | RawContentBlock
 )
 
 

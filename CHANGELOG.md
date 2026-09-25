@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.160
+
+### Bug Fixes
+
+- **Fixed follow-up turns failing after background subagents**: When using `query()` with hooks, `can_use_tool`, or SDK MCP servers, stdin was closed too early if a subagent finished just before the turn's result arrived. Follow-up turns would then fail with "Stream closed" and the model would report the tool as refused. The SDK now listens for the CLI's `session_state_changed` messages and keeps stdin open until the CLI reports `idle`, matching the TypeScript SDK's behavior. A bounded wait ceiling (configurable via `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, default 10 minutes) prevents indefinite hangs. Older CLIs without state events fall back to the previous close-at-first-result behavior. (#1190, #1279)
+
+### Documentation
+
+- Aligned docstrings with the code and fixed docstring formatting (#1293)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.283
+- CI: skip wheels over PyPI's per-file limit instead of failing the release (#1309)
+
 ## 0.2.159
 
 ### Internal/Other Changes

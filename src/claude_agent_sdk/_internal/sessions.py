@@ -43,7 +43,7 @@ _STORE_LIST_LOAD_CONCURRENCY = 16
 MAX_SANITIZED_LENGTH = 200
 
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
 
@@ -68,7 +68,7 @@ _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9]")
 
 def _validate_uuid(maybe_uuid: str) -> str | None:
     """Returns the string if it is a valid UUID, else None."""
-    if _UUID_RE.match(maybe_uuid):
+    if _UUID_RE.fullmatch(maybe_uuid):
         return maybe_uuid
     return None
 

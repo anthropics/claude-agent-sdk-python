@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -119,30 +120,41 @@ def _sanitize_path(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _get_claude_config_home_dir() -> Path:
-    """Returns the Claude config directory (respects CLAUDE_CONFIG_DIR)."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+def _get_claude_config_home_dir(
+    env_override: Mapping[str, str] | None = None,
+) -> Path:
+    """Returns the Claude config directory the CLI would use.
+
+    Mirrors how the subprocess sees its environment
+    (``{**os.environ, **options.env}``): ``CLAUDE_CONFIG_DIR`` from
+    ``env_override`` wins, then ``CLAUDE_CONFIG_DIR`` from ``os.environ``;
+    without either, the default is ``~/.claude`` under the home directory
+    the subprocess would see -- ``HOME`` (``USERPROFILE`` on Windows) from
+    ``env_override`` if given, else the caller's own home.
+    """
+    override = env_override or {}
+    config_dir = override.get("CLAUDE_CONFIG_DIR") or os.environ.get(
+        "CLAUDE_CONFIG_DIR"
+    )
     if config_dir:
         return Path(unicodedata.normalize("NFC", config_dir))
-    return Path(unicodedata.normalize("NFC", str(Path.home() / ".claude")))
+    home = override.get("HOME") or override.get("USERPROFILE")
+    home_dir = Path(home) if home else Path.home()
+    return Path(unicodedata.normalize("NFC", str(home_dir / ".claude")))
 
 
-def _get_projects_dir(env_override: dict[str, str] | None = None) -> Path:
+def _get_projects_dir(env_override: Mapping[str, str] | None = None) -> Path:
     """Returns the projects directory.
 
     ``env_override`` is consulted before ``os.environ`` so callers that pass
-    ``CLAUDE_CONFIG_DIR`` to the subprocess via ``options.env`` resolve the
-    same directory the subprocess will write to.
+    ``CLAUDE_CONFIG_DIR`` (or a different ``HOME``) to the subprocess via
+    ``options.env`` resolve the same directory the subprocess will write to.
     """
-    if env_override:
-        override = env_override.get("CLAUDE_CONFIG_DIR")
-        if override:
-            return Path(unicodedata.normalize("NFC", override)) / "projects"
-    return _get_claude_config_home_dir() / "projects"
+    return _get_claude_config_home_dir(env_override) / "projects"
 
 
-def _get_project_dir(project_path: str) -> Path:
-    return _get_projects_dir() / _sanitize_path(project_path)
+def _get_project_dir(project_path: str, env: Mapping[str, str] | None = None) -> Path:
+    return _get_projects_dir(env) / _sanitize_path(project_path)
 
 
 def _canonicalize_path(d: str) -> str:
@@ -154,7 +166,9 @@ def _canonicalize_path(d: str) -> str:
         return unicodedata.normalize("NFC", d)
 
 
-def _find_project_dir(project_path: str) -> Path | None:
+def _find_project_dir(
+    project_path: str, env: Mapping[str, str] | None = None
+) -> Path | None:
     """Finds the project directory for a given path.
 
     Tolerates hash mismatches for long paths (>200 chars). The CLI uses
@@ -163,7 +177,7 @@ def _find_project_dir(project_path: str) -> Path | None:
     This function falls back to prefix-based scanning when the exact match
     doesn't exist.
     """
-    exact = _get_project_dir(project_path)
+    exact = _get_project_dir(project_path, env)
     if exact.is_dir():
         return exact
 
@@ -174,7 +188,7 @@ def _find_project_dir(project_path: str) -> Path | None:
         return None
 
     prefix = sanitized[:MAX_SANITIZED_LENGTH]
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         for entry in projects_dir.iterdir():
             if entry.is_dir() and entry.name.startswith(prefix + "-"):
@@ -581,6 +595,7 @@ def _list_sessions_for_project(
     limit: int | None,
     offset: int,
     include_worktrees: bool,
+    env: Mapping[str, str] | None = None,
 ) -> list[SDKSessionInfo]:
     """Lists sessions for a specific project directory (and its worktrees)."""
     canonical_dir = _canonicalize_path(directory)
@@ -596,14 +611,14 @@ def _list_sessions_for_project(
     # No worktrees (or git not available / scanning disabled) —
     # just scan the single project dir
     if len(worktree_paths) <= 1:
-        project_dir = _find_project_dir(canonical_dir)
+        project_dir = _find_project_dir(canonical_dir, env)
         if project_dir is None:
             return []
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
         return _apply_sort_limit_offset(sessions, limit, offset)
 
     # Worktree-aware scanning: find all project dirs matching any worktree
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     case_insensitive = sys.platform == "win32"
 
     # Sort worktree paths by sanitized prefix length (longest first) so
@@ -619,7 +634,7 @@ def _list_sessions_for_project(
         all_dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
     except OSError:
         # Fall back to single project dir
-        project_dir = _find_project_dir(canonical_dir)
+        project_dir = _find_project_dir(canonical_dir, env)
         if project_dir is None:
             return _apply_sort_limit_offset([], limit, offset)
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
@@ -630,7 +645,7 @@ def _list_sessions_for_project(
 
     # Always include the user's actual directory (handles subdirectories
     # like /repo/packages/my-app that won't match worktree root prefixes)
-    canonical_project_dir = _find_project_dir(canonical_dir)
+    canonical_project_dir = _find_project_dir(canonical_dir, env)
     if canonical_project_dir is not None:
         dir_base = canonical_project_dir.name
         seen_dirs.add(dir_base.lower() if case_insensitive else dir_base)
@@ -660,9 +675,11 @@ def _list_sessions_for_project(
     return _apply_sort_limit_offset(deduped, limit, offset)
 
 
-def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
+def _list_all_sessions(
+    limit: int | None, offset: int, env: Mapping[str, str] | None = None
+) -> list[SDKSessionInfo]:
     """Lists sessions across all project directories."""
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
 
     try:
         project_dirs = [e for e in projects_dir.iterdir() if e.is_dir()]
@@ -682,6 +699,7 @@ def list_sessions(
     limit: int | None = None,
     offset: int = 0,
     include_worktrees: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> list[SDKSessionInfo]:
     """Lists sessions with metadata extracted from stat + head/tail reads.
 
@@ -701,6 +719,12 @@ def list_sessions(
         include_worktrees: When ``directory`` is provided and the directory
             is inside a git repository, include sessions from all git
             worktree paths. Defaults to ``True``.
+
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Returns:
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
@@ -727,8 +751,10 @@ def list_sessions(
             )
     """
     if directory:
-        return _list_sessions_for_project(directory, limit, offset, include_worktrees)
-    return _list_all_sessions(limit, offset)
+        return _list_sessions_for_project(
+            directory, limit, offset, include_worktrees, env
+        )
+    return _list_all_sessions(limit, offset, env)
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +765,7 @@ def list_sessions(
 def get_session_info(
     session_id: str,
     directory: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> SDKSessionInfo | None:
     """Reads metadata for a single session by ID.
 
@@ -752,6 +779,12 @@ def get_session_info(
         directory: Project directory path (same semantics as
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
+
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Returns:
         ``SDKSessionInfo`` for the session, or ``None`` if the session file
@@ -782,7 +815,7 @@ def get_session_info(
 
     if directory:
         canonical = _canonicalize_path(directory)
-        project_dir = _find_project_dir(canonical)
+        project_dir = _find_project_dir(canonical, env)
         if project_dir is not None:
             lite = _read_session_lite(project_dir / file_name)
             if lite is not None:
@@ -797,7 +830,7 @@ def get_session_info(
         for wt in worktree_paths:
             if wt == canonical:
                 continue
-            wt_project_dir = _find_project_dir(wt)
+            wt_project_dir = _find_project_dir(wt, env)
             if wt_project_dir is not None:
                 lite = _read_session_lite(wt_project_dir / file_name)
                 if lite is not None:
@@ -806,7 +839,7 @@ def get_session_info(
         return None
 
     # No directory — search all project directories for the session file.
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
     except OSError:
@@ -841,7 +874,9 @@ def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
         return None
 
 
-def _read_session_file(session_id: str, directory: str | None) -> str | None:
+def _read_session_file(
+    session_id: str, directory: str | None, env: Mapping[str, str] | None = None
+) -> str | None:
     """Finds and reads the session JSONL file.
 
     If directory is provided, looks in that project directory and its git
@@ -856,7 +891,7 @@ def _read_session_file(session_id: str, directory: str | None) -> str | None:
         canonical_dir = _canonicalize_path(directory)
 
         # Try the exact/prefix-matched project directory first
-        project_dir = _find_project_dir(canonical_dir)
+        project_dir = _find_project_dir(canonical_dir, env)
         if project_dir is not None:
             content = _try_read_session_file(project_dir, file_name)
             if content:
@@ -871,7 +906,7 @@ def _read_session_file(session_id: str, directory: str | None) -> str | None:
         for wt in worktree_paths:
             if wt == canonical_dir:
                 continue  # already tried above
-            wt_project_dir = _find_project_dir(wt)
+            wt_project_dir = _find_project_dir(wt, env)
             if wt_project_dir is not None:
                 content = _try_read_session_file(wt_project_dir, file_name)
                 if content:
@@ -880,7 +915,7 @@ def _read_session_file(session_id: str, directory: str | None) -> str | None:
         return None
 
     # No directory provided — search all project directories
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         dirents = list(projects_dir.iterdir())
     except OSError:
@@ -1061,6 +1096,7 @@ def get_session_messages(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    env: Mapping[str, str] | None = None,
 ) -> list[SessionMessage]:
     """Reads a session's conversation messages from its JSONL transcript file.
 
@@ -1073,6 +1109,12 @@ def get_session_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
@@ -1102,7 +1144,7 @@ def get_session_messages(
     if not _validate_uuid(session_id):
         return []
 
-    content = _read_session_file(session_id, directory)
+    content = _read_session_file(session_id, directory, env)
     if not content:
         return []
 
@@ -1136,7 +1178,9 @@ def _entries_to_session_messages(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_session_file_path(session_id: str, directory: str | None) -> Path | None:
+def _resolve_session_file_path(
+    session_id: str, directory: str | None, env: Mapping[str, str] | None = None
+) -> Path | None:
     """Resolves the on-disk path of a session JSONL file.
 
     Directory resolution mirrors ``_read_session_file``: when ``directory``
@@ -1158,7 +1202,7 @@ def _resolve_session_file_path(session_id: str, directory: str | None) -> Path |
     if directory:
         canonical_dir = _canonicalize_path(directory)
 
-        project_dir = _find_project_dir(canonical_dir)
+        project_dir = _find_project_dir(canonical_dir, env)
         if project_dir is not None:
             found = _stat_candidate(project_dir)
             if found is not None:
@@ -1172,7 +1216,7 @@ def _resolve_session_file_path(session_id: str, directory: str | None) -> Path |
         for wt in worktree_paths:
             if wt == canonical_dir:
                 continue
-            wt_project_dir = _find_project_dir(wt)
+            wt_project_dir = _find_project_dir(wt, env)
             if wt_project_dir is not None:
                 found = _stat_candidate(wt_project_dir)
                 if found is not None:
@@ -1180,7 +1224,7 @@ def _resolve_session_file_path(session_id: str, directory: str | None) -> Path |
 
         return None
 
-    projects_dir = _get_projects_dir()
+    projects_dir = _get_projects_dir(env)
     try:
         dirents = list(projects_dir.iterdir())
     except OSError:
@@ -1196,7 +1240,9 @@ def _resolve_session_file_path(session_id: str, directory: str | None) -> Path |
     return None
 
 
-def _resolve_subagents_dir(session_id: str, directory: str | None) -> Path | None:
+def _resolve_subagents_dir(
+    session_id: str, directory: str | None, env: Mapping[str, str] | None = None
+) -> Path | None:
     """Resolves the subagents directory for a given session.
 
     The session file lives at ``<projectDir>/<sessionId>.jsonl`` and the
@@ -1204,7 +1250,7 @@ def _resolve_subagents_dir(session_id: str, directory: str | None) -> Path | Non
 
     Returns ``None`` if the session cannot be found.
     """
-    resolved = _resolve_session_file_path(session_id, directory)
+    resolved = _resolve_session_file_path(session_id, directory, env)
     if resolved is None:
         return None
     # Strip the .jsonl suffix to derive the session directory.
@@ -1286,6 +1332,7 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
 def list_subagents(
     session_id: str,
     directory: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Lists subagent IDs for a given session by scanning the subagents directory.
 
@@ -1297,6 +1344,12 @@ def list_subagents(
         session_id: UUID of the parent session.
         directory: Project directory to find the session in. If omitted,
             searches all project directories under ``~/.claude/projects/``.
+
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Returns:
         List of subagent ID strings. Returns an empty list if the session
@@ -1318,7 +1371,7 @@ def list_subagents(
     if not _validate_uuid(session_id):
         return []
 
-    subagents_dir = _resolve_subagents_dir(session_id, directory)
+    subagents_dir = _resolve_subagents_dir(session_id, directory, env)
     if subagents_dir is None:
         return []
 
@@ -1331,6 +1384,7 @@ def get_subagent_messages(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    env: Mapping[str, str] | None = None,
 ) -> list[SessionMessage]:
     """Reads a subagent's conversation messages from its JSONL transcript file.
 
@@ -1349,6 +1403,12 @@ def get_subagent_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
@@ -1374,7 +1434,7 @@ def get_subagent_messages(
     if not agent_id:
         return []
 
-    subagents_dir = _resolve_subagents_dir(session_id, directory)
+    subagents_dir = _resolve_subagents_dir(session_id, directory, env)
     if subagents_dir is None:
         return []
 

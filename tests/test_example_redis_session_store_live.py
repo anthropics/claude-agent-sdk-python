@@ -31,7 +31,7 @@ if not REDIS_URL:
     )
 
 redis = pytest.importorskip(
-    "redis", reason="redis not installed (pip install .[examples])"
+    "redis", reason="redis not installed (pip install -e . --group examples-redis)"
 )
 import redis.asyncio as aredis  # noqa: E402
 

@@ -14,10 +14,12 @@ import pytest
 
 from claude_agent_sdk import (
     AgentDefinition,
+    AssistantMessage,
     ClaudeAgentOptions,
     HookMatcher,
     ResultMessage,
     SystemMessage,
+    ToolUseBlock,
     query,
 )
 
@@ -35,9 +37,17 @@ def _options(cwd: Path, **overrides: Any) -> ClaudeAgentOptions:
 
 
 def _record_hook(asked: list[str]) -> Any:
+    """A PreToolUse hook that records the tool and allows it, so the call only
+    goes through if the SDK was still there to answer the hook."""
+
     async def hook(input_data, tool_use_id, context):
         asked.append(input_data["tool_name"])
-        return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+            }
+        }
 
     return hook
 
@@ -105,5 +115,18 @@ async def test_follow_up_turn_after_a_background_subagent_is_served(
     results = [m for m in messages if isinstance(m, ResultMessage)]
     assert len(results) >= 2, [type(m).__name__ for m in messages]
     assert not any(r.is_error for r in results), results
-    assert asked == ["Write"], asked
+    # The Write must come from the follow-up turn, after the first result.
+    first_result = next(
+        i for i, m in enumerate(messages) if isinstance(m, ResultMessage)
+    )
+    writes = [
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, AssistantMessage)
+        and any(isinstance(b, ToolUseBlock) and b.name == "Write" for b in m.content)
+    ]
+    assert writes and writes[0] > first_result, (first_result, writes)
+    # The hook grants the write, so the file only lands if it was served. The
+    # model may retry a write, so the hook can run more than once.
+    assert "Write" in asked, asked
     assert target.exists()

@@ -1185,6 +1185,75 @@ class TestRunEndCeiling:
             "open_right_after_answer": True,
         }
 
+    def test_ceiling_is_not_armed_mid_turn(self):
+        """A "running" after an answered request inside a turn does not start
+        the clock; only the wait between turns counts."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            # The follow-up turn starts, asks for a permission, gets it, then
+            # runs a long tool with no main-thread output.
+            yield _assistant()
+            yield _session_state("requires_action")
+            yield _session_state("running")
+            await anyio.sleep(0.3)
+            checks["open_during_turn"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {"open_during_turn": True}
+
+    def test_result_while_answering_a_request_does_not_arm(self):
+        """A background agent's request the SDK is still answering when the
+        turn's result arrives keeps the clock stopped until it is answered."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _session_state("requires_action")
+            yield _make_result("uuid-r1")
+            await anyio.sleep(0.3)
+            checks["open_while_answering"] = not end_input_calls
+            yield _session_state("running")
+            await _let_waiter_run()
+            checks["open_right_after_answer"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_while_answering": True,
+            "open_right_after_answer": True,
+        }
+
+    def test_ceiling_leaves_a_tracked_agent_alone(self):
+        """A tracked background agent still in flight may still need stdin
+        (#1088), so the ceiling does not cut it off; the wait between turns
+        starts over once it settles."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield _make_result("uuid-r1")
+            await anyio.sleep(0.35)
+            checks["open_with_task_in_flight"] = not end_input_calls
+            yield dict(_TASK_NOTIFICATION)
+            await _let_waiter_run()
+            checks["open_right_after_task_settled"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_with_task_in_flight": True,
+            "open_right_after_task_settled": True,
+        }
+
     @pytest.mark.parametrize(
         "ceiling", ["0", str(2**31), "9" * 400], ids=["zero", "2**31", "huge"]
     )

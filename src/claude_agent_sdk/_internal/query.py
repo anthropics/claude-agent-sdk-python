@@ -252,6 +252,10 @@ class Query:
         # after it was cleared or re-armed to stand down.
         self._run_end_ceiling_task: TaskHandle | None = None
         self._run_end_ceiling_generation = 0
+        # A main-thread turn is under way (its assistant/stream_event frames
+        # have started and its result has not arrived): the ceiling counts
+        # only the wait between turns, so it is not armed meanwhile.
+        self._turn_in_progress = False
         # Set once stdin is closed or the reader is gone: the run then stays
         # ended, since nothing can wait on a reopened one.
         self._run_final = False
@@ -433,7 +437,12 @@ class Query:
                 # Track task lifecycle frames so results can tell "one turn
                 # ended" apart from "the run is done" (see #1088).
                 if msg_type == "system":
+                    had_tasks_in_flight = bool(self._inflight_tasks)
                     self._track_task_lifecycle(message)
+                    if had_tasks_in_flight and not self._inflight_tasks:
+                        # The ceiling left the last tracked agent alone; the
+                        # wait between turns starts over now that it settled.
+                        self._rearm_run_end_ceiling_between_turns()
                     if message.get("subtype") == "session_state_changed":
                         self._on_session_state(message.get("state"))
                         # Frames the CLI sent only because the transport asked
@@ -450,6 +459,7 @@ class Query:
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
                     self._result_received = True
+                    self._turn_in_progress = False
                     # A result ends a turn, not necessarily the run: a
                     # background agent that finished just before it still
                     # wakes the session for another turn, whose hook,
@@ -463,7 +473,9 @@ class Query:
                         or not self._has_bidirectional_needs()
                     ):
                         self._maybe_end_run()
-                    else:
+                    elif self._session_state != "requires_action":
+                        # While the SDK is still answering a request the
+                        # ceiling waits for the "running" that follows.
                         self._arm_run_end_ceiling()
                     if message.get("is_error"):
                         self._last_error_result = message
@@ -486,6 +498,7 @@ class Query:
                         msg_type in ("assistant", "stream_event")
                         and message.get("parent_tool_use_id") is None
                     ):
+                        self._turn_in_progress = True
                         self._reopen_run()
                         self._clear_run_end_ceiling()
 
@@ -921,8 +934,8 @@ class Query:
         if state == "requires_action":
             # The host is answering a request; stdin must outlast it.
             self._clear_run_end_ceiling()
-        elif self._result_received:
-            self._arm_run_end_ceiling()
+        else:
+            self._rearm_run_end_ceiling_between_turns()
 
     def _maybe_end_run(self) -> None:
         """End the run unless a tracked background task is still in flight.
@@ -963,9 +976,11 @@ class Query:
         """End the run anyway once the ceiling passes with no new turn.
 
         The CLI's own background-wait ceiling only counts once stdin is
-        closed, so without this a background agent that never finishes would
-        hold "running", and stdin, open forever. Restarted at each result;
-        cleared by main-thread turn activity and by "requires_action".
+        closed, so without this work that never finishes would hold
+        "running", and stdin, open forever. It counts only the wait between
+        turns: restarted at each result and whenever the CLI reports
+        "running" again, cleared by main-thread turn activity and by
+        "requires_action", and never armed while a turn is under way.
         """
         self._clear_run_end_ceiling()
         if (
@@ -975,6 +990,7 @@ class Query:
             # A frame read while close() is under way (the result branch
             # awaits a mirror flush) must not leave a sleeper behind.
             or self._closed
+            or self._turn_in_progress
             or not self._has_bidirectional_needs()
         ):
             return
@@ -982,16 +998,38 @@ class Query:
             self._end_run_at_ceiling(self._run_end_ceiling_generation)
         )
 
+    def _rearm_run_end_ceiling_between_turns(self) -> None:
+        """Restart the ceiling if the run is between turns, past a result,
+        with the CLI still reporting work ("running")."""
+        if self._result_received and self._session_state not in (
+            None,
+            "idle",
+            "requires_action",
+        ):
+            self._arm_run_end_ceiling()
+
     async def _end_run_at_ceiling(self, generation: int) -> None:
         await anyio.sleep(min(self._run_end_ceiling_ms, _MAX_RUN_END_CEILING_MS) / 1000)
         # Cleared or re-armed while this sleeper was already waking up.
         if generation != self._run_end_ceiling_generation:
             return
+        self._run_end_ceiling_task = None
+        if self._inflight_tasks:
+            # A tracked background agent is still running and may still need
+            # stdin for its hook, permission and SDK MCP requests (#1088), so
+            # it is not cut off, as without session state. The ceiling starts
+            # over once it settles (_read_messages).
+            logger.debug(
+                "No 'idle' %dms after the last result, but %d tracked task(s) "
+                "still in flight; keeping stdin open",
+                self._run_end_ceiling_ms,
+                len(self._inflight_tasks),
+            )
+            return
         logger.debug(
             "No 'idle' %dms after the last result; ending the run",
             self._run_end_ceiling_ms,
         )
-        self._run_end_ceiling_task = None
         self._end_run()
 
     def _clear_run_end_ceiling(self) -> None:
@@ -1027,10 +1065,11 @@ class Query:
         The wait is bounded between turns: if the CLI still reports
         "running" ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` (10 minutes by
         default, ``0`` for no limit) after a result with no new turn, the run
-        ends anyway (``_arm_run_end_ceiling``); main-thread turn activity and
-        a request the SDK is still answering stop that clock. The event is
-        guaranteed to fire: when the run ends as above, or in
-        _read_messages' finally block if the process exits early.
+        ends anyway (``_arm_run_end_ceiling``). A turn under way, a request
+        the SDK is still answering and a tracked background agent still in
+        flight (#1088) stop that clock. The event is guaranteed to fire: when
+        the run ends as above, or in _read_messages' finally block if the
+        process exits early.
 
         Known limitation: from a CLI that reports no session state, a result
         for an earlier prompt of an ``AsyncIterable`` still ends the run even

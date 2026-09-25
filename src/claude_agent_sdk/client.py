@@ -143,7 +143,7 @@ class ClaudeSDKClient:
         prompt: str | AsyncIterable[dict[str, Any]] | None,
         actual_prompt: AsyncIterable[dict[str, Any]],
     ) -> None:
-        from ._internal.query import Query, stamp_user_message
+        from ._internal.query import Query, run_end_ceiling_ms, stamp_user_message
         from ._internal.session_resume import (
             apply_materialized_options,
             build_mirror_batcher,
@@ -204,12 +204,6 @@ class ClaudeSDKClient:
 
         self._verbatim_prompts = self.options.verbatim_prompts
 
-        # Only a transport that turned session_state_changed on itself hides
-        # the frames from the caller.
-        hides_session_state_events = (
-            getattr(self._transport, "enables_session_state_events", False) is True
-        )
-
         # Create Query to handle control protocol
         self._query = Query(
             transport=self._transport,
@@ -226,7 +220,7 @@ class ClaudeSDKClient:
             skills=self.options.skills,
             forward_subagent_text=self.options.forward_subagent_text,
             verbatim_prompts=self._verbatim_prompts,
-            hides_session_state_events=hides_session_state_events,
+            run_end_ceiling_ms=run_end_ceiling_ms(self.options.env),
         )
 
         if self.options.session_store is not None:

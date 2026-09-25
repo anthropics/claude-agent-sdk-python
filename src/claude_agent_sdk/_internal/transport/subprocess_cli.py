@@ -38,8 +38,10 @@ MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 # First Claude Code version that honors `client_composed` on user messages,
 # which `ClaudeAgentOptions.verbatim_prompts` relies on.
 VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = "2.1.248"
-# Makes the CLI emit `session_state_changed` frames (see Query._read_messages).
-_SESSION_STATE_EVENTS_ENV = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"
+# Asks the CLI for `session_state_changed` frames marked `sdk_host_only`, which
+# Query reads to tell when the run is over and keeps out of the caller's
+# stream (see Query._read_messages). CLIs that predate it send no frames.
+_SDK_READS_SESSION_STATE_ENV = "CLAUDE_CODE_SDK_READS_SESSION_STATE"
 
 # cmd.exe metacharacters (plus the quote character cmd.exe uses to toggle
 # its quoting state, and "!", which expands like "%" when delayed expansion
@@ -249,14 +251,6 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
-        # Query waits for the CLI's session_state_changed 'idle' before
-        # closing stdin on a run that serves control requests (#1190). Turn
-        # the events on unless the caller chose a value either way; Query
-        # keeps the frames we enabled out of the caller's stream.
-        self.enables_session_state_events = not any(
-            key.upper() == _SESSION_STATE_EVENTS_ENV
-            for key in (*os.environ, *options.env)
-        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -856,8 +850,15 @@ class SubprocessCLITransport(Transport):
             except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
                 logger.debug("OTEL trace context injection failed", exc_info=True)
 
-            if self.enables_session_state_events:
-                process_env[_SESSION_STATE_EVENTS_ENV] = "1"
+            # Query waits for the CLI's session_state_changed "idle" before
+            # closing stdin on a run that serves control requests (#1190). Ask
+            # for the frames it drops (sdk_host_only) unless the caller chose
+            # a value, in any case; CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS stays
+            # the caller's own opt-in to seeing them.
+            if not any(
+                key.upper() == _SDK_READS_SESSION_STATE_ENV for key in process_env
+            ):
+                process_env[_SDK_READS_SESSION_STATE_ENV] = "1"
 
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:

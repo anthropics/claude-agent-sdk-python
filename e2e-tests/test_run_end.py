@@ -4,7 +4,9 @@
 the CLI can ask the SDK questions while it works. A result only ends a turn: a
 background subagent that settles just before the turn's result still wakes the
 parent for a follow-up turn, whose hook, permission and SDK MCP requests need
-stdin. The SDK now keeps stdin open until the CLI reports the session idle.
+stdin. The SDK keeps stdin open until the CLI reports the session idle, which
+it asks for with ``CLAUDE_CODE_SDK_READS_SESSION_STATE``; a CLI that predates
+that variable sends no state and the SDK closes stdin at the first result.
 """
 
 from pathlib import Path
@@ -22,6 +24,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
+from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 
 def _options(cwd: Path, **overrides: Any) -> ClaudeAgentOptions:
@@ -56,7 +59,7 @@ def _record_hook(asked: list[str]) -> Any:
 @pytest.mark.anyio
 async def test_hook_run_ends_with_one_result(tmp_path: Path):
     """A plain string prompt with a hook still completes with one result, and
-    the session-state frames the SDK turned on stay out of the stream."""
+    the session-state frames the SDK asked for stay out of the stream."""
     asked: list[str] = []
     options = _options(
         tmp_path,
@@ -76,14 +79,40 @@ async def test_hook_run_ends_with_one_result(tmp_path: Path):
     ]
 
 
+def _record_session_state_frames(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record the session_state_changed frames the CLI writes, including the
+    sdk_host_only ones the SDK keeps out of the caller's stream."""
+    frames: list[Any] = []
+    read_messages = SubprocessCLITransport.read_messages
+
+    async def recording(self: SubprocessCLITransport) -> Any:
+        async for message in read_messages(self):
+            if message.get("subtype") == "session_state_changed":
+                frames.append(message)
+            yield message
+
+    monkeypatch.setattr(SubprocessCLITransport, "read_messages", recording)
+    return frames
+
+
 @pytest.mark.e2e
 @pytest.mark.anyio
+@pytest.mark.parametrize("caller_opted_in", [False, True], ids=["sdk", "caller"])
 async def test_follow_up_turn_after_a_background_subagent_is_served(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caller_opted_in: bool
 ):
     """The parent starts a background subagent and ends its turn. The
     subagent's completion wakes it for a second turn, which writes a file: the
-    hook for that write must run, so stdin must still be open."""
+    hook for that write must run, so stdin must still be open.
+
+    ``sdk``: the SDK asks for the state frames itself and hides them.
+    ``caller``: the caller opted in with CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
+    and sees them; the SDK reads the same frames to end the run."""
+    # The variants differ only in options.env; keep the ambient environment
+    # from choosing for them.
+    monkeypatch.delenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SDK_READS_SESSION_STATE", raising=False)
+    frames = _record_session_state_frames(monkeypatch)
     asked: list[str] = []
     target = tmp_path / "out.txt"
     options = _options(
@@ -100,6 +129,7 @@ async def test_follow_up_turn_after_a_background_subagent_is_served(
                 model="haiku",
             )
         },
+        env=({"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1"} if caller_opted_in else {}),
     )
     prompt = (
         "Step 1: call the Agent tool once with subagent_type `worker`, "
@@ -110,8 +140,35 @@ async def test_follow_up_turn_after_a_background_subagent_is_served(
         f"write its reply to {target}, then answer FINISHED."
     )
 
-    messages = [m async for m in query(prompt=prompt, options=options)]
+    messages: list[Any] = []
+    error: Exception | None = None
+    try:
+        async for message in query(prompt=prompt, options=options):
+            messages.append(message)
+    except Exception as e:  # noqa: BLE001 - re-raised below unless skipped
+        error = e
+    # Without state the SDK closes stdin at the first result, as documented,
+    # so the follow-up turn is not expected to be served.
+    if caller_opted_in and not frames:
+        pytest.skip("this CLI sends no session_state_changed frames")
+    if not caller_opted_in and not any(f.get("sdk_host_only") is True for f in frames):
+        pytest.skip(
+            "this CLI predates CLAUDE_CODE_SDK_READS_SESSION_STATE "
+            "(sent no sdk_host_only session_state_changed frames)"
+        )
+    if error is not None:
+        raise error
 
+    states = [
+        m
+        for m in messages
+        if isinstance(m, SystemMessage) and m.subtype == "session_state_changed"
+    ]
+    if caller_opted_in:
+        assert states, "the caller opted in, so it sees the state frames"
+        assert not any(m.data.get("sdk_host_only") for m in states), states
+    else:
+        assert not states, states
     results = [m for m in messages if isinstance(m, ResultMessage)]
     assert len(results) >= 2, [type(m).__name__ for m in messages]
     assert not any(r.is_error for r in results), results

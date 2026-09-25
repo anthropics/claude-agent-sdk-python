@@ -13,7 +13,7 @@ from ..types import (
     _hooks_to_internal_format,
 )
 from .message_parser import parse_message
-from .query import Query, stamp_user_message
+from .query import Query, run_end_ceiling_ms, stamp_user_message
 from .session_resume import (
     MaterializedResume,
     apply_materialized_options,
@@ -134,12 +134,6 @@ class InternalClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Only a transport that turned session_state_changed on itself hides
-        # the frames from the caller.
-        hides_session_state_events = (
-            getattr(chosen_transport, "enables_session_state_events", False) is True
-        )
-
         # Create Query to handle control protocol
         # Always use streaming mode internally (matching TypeScript SDK)
         # This ensures agents are always sent via initialize request
@@ -158,7 +152,7 @@ class InternalClient:
             skills=configured_options.skills,
             forward_subagent_text=configured_options.forward_subagent_text,
             verbatim_prompts=configured_options.verbatim_prompts,
-            hides_session_state_events=hides_session_state_events,
+            run_end_ceiling_ms=run_end_ceiling_ms(configured_options.env),
         )
 
         if configured_options.session_store is not None:

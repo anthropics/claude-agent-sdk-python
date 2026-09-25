@@ -256,6 +256,41 @@ See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete 
 - `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
 
+### Correlating replies with user messages
+
+To match a reply to a submitted message, include a top-level `uuid` in the
+message dictionaries passed to `query()` or `ClaudeSDKClient.query()`:
+
+```python
+from uuid import uuid4
+
+message_id = str(uuid4())
+
+async def prompt_messages():
+    yield {
+        "type": "user",
+        "uuid": message_id,
+        "message": {"role": "user", "content": "Summarize the changes."},
+    }
+```
+
+Pass `prompt_messages()` as the prompt. `AssistantMessage`, `StreamEvent`, and
+`ResultMessage` expose `user_message_uuid` and `user_message_uuids`. When the CLI
+merges several inputs into one turn, match against `user_message_uuids` (up to
+64 UUIDs), falling back to `user_message_uuid` if the list is absent. The list
+may be incomplete when more than 64 inputs are consumed, so a missing UUID does
+not prove that its input was not consumed.
+
+Attribution usually appears on the first reply of each kind (assistant message
+and non-ping stream event). Synthetic turns may report new attribution after
+consuming queued user messages. Frames without attribution leave these fields
+as `None`; the SDK does not carry an earlier stamp forward. The result's list can
+also include inputs consumed after the first reply.
+
+`ResultMessage.queued_turn_count` reports pending user sends when the result was
+produced, not the number of remaining results: queued sends may merge into fewer
+turns. All three fields default to `None` when the CLI does not report them.
+
 ## Error Handling
 
 ```python

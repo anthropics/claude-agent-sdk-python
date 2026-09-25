@@ -90,7 +90,9 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The Linux entry calls Claude on GitHub's egress-firewall runner (allow list:
+        # .github/egress-firewall.yaml). GitHub offers no such runner for macOS or Windows.
+        os: [ubuntu-24.04-firewall, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +154,9 @@ jobs:
   test-e2e-docker:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
     needs: test # Run after unit tests pass
     permissions:
       contents: read
@@ -189,7 +193,9 @@ jobs:
   test-examples:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
     needs: test-e2e # Run after e2e tests
     permissions:
       contents: read

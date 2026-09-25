@@ -1090,7 +1090,9 @@ class Query:
         self._clear_run_end_ceiling()
         await self.transport.end_input()
 
-    async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
+    async def stream_input(
+        self, stream: AsyncIterable[dict[str, Any]], *, is_resuming: bool = False
+    ) -> None:
         """Stream input messages to transport.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
@@ -1121,7 +1123,9 @@ class Query:
             # close it like a normal end of input.
             logger.error("Prompt stream failed; closing stdin: %s", e)
         try:
-            if written:
+            if written or (is_resuming and self._has_bidirectional_needs()):
+                # A resumed session may replay a deferred tool without a new
+                # user message. Keep stdin open for its hook response.
                 await self.wait_for_result_and_end_input()
             else:
                 # Nothing was sent, so no result will arrive to release the

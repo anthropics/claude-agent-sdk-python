@@ -55,13 +55,22 @@ class ClaudeSDKClient:
     See examples/streaming_mode.py for full examples of ClaudeSDKClient in
     different scenarios.
 
-    Caveat: As of v0.0.20, you cannot use a ClaudeSDKClient instance across
-    different async runtime contexts (e.g., different trio nurseries or asyncio
-    task groups). The client internally maintains a persistent anyio task group
-    for reading messages that remains active from connect() until disconnect().
-    This means you must complete all operations with the client within the same
-    async context where it was connected. Ideally, this limitation should not
-    exist.
+    Caveat: a client is bound to the event loop it connected on, not to the
+    task that connected it. Moving it between tasks, task groups or nurseries
+    on that loop is supported — the read loop is a detached task, so nothing
+    holds a cancel scope open across your code. Keep to one reader at a time
+    though: concurrent receive_messages()/receive_response() consumers split
+    the stream between them, and one can swallow another's turn and leave it
+    with nothing.
+
+    A second event loop is not supported: a later asyncio.run() or trio.run()
+    has no read task and no live pipes, so query(), receive_messages() and
+    the methods that send a control request raise CLIConnectionError there.
+    (get_server_info() is the exception — it answers from the initialization
+    result cached at connect().) disconnect() stays usable from anywhere:
+    await it on the stranded client, then connect() again on the new loop.
+    Connecting without it leaves the first subprocess running until the
+    interpreter exits.
     """
 
     def __init__(
@@ -281,6 +290,9 @@ class ClaudeSDKClient:
         """
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
+        # This one writes straight to the transport instead of going through
+        # Query, so it needs the event-loop check of its own.
+        self._query.ensure_same_loop()
 
         from ._internal.query import stamp_user_message
 

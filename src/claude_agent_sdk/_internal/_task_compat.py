@@ -13,6 +13,10 @@ Under asyncio this is solved with plain ``loop.create_task()``, but that
 raises ``RuntimeError: no running event loop`` under trio. This module
 provides ``spawn_detached()`` which dispatches via sniffio to the
 appropriate backend primitive, returning a uniform ``TaskHandle``.
+
+It also provides ``current_loop_token()``, the identity of the loop
+those tasks are spawned on, so callers can tell a client moved between
+tasks (fine) from one reused on a second event loop (not).
 """
 
 from __future__ import annotations
@@ -186,3 +190,26 @@ def spawn_detached(coro: Coroutine[Any, Any, Any]) -> TaskHandle:
         f"Unsupported async backend: {backend!r}. "
         "claude_agent_sdk requires asyncio or trio."
     )
+
+
+def current_loop_token() -> object | None:
+    """Return an opaque identity for the event loop running this task.
+
+    Two calls return the same object if and only if they run under the
+    same asyncio loop or the same ``trio.run()``. Detached tasks and the
+    transport's pipes belong to that loop and die with it, so this is
+    what separates "moved to another task" from "reused on another loop".
+
+    Returns ``None`` on a backend we cannot identify, so callers skip the
+    comparison rather than reject a setup that may well work.
+    """
+    backend = sniffio.current_async_library()
+    if backend == "asyncio":
+        import asyncio
+
+        return asyncio.get_running_loop()
+    if backend == "trio":
+        import trio
+
+        return trio.lowlevel.current_trio_token()
+    return None

@@ -153,6 +153,13 @@ class TestHelpers:
         # The hash suffix is appended after the 200-char prefix
         assert "-" in result[200:]
 
+    def test_sanitize_path_astral_chars_match_cli(self):
+        assert _sanitize_path("/tmp/proj🚀x") == "-tmp-proj--x"
+
+    def test_simple_hash_astral_chars_match_js(self):
+        assert _simple_hash("🚀") == "1202r"
+        assert _simple_hash("/tmp/proj🚀x") == "g727m7"
+
     def test_simple_hash_deterministic(self):
         assert _simple_hash("hello") == _simple_hash("hello")
         assert _simple_hash("hello") != _simple_hash("world")

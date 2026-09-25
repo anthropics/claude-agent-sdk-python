@@ -2194,7 +2194,9 @@ class ClaudeAgentOptions:
     the CLI starts. It is **not** a session or analytics identifier.
 
     Requires the account to exist and the current process to have permission
-    to switch users (typically root). Not supported on Windows.
+    to switch users (typically root). Not supported on Windows. Only the user
+    id changes: the child keeps the parent's group ids, environment (including
+    ``HOME``), and working directory (``cwd``).
     """
 
     include_partial_messages: bool = False

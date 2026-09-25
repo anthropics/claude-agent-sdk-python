@@ -1,7 +1,6 @@
 """Pytest configuration for e2e tests."""
 
 import os
-import sys
 
 import pytest
 
@@ -45,30 +44,3 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "e2e: marks tests as e2e tests requiring API key"
     )
-
-
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """On GitHub Actions, surface each failing test phase as an error annotation."""
-    if os.environ.get("GITHUB_ACTIONS") != "true" or not report.failed:
-        return
-
-    def esc(s: str, prop: bool = False) -> str:
-        s = s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        return s.replace(":", "%3A").replace(",", "%2C") if prop else s
-
-    parts = [str(report.longrepr)[-3000:]]
-    for name, content in report.sections:
-        parts.append(f"----- {name} -----\n{content[-1500:]}")
-    title = esc(f"{report.nodeid} ({report.when})", prop=True)
-    message = esc("\n".join(parts))
-    line = f"::error title={title}::{message}"
-    # Keep the write from raising on a non-UTF-8 console (Windows cp1252).
-    out = sys.__stdout__
-    if out is None:
-        return
-    enc = out.encoding or "utf-8"
-    line = line.encode(enc, "backslashreplace").decode(enc)
-    # Start on a fresh line: the verbose reporter may have a line in progress.
-    sys.stdout.flush()
-    out.write(f"\n{line}\n")
-    out.flush()

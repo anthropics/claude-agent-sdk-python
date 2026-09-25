@@ -1015,6 +1015,15 @@ class TestMessageParser:
         with pytest.raises(MessageParseError):
             parse_message({"type": role, "message": message})
 
+    @pytest.mark.parametrize("role", ["assistant", "user"])
+    @pytest.mark.parametrize("bad_message", ["hi", ["hi"], 5, None])
+    def test_non_dict_message_field_raises_documented_error(
+        self, role: str, bad_message: object
+    ) -> None:
+        """A non-dict message field raises MessageParseError, never a raw TypeError."""
+        with pytest.raises(MessageParseError):
+            parse_message({"type": role, "message": bad_message})
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

@@ -967,6 +967,22 @@ class ThinkingBlock:
 
 
 @dataclass
+class ImageBlock:
+    """Image content block.
+
+    Appears in user messages when an image is attached (e.g. pasted into the
+    prompt). `source` is the raw source dict from the API (base64 or URL
+    variants), passed through as-is so newer source types stay visible.
+
+    Covers top-level image blocks only: images nested inside a tool result
+    remain raw dicts within `ToolResultBlock.content`, which is deliberately
+    opaque, so callers scanning for images should check both places.
+    """
+
+    source: dict[str, Any]
+
+
+@dataclass
 class ToolUseBlock:
     """Tool use content block."""
 
@@ -1027,6 +1043,7 @@ class ServerToolResultBlock:
 ContentBlock = (
     TextBlock
     | ThinkingBlock
+    | ImageBlock
     | ToolUseBlock
     | ToolResultBlock
     | ServerToolUseBlock

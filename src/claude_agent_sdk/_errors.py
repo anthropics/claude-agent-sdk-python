@@ -17,6 +17,7 @@ class CLINotFoundError(CLIConnectionError):
     def __init__(
         self, message: str = "Claude Code not found", cli_path: str | None = None
     ):
+        self.cli_path = cli_path
         if cli_path:
             message = f"{message}: {cli_path}"
         super().__init__(message)

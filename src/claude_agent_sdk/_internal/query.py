@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -50,6 +50,36 @@ logger = logging.getLogger(__name__)
 # Anything added here must be a type that reliably reaches a terminal status,
 # or it will hang the query (see Query._track_task_lifecycle).
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+
+# The CLI's own wait for background work once stdin is closed; the SDK bounds
+# its wait for the CLI's "idle" by the same value (Query._arm_run_end_ceiling).
+_RUN_END_CEILING_ENV = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
+DEFAULT_RUN_END_CEILING_MS = 600_000
+# The longest ceiling honored (~24.8 days), as in the TypeScript SDK, whose
+# timers cannot run longer; it also keeps a huge value convertible to float.
+_MAX_RUN_END_CEILING_MS = 2**31 - 1
+
+
+def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
+    """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
+
+    ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
+    environment, as it does for the CLI subprocess. ``0`` means no limit;
+    anything that is not a plain non-negative integer falls back to the CLI's
+    default of 10 minutes (the CLI itself also reads spellings such as
+    ``1e6``).
+    """
+    if _RUN_END_CEILING_ENV in options_env:
+        raw: Any = options_env[_RUN_END_CEILING_ENV]
+    else:
+        raw = os.environ.get(_RUN_END_CEILING_ENV)
+    if raw is None:
+        return DEFAULT_RUN_END_CEILING_MS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_RUN_END_CEILING_MS
+    return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 
 def _error_result_text(message: dict[str, Any]) -> str:
@@ -142,6 +172,7 @@ class Query:
         skills: list[str] | Literal["all"] | None = None,
         forward_subagent_text: bool = False,
         verbatim_prompts: bool = False,
+        run_end_ceiling_ms: int = DEFAULT_RUN_END_CEILING_MS,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -164,6 +195,10 @@ class Query:
             verbatim_prompts: Mark every outgoing user message
                 ``client_composed`` so the CLI delivers it as written (no
                 ``@path`` expansion, no slash-command dispatch)
+            run_end_ceiling_ms: How long the run stays open past a result
+                with no new turn while the CLI still reports ``running``;
+                ``0`` waits for ``idle`` however long it takes (see
+                ``run_end_ceiling_ms()``)
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -181,6 +216,7 @@ class Query:
         self._skills = skills
         self._forward_subagent_text = forward_subagent_text
         self._verbatim_prompts = verbatim_prompts
+        self._run_end_ceiling_ms = run_end_ceiling_ms
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -200,11 +236,29 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Set when a run-ending result arrives (a result frame with no tasks
-        # in flight) so the stdin-closing waiter can wake; see #1088 and
-        # _inflight_tasks below. Named for history — it once tracked the
-        # literal first result.
-        self._first_result_event = anyio.Event()
+        # Set when the run is over, so the stdin-closing waiter can wake; see
+        # _read_messages and _inflight_tasks below (#1088, #1190). Work the CLI
+        # takes up after the run ended swaps in a fresh event (_reopen_run).
+        self._run_ended_event = anyio.Event()
+        self._result_received = False
+        # The CLI's latest session_state_changed state, or None while it sends
+        # none (a CLI too old to honor CLAUDE_CODE_SDK_READS_SESSION_STATE).
+        # A CLI that reports state stays "running" while a background agent
+        # is live or its completion is still to be handled, and reports
+        # "idle" once no further turn is owed.
+        self._session_state: str | None = None
+        # Ends the run if no new turn starts within the ceiling after a result
+        # (_arm_run_end_ceiling). The generation tells a sleeper that fired
+        # after it was cleared or re-armed to stand down.
+        self._run_end_ceiling_task: TaskHandle | None = None
+        self._run_end_ceiling_generation = 0
+        # A main-thread turn is under way (its assistant/stream_event frames
+        # have started and its result has not arrived): the ceiling counts
+        # only the wait between turns, so it is not armed meanwhile.
+        self._turn_in_progress = False
+        # Set once stdin is closed or the reader is gone: the run then stays
+        # ended, since nothing can wait on a reopened one.
+        self._run_final = False
         # Task IDs of started-but-not-finished tasks. A result frame only ends
         # one turn, not the run: background tasks keep running past it and
         # still need stdin for hook/SDK-MCP control responses (see #1088), so
@@ -383,7 +437,19 @@ class Query:
                 # Track task lifecycle frames so results can tell "one turn
                 # ended" apart from "the run is done" (see #1088).
                 if msg_type == "system":
+                    had_tasks_in_flight = bool(self._inflight_tasks)
                     self._track_task_lifecycle(message)
+                    if had_tasks_in_flight and not self._inflight_tasks:
+                        # The ceiling left the last tracked agent alone; the
+                        # wait between turns starts over now that it settled.
+                        self._rearm_run_end_ceiling_between_turns()
+                    if message.get("subtype") == "session_state_changed":
+                        self._on_session_state(message.get("state"))
+                        # Frames the CLI sent only because the transport asked
+                        # for them (CLAUDE_CODE_SDK_READS_SESSION_STATE); the
+                        # caller did not opt in.
+                        if message.get("sdk_host_only") is True:
+                            continue
 
                 # Track results for proper stream closure
                 if msg_type == "result":
@@ -392,21 +458,25 @@ class Query:
                     # SessionStore being up to date for this turn.
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
-                    if self._inflight_tasks:
-                        # One turn ended, but background tasks are still
-                        # running and may need hook/SDK-MCP control responses
-                        # over stdin. Closing it now silently disables hooks
-                        # and fails SDK-MCP calls with "Stream closed"
-                        # (#1088). Each task completion wakes the parent for
-                        # a follow-up turn, so a later result frame arrives
-                        # with no tasks in flight and closes stdin then.
-                        logger.debug(
-                            "Result received with %d task(s) in flight; "
-                            "keeping stdin open",
-                            len(self._inflight_tasks),
-                        )
-                    else:
-                        self._first_result_event.set()
+                    self._result_received = True
+                    self._turn_in_progress = False
+                    # A result ends a turn, not necessarily the run: a
+                    # background agent that finished just before it still
+                    # wakes the session for another turn, whose hook,
+                    # permission and SDK MCP requests need stdin. A CLI that
+                    # reports session state stays "running" while such a turn
+                    # is owed, so wait for "idle" (some hosts send it just
+                    # before the result). Without state events the result is
+                    # all there is to go on.
+                    if (
+                        self._session_state in (None, "idle")
+                        or not self._has_bidirectional_needs()
+                    ):
+                        self._maybe_end_run()
+                    elif self._session_state != "requires_action":
+                        # While the SDK is still answering a request the
+                        # ceiling waits for the "running" that follows.
+                        self._arm_run_end_ceiling()
                     if message.get("is_error"):
                         self._last_error_result = message
                     else:
@@ -420,6 +490,17 @@ class Query:
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
                     self._last_error_result = None
+                    # A main-thread turn is under way, so the ceiling stops
+                    # (it counts only the wait between turns, as the CLI's
+                    # does) and the run reopens even if the ceiling ended it
+                    # while no state changed.
+                    if (
+                        msg_type in ("assistant", "stream_event")
+                        and message.get("parent_tool_use_id") is None
+                    ):
+                        self._turn_in_progress = True
+                        self._reopen_run()
+                        self._clear_run_end_ceiling()
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -479,9 +560,10 @@ class Query:
             if self._transcript_mirror_batcher is not None:
                 with anyio.CancelScope(shield=True):
                     await self._transcript_mirror_batcher.flush()
-            # Unblock any waiters (e.g. string-prompt path waiting for first
-            # result) so they don't stall for the full timeout on early exit.
-            self._first_result_event.set()
+            # Unblock any waiters (e.g. string-prompt path waiting for the end
+            # of the run) so they don't stall on early exit.
+            self._run_final = True
+            self._end_run()
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
@@ -797,13 +879,10 @@ class Query:
         This is a mitigation, not a complete answer to #1088. An empty set
         means "nothing we know of is running", which is not the same as "the
         run is over": a task that settles *before* the turn's result frame
-        leaves the set empty at that result, so stdin closes even though the
-        completion may still wake the parent for a continuation turn. No
-        ledger can close that gap, because the ledger cannot distinguish a
-        settled task whose continuation is pending from no work at all — that
-        needs a run-boundary signal from the CLI rather than an inference from
-        task bookkeeping. What this does fix is the common ordering, where the
-        task outlives the turn that spawned it.
+        leaves the set empty at that result, even though the completion may
+        still wake the parent for a continuation turn (#1190). No ledger can
+        close that gap; the CLI's session state does (see _read_messages),
+        and this ledger remains the guard for CLIs that do not report it.
 
         Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
         background *shell* — ``Bash(run_in_background=True)`` on a dev server or
@@ -842,6 +921,123 @@ class Query:
             if status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
 
+    def _on_session_state(self, state: Any) -> None:
+        """Track the CLI's ``session_state_changed`` state (#1190)."""
+        self._session_state = state
+        if state == "idle":
+            if self._result_received:
+                self._maybe_end_run()
+            return
+        # Work the CLI took up after the run ended (a finished background task
+        # woke it) reopens the run until the next "idle".
+        self._reopen_run()
+        if state == "requires_action":
+            # The host is answering a request; stdin must outlast it.
+            self._clear_run_end_ceiling()
+        else:
+            self._rearm_run_end_ceiling_between_turns()
+
+    def _maybe_end_run(self) -> None:
+        """End the run unless a tracked background task is still in flight.
+
+        One turn ended, but background tasks that are still running may need
+        hook/SDK-MCP control responses over stdin; closing it now silently
+        disables hooks and fails SDK-MCP calls with "Stream closed" (#1088).
+        Each task completion wakes the parent for a follow-up turn, so a later
+        result (or "idle") ends the run then. A CLI that reports session state
+        never reports "idle" with an agent still live, so this matters for
+        CLIs that report "idle" at every turn end or not at all.
+        """
+        if self._inflight_tasks:
+            logger.debug(
+                "Turn ended with %d task(s) in flight; keeping stdin open",
+                len(self._inflight_tasks),
+            )
+            return
+        self._end_run()
+
+    def _end_run(self) -> None:
+        """The run is over: wake the stdin-closing waiter. Idempotent."""
+        self._clear_run_end_ceiling()
+        self._run_ended_event.set()
+
+    def _reopen_run(self) -> None:
+        """Reopen an ended run for work that started after it ended.
+
+        A waiter the ended run already woke still closes stdin; this makes a
+        later wait (``stream_input``'s, once its prompts are all written)
+        wait for the new work too. Once stdin is closed, or the reader is
+        gone, the run stays ended.
+        """
+        if self._run_ended_event.is_set() and not self._run_final:
+            self._run_ended_event = anyio.Event()
+
+    def _arm_run_end_ceiling(self) -> None:
+        """End the run anyway once the ceiling passes with no new turn.
+
+        The CLI's own background-wait ceiling only counts once stdin is
+        closed, so without this work that never finishes would hold
+        "running", and stdin, open forever. It counts only the wait between
+        turns: restarted at each result and whenever the CLI reports
+        "running" again, cleared by main-thread turn activity and by
+        "requires_action", and never armed while a turn is under way.
+        """
+        self._clear_run_end_ceiling()
+        if (
+            self._run_end_ceiling_ms <= 0
+            or self._run_ended_event.is_set()
+            or self._run_final
+            # A frame read while close() is under way (the result branch
+            # awaits a mirror flush) must not leave a sleeper behind.
+            or self._closed
+            or self._turn_in_progress
+            or not self._has_bidirectional_needs()
+        ):
+            return
+        self._run_end_ceiling_task = self.spawn_task(
+            self._end_run_at_ceiling(self._run_end_ceiling_generation)
+        )
+
+    def _rearm_run_end_ceiling_between_turns(self) -> None:
+        """Restart the ceiling if the run is between turns, past a result,
+        with the CLI still reporting work ("running")."""
+        if self._result_received and self._session_state not in (
+            None,
+            "idle",
+            "requires_action",
+        ):
+            self._arm_run_end_ceiling()
+
+    async def _end_run_at_ceiling(self, generation: int) -> None:
+        await anyio.sleep(min(self._run_end_ceiling_ms, _MAX_RUN_END_CEILING_MS) / 1000)
+        # Cleared or re-armed while this sleeper was already waking up.
+        if generation != self._run_end_ceiling_generation:
+            return
+        self._run_end_ceiling_task = None
+        if self._inflight_tasks:
+            # A tracked background agent is still running and may still need
+            # stdin for its hook, permission and SDK MCP requests (#1088), so
+            # it is not cut off, as without session state. The ceiling starts
+            # over once it settles (_read_messages).
+            logger.debug(
+                "No 'idle' %dms after the last result, but %d tracked task(s) "
+                "still in flight; keeping stdin open",
+                self._run_end_ceiling_ms,
+                len(self._inflight_tasks),
+            )
+            return
+        logger.debug(
+            "No 'idle' %dms after the last result; ending the run",
+            self._run_end_ceiling_ms,
+        )
+        self._end_run()
+
+    def _clear_run_end_ceiling(self) -> None:
+        self._run_end_ceiling_generation += 1
+        task, self._run_end_ceiling_task = self._run_end_ceiling_task, None
+        if task is not None:
+            task.cancel()
+
     def _has_bidirectional_needs(self) -> bool:
         """Whether the CLI may still send control requests that need a reply.
 
@@ -855,49 +1051,64 @@ class Query:
         return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
 
     async def wait_for_result_and_end_input(self) -> None:
-        """Wait for the closing result (if needed) then close stdin.
+        """Wait for the end of the run (if needed) then close stdin.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
-        bidirectional communication, keeps stdin open until the first result
-        frame that arrives with no tasks in flight. A result frame ends one
-        turn, not necessarily the run: background tasks keep running past it
-        and still need stdin for control responses (see #1088). The control
-        protocol requires stdin to remain open for the entire conversation, so
-        no timeout is applied. The event is guaranteed to fire: either when a
-        result message arrives with no in-flight tasks (every task completion
-        wakes the parent for a follow-up turn, which ends in such a result),
-        or in _read_messages' finally block if the process exits early.
+        bidirectional communication, keeps stdin open until the run ends: the
+        CLI's "idle" session state after a result, or, from a CLI that reports
+        no session state, the first result with no tracked tasks in flight. A
+        result frame ends one turn, not necessarily the run: background tasks
+        keep running past it, or have just finished and still wake the parent
+        for a follow-up turn, and those turns need stdin for control responses
+        (#1088, #1190).
 
-        Known limitation: the event is one-shot and is not aware of prompt
-        messages still queued CLI-side, so an ``AsyncIterable`` prompt that
-        yields several user messages (several turns) releases the hold at the
-        first turn boundary with no tracked tasks; control requests from later
-        turns can then find stdin closed. Single-message and string prompts —
-        the common one-shot shapes — are fully covered.
+        The wait is bounded between turns: if the CLI still reports
+        "running" ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` (10 minutes by
+        default, ``0`` for no limit) after a result with no new turn, the run
+        ends anyway (``_arm_run_end_ceiling``). A turn under way, a request
+        the SDK is still answering and a tracked background agent still in
+        flight (#1088) stop that clock. The event is guaranteed to fire: when
+        the run ends as above, or in _read_messages' finally block if the
+        process exits early.
+
+        Known limitation: from a CLI that reports no session state, a result
+        for an earlier prompt of an ``AsyncIterable`` still ends the run even
+        when a later prompt is already queued CLI-side, so control requests
+        from that later turn can find stdin closed. Single-message and string
+        prompts, the common one-shot shapes, are fully covered.
         """
         if self._has_bidirectional_needs():
             logger.debug(
-                "Waiting for a run-ending result before closing stdin "
+                "Waiting for the run to end before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)}, "
                 f"has_can_use_tool={self.can_use_tool is not None})"
             )
-            await self._first_result_event.wait()
+            await self._run_ended_event.wait()
 
+        self._run_final = True
+        self._clear_run_end_ceiling()
         await self.transport.end_input()
 
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
-        waits for a run-ending result before closing stdin to allow
-        bidirectional control protocol communication.
+        waits for the run to end before closing stdin to allow
+        bidirectional control protocol communication. Each prompt written
+        owes a run of its own, so the wait is for the last prompt's run, not
+        an earlier one's.
         """
         written = 0
         try:
             async for message in stream:
                 if self._closed:
                     break
+                # This prompt owes a run of its own, result included: an
+                # earlier one having ended does not end it.
+                self._reopen_run()
+                self._result_received = False
+                self._clear_run_end_ceiling()
                 await self.transport.write(
                     json.dumps(stamp_user_message(message, self._verbatim_prompts))
                     + "\n"
@@ -916,6 +1127,7 @@ class Query:
                 # Nothing was sent, so no result will arrive to release the
                 # hold; close immediately (mirrors the TypeScript SDK's
                 # messageCount guard).
+                self._run_final = True
                 await self.transport.end_input()
         except Exception as e:
             logger.debug(f"Error closing input stream: {e}")

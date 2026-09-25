@@ -1219,6 +1219,64 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    @pytest.mark.parametrize(
+        ("options_env", "ambient_env", "expected_value"),
+        [
+            ({}, {}, "1"),
+            ({"CLAUDE_CODE_SDK_READS_SESSION_STATE": "0"}, {}, "0"),
+            ({}, {"CLAUDE_CODE_SDK_READS_SESSION_STATE": "0"}, "0"),
+            ({"claude_code_sdk_reads_session_state": "0"}, {}, None),
+        ],
+        ids=["unset", "caller_off", "ambient_off", "caller_other_case"],
+    )
+    def test_sdk_reads_session_state_unless_caller_chose(
+        self, monkeypatch, options_env, ambient_env, expected_value
+    ):
+        """The transport asks for the sdk_host_only session_state_changed
+        frames Query reads, unless the caller's options.env or the ambient
+        environment names the variable, in any case (#1190). It never turns on
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, which is the caller's own opt-in
+        to seeing the frames."""
+        monkeypatch.delenv("CLAUDE_CODE_SDK_READS_SESSION_STATE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", raising=False)
+        for key, value in ambient_env.items():
+            monkeypatch.setenv(key, value)
+
+        async def _test():
+            options = make_options(env=options_env)
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_version_process = MagicMock()
+                mock_version_process.stdout = MagicMock()
+                mock_version_process.stdout.receive = AsyncMock(
+                    return_value=b"2.0.0 (Claude Code)"
+                )
+                mock_version_process.terminate = MagicMock()
+                mock_version_process.wait = AsyncMock()
+
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.side_effect = [mock_version_process, mock_process]
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                assert (
+                    env_passed.get("CLAUDE_CODE_SDK_READS_SESSION_STATE")
+                    == expected_value
+                )
+                assert "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS" not in env_passed
+
+        anyio.run(_test)
+
     def test_otel_trace_context_propagated_to_subprocess(self):
         """Active OTEL trace context is injected as TRACEPARENT/TRACESTATE."""
 

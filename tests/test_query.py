@@ -5,10 +5,11 @@ servers, hooks, or a can_use_tool callback are configured, the CLI sends
 control_request messages back to the SDK *after* the prompt is written. The
 SDK must keep stdin open long enough to respond to these requests. These tests
 verify that both the string prompt and AsyncIterable prompt paths defer
-closing stdin until the CLI's run-ending result arrives.
+closing stdin until the CLI's run is over.
 """
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
@@ -19,12 +20,13 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     PermissionResultAllow,
     ResultMessage,
+    SystemMessage,
     create_sdk_mcp_server,
     query,
     tool,
 )
 from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
-from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
 from claude_agent_sdk.types import HookMatcher
 
 
@@ -758,6 +760,624 @@ class TestStdinStaysOpenWithInflightTasks:
         anyio.run(_test)
 
 
+def _session_state(state, *, sdk_host_only=True):
+    """A session_state_changed frame. By default it is marked the way a CLI
+    marks the frames it sends only because the SDK asked for them."""
+    frame = {
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": state,
+        "uuid": f"uuid-state-{state}",
+        "session_id": "test",
+    }
+    if sdk_host_only:
+        frame["sdk_host_only"] = True
+    return frame
+
+
+def _assistant(parent_tool_use_id=None):
+    return dict(_ASSISTANT_AND_RESULT[0], parent_tool_use_id=parent_tool_use_id)
+
+
+def _user_prompt(text="Hello"):
+    return {
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+        "session_id": "",
+    }
+
+
+async def _let_waiter_run():
+    for _ in range(20):
+        await anyio.sleep(0)
+
+
+async def _until(condition, timeout=5.0):
+    with anyio.fail_after(timeout):
+        while not condition():
+            await anyio.sleep(0.005)
+
+
+def _run_query_over(
+    frames_fn,
+    *,
+    prompt: Any = "Hello",
+    env: dict[str, str] | None = None,
+    backend: str = "asyncio",
+):
+    """Run query() with a hook over a scripted CLI.
+
+    ``frames_fn(end_input_calls, writes)`` is an async generator producing the
+    CLI's stdout; between frames it can inspect ``end_input_calls`` and the
+    user messages written to stdin so far. Returns the messages query()
+    yielded.
+    """
+
+    async def _test():
+        end_input_calls: list[bool] = []
+        writes: list[dict[str, Any]] = []
+
+        mock_transport = AsyncMock()
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        async def tracking_write(data):
+            writes.append(json.loads(data))
+
+        async def tracking_end_input():
+            end_input_calls.append(True)
+
+        mock_transport.write = tracking_write
+        mock_transport.end_input = tracking_end_input
+        mock_transport.read_messages = lambda: frames_fn(end_input_calls, writes)
+
+        async def hook(input_data, tool_use_id, context):
+            return {}
+
+        with (
+            patch("claude_agent_sdk._internal.client.SubprocessCLITransport") as cls,
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            cls.return_value = mock_transport
+            return [
+                msg
+                async for msg in query(
+                    prompt=prompt,
+                    options=ClaudeAgentOptions(
+                        hooks={"PreToolUse": [HookMatcher(hooks=[hook])]},
+                        env=env or {},
+                    ),
+                )
+            ]
+
+    return anyio.run(_test, backend=backend)
+
+
+def _state_frames(messages):
+    return [
+        m.data["state"]
+        for m in messages
+        if isinstance(m, SystemMessage) and m.subtype == "session_state_changed"
+    ]
+
+
+class TestStdinStaysOpenUntilIdle:
+    """With session state reported, the run ends at "idle", not a result (#1190).
+
+    A background agent that finishes just before the turn's result leaves
+    nothing in flight at that result, yet its completion still wakes the
+    parent for a follow-up turn whose hook, permission and SDK MCP requests
+    need stdin. The CLI reports "running" until no such turn is owed.
+    """
+
+    def test_task_settled_before_result_keeps_stdin_open_until_idle(self):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield dict(_TASK_NOTIFICATION)
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_first_result"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            await _let_waiter_run()
+            checks["open_after_second_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        messages = _run_query_over(frames)
+
+        assert checks == {
+            "open_after_first_result": True,
+            "open_after_second_result": True,
+            "closed_at_idle": True,
+        }
+        assert len([m for m in messages if isinstance(m, ResultMessage)]) == 2
+        # The CLI marked these frames sdk_host_only, so the caller never sees
+        # them.
+        assert _state_frames(messages) == []
+
+    @pytest.mark.parametrize("sdk_host_only", [True, False])
+    def test_only_marked_frames_are_dropped(self, sdk_host_only):
+        """Marked frames were sent only because the SDK asked; unmarked ones
+        mean the caller opted in (CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS), and
+        both drive the run end the same way."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running", sdk_host_only=sdk_host_only)
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_result"] = not end_input_calls
+            yield _session_state("idle", sdk_host_only=sdk_host_only)
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        messages = _run_query_over(frames)
+
+        assert checks == {"open_after_result": True, "closed_at_idle": True}
+        assert _state_frames(messages) == ([] if sdk_host_only else ["running", "idle"])
+
+    def test_no_state_frames_closes_stdin_at_the_first_result(self):
+        """A CLI too old to honor CLAUDE_CODE_SDK_READS_SESSION_STATE sends no
+        frames; the result is then all there is to go on."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _assistant()
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["closed_at_result"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {"closed_at_result": True}
+
+    def test_idle_just_before_result_ends_the_run_at_the_result(self):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["open_before_result"] = not end_input_calls
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["closed_at_result"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {"open_before_result": True, "closed_at_result": True}
+
+    def test_idle_before_any_result_does_not_end_the_run(self):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("idle")
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {"open_after_result": True, "closed_at_idle": True}
+
+    def test_idle_with_a_tracked_task_in_flight_keeps_stdin_open(self):
+        """A CLI that reports "idle" at every turn end still defers to the
+        task ledger (#1088)."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield _make_result("uuid-r1")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["open_with_task_in_flight"] = not end_input_calls
+            yield dict(_TASK_NOTIFICATION)
+            yield _session_state("running")
+            yield _make_result("uuid-r2")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_after_task_settled"] = bool(end_input_calls)
+
+        _run_query_over(frames)
+
+        assert checks == {
+            "open_with_task_in_flight": True,
+            "closed_after_task_settled": True,
+        }
+
+    def test_async_iterable_prompt_waits_for_idle(self):
+        checks = {}
+
+        async def prompt():
+            yield _user_prompt()
+
+        async def frames(end_input_calls, writes):
+            await _until(lambda: len(writes) == 1)
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_after_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, prompt=prompt())
+
+        assert checks == {"open_after_result": True, "closed_at_idle": True}
+
+    def test_stream_last_prompt_waits_for_its_own_run(self):
+        """A prompt written after an earlier prompt's run ended owes a run of
+        its own: its turn's requests need stdin too."""
+        checks = {}
+        second_ready = anyio.Event()
+
+        async def prompt():
+            yield _user_prompt("first")
+            await second_ready.wait()
+            yield _user_prompt("second")
+
+        async def frames(end_input_calls, writes):
+            await _until(lambda: len(writes) == 1)
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            second_ready.set()
+            await _until(lambda: len(writes) == 2)
+            await _let_waiter_run()
+            checks["open_after_second_prompt"] = not end_input_calls
+            yield _session_state("running")
+            yield _make_result("uuid-r2")
+            await _let_waiter_run()
+            checks["open_after_second_result"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_second_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, prompt=prompt())
+
+        assert checks == {
+            "open_after_second_prompt": True,
+            "open_after_second_result": True,
+            "closed_at_second_idle": True,
+        }
+
+    @pytest.mark.parametrize(
+        "wake_frame",
+        [_session_state("running"), _session_state("requires_action")],
+        ids=["running", "requires_action"],
+    )
+    def test_stream_reopens_for_work_the_cli_takes_up_after_idle(self, wake_frame):
+        """A background task that wakes the CLI after the run ended reopens
+        it, as long as the caller's input had not ended yet."""
+        checks = {}
+        end_stream = anyio.Event()
+
+        async def prompt():
+            yield _user_prompt()
+            await end_stream.wait()
+
+        async def frames(end_input_calls, writes):
+            await _until(lambda: len(writes) == 1)
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            yield dict(wake_frame)
+            await _let_waiter_run()
+            end_stream.set()
+            await _let_waiter_run()
+            checks["open_after_input_ended"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_next_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, prompt=prompt())
+
+        assert checks == {
+            "open_after_input_ended": True,
+            "closed_at_next_idle": True,
+        }
+
+
+class TestRunEndCeiling:
+    """The wait for "idle" is bounded between turns (#1190).
+
+    A background agent that never finishes holds "running" for good, and the
+    CLI's own background-wait ceiling only starts once stdin is closed, so
+    the SDK ends the run itself once CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS pass
+    after a result with no new turn.
+    """
+
+    _FAST = {"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "100"}
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_ceiling_ends_the_run_with_no_idle(self, backend):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await _let_waiter_run()
+            checks["open_right_after_result"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+            # A late idle does not close stdin a second time.
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["end_input_calls"] = len(end_input_calls)
+
+        _run_query_over(frames, env=self._FAST, backend=backend)
+
+        assert checks == {"open_right_after_result": True, "end_input_calls": 1}
+
+    def test_main_thread_turn_stops_the_ceiling(self):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            # The turn the finished background agent woke starts before the
+            # ceiling, then runs well past it.
+            yield _assistant()
+            await anyio.sleep(0.3)
+            checks["open_during_turn"] = not end_input_calls
+            # Its result starts the wait between turns over.
+            yield _make_result("uuid-r2")
+            await _let_waiter_run()
+            checks["open_right_after_second_result"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_during_turn": True,
+            "open_right_after_second_result": True,
+        }
+
+    def test_subagent_messages_do_not_stop_the_ceiling(self):
+        """Only main-thread activity is a new turn; a background agent's own
+        messages are the very work the ceiling bounds."""
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            yield _assistant(parent_tool_use_id="toolu_agent")
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+    def test_requires_action_stops_the_ceiling(self):
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            # A background agent's permission prompt waits on the host well
+            # past the ceiling.
+            yield _session_state("requires_action")
+            await anyio.sleep(0.3)
+            checks["open_while_answering"] = not end_input_calls
+            # Answered: the wait between turns starts over.
+            yield _session_state("running")
+            await _let_waiter_run()
+            checks["open_right_after_answer"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_while_answering": True,
+            "open_right_after_answer": True,
+        }
+
+    def test_ceiling_is_not_armed_mid_turn(self):
+        """A "running" after an answered request inside a turn does not start
+        the clock; only the wait between turns counts."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            # The follow-up turn starts, asks for a permission, gets it, then
+            # runs a long tool with no main-thread output.
+            yield _assistant()
+            yield _session_state("requires_action")
+            yield _session_state("running")
+            await anyio.sleep(0.3)
+            checks["open_during_turn"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {"open_during_turn": True}
+
+    def test_result_while_answering_a_request_does_not_arm(self):
+        """A background agent's request the SDK is still answering when the
+        turn's result arrives keeps the clock stopped until it is answered."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _session_state("requires_action")
+            yield _make_result("uuid-r1")
+            await anyio.sleep(0.3)
+            checks["open_while_answering"] = not end_input_calls
+            yield _session_state("running")
+            await _let_waiter_run()
+            checks["open_right_after_answer"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_while_answering": True,
+            "open_right_after_answer": True,
+        }
+
+    def test_ceiling_leaves_a_tracked_agent_alone(self):
+        """A tracked background agent still in flight may still need stdin
+        (#1088), so the ceiling does not cut it off; the wait between turns
+        starts over once it settles."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield dict(_TASK_STARTED)
+            yield _make_result("uuid-r1")
+            await anyio.sleep(0.35)
+            checks["open_with_task_in_flight"] = not end_input_calls
+            yield dict(_TASK_NOTIFICATION)
+            await _let_waiter_run()
+            checks["open_right_after_task_settled"] = not end_input_calls
+            await _until(lambda: bool(end_input_calls))
+
+        _run_query_over(frames, env=self._FAST)
+
+        assert checks == {
+            "open_with_task_in_flight": True,
+            "open_right_after_task_settled": True,
+        }
+
+    @pytest.mark.parametrize(
+        "ceiling", ["0", str(2**31), "9" * 400], ids=["zero", "2**31", "huge"]
+    )
+    def test_waits_for_idle_with_no_or_a_huge_ceiling(self, ceiling):
+        """0 means no ceiling; a huge one is honored as a very long wait, not
+        one that fires at once or fails."""
+        checks = {}
+
+        async def frames(end_input_calls, writes):
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            await anyio.sleep(0.3)
+            checks["open_after_wait"] = not end_input_calls
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, env={"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": ceiling})
+
+        assert checks == {"open_after_wait": True, "closed_at_idle": True}
+
+    def test_ceiling_ended_stream_reopens_for_a_main_thread_turn(self):
+        checks = {}
+        end_stream = anyio.Event()
+
+        async def prompt():
+            yield _user_prompt()
+            await end_stream.wait()
+
+        async def frames(end_input_calls, writes):
+            await _until(lambda: len(writes) == 1)
+            yield _session_state("running")
+            yield _make_result("uuid-r1")
+            # The ceiling passes while the caller's input is still open.
+            await anyio.sleep(0.3)
+            # The background agent finishes after all; its turn starts
+            # streaming with no state change, and the caller's input ends.
+            yield _assistant()
+            await _let_waiter_run()
+            end_stream.set()
+            await _let_waiter_run()
+            checks["open_after_input_ended"] = not end_input_calls
+            yield _make_result("uuid-r2")
+            yield _session_state("idle")
+            await _let_waiter_run()
+            checks["closed_at_idle"] = bool(end_input_calls)
+
+        _run_query_over(frames, prompt=prompt(), env=self._FAST)
+
+        assert checks == {"open_after_input_ended": True, "closed_at_idle": True}
+
+    def test_no_ceiling_is_armed_once_stdin_is_closed(self):
+        """Frames still arrive while the CLI winds down after stdin closed; a
+        ceiling armed then would outlive the run it bounds."""
+
+        async def _test():
+            transport = AsyncMock()
+            transport.is_ready = Mock(return_value=True)
+
+            async def hook(input_data, tool_use_id, context):
+                return {}
+
+            q = Query(
+                transport=transport,
+                is_streaming_mode=True,
+                hooks={"PreToolUse": [{"matcher": None, "hooks": [hook]}]},
+                run_end_ceiling_ms=50,
+            )
+            q._on_session_state("running")
+            q._result_received = True
+            q._arm_run_end_ceiling()
+            assert q._run_end_ceiling_task is not None
+
+            q._end_run()
+            await q.wait_for_result_and_end_input()
+            transport.end_input.assert_awaited_once()
+            assert q._run_end_ceiling_task is None
+
+            # Work after stdin closed neither reopens the run nor arms a
+            # ceiling for it.
+            q._on_session_state("running")
+            q._arm_run_end_ceiling()
+            assert q._run_end_ceiling_task is None
+            assert q._run_ended_event.is_set()
+            await q.close()
+
+        anyio.run(_test)
+
+
+class TestRunEndCeilingFromEnv:
+    """CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS is read as the CLI will see it."""
+
+    @pytest.mark.parametrize(
+        ("options_env", "ambient", "expected"),
+        [
+            ({}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "0"}, None, 0),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": " 250 "}, None, 250),
+            ({}, "1234", 1234),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "250"}, "1234", 250),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "soon"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "-1"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": ""}, "1234", 600_000),
+        ],
+        ids=[
+            "default",
+            "zero",
+            "whitespace",
+            "ambient",
+            "options_over_ambient",
+            "not_a_number",
+            "negative",
+            "empty_option_wins",
+        ],
+    )
+    def test_parse(self, monkeypatch, options_env, ambient, expected):
+        if ambient is None:
+            monkeypatch.delenv("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", ambient)
+
+        assert run_end_ceiling_ms(options_env) == expected
+
+
 class TestAsyncIterablePromptWithSdkMcpServers:
     """Test that AsyncIterable prompts keep stdin open for SDK MCP servers."""
 
@@ -895,7 +1515,7 @@ class TestNoTimeoutForHooksAndMcpServers:
                 async def wait_then_check():
                     await anyio.sleep(0.05)
                     assert not end_input_called.is_set()
-                    q._first_result_event.set()
+                    q._run_ended_event.set()
                     await anyio.sleep(0.05)
                     assert end_input_called.is_set()
 
@@ -948,7 +1568,7 @@ class TestNoTimeoutForHooksAndMcpServers:
                 async def wait_then_check():
                     await anyio.sleep(0.05)
                     assert not end_input_called.is_set()
-                    q._first_result_event.set()
+                    q._run_ended_event.set()
                     await anyio.sleep(0.05)
                     assert end_input_called.is_set()
 

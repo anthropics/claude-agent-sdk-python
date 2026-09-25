@@ -181,11 +181,13 @@ _HINT_WIRE_NAMES = {
     "idempotent_hint": "idempotentHint",
     "open_world_hint": "openWorldHint",
     "max_result_size_chars": "maxResultSizeChars",
+    "search_hint": "searchHint",
+    "always_load": "alwaysLoad",
 }
 
 
 class ToolAnnotations(_McpToolAnnotations, extra="allow"):
-    """Hints about a tool's behavior, plus ``maxResultSizeChars``.
+    """Hints about a tool's behavior, plus the Claude Code ones.
 
     A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling
     on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``
@@ -194,16 +196,27 @@ class ToolAnnotations(_McpToolAnnotations, extra="allow"):
     the camelCase names and 2.x prefers snake_case.) Attribute access follows
     the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.
 
-    ``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but
-    a Claude Code one: the size, in characters, up to which Claude Code keeps
-    this tool's result inline instead of persisting it to a file and showing
-    a preview. It travels to the CLI in the tool's ``_meta``.
+    Three of these are not MCP hints but Claude Code ones, and they travel to
+    the CLI in the tool's ``_meta`` rather than in ``annotations``.
+    ``maxResultSizeChars`` (``max_result_size_chars``) is the size, in
+    characters, up to which Claude Code keeps this tool's result inline
+    instead of persisting it to a file and showing a preview. ``searchHint``
+    (``search_hint``) is extra wording to match the tool on when tools are
+    discovered by search rather than all loaded up front, and ``alwaysLoad``
+    (``always_load``) keeps the tool loaded instead. Those last two are
+    arguments of ``tool()`` as well, which is where the TypeScript SDK takes
+    them, and the argument wins over the annotation.
 
     Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted
-    wherever the SDK takes annotations.
+    wherever the SDK takes annotations, but only this one carries those three
+    Claude Code keys. mcp 2.x's own class ignores keyword arguments it does
+    not know, so ``mcp.types.ToolAnnotations(searchHint="...")`` builds
+    without complaint and the hint is gone.
     """
 
     maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
+    searchHint: str | None = None  # noqa: N815 - the wire spelling
+    alwaysLoad: bool | None = None  # noqa: N815 - the wire spelling
 
     if TYPE_CHECKING:
 
@@ -221,6 +234,10 @@ class ToolAnnotations(_McpToolAnnotations, extra="allow"):
             open_world_hint: bool | None = None,
             maxResultSizeChars: int | None = None,  # noqa: N803
             max_result_size_chars: int | None = None,
+            searchHint: str | None = None,  # noqa: N803
+            search_hint: str | None = None,
+            alwaysLoad: bool | None = None,  # noqa: N803
+            always_load: bool | None = None,
             **extra: Any,
         ) -> None: ...
 
@@ -246,6 +263,8 @@ class SdkMcpTool(Generic[T]):
     input_schema: type[T] | dict[str, Any]
     handler: Callable[[T], Awaitable[dict[str, Any]]]
     annotations: _McpToolAnnotations | None = None
+    search_hint: str | None = None
+    always_load: bool | None = None
 
 
 def tool(
@@ -253,6 +272,9 @@ def tool(
     description: str,
     input_schema: type | dict[str, Any],
     annotations: _McpToolAnnotations | None = None,
+    *,
+    search_hint: str | None = None,
+    always_load: bool | None = None,
 ) -> Callable[[Callable[[Any], Awaitable[dict[str, Any]]]], SdkMcpTool[Any]]:
     """Decorator for defining MCP tools with type safety.
 
@@ -277,6 +299,10 @@ def tool(
             ``ToolAnnotations(maxResultSizeChars=N)`` additionally raises the
             size up to which Claude Code keeps this tool's result inline
             instead of persisting it to a file and showing a preview.
+        search_hint: Extra wording to match this tool on when Claude Code
+            discovers tools by search rather than loading them all up front.
+        always_load: Keep this tool loaded rather than leaving it to be
+            discovered by search.
 
     Returns:
         A decorator function that wraps the tool implementation and returns
@@ -311,6 +337,16 @@ def tool(
         ... async def get_schema(args):
         ...     return {"content": [{"type": "text", "text": load_schema()}]}
 
+        Tool that wants to be found when Claude Code searches for tools:
+        >>> @tool(
+        ...     "grep_logs",
+        ...     "Search the request logs",
+        ...     {"pattern": str},
+        ...     search_hint="logs traces requests errors",
+        ... )
+        ... async def grep_logs(args):
+        ...     return {"content": [{"type": "text", "text": grep(args["pattern"])}]}
+
     Notes:
         - The tool function must be async (defined with async def)
         - The function receives a single dict argument with the input parameters
@@ -330,6 +366,8 @@ def tool(
             input_schema=input_schema,
             handler=handler,
             annotations=annotations,
+            search_hint=search_hint,
+            always_load=always_load,
         )
 
     return decorator
@@ -430,16 +468,41 @@ def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
     return {"type": "object", "properties": {}}
 
 
-def _build_meta(tool_def: SdkMcpTool[Any]) -> dict[str, Any] | None:
-    # Client-specific hints travel in _meta under namespaced keys because MCP
-    # clients drop annotation fields they do not know. maxResultSizeChars is
-    # the size up to which Claude Code keeps a tool result inline rather than
-    # persisting it and showing a preview; it rides on the annotations object
-    # as an extra (or subclass-declared) field.
+def _build_meta(
+    tool_def: SdkMcpTool[Any], server_always_load: bool = False
+) -> dict[str, Any] | None:
+    """Collect Claude Code's own tool metadata for the tool's ``_meta``.
+
+    These are not MCP fields, so they travel under the ``anthropic/``
+    namespace rather than in ``annotations``, which MCP clients strip of
+    anything they do not know. They can be set on the annotations object, as
+    an extra or as a subclass-declared field under the wire spelling;
+    ``searchHint`` and ``alwaysLoad`` can also come from ``tool()``, which is
+    where the TypeScript SDK takes them, and that wins. ``server_always_load``
+    is the whole server asking for ``alwaysLoad`` on every one of its tools.
+    """
+    meta: dict[str, Any] = {}
+
     max_size = getattr(tool_def.annotations, "maxResultSizeChars", None)
-    if max_size is None:
-        return None
-    return {"anthropic/maxResultSizeChars": max_size}
+    if max_size is not None:
+        meta["anthropic/maxResultSizeChars"] = max_size
+
+    # A falsy searchHint or alwaysLoad is the default rather than a request,
+    # and the TypeScript SDK sends no key at all for it. Sending one would
+    # read as the opposite to anything that tests for the key's presence.
+    search_hint = tool_def.search_hint
+    if search_hint is None:
+        search_hint = getattr(tool_def.annotations, "searchHint", None)
+    if search_hint:
+        meta["anthropic/searchHint"] = search_hint
+
+    always_load = tool_def.always_load
+    if always_load is None:
+        always_load = getattr(tool_def.annotations, "alwaysLoad", None)
+    if always_load or server_always_load:
+        meta["anthropic/alwaysLoad"] = True
+
+    return meta or None
 
 
 def _tool_error_result(message: str) -> CallToolResult:
@@ -489,7 +552,11 @@ def _convert_tool_content(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def create_sdk_mcp_server(
-    name: str, version: str = "1.0.0", tools: list[SdkMcpTool[Any]] | None = None
+    name: str,
+    version: str = "1.0.0",
+    tools: list[SdkMcpTool[Any]] | None = None,
+    instructions: str | None = None,
+    always_load: bool = False,
 ) -> McpSdkServerConfig:
     """Create an in-process MCP server that runs within your Python application.
 
@@ -508,6 +575,13 @@ def create_sdk_mcp_server(
         tools: List of SdkMcpTool instances created with the @tool decorator.
             These are the functions that Claude can call through this server.
             If None or empty, the server will have no tools (rarely useful).
+        instructions: Optional guidance on how to use this server's tools,
+            returned in the MCP handshake. Claude Code reads it from there and
+            puts it in front of the model, so keep it short.
+        always_load: Keep every tool on this server loaded rather than leaving
+            them to be discovered by search. There is no server-level field
+            for this on the wire; it is applied as ``alwaysLoad`` on each of
+            the server's tools, on top of whatever each tool asked for itself.
 
     Returns:
         McpSdkServerConfig: A configuration object that can be passed to
@@ -585,7 +659,7 @@ def create_sdk_mcp_server(
                 "description": tool_def.description,
                 "inputSchema": schemas[tool_def.name],
                 "annotations": tool_def.annotations,
-                "_meta": _build_meta(tool_def),
+                "_meta": _build_meta(tool_def, server_always_load=always_load),
             }
         )
         for tool_def in tools
@@ -614,7 +688,7 @@ def create_sdk_mcp_server(
         except Exception as e:
             return _tool_error_result(str(e))
 
-    server = build_tool_server(name, version, wire_tools, run_tool)
+    server = build_tool_server(name, version, wire_tools, run_tool, instructions)
 
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
 

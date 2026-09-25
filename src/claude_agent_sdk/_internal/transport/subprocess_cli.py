@@ -8,8 +8,8 @@ import platform
 import re
 import shutil
 import signal
-from collections.abc import AsyncIterable, AsyncIterator
-from contextlib import suppress
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any, cast
@@ -959,6 +959,24 @@ class SubprocessCLITransport(Transport):
             # synchronous, so it is safe to run during cancellation unwind.
             emit(framer.flush())
 
+    @contextmanager
+    def _stop_stderr_reader_on_error(self) -> Iterator[None]:
+        """Cancel the stderr reader if close() is interrupted.
+
+        close() lets the reader run until the process has exited. If a raw
+        cancellation (see the caveat in close()) unwinds out before that, stop
+        the reader without awaiting, so the callback doesn't keep firing after
+        close() has given up. The stream is left for a later close() to
+        aclose().
+        """
+        try:
+            yield
+        except BaseException:
+            if self._stderr_task is not None:
+                self._stderr_task.cancel()
+                self._stderr_task = None
+            raise
+
     async def close(self) -> None:
         """Close the transport and clean up resources.
 
@@ -973,8 +991,9 @@ class SubprocessCLITransport(Transport):
         cancellation is delayed but never blocked: the stream `aclose()`s are a
         non-blocking `close()` plus a checkpoint on both anyio backends (they
         never await `wait_closed()`, so undrained stdin cannot wedge them), the
-        stderr task is cancelled before it is awaited, and the lock acquire and
-        every process `wait()` carry an explicit deadline.
+        stderr task is only waited on for a moment after the process exits
+        before it is cancelled, and the lock acquire and every process `wait()`
+        carry an explicit deadline.
 
         Caveat: an anyio shield only defers cancellation that *originates from
         an anyio cancel scope*. A raw asyncio cancellation (`asyncio.wait_for` /
@@ -991,13 +1010,10 @@ class SubprocessCLITransport(Transport):
             self._ready = False
             return
 
-        with anyio.CancelScope(shield=True):
-            # Cancel stderr reader if active
-            if self._stderr_task is not None and not self._stderr_task.done():
-                self._stderr_task.cancel()
-                with suppress(Exception):
-                    await self._stderr_task.wait()
-            self._stderr_task = None
+        with anyio.CancelScope(shield=True), self._stop_stderr_reader_on_error():
+            # The stderr reader keeps running until the process has exited (see
+            # below): what the CLI writes while it shuts down still reaches the
+            # callback, and a full stderr pipe can't block its exit.
 
             # Close stdin stream (hold the write lock to prevent a race with
             # concurrent writes). Bounded: a writer blocked on a full stdin
@@ -1015,11 +1031,6 @@ class SubprocessCLITransport(Transport):
             finally:
                 if lock_held:
                     self._write_lock.release()
-
-            if self._stderr_stream:
-                with suppress(Exception):
-                    await self._stderr_stream.aclose()
-                self._stderr_stream = None
 
             # Wait for graceful shutdown after stdin EOF, then terminate if
             # needed. The subprocess needs time to flush its session file after
@@ -1053,6 +1064,25 @@ class SubprocessCLITransport(Transport):
                 # not one that survived SIGKILL.
                 if self._process.returncode is not None:
                     _ACTIVE_CHILDREN.discard(self._process)
+
+            # Once the process is gone the reader reaches EOF on its own. Give it
+            # a moment to deliver the last lines, then cancel it in case something
+            # else still holds the pipe open (e.g. a stdio MCP server the CLI
+            # started inherited its stderr), which costs close() up to 1s.
+            if self._stderr_task is not None:
+                if not self._stderr_task.done():
+                    with anyio.move_on_after(1):
+                        await self._stderr_task.wait()
+                if not self._stderr_task.done():
+                    self._stderr_task.cancel()
+                with suppress(Exception):
+                    await self._stderr_task.wait()
+            self._stderr_task = None
+
+            if self._stderr_stream:
+                with suppress(Exception):
+                    await self._stderr_stream.aclose()
+                self._stderr_stream = None
 
             self._process = None
             self._stdout_stream = None

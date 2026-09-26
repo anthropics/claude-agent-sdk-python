@@ -220,6 +220,63 @@ class PermissionUpdate:
 
 # Tool callback types
 @dataclass
+class McpServerProvenance:
+    """Which MCP server serves a tool, and where that server was configured.
+
+    Attributes:
+        name: The server's key as registered or configured. For any source
+            other than ``"sdk"`` this is text from a configuration file, so
+            escape it before display.
+        source: ``"sdk"`` for an in-process server this host registered via
+            ``create_sdk_mcp_server``; otherwise where the configuration came
+            from (``"plugin"``, ``"user"``, ``"project"``, ``"local"``,
+            ``"dynamic"``, ``"managed"``, ...). This is an open set: treat an
+            unknown value as an unrecognized configured source, never as
+            ``"sdk"``. Key trust decisions on this field, not on the name or
+            the ``mcp__`` tool-name prefix.
+    """
+
+    name: str
+    source: str
+
+
+@dataclass
+class MatchedAskRule:
+    """The user-configured ``permissions.ask`` rule that forced a prompt.
+
+    Attributes:
+        source: Settings source the rule came from.
+        tool_name: Tool the rule matches.
+        rule_content: The rule's content pattern, if it has one.
+    """
+
+    source: str
+    tool_name: str
+    rule_content: str | None = None
+
+
+DecisionReasonType = Literal[
+    "rule",
+    "mode",
+    "subcommandResults",
+    "permissionPromptTool",
+    "hook",
+    "asyncAgent",
+    "sandboxOverride",
+    "workingDir",
+    "safetyCheck",
+    "classifier",
+    "other",
+]
+"""Structured reason a permission request escalated to the host."""
+
+PermissionDecisionClassification = Literal[
+    "user_temporary", "user_permanent", "user_reject"
+]
+"""How the host classified a permission decision for the CLI's records."""
+
+
+@dataclass
 class ToolPermissionContext:
     """Context information for tool permission callbacks."""
 
@@ -252,6 +309,33 @@ class ToolPermissionContext:
     button labels or compact UI."""
     description: str | None = None
     """Human-readable subtitle for the permission UI."""
+    mcp_server: McpServerProvenance | None = None
+    """For ``mcp__*`` tools, the MCP server serving the tool and where its
+    definition came from. ``None`` for built-in tools and on CLIs that predate
+    the field."""
+    decision_reason_type: DecisionReasonType | None = None
+    """Structured counterpart of ``decision_reason``, so a host can make policy
+    (for example auto-deny ``"safetyCheck"``) without parsing the text."""
+    classifier_approvable: bool | None = None
+    """When a safety check is part of the decision reason: ``True`` if every
+    check involved may be approved by a classifier, ``False`` if at least one
+    requires a human."""
+    default_to_no: bool | None = None
+    """The prompt must not be approvable by a single stray keystroke: open it
+    on its decline option and offer no one-key approve shortcut."""
+    suppress_always_allow_rule: bool | None = None
+    """The prompt must not offer a persistent "don't ask again" choice: the
+    rule it would write grants more than this request's own action."""
+    matched_ask_rule: MatchedAskRule | None = None
+    """Set when a user-configured ``permissions.ask`` rule forced this prompt
+    while the request carries the tool's own ``decision_reason``. Treat such a
+    request as rule-forced: the user asked to be prompted."""
+    requires_user_interaction: bool | None = None
+    """One-tap approve/deny must not be offered; the tool's approval card is
+    itself the interaction surface."""
+    request_id: str | None = None
+    """The ``control_request`` envelope's ``request_id``. A response sent
+    out-of-band must echo it for the CLI to match it."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -262,6 +346,10 @@ class PermissionResultAllow:
     behavior: Literal["allow"] = "allow"
     updated_input: dict[str, Any] | None = None
     updated_permissions: list[PermissionUpdate] | None = None
+    decision_classification: PermissionDecisionClassification | None = None
+    """How the decision was made, for the CLI's records: ``"user_temporary"``
+    (allowed once), ``"user_permanent"`` (allowed with a persisted rule) or
+    ``"user_reject"``."""
 
 
 @dataclass
@@ -271,6 +359,9 @@ class PermissionResultDeny:
     behavior: Literal["deny"] = "deny"
     message: str = ""
     interrupt: bool = False
+    decision_classification: PermissionDecisionClassification | None = None
+    """How the decision was made, for the CLI's records (see
+    :class:`PermissionResultAllow`)."""
 
 
 PermissionResult = PermissionResultAllow | PermissionResultDeny
@@ -2449,6 +2540,13 @@ class SDKControlPermissionRequest(TypedDict):
     permission_suggestions: list[dict[str, Any]] | None
     blocked_path: str | None
     decision_reason: NotRequired[str]
+    decision_reason_type: NotRequired[DecisionReasonType]
+    classifier_approvable: NotRequired[bool]
+    mcp_server: NotRequired[dict[str, Any]]
+    default_to_no: NotRequired[bool]
+    suppress_always_allow_rule: NotRequired[bool]
+    matched_ask_rule: NotRequired[dict[str, Any]]
+    requires_user_interaction: NotRequired[bool]
     title: NotRequired[str]
     display_name: NotRequired[str]
     description: NotRequired[str]

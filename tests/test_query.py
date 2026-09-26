@@ -107,6 +107,90 @@ def test_initialize_omits_forward_subagent_text_by_default():
     )
 
 
+def _run_control_request(method: str, *args, response: dict, **kwargs):
+    """Call ``Query.<method>`` against a stubbed control channel.
+
+    Returns ``(request_sent, value_returned)``.
+    """
+    sent: dict = {}
+    returned: list = []
+
+    async def _run():
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        async def fake_send(request, timeout=60.0):
+            sent.update(request)
+            return response
+
+        with patch.object(q, "_send_control_request", side_effect=fake_send):
+            returned.append(await getattr(q, method)(*args, **kwargs))
+
+    anyio.run(_run)
+    return sent, returned[0]
+
+
+class TestControlRequestOptionsAndResults:
+    """rewind_files, interrupt and get_context_usage pass their options through
+    and hand the CLI's response back instead of discarding it (#1299)."""
+
+    def test_rewind_files_returns_result_and_omits_dry_run_by_default(self):
+        result = {"canRewind": True, "filesChanged": ["a.txt"], "insertions": 3}
+        sent, returned = _run_control_request(
+            "rewind_files", "user-msg-1", response=result
+        )
+        assert sent == {"subtype": "rewind_files", "user_message_id": "user-msg-1"}
+        assert returned == result
+
+    def test_rewind_files_dry_run_is_sent(self):
+        sent, returned = _run_control_request(
+            "rewind_files",
+            "user-msg-1",
+            dry_run=True,
+            response={"canRewind": False, "error": "checkpointing is off"},
+        )
+        assert sent == {
+            "subtype": "rewind_files",
+            "user_message_id": "user-msg-1",
+            "dry_run": True,
+        }
+        assert returned["canRewind"] is False
+        assert returned["error"] == "checkpointing is off"
+
+    def test_interrupt_returns_receipt(self):
+        sent, returned = _run_control_request(
+            "interrupt", response={"still_queued": ["q-1", "q-2"]}
+        )
+        assert sent == {"subtype": "interrupt"}
+        assert returned == {"still_queued": ["q-1", "q-2"]}
+
+    def test_interrupt_from_older_cli_returns_empty_dict(self):
+        _, returned = _run_control_request("interrupt", response={})
+        assert returned == {}
+
+    def test_interrupt_cancel_queued_is_sent(self):
+        sent, returned = _run_control_request(
+            "interrupt",
+            cancel_queued=True,
+            response={"still_queued": [], "cancelled": ["q-1"]},
+        )
+        assert sent == {"subtype": "interrupt", "cancel_queued": True}
+        assert returned["cancelled"] == ["q-1"]
+
+    def test_get_context_usage_omits_detail_by_default(self):
+        sent, _ = _run_control_request("get_context_usage", response={})
+        assert sent == {"subtype": "get_context_usage"}
+
+    @pytest.mark.parametrize("detail", ["summary", "full"])
+    def test_get_context_usage_sends_detail(self, detail):
+        sent, returned = _run_control_request(
+            "get_context_usage", detail=detail, response={"totalTokens": 12}
+        )
+        assert sent == {"subtype": "get_context_usage", "detail": detail}
+        assert returned == {"totalTokens": 12}
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_forward_subagent_text_option_reaches_initialize(enabled):
     """ClaudeAgentOptions.forward_subagent_text is plumbed through query()."""

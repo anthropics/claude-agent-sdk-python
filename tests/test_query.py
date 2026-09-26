@@ -2660,3 +2660,19 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+def test_initialize_registers_hooks_for_newer_events():
+    """Events added to HookEvent beyond the original ten reach the CLI's initialize."""
+
+    async def hook(input_data, tool_use_id, context):
+        return {}
+
+    sent = _capture_initialize_request(
+        hooks={
+            "SessionStart": [{"matcher": None, "hooks": [hook]}],
+            "PostToolBatch": [{"matcher": None, "hooks": [hook]}],
+        }
+    )
+    assert set(sent["hooks"]) == {"SessionStart", "PostToolBatch"}
+    assert sent["hooks"]["PostToolBatch"][0]["hookCallbackIds"] == ["hook_1"]

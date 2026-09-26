@@ -1,4 +1,4 @@
-"""Tests for tool permission callbacks and hook callbacks."""
+"""Tests for tool permission, elicitation, user dialog and hook callbacks."""
 
 import json
 from typing import Any
@@ -7,6 +7,9 @@ import pytest
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
+    ElicitationContext,
+    ElicitationRequest,
+    ElicitationResult,
     HookContext,
     HookInput,
     HookJSONOutput,
@@ -14,6 +17,9 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     PermissionResultDeny,
     ToolPermissionContext,
+    UserDialogContext,
+    UserDialogRequest,
+    UserDialogResult,
 )
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.transport import Transport
@@ -386,6 +392,330 @@ class TestToolPermissionCallbacks:
         response = transport.written_messages[0]
         assert '"subtype": "error"' in response
         assert "Callback error" in response
+
+
+def _single_response(transport: MockTransport) -> dict[str, Any]:
+    """Return the one control response the SDK wrote."""
+    assert len(transport.written_messages) == 1
+    return json.loads(transport.written_messages[0])["response"]
+
+
+class TestElicitationCallbacks:
+    """Test MCP elicitation callback functionality."""
+
+    @staticmethod
+    def _request(**fields: Any) -> dict[str, Any]:
+        return {
+            "type": "control_request",
+            "request_id": "elicit-1",
+            "request": {
+                "subtype": "elicitation",
+                "mcp_server_name": "my-server",
+                "message": "Pick a name",
+                **fields,
+            },
+        }
+
+    @staticmethod
+    def _query(transport: MockTransport, on_elicitation: Any = None) -> Query:
+        return Query(
+            transport=transport, is_streaming_mode=True, on_elicitation=on_elicitation
+        )
+
+    @pytest.mark.anyio
+    async def test_form_elicitation_accept_with_content(self):
+        """Test form request fields reach the callback and content is returned."""
+        calls: list[tuple[ElicitationRequest, ElicitationContext]] = []
+
+        async def on_elicitation(
+            request: ElicitationRequest, context: ElicitationContext
+        ) -> ElicitationResult:
+            calls.append((request, context))
+            return ElicitationResult(action="accept", content={"name": "Test"})
+
+        transport = MockTransport()
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        await self._query(transport, on_elicitation)._handle_control_request(
+            self._request(
+                mode="form",
+                requested_schema=schema,
+                title="Name your project",
+                display_name="Projects",
+                description="Used as the folder name",
+            )
+        )
+
+        assert calls == [
+            (
+                ElicitationRequest(
+                    server_name="my-server",
+                    message="Pick a name",
+                    mode="form",
+                    requested_schema=schema,
+                    title="Name your project",
+                    display_name="Projects",
+                    description="Used as the folder name",
+                ),
+                ElicitationContext(request_id="elicit-1"),
+            )
+        ]
+        assert _single_response(transport) == {
+            "subtype": "success",
+            "request_id": "elicit-1",
+            "response": {"action": "accept", "content": {"name": "Test"}},
+        }
+
+    @pytest.mark.anyio
+    async def test_url_elicitation_accept_without_content(self):
+        """Test URL request fields reach the callback and no content is sent."""
+        received: list[ElicitationRequest] = []
+
+        async def on_elicitation(
+            request: ElicitationRequest, context: ElicitationContext
+        ) -> ElicitationResult:
+            received.append(request)
+            return ElicitationResult(action="accept")
+
+        transport = MockTransport()
+        await self._query(transport, on_elicitation)._handle_control_request(
+            self._request(
+                mode="url", url="https://example.com/auth", elicitation_id="el-1"
+            )
+        )
+
+        assert received == [
+            ElicitationRequest(
+                server_name="my-server",
+                message="Pick a name",
+                mode="url",
+                url="https://example.com/auth",
+                elicitation_id="el-1",
+            )
+        ]
+        assert _single_response(transport)["response"] == {"action": "accept"}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("action", ["decline", "cancel"])
+    async def test_decline_and_cancel_are_forwarded(self, action):
+        """Test decline and cancel answers are sent as returned."""
+
+        async def on_elicitation(
+            request: ElicitationRequest, context: ElicitationContext
+        ) -> ElicitationResult:
+            return ElicitationResult(action=action)
+
+        transport = MockTransport()
+        await self._query(transport, on_elicitation)._handle_control_request(
+            self._request()
+        )
+
+        assert _single_response(transport)["response"] == {"action": action}
+
+    @pytest.mark.anyio
+    async def test_declines_without_callback(self):
+        """Test that no callback declines, as the TypeScript SDK does."""
+        transport = MockTransport()
+        await self._query(transport)._handle_control_request(self._request())
+
+        assert _single_response(transport) == {
+            "subtype": "success",
+            "request_id": "elicit-1",
+            "response": {"action": "decline"},
+        }
+
+    @pytest.mark.anyio
+    async def test_missing_required_fields_sends_clear_error(self):
+        """Test a request without mcp_server_name or message is rejected by
+        name, e.g. the nested shape in the #1296 repro."""
+
+        async def on_elicitation(
+            request: ElicitationRequest, context: ElicitationContext
+        ) -> ElicitationResult:
+            raise AssertionError("callback must not run")
+
+        transport = MockTransport()
+        await self._query(transport, on_elicitation)._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "x",
+                "request": {
+                    "subtype": "elicitation",
+                    "elicitation": {"message": "pick one"},
+                },
+            }
+        )
+
+        assert _single_response(transport) == {
+            "subtype": "error",
+            "request_id": "x",
+            "error": "Missing mcp_server_name or message for elicitation request",
+        }
+
+    @pytest.mark.anyio
+    async def test_callback_exception_sends_error(self):
+        """Test that callback exceptions are sent as error responses."""
+
+        async def on_elicitation(
+            request: ElicitationRequest, context: ElicitationContext
+        ) -> ElicitationResult:
+            raise ValueError("elicitation failed")
+
+        transport = MockTransport()
+        await self._query(transport, on_elicitation)._handle_control_request(
+            self._request()
+        )
+
+        response = _single_response(transport)
+        assert response["subtype"] == "error"
+        assert "elicitation failed" in response["error"]
+
+    @pytest.mark.anyio
+    async def test_wrong_return_type_sends_error(self):
+        """Test that a non-ElicitationResult return is rejected."""
+
+        async def on_elicitation(request, context):
+            return {"action": "accept"}
+
+        transport = MockTransport()
+        await self._query(transport, on_elicitation)._handle_control_request(
+            self._request()
+        )
+
+        response = _single_response(transport)
+        assert response["subtype"] == "error"
+        assert "must return ElicitationResult" in response["error"]
+
+
+class TestUserDialogCallbacks:
+    """Test user dialog callback functionality."""
+
+    @staticmethod
+    def _request(**fields: Any) -> dict[str, Any]:
+        return {
+            "type": "control_request",
+            "request_id": "dialog-1",
+            "request": {
+                "subtype": "request_user_dialog",
+                "dialog_kind": "refusal_fallback_prompt",
+                "payload": {"model": "fallback-model"},
+                **fields,
+            },
+        }
+
+    @staticmethod
+    def _query(transport: MockTransport, on_user_dialog: Any = None) -> Query:
+        return Query(
+            transport=transport, is_streaming_mode=True, on_user_dialog=on_user_dialog
+        )
+
+    @pytest.mark.anyio
+    async def test_completed_dialog_returns_result(self):
+        """Test request fields reach the callback and the result is returned."""
+        calls: list[tuple[UserDialogRequest, UserDialogContext]] = []
+
+        async def on_user_dialog(
+            request: UserDialogRequest, context: UserDialogContext
+        ) -> UserDialogResult:
+            calls.append((request, context))
+            return UserDialogResult(behavior="completed", result={"choice": "retry"})
+
+        transport = MockTransport()
+        await self._query(transport, on_user_dialog)._handle_control_request(
+            self._request(tool_use_id="toolu_1")
+        )
+
+        assert calls == [
+            (
+                UserDialogRequest(
+                    dialog_kind="refusal_fallback_prompt",
+                    payload={"model": "fallback-model"},
+                    tool_use_id="toolu_1",
+                ),
+                UserDialogContext(request_id="dialog-1"),
+            )
+        ]
+        assert _single_response(transport) == {
+            "subtype": "success",
+            "request_id": "dialog-1",
+            "response": {"behavior": "completed", "result": {"choice": "retry"}},
+        }
+
+    @pytest.mark.anyio
+    async def test_cancelled_dialog_sends_no_result(self):
+        """Test a cancelled answer is sent without a result field."""
+
+        async def on_user_dialog(
+            request: UserDialogRequest, context: UserDialogContext
+        ) -> UserDialogResult:
+            return UserDialogResult(behavior="cancelled", result="ignored")
+
+        transport = MockTransport()
+        await self._query(transport, on_user_dialog)._handle_control_request(
+            self._request()
+        )
+
+        assert _single_response(transport)["response"] == {"behavior": "cancelled"}
+
+    @pytest.mark.anyio
+    async def test_no_callback_sends_nothing(self):
+        """Test that no callback leaves the dialog unanswered, as the
+        TypeScript SDK does."""
+        transport = MockTransport()
+        await self._query(transport)._handle_control_request(self._request())
+
+        assert transport.written_messages == []
+
+    @pytest.mark.anyio
+    async def test_missing_dialog_kind_sends_clear_error(self):
+        """Test a request without dialog_kind is rejected by name."""
+
+        async def on_user_dialog(
+            request: UserDialogRequest, context: UserDialogContext
+        ) -> UserDialogResult:
+            raise AssertionError("callback must not run")
+
+        transport = MockTransport()
+        request = self._request()
+        del request["request"]["dialog_kind"]
+        await self._query(transport, on_user_dialog)._handle_control_request(request)
+
+        assert _single_response(transport)["error"] == (
+            "Missing dialog_kind for user dialog request"
+        )
+
+    @pytest.mark.anyio
+    async def test_callback_exception_sends_error(self):
+        """Test that callback exceptions are sent as error responses."""
+
+        async def on_user_dialog(
+            request: UserDialogRequest, context: UserDialogContext
+        ) -> UserDialogResult:
+            raise ValueError("dialog failed")
+
+        transport = MockTransport()
+        await self._query(transport, on_user_dialog)._handle_control_request(
+            self._request()
+        )
+
+        response = _single_response(transport)
+        assert response["subtype"] == "error"
+        assert "dialog failed" in response["error"]
+
+    @pytest.mark.anyio
+    async def test_wrong_return_type_sends_error(self):
+        """Test that a non-UserDialogResult return is rejected."""
+
+        async def on_user_dialog(request, context):
+            return {"behavior": "cancelled"}
+
+        transport = MockTransport()
+        await self._query(transport, on_user_dialog)._handle_control_request(
+            self._request()
+        )
+
+        response = _single_response(transport)
+        assert response["subtype"] == "error"
+        assert "must return UserDialogResult" in response["error"]
 
 
 class TestHookCallbacks:

@@ -280,6 +280,116 @@ CanUseTool = Callable[
 ]
 
 
+# Elicitation callback types
+@dataclass
+class ElicitationRequest:
+    """An MCP server's request for user input, passed to ``on_elicitation``.
+
+    Mirrors the TypeScript SDK's ``ElicitationRequest``.
+    """
+
+    server_name: str
+    """Name of the MCP server requesting input."""
+    message: str
+    """Message to display to the user."""
+    mode: Literal["form", "url"] | None = None
+    """``"form"`` for structured input, ``"url"`` for browser-based auth."""
+    url: str | None = None
+    """URL to open (``"url"`` mode only)."""
+    elicitation_id: str | None = None
+    """Links a URL elicitation to its completion notice (``"url"`` mode only)."""
+    requested_schema: dict[str, Any] | None = None
+    """JSON Schema for the requested input (``"form"`` mode only)."""
+    title: str | None = None
+    """Prompt header from the server's permission-display metadata."""
+    display_name: str | None = None
+    """Short tool or server label from the server's permission-display metadata."""
+    description: str | None = None
+    """Subtitle from the server's permission-display metadata."""
+
+
+@dataclass
+class ElicitationResult:
+    """The user's answer to an elicitation request.
+
+    ``action`` is ``"accept"``, ``"decline"`` or ``"cancel"``. On ``"accept"``
+    in ``"form"`` mode, ``content`` holds the values for ``requested_schema``;
+    it is only meaningful with ``"accept"``.
+    """
+
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, Any] | None = None
+
+
+@dataclass
+class ElicitationContext:
+    """Context information for elicitation callbacks."""
+
+    signal: Any | None = None
+    """Reserved for future abort signal support. Currently always None."""
+    request_id: str | None = None
+    """ID of the control request carrying this elicitation.
+
+    Always set when delivered to the callback; the ``Optional`` is only for
+    dataclass field-ordering compatibility."""
+
+
+OnElicitation = Callable[
+    [ElicitationRequest, ElicitationContext], Awaitable[ElicitationResult]
+]
+
+
+# User dialog callback types
+@dataclass
+class UserDialogRequest:
+    """A blocking dialog the CLI asks the host to render, passed to
+    ``on_user_dialog``.
+
+    Mirrors the TypeScript SDK's ``UserDialogRequest``.
+    """
+
+    dialog_kind: str
+    """Which dialog to render. The CLI only sends kinds listed in
+    ``supported_dialog_kinds``; if you cannot render one, answer
+    ``behavior="cancelled"`` and the CLI applies the dialog's default."""
+    payload: dict[str, Any]
+    """Dialog-specific data; its shape depends on ``dialog_kind``."""
+    tool_use_id: str | None = None
+    """The tool call the dialog belongs to, if any (the same ID
+    ``can_use_tool`` receives)."""
+
+
+@dataclass
+class UserDialogResult:
+    """The user's answer to a dialog.
+
+    ``"completed"`` requires the dialog's ``result``, whose shape depends on
+    the dialog kind. On ``"cancelled"``, ``result`` is ignored and the CLI
+    applies the dialog's default behavior.
+    """
+
+    behavior: Literal["completed", "cancelled"]
+    result: Any = None
+
+
+@dataclass
+class UserDialogContext:
+    """Context information for user dialog callbacks."""
+
+    signal: Any | None = None
+    """Reserved for future abort signal support. Currently always None."""
+    request_id: str | None = None
+    """ID of the control request carrying this dialog.
+
+    Always set when delivered to the callback; the ``Optional`` is only for
+    dataclass field-ordering compatibility."""
+
+
+OnUserDialog = Callable[
+    [UserDialogRequest, UserDialogContext], Awaitable[UserDialogResult]
+]
+
+
 ##### Hook types
 HookEvent = (
     Literal["PreToolUse"]
@@ -1923,6 +2033,25 @@ def _warn_if_can_use_tool_shadowed(options: "ClaudeAgentOptions") -> None:
         warnings.warn(message, CanUseToolShadowedWarning, stacklevel=2)
 
 
+def _validate_user_dialog_options(options: "ClaudeAgentOptions") -> None:
+    """Reject ``supported_dialog_kinds`` without an ``on_user_dialog`` handler.
+
+    Declared kinds with no handler would leave every dialog unanswered.
+    Mirrors the TypeScript SDK's option check.
+
+    Raises:
+        ValueError: If ``supported_dialog_kinds`` is non-empty and
+            ``on_user_dialog`` is not set.
+    """
+    if options.supported_dialog_kinds and not options.on_user_dialog:
+        raise ValueError(
+            "supported_dialog_kinds requires an on_user_dialog callback: "
+            "declaring dialog kinds without a handler would leave those "
+            "dialogs unanswered. Provide on_user_dialog, or omit "
+            "supported_dialog_kinds."
+        )
+
+
 def _configure_can_use_tool(options: "ClaudeAgentOptions") -> "ClaudeAgentOptions":
     """Validate ``can_use_tool`` and route permission prompts over stdio.
 
@@ -2171,6 +2300,49 @@ class ClaudeAgentOptions:
     To observe or gate *every* tool call regardless of permission rules, use a
     ``PreToolUse`` hook via ``hooks`` instead — but note that a ``PreToolUse``
     hook returning an *allow* decision also skips this callback.
+    """
+
+    on_elicitation: OnElicitation | None = None
+    """Handler for MCP elicitation requests.
+
+    Called when an MCP server asks the user for input: a form to fill in
+    (``mode="form"``) or a URL to open, e.g. for browser-based auth
+    (``mode="url"``). Called only when no ``Elicitation`` hook answers the
+    request first. Return an :class:`ElicitationResult`. Without a handler,
+    elicitations are declined.
+
+    Elicitations from in-process SDK MCP servers (``create_sdk_mcp_server``)
+    are not forwarded yet and never reach this callback.
+    """
+
+    on_user_dialog: OnUserDialog | None = None
+    """Handler for blocking dialogs the CLI asks the host to render.
+
+    Only dialog kinds listed in ``supported_dialog_kinds`` are sent, so set
+    both. Return a :class:`UserDialogResult`. If the callback raises, the CLI
+    discards the error and the dialog stays open until its deadline, so
+    prefer returning ``behavior="cancelled"`` on failure.
+    """
+
+    supported_dialog_kinds: list[str] | None = None
+    """Dialog kinds ``on_user_dialog`` can render (e.g.
+    ``"refusal_fallback_prompt"``), declared to the CLI at startup.
+
+    The CLI only sends dialogs of a declared kind; any other dialog falls back
+    to its no-dialog behavior. Requires ``on_user_dialog``. Matches the
+    TypeScript SDK's ``supportedDialogKinds``.
+    """
+
+    per_task_stop_affordance: bool = False
+    """Declare that the host lets the user stop background tasks one at a time
+    with :meth:`ClaudeSDKClient.stop_task`.
+
+    When true, :meth:`ClaudeSDKClient.interrupt` only aborts the current turn
+    and running background tasks keep going. When false (the default), an
+    interrupt also kills them, so a runaway task cannot outlive it. Only
+    meaningful with ``ClaudeSDKClient``: ``query()`` closes stdin when the run
+    ends, so background tasks are killed then either way. Matches the
+    TypeScript SDK's ``perTaskStopAffordance``.
     """
 
     hooks: dict[HookEvent, list[HookMatcher]] | None = None
@@ -2464,6 +2636,8 @@ class SDKControlInitializeRequest(TypedDict):
     systemPromptSnapshot: NotRequired[bool]
     skills: NotRequired[list[str]]
     forwardSubagentText: NotRequired[bool]
+    supportedDialogKinds: NotRequired[list[str]]
+    perTaskStopAffordance: NotRequired[bool]
 
 
 class SDKControlSetPermissionModeRequest(TypedDict):
@@ -2511,6 +2685,26 @@ class SDKControlStopTaskRequest(TypedDict):
     task_id: str
 
 
+class SDKControlRequestUserDialogRequest(TypedDict):
+    subtype: Literal["request_user_dialog"]
+    dialog_kind: str
+    payload: dict[str, Any]
+    tool_use_id: NotRequired[str]
+
+
+class SDKControlElicitationRequest(TypedDict):
+    subtype: Literal["elicitation"]
+    mcp_server_name: str
+    message: str
+    mode: NotRequired[Literal["form", "url"]]
+    url: NotRequired[str]
+    elicitation_id: NotRequired[str]
+    requested_schema: NotRequired[dict[str, Any]]
+    title: NotRequired[str]
+    display_name: NotRequired[str]
+    description: NotRequired[str]
+
+
 class SDKControlRequest(TypedDict):
     type: Literal["control_request"]
     request_id: str
@@ -2525,6 +2719,8 @@ class SDKControlRequest(TypedDict):
         | SDKControlMcpReconnectRequest
         | SDKControlMcpToggleRequest
         | SDKControlStopTaskRequest
+        | SDKControlElicitationRequest
+        | SDKControlRequestUserDialogRequest
     )
 
 

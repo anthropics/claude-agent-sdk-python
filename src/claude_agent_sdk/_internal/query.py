@@ -738,7 +738,6 @@ class Query:
                 await event.wait()
 
             result = self.pending_control_results.pop(request_id)
-            self.pending_control_responses.pop(request_id, None)
 
             if isinstance(result, Exception):
                 raise result
@@ -746,9 +745,14 @@ class Query:
             response_data = result.get("response", {})
             return response_data if isinstance(response_data, dict) else {}
         except TimeoutError as e:
+            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+        finally:
+            # Every exit has to release the slot. A host that bounds this call
+            # with asyncio.wait_for or anyio.move_on_after leaves through
+            # cancellation, and the reader would otherwise keep routing a late
+            # response into pending_control_results for a waiter that is gone.
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

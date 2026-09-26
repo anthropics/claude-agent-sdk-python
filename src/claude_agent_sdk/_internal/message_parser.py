@@ -5,7 +5,10 @@ from typing import Any, cast
 
 from .._errors import MessageParseError
 from ..types import (
+    ActiveGoal,
+    ActiveGoalMessage,
     AssistantMessage,
+    AuthStatusMessage,
     ContentBlock,
     ConversationResetMessage,
     DeferredToolUse,
@@ -13,6 +16,7 @@ from ..types import (
     Message,
     MessageOrigin,
     MirrorErrorMessage,
+    PromptSuggestionMessage,
     RateLimitEvent,
     RateLimitInfo,
     ResultMessage,
@@ -26,8 +30,10 @@ from ..types import (
     TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
+    ToolProgressMessage,
     ToolResultBlock,
     ToolUseBlock,
+    ToolUseSummaryMessage,
     UserMessage,
 )
 
@@ -386,6 +392,87 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in conversation_reset message: {e}",
                     data,
+                ) from e
+
+        case "tool_progress":
+            try:
+                return ToolProgressMessage(
+                    tool_use_id=data["tool_use_id"],
+                    tool_name=data["tool_name"],
+                    parent_tool_use_id=data.get("parent_tool_use_id"),
+                    elapsed_time_seconds=data["elapsed_time_seconds"],
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                    task_id=data.get("task_id"),
+                    heartbeat=data.get("heartbeat"),
+                    subagent_type=data.get("subagent_type"),
+                    subagent_retry=data.get("subagent_retry"),
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in tool_progress message: {e}", data
+                ) from e
+
+        case "tool_use_summary":
+            try:
+                return ToolUseSummaryMessage(
+                    summary=data["summary"],
+                    preceding_tool_use_ids=list(data["preceding_tool_use_ids"]),
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in tool_use_summary message: {e}", data
+                ) from e
+
+        case "auth_status":
+            try:
+                return AuthStatusMessage(
+                    is_authenticating=data["isAuthenticating"],
+                    output=list(data.get("output") or []),
+                    error=data.get("error"),
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in auth_status message: {e}", data
+                ) from e
+
+        case "active_goal":
+            try:
+                goal = data["value"]
+                return ActiveGoalMessage(
+                    value=(
+                        ActiveGoal(
+                            condition=goal["condition"],
+                            iterations=goal["iterations"],
+                            set_at=goal["set_at"],
+                            tokens_at_start=goal["tokens_at_start"],
+                            last_reason=goal.get("last_reason"),
+                        )
+                        if goal is not None
+                        else None
+                    ),
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in active_goal message: {e}", data
+                ) from e
+
+        case "prompt_suggestion":
+            try:
+                return PromptSuggestionMessage(
+                    suggestion=data["suggestion"],
+                    uuid=data["uuid"],
+                    session_id=data["session_id"],
+                )
+            except KeyError as e:
+                raise MessageParseError(
+                    f"Missing required field in prompt_suggestion message: {e}", data
                 ) from e
 
         case _:

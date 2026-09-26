@@ -785,13 +785,36 @@ class Query:
         """Get current MCP server connection status."""
         return await self._send_control_request({"subtype": "mcp_status"})
 
-    async def get_context_usage(self) -> dict[str, Any]:
-        """Get a breakdown of current context window usage by category."""
-        return await self._send_control_request({"subtype": "get_context_usage"})
+    async def get_context_usage(
+        self, *, detail: Literal["summary", "full"] | None = None
+    ) -> dict[str, Any]:
+        """Get a breakdown of current context window usage by category.
 
-    async def interrupt(self) -> None:
-        """Send interrupt control request."""
-        await self._send_control_request({"subtype": "interrupt"})
+        Args:
+            detail: ``"full"`` counts each category with the token-count API;
+                ``"summary"`` answers from the last response's usage and local
+                estimates. ``None`` leaves the choice to the CLI (``"full"``).
+        """
+        request: dict[str, Any] = {"subtype": "get_context_usage"}
+        if detail is not None:
+            request["detail"] = detail
+        return await self._send_control_request(request)
+
+    async def interrupt(self, *, cancel_queued: bool = False) -> dict[str, Any]:
+        """Send interrupt control request and return the CLI's receipt.
+
+        Args:
+            cancel_queued: Also cancel queued async user messages instead of
+                letting them run after the interrupted turn.
+
+        Returns:
+            The interrupt receipt (``still_queued`` and, when ``cancel_queued``
+            was set, ``cancelled`` uuids). Older CLIs answer with an empty dict.
+        """
+        request: dict[str, Any] = {"subtype": "interrupt"}
+        if cancel_queued:
+            request["cancel_queued"] = True
+        return await self._send_control_request(request)
 
     async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode."""
@@ -811,20 +834,28 @@ class Query:
             }
         )
 
-    async def rewind_files(self, user_message_id: str) -> None:
+    async def rewind_files(
+        self, user_message_id: str, *, dry_run: bool = False
+    ) -> dict[str, Any]:
         """Rewind tracked files to their state at a specific user message.
 
         Requires file checkpointing to be enabled via the `enable_file_checkpointing` option.
 
         Args:
             user_message_id: UUID of the user message to rewind to
+            dry_run: Report what would change without touching any file
+
+        Returns:
+            The CLI's result: ``canRewind`` plus, when known, ``error``,
+            ``filesChanged``, ``insertions``, ``deletions`` and ``skippedLinks``.
         """
-        await self._send_control_request(
-            {
-                "subtype": "rewind_files",
-                "user_message_id": user_message_id,
-            }
-        )
+        request: dict[str, Any] = {
+            "subtype": "rewind_files",
+            "user_message_id": user_message_id,
+        }
+        if dry_run:
+            request["dry_run"] = True
+        return await self._send_control_request(request)
 
     async def reconnect_mcp_server(self, server_name: str) -> None:
         """Reconnect a disconnected or failed MCP server.

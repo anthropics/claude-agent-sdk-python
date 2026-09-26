@@ -852,6 +852,55 @@ class ContextUsageResponse(TypedDict):
     """Cumulative API usage for the session."""
 
 
+ContextUsageDetail = Literal["summary", "full"]
+"""How `ClaudeSDKClient.get_context_usage()` computes its numbers.
+
+``"full"`` counts each category with the token-count API; ``"summary"``
+answers from the last response's usage and local estimates without the
+per-category calls.
+"""
+
+
+class RewindFilesResult(TypedDict):
+    """Result of `ClaudeSDKClient.rewind_files()`."""
+
+    canRewind: bool
+    """Whether the rewind can be (or, for a real rewind, was) performed."""
+
+    error: NotRequired[str]
+    """Why the rewind is not possible, when ``canRewind`` is false."""
+
+    filesChanged: NotRequired[list[str]]
+    """Paths that differ between the checkpoint and the working tree."""
+
+    insertions: NotRequired[int]
+    """Lines the rewind adds back."""
+
+    deletions: NotRequired[int]
+    """Lines the rewind removes."""
+
+    skippedLinks: NotRequired[int]
+    """Tracked files a real rewind refused to touch because a symlink, hard
+    link or other non-regular file was found at the tracked path. Never set
+    on a dry run."""
+
+
+class InterruptResponse(TypedDict):
+    """Receipt returned by `ClaudeSDKClient.interrupt()`.
+
+    Older CLIs answer an interrupt with an empty response, so both keys may be
+    absent.
+    """
+
+    still_queued: NotRequired[list[str]]
+    """UUIDs of queued async user messages that survive the interrupt and
+    will still run unless cancelled first."""
+
+    cancelled: NotRequired[list[str]]
+    """UUIDs of queued messages this interrupt cancelled. Only present when
+    the request set ``cancel_queued=True``."""
+
+
 class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 

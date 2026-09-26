@@ -431,12 +431,13 @@ class TestHookInputTypes:
                     "tool_name": "Bash",
                     "tool_input": {"command": "cat notes.txt"},
                     "tool_use_id": "toolu_01",
-                    "tool_response": {"stdout": "one\n"},
+                    "tool_response": "one",
                 },
                 {
                     "tool_name": "Read",
                     "tool_input": {"file_path": "/tmp/notes.txt"},
                     "tool_use_id": "toolu_02",
+                    "tool_response": "1\tone\n",
                 },
             ],
         }
@@ -461,64 +462,56 @@ class TestHookInputTypes:
         }
         assert hook_input["source"] == "sdk"
 
-
-# HOOK_EVENTS from the TypeScript SDK (@anthropic-ai/claude-agent-sdk 0.3.283).
-TS_HOOK_EVENTS = {
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PostToolBatch",
-    "Notification",
-    "UserPromptSubmit",
-    "UserPromptExpansion",
-    "SessionStart",
-    "SessionEnd",
-    "Stop",
-    "StopFailure",
-    "SubagentStart",
-    "SubagentStop",
-    "PreCompact",
-    "PostCompact",
-    "PreModelSwitch",
-    "PostModelSwitch",
-    "PermissionRequest",
-    "PermissionDenied",
-    "Setup",
-    "TeammateIdle",
-    "TaskCreated",
-    "TaskCompleted",
-    "Elicitation",
-    "ElicitationResult",
-    "ConfigChange",
-    "WorktreeCreate",
-    "WorktreeRemove",
-    "InstructionsLoaded",
-    "CwdChanged",
-    "FileChanged",
-    "DirectoryAdded",
-    "MessageDisplay",
-}
-
-
-def _hook_event_names() -> set[str]:
-    return {name for lit in get_args(HookEvent) for name in get_args(lit)}
-
-
-class TestHookEventCoverage:
-    """HookEvent and HookInput must cover every event the CLI can fire."""
-
     def test_hook_event_matches_typescript_sdk(self):
-        """Test HookEvent names the same events as the TypeScript SDK."""
-        assert _hook_event_names() == TS_HOOK_EVENTS
+        """Test HookEvent names every event in the TypeScript SDK's HOOK_EVENTS."""
+        # From @anthropic-ai/claude-agent-sdk 0.3.283.
+        ts_hook_events = {
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PostToolBatch",
+            "Notification",
+            "UserPromptSubmit",
+            "UserPromptExpansion",
+            "SessionStart",
+            "SessionEnd",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "PreCompact",
+            "PostCompact",
+            "PreModelSwitch",
+            "PostModelSwitch",
+            "PermissionRequest",
+            "PermissionDenied",
+            "Setup",
+            "TeammateIdle",
+            "TaskCreated",
+            "TaskCompleted",
+            "Elicitation",
+            "ElicitationResult",
+            "ConfigChange",
+            "WorktreeCreate",
+            "WorktreeRemove",
+            "InstructionsLoaded",
+            "CwdChanged",
+            "FileChanged",
+            "DirectoryAdded",
+            "MessageDisplay",
+        }
+        events = {name for lit in get_args(HookEvent) for name in get_args(lit)}
+        assert events == ts_hook_events
 
     def test_every_hook_event_has_one_input_type(self):
         """Test each HookEvent has exactly one input type in HookInput."""
+        events = [name for lit in get_args(HookEvent) for name in get_args(lit)]
         input_events = [
             name
             for cls in get_args(HookInput)
             for name in get_args(get_type_hints(cls)["hook_event_name"])
         ]
-        assert sorted(input_events) == sorted(_hook_event_names())
+        assert sorted(input_events) == sorted(events)
 
 
 class TestHookSpecificOutputTypes:

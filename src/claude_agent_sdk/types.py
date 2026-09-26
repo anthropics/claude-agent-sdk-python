@@ -281,7 +281,7 @@ CanUseTool = Callable[
 
 
 ##### Hook types
-# Hook event names (matching the TypeScript SDK's HOOK_EVENTS)
+# Mirrors HOOK_EVENTS in the TypeScript SDK; keep in sync.
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]
@@ -472,10 +472,11 @@ class UserPromptExpansionHookInput(BaseHookInput):
 class SessionStartHookInput(BaseHookInput):
     """Input data for SessionStart hook events.
 
-    The CLI fires the ``source="startup"`` SessionStart before the SDK
-    registers its hook callbacks, so an SDK callback does not receive it;
-    it does receive SessionStart events later in the session, such as
-    ``source="compact"``. To run code at startup, run it before connecting.
+    As of CLI 2.1.283, SessionStart events fired while the CLI process starts
+    (``source`` of ``"startup"``, ``"resume"`` or ``"fork"``) run before the
+    SDK registers its hook callbacks, so SDK callbacks do not receive them.
+    Callbacks do receive SessionStart events fired later in the session, such
+    as ``source="compact"``. To run code at startup, run it before connecting.
     """
 
     hook_event_name: Literal["SessionStart"]
@@ -500,7 +501,8 @@ class StopFailureHookInput(BaseHookInput):
     """Input data for StopFailure hook events."""
 
     hook_event_name: Literal["StopFailure"]
-    error: "AssistantMessageError"
+    error: str
+    """Error category, e.g. ``"rate_limit"`` or ``"overloaded"``."""
     error_details: NotRequired[str]
     last_assistant_message: NotRequired[str]
 

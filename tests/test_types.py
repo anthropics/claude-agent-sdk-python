@@ -53,7 +53,40 @@ class TestPermissionUpdate:
             PermissionRuleValue(tool_name="Bash", rule_content="npm *"),
             PermissionRuleValue(tool_name="Read", rule_content=None),
         ]
-        assert update.to_dict() == wire
+        assert update.to_dict() == {
+            **wire,
+            "rules": [
+                {"toolName": "Bash", "ruleContent": "npm *"},
+                # A rule with no content goes out with the key absent.
+                {"toolName": "Read"},
+            ],
+        }
+
+    def test_to_dict_omits_rule_content_when_unset(self):
+        """A rule without content omits ruleContent instead of sending null.
+
+        The control protocol types a rule as {toolName: string,
+        ruleContent?: string}: null is not a string, and the CLI drops the
+        whole updatedPermissions array when a rule carries one.
+        """
+        update = PermissionUpdate(
+            type="addRules",
+            rules=[PermissionRuleValue(tool_name="WebSearch")],
+            behavior="allow",
+            destination="localSettings",
+        )
+        assert update.to_dict()["rules"] == [{"toolName": "WebSearch"}]
+
+        # A rule that arrived with an explicit null normalizes the same way.
+        from_null = PermissionUpdate.from_dict(
+            {
+                "type": "addRules",
+                "destination": "localSettings",
+                "behavior": "allow",
+                "rules": [{"toolName": "Read", "ruleContent": None}],
+            }
+        )
+        assert from_null.to_dict()["rules"] == [{"toolName": "Read"}]
 
     def test_from_dict_set_mode(self):
         wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}

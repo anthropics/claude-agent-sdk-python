@@ -332,9 +332,10 @@ class BaseHookInput(TypedDict):
 # agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
 # declared per-hook here because SubagentStartHookInput/SubagentStopHookInput
 # need them as *required*, and PEP 655 forbids narrowing NotRequired->Required
-# in a TypedDict subclass. The four tool-lifecycle types below are the only
-# ones the CLI actually populates (the other BaseHookInput consumers don't
-# have a toolUseContext in scope at their build site).
+# in a TypedDict subclass. The four tool-lifecycle types below and
+# PostToolBatchHookInput are the only ones the CLI actually populates (the
+# other BaseHookInput consumers don't have a toolUseContext in scope at their
+# build site).
 class _SubagentContextMixin(TypedDict, total=False):
     """Optional sub-agent attribution fields for tool-lifecycle hooks.
 
@@ -449,9 +450,14 @@ class PostToolBatchToolCall(TypedDict):
     tool_input: dict[str, Any]
     tool_use_id: str
     tool_response: NotRequired[Any]
+    """The tool result as sent to the model, e.g. a string for Bash and Read.
+
+    This can differ from ``PostToolUseHookInput.tool_response`` for the same
+    call, which carries the tool's structured output.
+    """
 
 
-class PostToolBatchHookInput(BaseHookInput):
+class PostToolBatchHookInput(BaseHookInput, _SubagentContextMixin):
     """Input data for PostToolBatch hook events."""
 
     hook_event_name: Literal["PostToolBatch"]

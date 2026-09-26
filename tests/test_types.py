@@ -437,7 +437,7 @@ class TestHookInputTypes:
                     "tool_name": "Read",
                     "tool_input": {"file_path": "/tmp/notes.txt"},
                     "tool_use_id": "toolu_02",
-                    "tool_response": "1\tone\n",
+                    "tool_response": "1\tone\n2\t",
                 },
             ],
         }

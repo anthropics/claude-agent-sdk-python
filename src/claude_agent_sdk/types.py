@@ -281,8 +281,7 @@ CanUseTool = Callable[
 
 
 ##### Hook types
-# Mirrors HOOK_EVENTS in the TypeScript SDK. Keep the two in sync: the CLI
-# accepts any event name at registration, so this Literal is the only check.
+# Hook event names (matching the TypeScript SDK's HOOK_EVENTS)
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]

@@ -407,7 +407,6 @@ class TestHookInputTypes:
         }
         assert len(hook_input["permission_suggestions"]) == 1
 
-    # Payloads below were captured from a live CLI (2.1.283) session.
     def test_session_start_hook_input(self):
         """Test SessionStartHookInput with a compaction-triggered payload."""
         hook_input: SessionStartHookInput = {
@@ -509,9 +508,11 @@ class TestHookEventCoverage:
     """HookEvent and HookInput must cover every event the CLI can fire."""
 
     def test_hook_event_matches_typescript_sdk(self):
+        """Test HookEvent names the same events as the TypeScript SDK."""
         assert _hook_event_names() == TS_HOOK_EVENTS
 
     def test_every_hook_event_has_one_input_type(self):
+        """Test each HookEvent has exactly one input type in HookInput."""
         input_events = [
             name
             for cls in get_args(HookInput)

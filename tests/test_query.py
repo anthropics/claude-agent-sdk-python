@@ -2663,7 +2663,7 @@ class TestProcessExitAfterErrorResult:
 
 
 def test_initialize_registers_hooks_for_newer_events():
-    """Events added to HookEvent beyond the original ten reach the CLI's initialize."""
+    """Query.initialize() includes hooks registered for SessionStart and PostToolBatch."""
 
     async def hook(input_data, tool_use_id, context):
         return {}

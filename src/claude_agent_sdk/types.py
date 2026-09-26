@@ -856,10 +856,18 @@ class SdkPluginConfig(TypedDict):
     """SDK plugin configuration.
 
     Currently only local plugins are supported via the 'local' type.
+
+    Attributes:
+        type: Plugin source type. Only ``"local"`` is supported.
+        path: Path to the plugin directory.
+        skipMcpDiscovery: When True, load the plugin without discovering the
+            MCP servers it declares (passed as ``--plugin-dir-no-mcp``). Use
+            this when the host already provides those MCP connections.
     """
 
     type: Literal["local"]
     path: str
+    skipMcpDiscovery: NotRequired[bool]
 
 
 # Sandbox configuration types

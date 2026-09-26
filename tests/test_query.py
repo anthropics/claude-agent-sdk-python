@@ -2045,6 +2045,70 @@ class TestQueryTrioBackend:
         self._run_buffered_drain_after_close("trio")
 
 
+class TestSendControlRequestCancellation:
+    """A cancelled control request must not keep its bookkeeping entry.
+
+    ``_send_control_request`` cleans up ``pending_control_responses`` and
+    ``pending_control_results`` on the success and timeout exits, but a host
+    that bounds the call with ``asyncio.wait_for`` or ``anyio.move_on_after``
+    leaves through cancellation instead. The entry then lives as long as the
+    Query, and a late response from the CLI is still routed into
+    ``pending_control_results`` for a waiter that is gone.
+    """
+
+    @pytest.mark.anyio
+    async def test_cancelled_request_releases_its_entry(self):
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+
+        with anyio.move_on_after(0.05):
+            await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+        assert query.pending_control_responses == {}
+        assert query.pending_control_results == {}
+
+    @pytest.mark.anyio
+    async def test_late_response_after_cancellation_is_not_recorded(self):
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+        sent_ids: list[str] = []
+
+        async def write(payload):
+            sent_ids.append(json.loads(payload)["request_id"])
+
+        query.transport.write = write
+
+        with anyio.move_on_after(0.05):
+            await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+        # The reader only records a control_response when the id is still
+        # pending, so releasing the slot is what drops a late answer.
+        request_id = sent_ids[0]
+        assert request_id not in query.pending_control_responses
+        assert query.pending_control_results == {}
+
+    @pytest.mark.anyio
+    async def test_successful_request_still_returns_its_response(self):
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+
+        async def write(payload):
+            request_id = json.loads(payload)["request_id"]
+            # Stand in for the read loop: record the result, then release the
+            # waiter.
+            query.pending_control_results[request_id] = {
+                "request_id": request_id,
+                "subtype": "success",
+                "response": {"model": "claude-test"},
+            }
+            query.pending_control_responses[request_id].set()
+
+        query.transport.write = write
+
+        result = await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+        assert result == {"model": "claude-test"}
+        assert query.pending_control_responses == {}
+        assert query.pending_control_results == {}
+
+
 class TestControlCancelRequest:
     """Tests for control_cancel_request handling (issue #739).
 

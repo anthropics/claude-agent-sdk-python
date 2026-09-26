@@ -1436,6 +1436,127 @@ class RateLimitEvent:
 
 
 @dataclass
+class ToolProgressMessage:
+    """Periodic progress for a tool call that is still running.
+
+    The CLI emits one of these every few seconds while a tool (typically a
+    sub-agent spawned by ``Task``) runs, so a host can show elapsed time or
+    detect a stalled call before its result arrives.
+
+    Attributes:
+        tool_use_id: ID of the ``tool_use`` block the progress belongs to.
+        tool_name: Name of the running tool.
+        parent_tool_use_id: ID of the enclosing sub-agent's ``tool_use`` block,
+            or ``None`` on the main thread.
+        elapsed_time_seconds: Seconds since the tool call started.
+        uuid: Unique ID of this message.
+        session_id: Session the message belongs to.
+        task_id: Background task ID when the tool runs as a task.
+        heartbeat: ``True`` when the frame is a bare liveness heartbeat.
+        subagent_type: Agent type of the running sub-agent, if any.
+        subagent_retry: Retry state when a sub-agent's API call is being
+            retried (``agent_id``, ``attempt``, ``max_retries``,
+            ``retry_delay_ms``, ``error_status``, ``error_category``).
+    """
+
+    tool_use_id: str
+    tool_name: str
+    parent_tool_use_id: str | None
+    elapsed_time_seconds: float
+    uuid: str
+    session_id: str
+    task_id: str | None = None
+    heartbeat: bool | None = None
+    subagent_type: str | None = None
+    subagent_retry: dict[str, Any] | None = None
+
+
+@dataclass
+class ToolUseSummaryMessage:
+    """A short model-written summary of a run of tool calls.
+
+    Attributes:
+        summary: The summary text.
+        preceding_tool_use_ids: IDs of the ``tool_use`` blocks it covers.
+        uuid: Unique ID of this message.
+        session_id: Session the message belongs to.
+    """
+
+    summary: str
+    preceding_tool_use_ids: list[str]
+    uuid: str
+    session_id: str
+
+
+@dataclass
+class AuthStatusMessage:
+    """Progress of an authentication flow the CLI is running.
+
+    Attributes:
+        is_authenticating: ``True`` while the flow is in progress.
+        output: Lines of output produced by the flow so far.
+        error: Error text if the flow failed.
+        uuid: Unique ID of this message.
+        session_id: Session the message belongs to.
+    """
+
+    is_authenticating: bool
+    output: list[str]
+    uuid: str
+    session_id: str
+    error: str | None = None
+
+
+@dataclass
+class ActiveGoal:
+    """The goal a session is currently iterating towards.
+
+    Attributes:
+        condition: The completion condition the model is working to satisfy.
+        iterations: Number of iterations spent on the goal so far.
+        set_at: Unix timestamp (ms) at which the goal was set.
+        tokens_at_start: Context token count when the goal was set.
+        last_reason: The model's most recent explanation for continuing.
+    """
+
+    condition: str
+    iterations: int
+    set_at: int
+    tokens_at_start: int
+    last_reason: str | None = None
+
+
+@dataclass
+class ActiveGoalMessage:
+    """Emitted when the session's active goal is set, updated or cleared.
+
+    Attributes:
+        value: The current goal, or ``None`` once it is cleared.
+        uuid: Unique ID of this message.
+        session_id: Session the message belongs to.
+    """
+
+    value: ActiveGoal | None
+    uuid: str
+    session_id: str
+
+
+@dataclass
+class PromptSuggestionMessage:
+    """A suggested next prompt the CLI offers after a turn.
+
+    Attributes:
+        suggestion: The suggested prompt text.
+        uuid: Unique ID of this message.
+        session_id: Session the message belongs to.
+    """
+
+    suggestion: str
+    uuid: str
+    session_id: str
+
+
+@dataclass
 class ConversationResetMessage:
     """Emitted when the session's conversation is replaced without ending the
     connection — e.g. after ``/clear`` or any other flow that discards the
@@ -1503,6 +1624,11 @@ Message = (
     | ResultMessage
     | StreamEvent
     | RateLimitEvent
+    | ToolProgressMessage
+    | ToolUseSummaryMessage
+    | AuthStatusMessage
+    | ActiveGoalMessage
+    | PromptSuggestionMessage
     | ConversationResetMessage
 )
 

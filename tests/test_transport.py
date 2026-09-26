@@ -3095,3 +3095,123 @@ class TestWindowsCmdMetacharacterRejection:
             cmd = transport._build_command()
         assert "--resume=title & % | notes" in cmd
         assert "--session-id=a>b" in cmd
+
+
+class TestBundledCLIOptOut:
+    """CLAUDE_AGENT_SDK_NO_BUNDLE makes CLI discovery skip the bundled binary.
+
+    The bundled copy is checked before PATH, so a `claude` the user installed
+    and manages themselves is silently shadowed. These pin the opt-out.
+    """
+
+    _WHICH = "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which"
+    _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
+    _ENV = "CLAUDE_AGENT_SDK_NO_BUNDLE"
+
+    def _transport(self) -> SubprocessCLITransport:
+        return SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+
+    def test_bundled_cli_still_wins_when_unset(self):
+        """Default precedence is unchanged: bundled beats PATH."""
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value="/bundled/claude",
+            ),
+            patch(self._WHICH, return_value="/usr/local/bin/claude"),
+        ):
+            os.environ.pop(self._ENV, None)
+            assert self._transport()._find_cli() == "/bundled/claude"
+
+    def test_opt_out_prefers_path_cli(self):
+        with (
+            patch.dict(os.environ, {self._ENV: "1"}),
+            patch(self._PLATFORM, return_value="Linux"),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value="/bundled/claude",
+            ),
+            patch(self._WHICH, return_value="/usr/local/bin/claude"),
+        ):
+            assert self._transport()._find_cli() == "/usr/local/bin/claude"
+
+    def test_opt_out_does_not_probe_the_bundle_at_all(self):
+        """Not just ignored -- never looked for, so a slim install is free."""
+        with (
+            patch.dict(os.environ, {self._ENV: "1"}),
+            patch(self._PLATFORM, return_value="Linux"),
+            patch.object(SubprocessCLITransport, "_find_bundled_cli") as find_bundled,
+            patch(self._WHICH, return_value="/usr/local/bin/claude"),
+        ):
+            self._transport()._find_cli()
+            find_bundled.assert_not_called()
+
+    def test_empty_value_is_not_an_opt_out(self):
+        """Matches CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK: non-empty enables it."""
+        with (
+            patch.dict(os.environ, {self._ENV: ""}),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value="/bundled/claude",
+            ),
+            patch(self._WHICH, return_value="/usr/local/bin/claude"),
+        ):
+            assert self._transport()._find_cli() == "/bundled/claude"
+
+    def test_opt_out_falls_through_to_known_locations(self):
+        """PATH is not the only fallback; the usual install sites still count."""
+        with (
+            patch.dict(os.environ, {self._ENV: "1"}),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value="/bundled/claude",
+            ),
+            patch(self._WHICH, return_value=None),
+            patch(self._PLATFORM, return_value="Linux"),
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_file", return_value=True),
+        ):
+            assert self._transport()._find_cli() != "/bundled/claude"
+
+    def test_not_found_message_explains_the_opt_out(self):
+        """Otherwise "not found" is baffling with a bundled binary right there."""
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        with (
+            patch.dict(os.environ, {self._ENV: "1"}),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value="/bundled/claude",
+            ),
+            patch(self._WHICH, return_value=None),
+            patch(self._PLATFORM, return_value="Linux"),
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(CLINotFoundError) as exc_info,
+        ):
+            self._transport()._find_cli()
+
+        assert self._ENV in str(exc_info.value)
+
+    def test_not_found_message_is_unchanged_without_the_opt_out(self):
+        from claude_agent_sdk._errors import CLINotFoundError
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(
+                SubprocessCLITransport, "_find_bundled_cli", return_value=None
+            ),
+            patch(self._WHICH, return_value=None),
+            patch(self._PLATFORM, return_value="Linux"),
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(CLINotFoundError) as exc_info,
+        ):
+            os.environ.pop(self._ENV, None)
+            self._transport()._find_cli()
+
+        assert self._ENV not in str(exc_info.value)

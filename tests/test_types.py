@@ -1,6 +1,6 @@
 """Tests for Claude SDK type definitions."""
 
-from typing import get_args
+from typing import get_args, get_type_hints
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -10,11 +10,16 @@ from claude_agent_sdk import (
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
+    PostToolBatchHookInput,
+    PreModelSwitchHookInput,
     ResultMessage,
+    SessionStartHookInput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    HookEvent,
+    HookInput,
     PermissionRuleValue,
     PermissionUpdate,
     PostToolUseHookSpecificOutput,
@@ -401,6 +406,112 @@ class TestHookInputTypes:
             "permission_suggestions": [{"type": "allow", "rule": "Bash(*)"}],
         }
         assert len(hook_input["permission_suggestions"]) == 1
+
+    def test_session_start_hook_input(self):
+        """Test SessionStartHookInput with a compaction-triggered payload."""
+        hook_input: SessionStartHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionStart",
+            "source": "compact",
+            "model": "claude-haiku-4-5",
+        }
+        assert hook_input["source"] == "compact"
+
+    def test_post_tool_batch_hook_input(self):
+        """Test PostToolBatchHookInput with its tool_calls list."""
+        hook_input: PostToolBatchHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PostToolBatch",
+            "tool_calls": [
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "cat notes.txt"},
+                    "tool_use_id": "toolu_01",
+                    "tool_response": "one",
+                },
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "/tmp/notes.txt"},
+                    "tool_use_id": "toolu_02",
+                    "tool_response": "1\tone\n2\t",
+                },
+            ],
+        }
+        assert [c["tool_name"] for c in hook_input["tool_calls"]] == ["Bash", "Read"]
+
+    def test_pre_model_switch_hook_input(self):
+        """Test PreModelSwitchHookInput from an SDK set_model() call."""
+        hook_input: PreModelSwitchHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PreModelSwitch",
+            "from_model": "claude-opus-5-5",
+            "to_model": "claude-haiku-4-5",
+            "requested_model": "claude-haiku-4-5",
+            "source": "sdk",
+            "context_tokens": 17985,
+            "prompt_cache_warm": True,
+            "cache_ttl": "5m",
+            "estimated_cache_write_usd": 0.0225,
+            "pricing": "catalog",
+        }
+        assert hook_input["source"] == "sdk"
+
+    def test_hook_event_matches_typescript_sdk(self):
+        """Test HookEvent names every event in the TypeScript SDK's HOOK_EVENTS."""
+        # From @anthropic-ai/claude-agent-sdk 0.3.283.
+        ts_hook_events = {
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PostToolBatch",
+            "Notification",
+            "UserPromptSubmit",
+            "UserPromptExpansion",
+            "SessionStart",
+            "SessionEnd",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "PreCompact",
+            "PostCompact",
+            "PreModelSwitch",
+            "PostModelSwitch",
+            "PermissionRequest",
+            "PermissionDenied",
+            "Setup",
+            "TeammateIdle",
+            "TaskCreated",
+            "TaskCompleted",
+            "Elicitation",
+            "ElicitationResult",
+            "ConfigChange",
+            "WorktreeCreate",
+            "WorktreeRemove",
+            "InstructionsLoaded",
+            "CwdChanged",
+            "FileChanged",
+            "DirectoryAdded",
+            "MessageDisplay",
+        }
+        events = {name for lit in get_args(HookEvent) for name in get_args(lit)}
+        assert events == ts_hook_events
+
+    def test_every_hook_event_has_one_input_type(self):
+        """Test each HookEvent has exactly one input type in HookInput."""
+        events = [name for lit in get_args(HookEvent) for name in get_args(lit)]
+        input_events = [
+            name
+            for cls in get_args(HookInput)
+            for name in get_args(get_type_hints(cls)["hook_event_name"])
+        ]
+        assert sorted(input_events) == sorted(events)
 
 
 class TestHookSpecificOutputTypes:

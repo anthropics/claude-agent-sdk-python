@@ -2696,6 +2696,56 @@ class TestControlChannelWriteFailures:
 
         anyio.run(_test)
 
+    def test_response_racing_a_failed_write_leaves_no_pending_result(self):
+        """The CLI answers before the write error reaches the cleanup.
+
+        The request bytes reached the CLI, its response came back and the
+        real read loop stored the result and set the event, and only then did
+        the write raise. The cleanup must drop the stored result as well as
+        the waiter slot, or it stays in pending_control_results for the life
+        of the Query.
+        """
+
+        async def _test():
+            responses: list[dict[str, Any]] = []
+
+            async def read_messages():
+                for message in responses:
+                    yield message
+
+            transport = AsyncMock()
+            transport.is_ready = Mock(return_value=True)
+            transport.read_messages = read_messages
+            q = Query(transport=transport, is_streaming_mode=True)
+
+            async def write_then_fail(data: str) -> None:
+                request_id = json.loads(data)["request_id"]
+                responses.append(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": request_id,
+                            "response": {},
+                        },
+                    }
+                )
+                # Let the read loop route the response before the write fails.
+                await q._read_messages()
+                assert request_id in q.pending_control_results
+                assert q.pending_control_responses[request_id].is_set()
+                raise CLIConnectionError("stdin closed after the write")
+
+            transport.write = AsyncMock(side_effect=write_then_fail)
+
+            with pytest.raises(CLIConnectionError):
+                await q.interrupt()
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+
+        anyio.run(_test)
+
     def test_success_response_write_failure_does_not_raise(self):
         """The callback ran; only its reply could not be delivered."""
 

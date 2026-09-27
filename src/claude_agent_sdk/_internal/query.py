@@ -758,13 +758,18 @@ class Query:
         try:
             await self.transport.write(json.dumps(control_request) + "\n")
         except BaseException:
-            # The request never reached the CLI, so no response can ever
-            # arrive for it. Drop the slot here: the write error already goes
-            # to the caller, and an entry left behind stays for the life of
-            # the Query (only the wait below and the read loop's failure path
-            # clean these up, and neither runs now). On a long-lived client
-            # a repeatedly failing interrupt() would grow both dicts.
+            # The write failed or was cancelled, so nobody will wait on this
+            # request. Drop its state here: the error already goes to the
+            # caller, and an entry left behind stays for the life of the Query
+            # (only the wait below and the read loop's failure path clean these
+            # up, and neither runs now). On a long-lived client a repeatedly
+            # failing interrupt() would grow both dicts.
+            #
+            # Clear the result as well as the slot. Some bytes may have reached
+            # the CLI before the failure, and if its response raced in before
+            # this handler ran, _read_messages has already stored a result.
             self.pending_control_responses.pop(request_id, None)
+            self.pending_control_results.pop(request_id, None)
             raise
 
         # Wait for response

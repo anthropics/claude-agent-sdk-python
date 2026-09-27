@@ -605,6 +605,19 @@ class Query:
                     title=permission_request.get("title"),
                     display_name=permission_request.get("display_name"),
                     description=permission_request.get("description"),
+                    mcp_server=permission_request.get("mcp_server"),
+                    default_to_no=permission_request.get("default_to_no"),
+                    suppress_always_allow_rule=permission_request.get(
+                        "suppress_always_allow_rule"
+                    ),
+                    matched_ask_rule=permission_request.get("matched_ask_rule"),
+                    decision_reason_type=permission_request.get("decision_reason_type"),
+                    classifier_approvable=permission_request.get(
+                        "classifier_approvable"
+                    ),
+                    requires_user_interaction=permission_request.get(
+                        "requires_user_interaction"
+                    ),
                 )
 
                 response = await self.can_use_tool(

@@ -352,6 +352,120 @@ class TestToolPermissionCallbacks:
         assert received_context.description == "rm -rf /tmp/x"
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("source", ["sdk", "project", "future-config-source", None])
+    async def test_permission_callback_can_decide_on_mcp_source(self, source):
+        """The same tool name can be trusted differently based on provenance."""
+        received_context = None
+
+        async def source_policy(tool_name, input_data, context):
+            nonlocal received_context
+            received_context = context
+            if context.mcp_server and context.mcp_server["source"] == "sdk":
+                return PermissionResultAllow()
+            return PermissionResultDeny(message="Only host-registered MCP servers")
+
+        transport = MockTransport()
+        query = Query(transport, True, can_use_tool=source_policy)
+        permission_request = {
+            "subtype": "can_use_tool",
+            "tool_name": "mcp__srv__read",
+            "input": {"path": "public.txt"},
+            "tool_use_id": "toolu_mcp",
+        }
+        if source is not None:
+            permission_request["mcp_server"] = {"name": "srv", "source": source}
+
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "mcp-source",
+                "request": permission_request,
+            }
+        )
+
+        assert received_context is not None
+        assert received_context.mcp_server == permission_request.get("mcp_server")
+        response = json.loads(transport.written_messages[0])["response"]
+        assert response["subtype"] == "success"
+        assert response["response"]["behavior"] == (
+            "allow" if source == "sdk" else "deny"
+        )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            (True, False, False, False),
+            (False, True, False, False),
+            (False, False, True, False),
+            (False, False, False, True),
+            (False, False, False, False),
+            None,
+        ],
+    )
+    async def test_permission_callback_receives_decision_metadata(self, flags):
+        """Optional metadata preserves both explicit false and older CLI omissions."""
+        received_context = None
+
+        async def capture_callback(tool_name, input_data, context):
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(transport, True, can_use_tool=capture_callback)
+        metadata = {}
+        if flags is not None:
+            metadata = {
+                "default_to_no": flags[0],
+                "suppress_always_allow_rule": flags[1],
+                "classifier_approvable": flags[2],
+                "requires_user_interaction": flags[3],
+                "decision_reason_type": "subcommandResults",
+                "matched_ask_rule": {
+                    "source": "projectSettings",
+                    "tool_name": "Bash",
+                    "rule_content": "git *",
+                },
+            }
+
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "decision-metadata",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "input": {"command": "git status"},
+                    "tool_use_id": "toolu_metadata",
+                    **metadata,
+                },
+            }
+        )
+
+        assert received_context is not None
+        assert received_context.default_to_no is metadata.get("default_to_no")
+        assert received_context.suppress_always_allow_rule is metadata.get(
+            "suppress_always_allow_rule"
+        )
+        assert received_context.classifier_approvable is metadata.get(
+            "classifier_approvable"
+        )
+        assert received_context.requires_user_interaction is metadata.get(
+            "requires_user_interaction"
+        )
+        assert received_context.decision_reason_type == metadata.get(
+            "decision_reason_type"
+        )
+        assert received_context.matched_ask_rule == metadata.get("matched_ask_rule")
+        response = json.loads(transport.written_messages[0])["response"]
+        assert response["subtype"] == "success"
+        assert response["response"] == {
+            "behavior": "allow",
+            "updatedInput": {"command": "git status"},
+        }
+
+    @pytest.mark.anyio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 

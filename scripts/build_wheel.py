@@ -19,8 +19,12 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import time
+import zipfile
+import zlib
 from pathlib import Path
 from typing import NoReturn
 
@@ -235,7 +239,231 @@ def retag_wheel(wheel_path: Path, platform_tag: str) -> Path:
         return wheel_path
 
 
-def build_wheel() -> None:
+RECOMPRESS_ENCODERS = ("zlib", "zopfli")
+
+# 5 iterations is the zopfli package's advice for files over several MB: more is too
+# slow. Up to 120 blocks per megabyte, not the default 15: each block gets its own
+# Huffman code, which suits a binary whose sections differ. Raising either slows the
+# build.
+ZOPFLI_OPTIONS = {"numiterations": 5, "blocksplittingmax": 120}
+
+# Zip record layouts, from PKWARE's APPNOTE.TXT sections 4.3.7, 4.3.12 and 4.3.16.
+_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
+_CENTRAL_HEADER = struct.Struct("<4s6H3L5H2L")
+_END_RECORD = struct.Struct("<4s4H2LH")
+
+
+def _fail_recompress(reason: str) -> NoReturn:
+    """Report a wheel that could not be recompressed and stop the build."""
+    print(f"Error: cannot recompress the wheel: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+def require_encoder(encoder: str) -> None:
+    """Stop the build if the encoder needs a package that is not installed."""
+    if encoder != "zopfli":
+        return
+    try:
+        import zopfli.zlib  # noqa: F401
+    except ImportError:
+        _fail_recompress(
+            "--recompress zopfli needs the zopfli package. Install it with: "
+            "pip install --require-hashes --only-binary :all: "
+            "-r scripts/requirements-recompress.txt"
+        )
+
+
+def _deflate(data: bytes, encoder: str) -> bytes:
+    """Return data as one raw deflate stream, the form a zip member holds."""
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    best = compressor.compress(data) + compressor.flush()
+    if encoder == "zopfli":
+        import zopfli.zlib
+
+        # zopfli returns a zlib container (RFC 1950): a 2-byte header, the raw
+        # deflate stream, and a 4-byte checksum.
+        container = zopfli.zlib.compress(data, **ZOPFLI_OPTIONS)
+        if container[0] & 0x0F != 8 or container[1] & 0x20:
+            _fail_recompress(
+                f"zopfli {zopfli.__version__} produced output that is not in the zlib "
+                "format this script expects. Check that it is the version pinned in "
+                "scripts/requirements-recompress.txt"
+            )
+        if len(container) - 6 < len(best):
+            best = container[2:-4]
+    return best
+
+
+def _member_fields(info: zipfile.ZipInfo) -> tuple[object, ...]:
+    """Everything about a member that recompressing must leave as it was."""
+    return (
+        info.filename,
+        info.date_time,
+        info.compress_type,
+        info.CRC,
+        info.file_size,
+        info.external_attr,
+        info.internal_attr,
+        info.create_system,
+        info.create_version,
+        info.extract_version,
+        info.flag_bits & ~0x08,
+        info.extra,
+        info.comment,
+    )
+
+
+def _same_members(old: Path, new: Path) -> bool:
+    """True if both zips hold the same members in the same order and contents."""
+    try:
+        with zipfile.ZipFile(old) as old_zip, zipfile.ZipFile(new) as new_zip:
+            old_infos, new_infos = old_zip.infolist(), new_zip.infolist()
+            if len(old_infos) != len(new_infos) or old_zip.comment != new_zip.comment:
+                return False
+            for old_info, new_info in zip(old_infos, new_infos, strict=True):
+                if _member_fields(old_info) != _member_fields(new_info):
+                    return False
+                if old_zip.read(old_info) != new_zip.read(new_info):
+                    return False
+    except (zipfile.BadZipFile, zlib.error):
+        # A member that does not decompress, or fails its CRC check.
+        return False
+    return True
+
+
+def _write_recompressed(wheel_path: Path, tmp_path: Path, encoder: str) -> None:
+    """Write wheel_path's members to tmp_path, deflated again with the encoder."""
+    # zipfile cannot take bytes that are already compressed, so the records are
+    # written here directly.
+    with zipfile.ZipFile(wheel_path) as wheel, tmp_path.open("wb") as out:
+        infos = wheel.infolist()
+        if len(infos) >= 0xFFFF:
+            _fail_recompress(
+                f"the wheel holds {len(infos):,} files, and this script can only "
+                "rewrite fewer than 65,535 (it does not write the ZIP64 format)"
+            )
+        central_directory = []
+        for info in infos:
+            if info.flag_bits & 0x01:
+                _fail_recompress(
+                    f"{info.filename} is encrypted, and this script cannot rewrite "
+                    "encrypted files"
+                )
+            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                _fail_recompress(
+                    f"{info.filename} uses zip compression method "
+                    f"{info.compress_type}, and this script can only rewrite files that "
+                    "are stored (0) or deflated (8)"
+                )
+            data = wheel.read(info)
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                payload = _deflate(data, encoder)
+            else:
+                payload = data
+            offset = out.tell()
+            if max(offset, len(payload), len(data)) >= 0xFFFFFFFF:
+                _fail_recompress(
+                    f"the wheel reaches 4 GiB at {info.filename}. A zip needs the ZIP64 "
+                    "format for that, and this script does not write it"
+                )
+            # Bit 3 says the sizes follow the data. Here they are in the header.
+            flags = info.flag_bits & ~0x08
+            name = info.filename.encode("utf-8" if flags & 0x800 else "cp437")
+            year, month, day, hour, minute, second = info.date_time
+            dos_date = (year - 1980) << 9 | month << 5 | day
+            dos_time = hour << 11 | minute << 5 | second // 2
+            shared = (
+                info.extract_version,
+                flags,
+                info.compress_type,
+                dos_time,
+                dos_date,
+                info.CRC,
+                len(payload),
+                len(data),
+                len(name),
+                len(info.extra),
+            )
+            out.write(_LOCAL_HEADER.pack(b"PK\x03\x04", *shared) + name + info.extra)
+            out.write(payload)
+            central_directory.append(
+                _CENTRAL_HEADER.pack(
+                    b"PK\x01\x02",
+                    info.create_system << 8 | info.create_version,
+                    *shared,
+                    len(info.comment),
+                    0,
+                    info.internal_attr,
+                    info.external_attr,
+                    offset,
+                )
+                + name
+                + info.extra
+                + info.comment
+            )
+        directory_offset = out.tell()
+        directory = b"".join(central_directory)
+        if directory_offset + len(directory) >= 0xFFFFFFFF:
+            _fail_recompress(
+                "the rewritten wheel would be 4 GiB or larger. A zip needs the ZIP64 "
+                "format for that, and this script does not write it"
+            )
+        out.write(directory)
+        out.write(
+            _END_RECORD.pack(
+                b"PK\x05\x06",
+                0,
+                0,
+                len(infos),
+                len(infos),
+                len(directory),
+                directory_offset,
+                len(wheel.comment),
+            )
+            + wheel.comment
+        )
+
+
+def recompress_wheel(wheel_path: Path, encoder: str) -> None:
+    """Rewrite a wheel in place with its deflated members compressed harder.
+
+    Member names, order, contents, dates and file modes stay as they were, so the
+    hashes in the wheel's RECORD file still match. Exits with status 1, leaving the
+    wheel untouched, if a member cannot be rewritten or the result does not match.
+    """
+    note = " (takes minutes, prints nothing until done)" if encoder == "zopfli" else ""
+    print(f"\n{'=' * 60}")
+    print(f"Recompressing wheel with {encoder}{note}")
+    print(f"{'=' * 60}", flush=True)
+    started = time.monotonic()
+    old_size = wheel_path.stat().st_size
+    tmp_path = wheel_path.with_name(wheel_path.name + ".tmp")
+
+    try:
+        _write_recompressed(wheel_path, tmp_path, encoder)
+        if not _same_members(wheel_path, tmp_path):
+            _fail_recompress(
+                f"the rewritten copy of {wheel_path.name} does not hold the same files "
+                "as the original, so the original was kept. This is a fault in "
+                "build_wheel.py's zip writing or in the encoder, not in the wheel"
+            )
+        tmp_path.replace(wheel_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    new_size = wheel_path.stat().st_size
+    if new_size < old_size:
+        change = f"{(old_size - new_size) / 1024**2:.2f} MiB smaller"
+    elif new_size == old_size:
+        change = "no change"
+    else:
+        change = f"{new_size - old_size:,} bytes larger"
+    print(
+        f"{wheel_path.name}: {old_size:,} -> {new_size:,} bytes ({change}) "
+        f"in {time.monotonic() - started:.0f} s"
+    )
+
+
+def build_wheel(recompress: str | None = None) -> None:
     """Build the wheel."""
     run_command(
         [sys.executable, "-m", "build", "--wheel"],
@@ -263,6 +491,10 @@ def build_wheel() -> None:
             print("Warning: No wheel found to retag")
     else:
         print("\nNo bundled CLI found - wheel will be platform-independent")
+
+    if recompress:
+        for wheel in sorted(Path("dist").glob("*.whl")):
+            recompress_wheel(wheel, recompress)
 
 
 def build_sdist() -> None:
@@ -380,8 +612,18 @@ def main() -> None:
         action="store_true",
         help="Clean dist directory before building",
     )
+    parser.add_argument(
+        "--recompress",
+        choices=RECOMPRESS_ENCODERS,
+        default=None,
+        help="Compress the files in the built wheel again so the wheel is smaller; "
+        "the files themselves do not change. zlib: quick. zopfli: smaller, takes "
+        "minutes, needs the zopfli package (see scripts/requirements-recompress.txt)",
+    )
 
     args = parser.parse_args()
+    if args.recompress:
+        require_encoder(args.recompress)
 
     print("\n" + "=" * 60)
     print("Claude Agent SDK - Wheel Builder")
@@ -402,7 +644,7 @@ def main() -> None:
         print("\nSkipping CLI download (using existing)")
 
     # Build wheel
-    build_wheel()
+    build_wheel(args.recompress)
 
     # Build sdist unless skipped
     if not args.skip_sdist:

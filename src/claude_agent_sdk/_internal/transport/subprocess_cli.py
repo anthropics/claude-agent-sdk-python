@@ -24,6 +24,7 @@ from ..._version import __version__
 from ...types import (
     _SKILLS_ALL,
     ClaudeAgentOptions,
+    SystemPromptCustom,
     SystemPromptFile,
     SystemPromptPreset,
 )
@@ -34,6 +35,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
+# First Claude Code version that honors `client_composed` on user messages,
+# which `ClaudeAgentOptions.verbatim_prompts` relies on.
+VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = "2.1.248"
+# Asks the CLI for `session_state_changed` frames marked `sdk_host_only`, which
+# Query reads to tell when the run is over and keeps out of the caller's
+# stream (see Query._read_messages). CLIs that predate it send no frames.
+_SDK_READS_SESSION_STATE_ENV = "CLAUDE_CODE_SDK_READS_SESSION_STATE"
 
 # cmd.exe metacharacters (plus the quote character cmd.exe uses to toggle
 # its quoting state, and "!", which expands like "%" when delayed expansion
@@ -573,6 +581,8 @@ class SubprocessCLITransport(Transport):
             sp = self._options.system_prompt
             if sp.get("type") == "file":
                 cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+            elif sp.get("type") == "custom":
+                cmd.extend(["--system-prompt", cast(SystemPromptCustom, sp)["prompt"]])
             elif sp.get("type") == "preset" and "append" in sp:
                 cmd.extend(
                     ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
@@ -839,6 +849,16 @@ class SubprocessCLITransport(Transport):
                             process_env[key] = v
             except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
                 logger.debug("OTEL trace context injection failed", exc_info=True)
+
+            # Query waits for the CLI's session_state_changed "idle" before
+            # closing stdin on a run that serves control requests (#1190). Ask
+            # for the frames it drops (sdk_host_only) unless the caller chose
+            # a value, in any case; CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS stays
+            # the caller's own opt-in to seeing them.
+            if not any(
+                key.upper() == _SDK_READS_SESSION_STATE_ENV for key in process_env
+            ):
+                process_env[_SDK_READS_SESSION_STATE_ENV] = "1"
 
             # Enable file checkpointing if requested
             if self._options.enable_file_checkpointing:
@@ -1174,6 +1194,25 @@ class SubprocessCLITransport(Transport):
                                 version,
                                 self._cli_path,
                                 MINIMUM_CLAUDE_CODE_VERSION,
+                            )
+
+                        verbatim_min_parts = [
+                            int(x)
+                            for x in VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION.split(
+                                "."
+                            )
+                        ]
+                        if self._options.verbatim_prompts and (
+                            version_parts < verbatim_min_parts
+                        ):
+                            logger.warning(
+                                "verbatim_prompts is enabled, but Claude Code "
+                                "version %s at %s ignores it: prompts will still "
+                                "have @path mentions expanded and slash commands "
+                                "dispatched. Claude Code %s or later is required.",
+                                version,
+                                self._cli_path,
+                                VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION,
                             )
         except Exception:
             pass

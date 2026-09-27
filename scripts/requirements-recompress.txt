@@ -1,0 +1,8 @@
+# zopfli is the encoder for "scripts/build_wheel.py --recompress zopfli". It runs
+# compiled code in the release build, so it is pinned to one version and to the hashes
+# PyPI lists for its wheels: Windows x64, macOS universal2, Linux x86_64 and aarch64.
+zopfli==0.4.3 \
+    --hash=sha256:921c2c9907f4364963848da5ad194b46d68865e07fdb975d04fd09bc42d47357 \
+    --hash=sha256:88f4fbe429aad72bc206275d81fab11a097e0f951a5848d1f51083c37ea73073 \
+    --hash=sha256:769875152d0625c46707bcca57d4b2233fe653482067acd55fbf6ec525cb9bdc \
+    --hash=sha256:eb0c9c1d40a8cb1d58762d7e57290ccb753e0828c4d01be8acb59aae5d0ca206

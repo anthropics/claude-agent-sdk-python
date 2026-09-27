@@ -196,6 +196,11 @@ jobs:
       # Required to mint the OIDC token exchanged for a Claude API access
       # token (workload identity federation)
       id-token: write
+    env:
+      # Pin the CLI's default model for the examples instead of taking the
+      # one the installed CLI ships with, which changes between releases.
+      # Same value as e2e-tests/conftest.py; see the comment there.
+      ANTHROPIC_DEFAULT_MODEL: claude-opus-5
 
     steps:
       - uses: actions/checkout@v4

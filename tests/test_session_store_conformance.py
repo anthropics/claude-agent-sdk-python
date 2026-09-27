@@ -199,6 +199,18 @@ class TestSessionStoreOptionsValidation:
             )
         )
 
+    def test_rejects_persist_session_false_combo(self) -> None:
+        with pytest.raises(ValueError, match="persist_session=False"):
+            validate_session_store_options(
+                ClaudeAgentOptions(
+                    session_store=InMemorySessionStore(),
+                    persist_session=False,
+                )
+            )
+
+    def test_persist_session_false_without_store_is_valid(self) -> None:
+        validate_session_store_options(ClaudeAgentOptions(persist_session=False))
+
     def test_rejects_file_checkpointing_combo(self) -> None:
         with pytest.raises(ValueError, match="enable_file_checkpointing"):
             validate_session_store_options(

@@ -101,6 +101,16 @@ class TestSubprocessCLITransport:
         transport = SubprocessCLITransport(prompt="test", options=make_options())
         assert "--strict-mcp-config" not in transport._build_command()
 
+    def test_build_command_persist_session(self):
+        """Test that --no-session-persistence is emitted only when persist_session is False."""
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(persist_session=False)
+        )
+        assert "--no-session-persistence" in transport._build_command()
+
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--no-session-persistence" not in transport._build_command()
+
     def test_build_command_resume_and_session_id(self):
         """Test that resume and session_id are passed as --flag=value."""
         session_id = "8f8b1c0e-2b1e-4a3f-9c2d-5e6f7a8b9c0d"

@@ -26,6 +26,9 @@ PermissionMode = Literal[
     "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"
 ]
 
+# Who answers permission prompts
+PermissionPrompts = Literal["host", "none"]
+
 # SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
 SdkBeta = Literal["context-1m-2025-08-07"]
 
@@ -2091,6 +2094,17 @@ class ClaudeAgentOptions:
 
     When set, permission requests are routed through this MCP tool instead of
     the default handler.
+    """
+
+    permission_prompts: PermissionPrompts | None = None
+    """Who answers permission prompts.
+
+    ``"host"`` (the CLI's default): this process, through ``can_use_tool`` or
+    ``permission_prompt_tool_name``. ``"none"``: nobody. The permission mode
+    (including auto mode's classifier), rules and hooks still decide, and
+    anything that would otherwise prompt is denied at once with a message
+    telling Claude the session has no approval surface; ``can_use_tool`` is
+    never called.
     """
 
     cwd: str | Path | None = None

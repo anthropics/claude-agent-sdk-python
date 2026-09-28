@@ -54,9 +54,12 @@ icacls $env:ANTHROPIC_IDENTITY_TOKEN_FILE /grant "${E2EUser}:R" /Q | Out-Null
 # in _actions, step scripts in _temp, the toolcache, the runner itself). Deny
 # the e2e user every kind of write there; reading stays allowed.
 $worker = Get-Process -Name Runner.Worker -ErrorAction SilentlyContinue | Select-Object -First 1
-$runnerDir = if ($worker) { Split-Path (Split-Path $worker.Path) } else { $null }
-foreach ($dir in @((Split-Path $env:RUNNER_WORKSPACE), $env:RUNNER_TOOL_CACHE, $runnerDir) | Where-Object { $_ }) {
+if (-not $worker) { throw 'Could not find the Runner.Worker process to locate the runner directory.' }
+$runnerDir = Split-Path (Split-Path $worker.Path)
+foreach ($dir in @((Split-Path $env:RUNNER_WORKSPACE), $env:RUNNER_TOOL_CACHE, $runnerDir)) {
+  if (-not $dir -or -not (Test-Path $dir)) { throw "Directory to protect not found: '$dir'" }
   icacls $dir /deny "${E2EUser}:(OI)(CI)(W,D,DC)" /Q | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "icacls could not deny writes on $dir (exit $LASTEXITCODE)" }
 }
 Write-Host '::endgroup::'
 

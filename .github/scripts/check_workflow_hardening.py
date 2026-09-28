@@ -201,12 +201,24 @@ def check_job(file_name: str, job_id: str, job: dict) -> list[str]:
         )
         # An exempt job that runs on a matrix of OSes must still use the firewall
         # runner for Linux: the exemption covers only its macOS and Windows entries.
-        matrix_os = ((job.get("strategy") or {}).get("matrix") or {}).get("os")
-        if isinstance(matrix_os, list):
-            linux = [str(label) for label in matrix_os if str(label).startswith("ubuntu")]
+        matrix = (job.get("strategy") or {}).get("matrix") or {}
+        if isinstance(matrix, dict) and ("os" in matrix or "include" in matrix):
+            labels = matrix.get("os") or []
+            labels = labels if isinstance(labels, list) else [labels]
+            for entry in matrix.get("include") or []:
+                if isinstance(entry, dict) and "os" in entry:
+                    labels.append(entry["os"])
+            linux = sorted(
+                {
+                    str(label).strip().lower()
+                    for label in labels
+                    if str(label).strip().lower().startswith(("ubuntu", "linux", "self-hosted"))
+                    or isinstance(label, list)
+                }
+            )
             if linux != [FIREWALL_RUNNER]:
                 errors.append(
-                    f"{where}: its matrix 'os' must list '{FIREWALL_RUNNER}' as its only Linux "
+                    f"{where}: its matrix must list '{FIREWALL_RUNNER}' as its only Linux "
                     f"entry. It has {linux or 'none'}. {HELP}"
                 )
     elif runs_on != FIREWALL_RUNNER:

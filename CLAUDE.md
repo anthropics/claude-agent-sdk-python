@@ -56,8 +56,13 @@ Exceptions (each is listed with its reason in an exemption table in
   keeps its fixed allowed tools and sets no permission mode.
 - `test.yml`'s `test-e2e` job runs on Linux, macOS and Windows. Its matrix
   uses `ubuntu-24.04-firewall` for Linux. GitHub offers no such runner for macOS
-  or Windows. The check does not look inside the matrix: keep
-  `ubuntu-24.04-firewall` as its Linux entry by hand.
+  or Windows, so there the tests run through
+  `.github/scripts/run-e2e-firewalled-macos.sh` and
+  `.github/scripts/run-e2e-firewalled-windows.ps1`: as a separate
+  non-administrator user whose outbound traffic the OS firewall limits to the
+  Claude API. Keep running them that way. The check does not look inside the
+  matrix or at those steps: keep `ubuntu-24.04-firewall` as the Linux entry and
+  the two scripts by hand.
 
 `.github/workflows/workflow-hardening.yml` fails when a job that runs the Claude
 Code action or mentions `ANTHROPIC_FEDERATION_RULE_ID` breaks protection 1 or 3,

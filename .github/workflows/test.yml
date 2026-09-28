@@ -144,12 +144,34 @@ jobs:
         run: python scripts/trust_workspace.py
 
       - name: Run end-to-end tests with real API
+        if: runner.os == 'Linux'
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
         run: |
           python -m pytest e2e-tests/ -v -m e2e
+
+      # GitHub's egress-firewall runner is Linux only. On macOS and Windows the
+      # tests run as a separate user whose outbound traffic the OS firewall
+      # limits to the Claude API; the script checks the firewall before the tests.
+      - name: Run end-to-end tests with real API (macOS, OS firewall)
+        if: runner.os == 'macOS'
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        shell: bash
+        run: .github/scripts/run-e2e-firewalled-macos.sh e2e-tests/ -v -m e2e
+
+      - name: Run end-to-end tests with real API (Windows, OS firewall)
+        if: runner.os == 'Windows'
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        shell: powershell
+        run: .github/scripts/run-e2e-firewalled-windows.ps1 e2e-tests/ -v -m e2e
 
   test-e2e-docker:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth

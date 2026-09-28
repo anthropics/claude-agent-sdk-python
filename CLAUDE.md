@@ -60,9 +60,9 @@ Exceptions (each is listed with its reason in an exemption table in
   `.github/scripts/run-e2e-firewalled-macos.sh` and
   `.github/scripts/run-e2e-firewalled-windows.ps1`: as a separate
   non-administrator user whose outbound traffic the OS firewall limits to the
-  Claude API. Keep running them that way. The check does not look inside the
-  matrix or at those steps: keep `ubuntu-24.04-firewall` as the Linux entry and
-  the two scripts by hand.
+  Claude API. Keep running them that way. The check makes sure the matrix's
+  only Linux entry is `ubuntu-24.04-firewall`, but it does not look at those
+  steps: keep the two scripts by hand.
 
 `.github/workflows/workflow-hardening.yml` fails when a job that runs the Claude
 Code action or mentions `ANTHROPIC_FEDERATION_RULE_ID` breaks protection 1 or 3,

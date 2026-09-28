@@ -27,18 +27,22 @@ python_bin=$(python -c 'import sys; print(sys.executable)')
 claude_bin=$(python -c 'import os, shutil; print(os.path.realpath(shutil.which("claude")))')
 
 echo "::group::Create the e2e user"
+# A group of its own, so it gets no write access that the runner's groups have.
+sudo dscl . -create "/Groups/$E2E_USER"
+sudo dscl . -create "/Groups/$E2E_USER" PrimaryGroupID "$E2E_UID"
 sudo dscl . -create "/Users/$E2E_USER"
 sudo dscl . -create "/Users/$E2E_USER" UniqueID "$E2E_UID"
-# staff: the checkout and the Python toolcache are group-readable for it
-sudo dscl . -create "/Users/$E2E_USER" PrimaryGroupID 20
+sudo dscl . -create "/Users/$E2E_USER" PrimaryGroupID "$E2E_UID"
 sudo dscl . -create "/Users/$E2E_USER" UserShell /bin/bash
 sudo dscl . -create "/Users/$E2E_USER" NFSHomeDirectory "$E2E_HOME"
 sudo mkdir -p "$E2E_HOME/tmp"
-sudo chown -R "$E2E_USER:staff" "$E2E_HOME"
-# The user needs to reach the checkout, the toolcache and the token file. The
+sudo chown -R "$E2E_USER:$E2E_USER" "$E2E_HOME"
+# The user needs to read the checkout, the toolcache and the token file, and
+# must not be able to write anything the runner uses after this step (the
+# checkout's .git above all), so it gets search access and nothing more. The
 # token refresher truncates the file in place, so this mode survives refreshes.
 sudo chmod o+x "$HOME" "$HOME/work" "$RUNNER_TEMP"
-sudo chmod -R g+w "$GITHUB_WORKSPACE"
+sudo chgrp "$E2E_USER" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
 sudo chmod 640 "$ANTHROPIC_IDENTITY_TOKEN_FILE"
 sudo mkdir -p "$BIN_DIR"
 sudo cp "$claude_bin" "$BIN_DIR/claude"
@@ -89,6 +93,9 @@ if ! [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
 fi
 echo "Blocked https://example.com; reached https://api.anthropic.com (HTTP $code)."
 echo "::endgroup::"
+
+# Nothing the e2e user started may outlive this step.
+trap 'sudo pkill -KILL -u "$E2E_USER" || true' EXIT
 
 cd "$GITHUB_WORKSPACE"
 as_e2e "$python_bin" scripts/trust_workspace.py

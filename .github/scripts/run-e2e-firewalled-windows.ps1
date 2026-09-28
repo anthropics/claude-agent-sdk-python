@@ -49,7 +49,15 @@ New-Item -ItemType Directory -Force -Path $BinDir, (Join-Path $E2EDir 'tmp'), (J
 Copy-Item $claude (Join-Path $BinDir 'claude.exe')
 icacls $E2EDir /grant "${E2EUser}:(OI)(CI)M" /T /Q | Out-Null
 icacls $env:ANTHROPIC_IDENTITY_TOKEN_FILE /grant "${E2EUser}:R" /Q | Out-Null
-icacls $env:GITHUB_WORKSPACE /grant "${E2EUser}:(OI)(CI)M" /T /Q | Out-Null
+# Inherited ACLs can let any local user write under these, and the runner
+# account runs code from them after this step (the checkout's .git, action code
+# in _actions, step scripts in _temp, the toolcache, the runner itself). Deny
+# the e2e user every kind of write there; reading stays allowed.
+$worker = Get-Process -Name Runner.Worker -ErrorAction SilentlyContinue | Select-Object -First 1
+$runnerDir = if ($worker) { Split-Path (Split-Path $worker.Path) } else { $null }
+foreach ($dir in @((Split-Path $env:RUNNER_WORKSPACE), $env:RUNNER_TOOL_CACHE, $runnerDir) | Where-Object { $_ }) {
+  icacls $dir /deny "${E2EUser}:(OI)(CI)(W,D,DC)" /Q | Out-Null
+}
 Write-Host '::endgroup::'
 
 Write-Host "::group::Limit the e2e user's outbound traffic to the Claude API"
@@ -97,10 +105,14 @@ Set-Location '$env:GITHUB_WORKSPACE'
   } else {
     Write-Output "Blocked https://example.com; reached https://api.anthropic.com (HTTP `$status)."
     & '$python' scripts/trust_workspace.py
+    # 99 stays if pytest never starts, so that case can't read as a pass.
+    `$global:LASTEXITCODE = 99
     & '$python' -m pytest -p no:cacheprovider $quotedArgs
-    `$code = `$LASTEXITCODE
+    `$code = `$global:LASTEXITCODE
   }
-  Set-Content -Path '$exitFile' -Value `$code
+  # Write, then rename, so the runner never reads a half-written file.
+  Set-Content -Path '$exitFile.tmp' -Value `$code
+  Move-Item -Force '$exitFile.tmp' '$exitFile'
 } *>&1 | Out-File -FilePath '$logFile' -Encoding utf8
 "@ | Set-Content -Path $inner -Encoding utf8
 
@@ -130,13 +142,21 @@ while (-not (Test-Path $exitFile)) {
     Write-Host "::error::The e2e task stopped without an exit code (state $state, last result $result)."
     exit 1
   }
-  if ($elapsed -gt 3600) {
-    Write-Host '::error::The e2e task did not finish within 60 minutes.'
-    exit 1
-  }
 }
 Show-NewLines
-$code = [int](Get-Content $exitFile)
+
+# Nothing the e2e user started may outlive this step.
+Get-CimInstance Win32_Process | Where-Object {
+  (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue).User -eq $E2EUser
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Disable-LocalUser -Name $E2EUser
+
+$raw = (Get-Content $exitFile -Raw).Trim()
+if ($raw -notmatch '^-?\d+$') {
+  Write-Host "::error::The e2e task left no exit code (got '$raw')."
+  exit 1
+}
+$code = [int]$raw
 Write-Host "e2e tests exited with $code"
 if ($code -ne 0 -and (Test-Path $logFile)) {
   # Repeat the failures and pytest's summary as an annotation, where they show

@@ -199,6 +199,16 @@ def check_job(file_name: str, job_id: str, job: dict) -> list[str]:
             f"The egress-firewall runner is not required for job '{job_id}' in {file_name}. "
             f"Reason: {EXEMPT_FROM_FIREWALL_RUNNER[key]}."
         )
+        # An exempt job that runs on a matrix of OSes must still use the firewall
+        # runner for Linux: the exemption covers only its macOS and Windows entries.
+        matrix_os = ((job.get("strategy") or {}).get("matrix") or {}).get("os")
+        if isinstance(matrix_os, list):
+            linux = [str(label) for label in matrix_os if str(label).startswith("ubuntu")]
+            if linux != [FIREWALL_RUNNER]:
+                errors.append(
+                    f"{where}: its matrix 'os' must list '{FIREWALL_RUNNER}' as its only Linux "
+                    f"entry. It has {linux or 'none'}. {HELP}"
+                )
     elif runs_on != FIREWALL_RUNNER:
         if "runs-on" not in job:
             has = "no 'runs-on'"

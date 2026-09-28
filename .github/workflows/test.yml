@@ -194,12 +194,18 @@ jobs:
         # The egress firewall re-signs TLS with a per-run CA that containers don't
         # trust. Hand it to the build as a secret; Dockerfile.test installs it.
         run: |
+          set -o pipefail
+          args=()
           ca=/var/lib/actions-firewall/rootCA.pem
           if sudo test -f "$ca"; then
             sudo cat "$ca" > "$RUNNER_TEMP/extra-ca.pem"
-            docker build --secret id=extra_ca,src="$RUNNER_TEMP/extra-ca.pem" -f Dockerfile.test -t claude-sdk-test .
-          else
-            docker build -f Dockerfile.test -t claude-sdk-test .
+            args=(--secret "id=extra_ca,src=$RUNNER_TEMP/extra-ca.pem")
+          fi
+          # Repeat the end of a failed build as an annotation, where it shows
+          # without opening the log.
+          if ! docker build "${args[@]}" -f Dockerfile.test -t claude-sdk-test . 2>&1 | tee "$RUNNER_TEMP/docker-build.log"; then
+            echo "::error title=docker build failed::$(tail -n 25 "$RUNNER_TEMP/docker-build.log" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            exit 1
           fi
 
       - name: Set up Claude API auth (workload identity federation)

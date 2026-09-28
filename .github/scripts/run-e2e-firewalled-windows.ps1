@@ -79,7 +79,9 @@ $inner = Join-Path $E2EDir 'run.ps1'
 $quotedArgs = ($PytestArgs | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }) -join ', '
 @"
 `$ErrorActionPreference = 'Continue'
-`$env:PATH = '$BinDir;$(Split-Path $python);' + `$env:SystemRoot + '\System32;' + `$env:SystemRoot
+# Keep the task's own PATH (the machine PATH, which has Git and its bash for
+# Claude Code's Bash tool) and put the copied CLI and the job's Python first.
+`$env:PATH = '$BinDir;$(Split-Path $python);$(Split-Path $python)\Scripts;' + `$env:PATH
 `$env:TEMP = '$E2EDir\tmp'
 `$env:TMP = '$E2EDir\tmp'
 `$env:CLAUDE_CONFIG_DIR = '$E2EDir\config'

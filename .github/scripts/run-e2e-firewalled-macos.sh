@@ -67,7 +67,7 @@ echo "::endgroup::"
 
 as_e2e() {
   sudo -u "$E2E_USER" -H env \
-    PATH="$BIN_DIR:$(dirname "$python_bin"):/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="$BIN_DIR:$(dirname "$python_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     TMPDIR="$E2E_HOME/tmp" \
     ANTHROPIC_FEDERATION_RULE_ID="${ANTHROPIC_FEDERATION_RULE_ID:-}" \
     ANTHROPIC_ORGANIZATION_ID="${ANTHROPIC_ORGANIZATION_ID:-}" \

@@ -52,13 +52,15 @@ icacls $env:ANTHROPIC_IDENTITY_TOKEN_FILE /grant "${E2EUser}:R" /Q | Out-Null
 # Inherited ACLs can let any local user write under these, and the runner
 # account runs code from them after this step (the checkout's .git, action code
 # in _actions, step scripts in _temp, the toolcache, the runner itself). Deny
-# the e2e user every kind of write there; reading stays allowed.
+# the e2e user every kind of write there; reading stays allowed. The rights are
+# listed one by one: icacls' W also carries SYNCHRONIZE and READ_CONTROL, and
+# denying those stops the user from running anything there.
 $worker = Get-Process -Name Runner.Worker -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $worker) { throw 'Could not find the Runner.Worker process to locate the runner directory.' }
 $runnerDir = Split-Path (Split-Path $worker.Path)
 foreach ($dir in @((Split-Path $env:RUNNER_WORKSPACE), $env:RUNNER_TOOL_CACHE, $runnerDir)) {
   if (-not $dir -or -not (Test-Path $dir)) { throw "Directory to protect not found: '$dir'" }
-  icacls $dir /deny "${E2EUser}:(OI)(CI)(W,D,DC)" /Q | Out-Null
+  icacls $dir /deny "${E2EUser}:(OI)(CI)(WD,AD,WEA,WA,D,DC)" /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "icacls could not deny writes on $dir (exit $LASTEXITCODE)" }
 }
 Write-Host '::endgroup::'

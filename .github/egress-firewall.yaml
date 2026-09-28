@@ -32,8 +32,9 @@ allow:
   - registry-1.docker.io
   - auth.docker.io
   # Docker Hub's image layer downloads: registry-1.docker.io redirects them to
-  # one of these two CDN hosts
+  # one of these hosts (the last is the storage origin Docker's docs name)
   - production.cloudfront.docker.com
   - production.cloudflare.docker.com
+  - docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
   # Debian packages: apt-get inside Dockerfile.test
   - deb.debian.org

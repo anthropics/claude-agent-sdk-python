@@ -191,7 +191,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker test image
-        run: docker build -f Dockerfile.test -t claude-sdk-test .
+        # The egress firewall re-signs TLS with a per-run CA that containers don't
+        # trust. Hand it to the build as a secret; Dockerfile.test installs it.
+        run: |
+          ca=/var/lib/actions-firewall/rootCA.pem
+          if sudo test -f "$ca"; then
+            sudo cat "$ca" > "$RUNNER_TEMP/extra-ca.pem"
+            docker build --secret id=extra_ca,src="$RUNNER_TEMP/extra-ca.pem" -f Dockerfile.test -t claude-sdk-test .
+          else
+            docker build -f Dockerfile.test -t claude-sdk-test .
+          fi
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth

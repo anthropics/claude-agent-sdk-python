@@ -19,7 +19,7 @@ HELP = 'See CLAUDE.md, "Security hardening for GitHub Actions".'
 
 # Key: "<workflow file name>:<job id>". Value: why that job is exempt from the table's rule.
 EXEMPT_FROM_FIREWALL_RUNNER: dict[str, str] = {
-    "test.yml:test-e2e": "runs on Linux, macOS and Windows. Its matrix uses the egress-firewall runner for Linux, and GitHub offers no such runner for macOS or Windows",
+    "test.yml:test-e2e": "runs on Linux, macOS and Windows. Its matrix uses the egress-firewall runner for Linux. GitHub offers no such runner for macOS or Windows, so there the tests run as a separate user behind the OS firewall (.github/scripts/run-e2e-firewalled-*)",
     "build-and-publish.yml:publish": "release job: it also uploads to PyPI and pushes over SSH, which the allow list does not cover",
 }
 EXEMPT_FROM_AUTO_MODE: dict[str, str] = {
@@ -145,12 +145,46 @@ def permission_mode_problem(step: dict, exempt: bool) -> str | None:
                 f"'claude_args' has '--permission-mode {mode}'. "
                 "Change it to '--permission-mode auto'"
             )
-    if "defaultMode" in str(inputs.get("settings", "")):
-        return (
-            "remove 'defaultMode' from the step's 'settings': "
-            "'settings' must not set a permission mode"
-        )
+    settings = [("the step's 'settings'", inputs.get("settings", ""))]
+    settings += [
+        ("'--settings' in 'claude_args'", args[index + 1])
+        for index, arg in enumerate(args)
+        if arg == "--settings" and index + 1 < len(args)
+    ]
+    settings += [
+        ("'--settings' in 'claude_args'", arg.split("=", 1)[1])
+        for arg in args
+        if arg.startswith("--settings=")
+    ]
+    for where, value in settings:
+        text = settings_text(value)
+        if text is None:
+            return (
+                f"{where} names a file outside the repository, which this check cannot read. "
+                "Use inline settings or a file inside the repository"
+            )
+        if "defaultMode" in text:
+            return f"remove 'defaultMode' from {where}: settings must not set a permission mode"
     return None
+
+
+def settings_text(value) -> str | None:
+    """The settings JSON a 'settings' value stands for: the value itself, or the contents of
+    the file it names when it is a path inside the repository. None when it names a path
+    outside the repository."""
+    text = str(value or "").strip()
+    if not text or text.startswith("{"):
+        return text
+    path = pathlib.Path(text)
+    root = pathlib.Path.cwd().resolve()
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if resolved.is_file():
+        return resolved.read_text(encoding="utf-8", errors="replace")
+    return text
 
 
 def check_job(file_name: str, job_id: str, job: dict) -> list[str]:
@@ -181,6 +215,12 @@ def check_job(file_name: str, job_id: str, job: dict) -> list[str]:
         print(
             f"Auto permission mode is not required for job '{job_id}' in {file_name}. "
             f"Reason: {EXEMPT_FROM_AUTO_MODE[key]}."
+        )
+    if "defaultMode" in json.dumps(job):
+        # Catches a settings file that an earlier step of the job writes, which the
+        # step-level check cannot read.
+        errors.append(
+            f"{where} mentions 'defaultMode': settings must not set a permission mode. {HELP}"
         )
     for index, step in enumerate(steps_of(job), start=1):
         if not runs_claude_code_action(step):

@@ -60,7 +60,7 @@ if (-not $worker) { throw 'Could not find the Runner.Worker process to locate th
 $runnerDir = Split-Path (Split-Path $worker.Path)
 foreach ($dir in @((Split-Path $env:RUNNER_WORKSPACE), $env:RUNNER_TOOL_CACHE, $runnerDir)) {
   if (-not $dir -or -not (Test-Path $dir)) { throw "Directory to protect not found: '$dir'" }
-  icacls $dir /deny "${E2EUser}:(OI)(CI)(WD,AD,WEA,WA,D,DC)" /Q | Out-Null
+  icacls $dir /deny "${E2EUser}:(OI)(CI)(WD,AD,WEA,WA,DE,DC)" /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "icacls could not deny writes on $dir (exit $LASTEXITCODE)" }
 }
 Write-Host '::endgroup::'

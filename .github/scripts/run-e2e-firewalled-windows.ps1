@@ -81,21 +81,24 @@ $quotedArgs = ($PytestArgs | ForEach-Object { "'" + ($_ -replace "'", "''") + "'
 Set-Location '$env:GITHUB_WORKSPACE'
 & {
   `$code = 0
-  curl.exe -sS -m 10 -o NUL https://example.com
-  if (`$LASTEXITCODE -eq 0) {
-    Write-Output '::error::The e2e user reached https://example.com: the OS firewall is not in effect.'
+  # --ssl-no-revoke: Windows curl checks certificate revocation online, which the
+  # firewall blocks for this user too, and that would read as a failure here.
+  `$blocked = curl.exe --ssl-no-revoke -sS -m 10 -o NUL https://example.com 2>&1 | Out-String
+  `$blockedExit = `$LASTEXITCODE
+  `$reached = curl.exe --ssl-no-revoke -sS -m 15 -o NUL -w '%{http_code}' https://api.anthropic.com/ 2>&1 | Out-String
+  `$status = if (`$reached -match '(\d{3})\s*`$') { `$Matches[1] } else { '000' }
+  # 7: could not connect, 28: timed out. Anything else is not the firewall's doing.
+  if (`$blockedExit -ne 7 -and `$blockedExit -ne 28) {
+    Write-Output "::error::https://example.com was not refused by the OS firewall (curl exit `$blockedExit): `$(`$blocked.Trim())"
     `$code = 97
+  } elseif (`$status -notmatch '^[1-5][0-9][0-9]`$' -or `$status -eq '000') {
+    Write-Output "::error::The e2e user could not reach https://api.anthropic.com: `$(`$reached.Trim())"
+    `$code = 98
   } else {
-    `$status = curl.exe -sS -m 15 -o NUL -w '%{http_code}' https://api.anthropic.com/
-    if (`$status -notmatch '^[1-5][0-9][0-9]$') {
-      Write-Output "::error::The e2e user could not reach https://api.anthropic.com (got '`$status')."
-      `$code = 98
-    } else {
-      Write-Output "Blocked https://example.com; reached https://api.anthropic.com (HTTP `$status)."
-      & '$python' scripts/trust_workspace.py
-      & '$python' -m pytest -p no:cacheprovider $quotedArgs
-      `$code = `$LASTEXITCODE
-    }
+    Write-Output "Blocked https://example.com; reached https://api.anthropic.com (HTTP `$status)."
+    & '$python' scripts/trust_workspace.py
+    & '$python' -m pytest -p no:cacheprovider $quotedArgs
+    `$code = `$LASTEXITCODE
   }
   Set-Content -Path '$exitFile' -Value `$code
 } *>&1 | Out-File -FilePath '$logFile' -Encoding utf8

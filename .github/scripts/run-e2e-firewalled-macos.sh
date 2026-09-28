@@ -74,13 +74,17 @@ as_e2e() {
 }
 
 echo "::group::Check the filter before running the tests"
-if as_e2e curl -sS -m 10 -o /dev/null https://example.com; then
-  echo "::error::The e2e user reached https://example.com: the OS firewall is not in effect."
+rc=0
+blocked=$(as_e2e curl -sS -m 10 -o /dev/null https://example.com 2>&1) || rc=$?
+# 7: could not connect, 28: timed out. Anything else is not the firewall's doing.
+if [ "$rc" -ne 7 ] && [ "$rc" -ne 28 ]; then
+  echo "::error::https://example.com was not refused by the OS firewall (curl exit $rc): $blocked"
   exit 1
 fi
-code=$(as_e2e curl -sS -m 15 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ || true)
+reached=$(as_e2e curl -sS -m 15 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>&1 || true)
+code=${reached: -3}
 if ! [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
-  echo "::error::The e2e user could not reach https://api.anthropic.com (got '${code}')."
+  echo "::error::The e2e user could not reach https://api.anthropic.com: $reached"
   exit 1
 fi
 echo "Blocked https://example.com; reached https://api.anthropic.com (HTTP $code)."

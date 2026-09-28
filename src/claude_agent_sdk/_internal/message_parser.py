@@ -381,6 +381,9 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     new_conversation_id=data["new_conversation_id"],
                     uuid=data["uuid"],
                     session_id=data["session_id"],
+                    trigger=data.get("trigger"),
+                    user_message_uuid=data.get("user_message_uuid"),
+                    timestamp=data.get("timestamp"),
                 )
             except KeyError as e:
                 raise MessageParseError(

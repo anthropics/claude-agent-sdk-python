@@ -5,6 +5,8 @@ from typing import get_args
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ConversationResetMessage,
+    ConversationResetTrigger,
     EffortLevel,
     NotificationHookInput,
     NotificationHookSpecificOutput,
@@ -30,6 +32,46 @@ from claude_agent_sdk.types import (
 def test_effort_level_is_exported():
     """EffortLevel is part of the public package API for downstream wrappers."""
     assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
+
+
+def test_conversation_reset_trigger_is_exported():
+    """ConversationResetTrigger is part of the public package API."""
+    assert set(get_args(ConversationResetTrigger)) == {
+        "clear",
+        "plan_mode_exit",
+        "fresh_session",
+        "onboarding",
+    }
+
+
+def test_conversation_reset_message_defaults():
+    """ConversationResetMessage defaults optional metadata fields to None."""
+    msg = ConversationResetMessage(
+        new_conversation_id="new-id",
+        uuid="uuid-1",
+        session_id="session-1",
+    )
+    assert msg.new_conversation_id == "new-id"
+    assert msg.uuid == "uuid-1"
+    assert msg.session_id == "session-1"
+    assert msg.trigger is None
+    assert msg.user_message_uuid is None
+    assert msg.timestamp is None
+
+
+def test_conversation_reset_message_with_optional_fields():
+    """ConversationResetMessage stores all optional metadata fields."""
+    msg = ConversationResetMessage(
+        new_conversation_id="new-id",
+        uuid="uuid-1",
+        session_id="session-1",
+        trigger="clear",
+        user_message_uuid="user-msg-1",
+        timestamp="2026-09-28T07:15:00.000Z",
+    )
+    assert msg.trigger == "clear"
+    assert msg.user_message_uuid == "user-msg-1"
+    assert msg.timestamp == "2026-09-28T07:15:00.000Z"
 
 
 class TestPermissionUpdate:

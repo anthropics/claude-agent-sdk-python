@@ -92,4 +92,12 @@ echo "::endgroup::"
 
 cd "$GITHUB_WORKSPACE"
 as_e2e "$python_bin" scripts/trust_workspace.py
-as_e2e "$python_bin" -m pytest -p no:cacheprovider "$@"
+log=$(mktemp)
+if ! as_e2e "$python_bin" -m pytest -p no:cacheprovider "$@" 2>&1 | tee "$log"; then
+  # Repeat the failures and pytest's summary as an annotation, where they show
+  # without opening the log.
+  summary=$({ grep -E '^(FAILED|ERROR) ' "$log" || true; tail -n 5 "$log"; } \
+    | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+  echo "::error title=e2e tests failed::$summary"
+  exit 1
+fi

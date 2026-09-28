@@ -138,4 +138,12 @@ while (-not (Test-Path $exitFile)) {
 Show-NewLines
 $code = [int](Get-Content $exitFile)
 Write-Host "e2e tests exited with $code"
+if ($code -ne 0 -and (Test-Path $logFile)) {
+  # Repeat the failures and pytest's summary as an annotation, where they show
+  # without opening the log.
+  $lines = @(Get-Content $logFile -Encoding utf8)
+  $summary = @($lines | Where-Object { $_ -match '^(FAILED|ERROR) ' }) + @($lines | Select-Object -Last 5)
+  $text = ($summary -join "`n") -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+  Write-Host "::error title=e2e tests failed::$text"
+}
 exit $code

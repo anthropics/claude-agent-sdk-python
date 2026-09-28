@@ -2079,10 +2079,86 @@ class TestSendControlRequestCancellation:
         with anyio.move_on_after(0.05):
             await query._send_control_request({"subtype": "interrupt"}, timeout=60)
 
-        # The reader only records a control_response when the id is still
-        # pending, so releasing the slot is what drops a late answer.
         request_id = sent_ids[0]
         assert request_id not in query.pending_control_responses
+
+        async def read_messages():
+            yield {
+                "type": "control_response",
+                "response": {
+                    "request_id": request_id,
+                    "subtype": "success",
+                    "response": {"model": "claude-test"},
+                },
+            }
+
+        query.transport.read_messages = read_messages
+        await query._read_messages()
+
+        # A response that arrives after cancellation must pass through the
+        # reader without recreating state for the abandoned request.
+        assert query.pending_control_results == {}
+
+    @pytest.mark.anyio
+    async def test_cancelled_request_discards_response_at_cancellation_boundary(self):
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+        request_started = anyio.Event()
+        request_finished = anyio.Event()
+        request_id: str | None = None
+        request_scope: anyio.CancelScope | None = None
+
+        class CancelOnSet:
+            def __init__(self, event, cancel_scope):
+                self.event = event
+                self.cancel_scope = cancel_scope
+
+            async def wait(self):
+                await self.event.wait()
+
+            def set(self):
+                # The reader stores the result immediately before calling
+                # set(). Cancel the waiter in that narrow window so finally
+                # must discard a result that has already been recorded.
+                self.cancel_scope.cancel()
+                self.event.set()
+
+        async def write(payload):
+            nonlocal request_id
+            request_id = json.loads(payload)["request_id"]
+            event = query.pending_control_responses[request_id]
+            query.pending_control_responses[request_id] = CancelOnSet(
+                event, request_scope
+            )
+            request_started.set()
+
+        query.transport.write = write
+
+        async def send_request():
+            nonlocal request_scope
+            with anyio.CancelScope() as scope:
+                request_scope = scope
+                await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+            request_finished.set()
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(send_request)
+            await request_started.wait()
+
+            async def read_messages():
+                yield {
+                    "type": "control_response",
+                    "response": {
+                        "request_id": request_id,
+                        "subtype": "success",
+                        "response": {"model": "claude-test"},
+                    },
+                }
+
+            query.transport.read_messages = read_messages
+            await query._read_messages()
+            await request_finished.wait()
+
+        assert query.pending_control_responses == {}
         assert query.pending_control_results == {}
 
     @pytest.mark.anyio

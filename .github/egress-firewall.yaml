@@ -31,7 +31,9 @@ allow:
   # Docker Hub: test.yml's test-e2e-docker job pulls python:3.12-slim for Dockerfile.test
   - registry-1.docker.io
   - auth.docker.io
-  # Docker Hub's image layer downloads (registry-1.docker.io redirects them here)
+  # Docker Hub's image layer downloads: registry-1.docker.io redirects them to
+  # one of these two CDN hosts
+  - production.cloudfront.docker.com
   - production.cloudflare.docker.com
   # Debian packages: apt-get inside Dockerfile.test
   - deb.debian.org

@@ -465,6 +465,96 @@ class TestHookSpecificOutputTypes:
         }
 
 
+class TestSystemInitData:
+    """SystemInitData describes SystemMessage.data for init frames."""
+
+    def test_key_sets_match_typescript(self):
+        """Keys match the documented fields of the TS SDK's SDKSystemMessage."""
+        from claude_agent_sdk import SystemInitData
+
+        assert SystemInitData.__required_keys__ == {
+            "type",
+            "subtype",
+            "uuid",
+            "session_id",
+            "apiKeySource",
+            "claude_code_version",
+            "cwd",
+            "tools",
+            "mcp_servers",
+            "model",
+            "permissionMode",
+            "slash_commands",
+            "output_style",
+            "skills",
+            "plugins",
+        }
+        assert SystemInitData.__optional_keys__ == {
+            "agents",
+            "betas",
+            "terminal_slash_commands",
+            "plugin_errors",
+            "fast_mode_state",
+            "fast_mode_disabled_reason",
+            "capabilities",
+        }
+
+    def test_nested_key_sets(self):
+        from claude_agent_sdk import (
+            SystemInitMcpServer,
+            SystemInitPlugin,
+            SystemInitPluginError,
+        )
+
+        assert SystemInitMcpServer.__required_keys__ == {"name", "status"}
+        assert SystemInitMcpServer.__optional_keys__ == {"source"}
+        assert SystemInitPlugin.__required_keys__ == {"name", "path"}
+        assert SystemInitPlugin.__optional_keys__ == {"version"}
+        assert SystemInitPluginError.__required_keys__ == {
+            "plugin",
+            "type",
+            "message",
+        }
+        assert SystemInitPluginError.__optional_keys__ == {"path"}
+
+    def test_fast_mode_literals(self):
+        from claude_agent_sdk import FastModeDisabledReason, FastModeState
+
+        assert set(get_args(FastModeState)) == {"off", "cooldown", "on"}
+        assert "sdk_opt_in_required" in get_args(FastModeDisabledReason)
+
+    def test_init_frame_still_parses_to_plain_system_message(self):
+        """Typing the payload does not change what the parser returns."""
+        from typing import cast
+
+        from claude_agent_sdk import SystemInitData, SystemMessage
+        from claude_agent_sdk._internal.message_parser import parse_message
+
+        data = {
+            "type": "system",
+            "subtype": "init",
+            "uuid": "u1",
+            "session_id": "s1",
+            "apiKeySource": "none",
+            "claude_code_version": "2.1.284",
+            "cwd": "/repo",
+            "tools": ["Bash"],
+            "mcp_servers": [{"name": "docs", "status": "connected"}],
+            "model": "claude-sonnet-5",
+            "permissionMode": "default",
+            "slash_commands": ["compact"],
+            "output_style": "default",
+            "skills": [],
+            "plugins": [],
+        }
+        message = parse_message(data)
+        assert type(message) is SystemMessage
+        assert message.data == data
+        init = cast(SystemInitData, message.data)
+        assert init["mcp_servers"][0]["status"] == "connected"
+        assert init.get("capabilities") is None
+
+
 class TestMcpServerStatusTypes:
     """Test MCP server status type definitions."""
 

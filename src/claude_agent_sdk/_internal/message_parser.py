@@ -3,7 +3,7 @@
 import logging
 from typing import Any, cast
 
-from .._errors import MessageParseError
+from .._errors import MessageParseError, _normalize_result_errors
 from ..types import (
     AssistantMessage,
     ContentBlock,
@@ -32,6 +32,21 @@ from ..types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_result_errors(raw: Any) -> list[str] | None:
+    """Normalize a ``result`` frame's ``errors`` to the shape ResultMessage declares.
+
+    ``None`` stays ``None`` so "the CLI reported no errors field" remains
+    distinguishable from an explicitly empty list, matching the other optional
+    fields on :class:`ResultMessage`. A reported value goes through the same
+    normalization as :class:`ResultError.errors` and the raised exception text,
+    so a bare string cannot iterate per character and stray non-string entries
+    cannot raise ``TypeError`` in caller code.
+    """
+    if raw is None:
+        return None
+    return _normalize_result_errors(raw)
 
 
 def _parse_origin(data: dict[str, Any]) -> MessageOrigin | None:
@@ -329,7 +344,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     )
                     if deferred
                     else None,
-                    errors=data.get("errors"),
+                    errors=_parse_result_errors(data.get("errors")),
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
                     terminal_reason=data.get("terminal_reason"),

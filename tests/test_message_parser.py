@@ -1256,6 +1256,43 @@ class TestMessageParser:
         assert message.subtype == "error_during_execution"
         assert message.uuid == "err-uuid-789"
 
+    @pytest.mark.parametrize(
+        ("errors", "expected"),
+        [
+            ("API Error: 429 overloaded", ["API Error: 429 overloaded"]),
+            (["API Error: 429", {"code": 429}], ["API Error: 429"]),
+            (
+                ["  ", " Reached maximum number of turns "],
+                ["Reached maximum number of turns"],
+            ),
+            (42, []),
+        ],
+    )
+    def test_parse_result_message_normalizes_malformed_errors(self, errors, expected):
+        """A malformed `errors` field is normalized, not passed through raw.
+
+        A run that fails on an API error arrives as `subtype: "success"` with
+        `is_error: true` and exits 0, so ResultMessage.errors is then the only
+        channel carrying the reason. A bare string would make
+        `"; ".join(msg.errors)` iterate it character by character, and a stray
+        dict entry would raise TypeError in the caller's own code — far from the
+        cause. Keep it agreeing with ResultError.errors and the raised
+        exception text, which normalize the same field.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1500,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "session_overload",
+            "errors": errors,
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.errors == expected
+
     def test_parse_result_message_with_api_error_status(self):
         """ResultMessage surfaces api_error_status for failed API calls.
 

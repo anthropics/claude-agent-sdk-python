@@ -1,4 +1,4 @@
-# Temporary: runs Claude with the claude_args that tag mode builds for an @claude
+# Temporary: runs Claude (through the action's base-action, which parses claude_args the same way) with the claude_args that tag mode builds for an @claude
 # mention (the action's own --permission-mode acceptEdits first, then each
 # repository's claude.yml claude_args) and checks that auto mode is what runs.
 # Delete this branch after the run.
@@ -35,7 +35,7 @@ jobs:
 
       - name: Run Claude with tag mode's claude_args
         id: claude
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action/base-action@v1
         with:
           prompt: |
             This is a test of permission handling. Do these steps in order and report each result:
@@ -47,7 +47,6 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          github_token: ${{ github.token }}
           claude_args: >-
             --permission-mode acceptEdits
             --allowedTools "Glob,Grep,LS,Read,Bash(git add:*),Bash(git commit:*),Bash(git rm:*)"

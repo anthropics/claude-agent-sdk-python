@@ -43,26 +43,29 @@ Keep them when you add or edit a workflow.
    `claude_args` input) passes `--permission-mode auto` in `claude_args`. A tool
    call that needs permission and that the allowed tools do not cover then runs
    only if Claude Code's safety review passes it. Allow only the tools the job
-   needs, and keep any `--disallowedTools` list a step has.
+   needs, and keep any `--disallowedTools` list a step has. Use `claude-opus-4-6`
+   or a newer model: on an older one Claude Code falls back to its default
+   permission mode.
 
-Exceptions (each is listed with its reason in an exemption table in
-`.github/scripts/check_workflow_hardening.py`):
+`claude.yml` answers `@claude` mentions. The Claude Code action sets
+`--permission-mode acceptEdits` for those, and the `--permission-mode auto` in
+the workflow's `claude_args`, which comes after it, replaces it.
 
-- `claude.yml` answers `@claude` mentions. For those the Claude Code action
-  sets `--permission-mode acceptEdits` itself. Do not add a `--permission-mode`
-  there.
-- `build-and-publish.yml`'s `publish` job is the release job: it also uploads
-  to PyPI and pushes over SSH. It stays on its runner, and its changelog step
-  keeps its fixed allowed tools and sets no permission mode.
-- `test.yml`'s `test-e2e` job runs on Linux, macOS and Windows. Its matrix
-  uses `ubuntu-24.04-firewall` for Linux. GitHub offers no such runner for macOS
-  or Windows, so there the tests run through
-  `.github/scripts/run-e2e-firewalled-macos.sh` and
-  `.github/scripts/run-e2e-firewalled-windows.ps1`: as a separate
-  non-administrator user whose outbound traffic the OS firewall limits to the
-  Claude API. Keep running them that way. The check makes sure the matrix's
-  only Linux entry is `ubuntu-24.04-firewall`, but it does not look at those
-  steps: keep the two scripts by hand.
+`build-and-publish.yml`'s `publish` job holds the publishing credentials (the
+PyPI token and the deploy key) and does not call Claude. Claude writes the
+changelog in `generate-changelog.yml`, a job with none of those credentials,
+and the `publish` job takes only `CHANGELOG.md` from it. Keep it that way.
+
+Exception (listed with its reason in an exemption table in
+`.github/scripts/check_workflow_hardening.py`): `test.yml`'s `test-e2e` job runs
+on Linux, macOS and Windows. Its matrix uses `ubuntu-24.04-firewall` for Linux.
+GitHub offers no such runner for macOS or Windows, so there the tests run
+through `.github/scripts/run-e2e-firewalled-macos.sh` and
+`.github/scripts/run-e2e-firewalled-windows.ps1`: as a separate
+non-administrator user whose outbound traffic the OS firewall limits to the
+Claude API. Keep running them that way. The check makes sure the matrix's only
+Linux entry is `ubuntu-24.04-firewall`, but it does not look at those steps:
+keep the two scripts by hand.
 
 `.github/workflows/workflow-hardening.yml` fails when a job that runs the Claude
 Code action or mentions `ANTHROPIC_FEDERATION_RULE_ID` breaks protection 1 or 3,

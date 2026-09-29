@@ -1,0 +1,73 @@
+name: Generate Changelog
+
+# Called by build-and-publish.yml. Claude writes the new CHANGELOG.md here, in a
+# job that holds no publishing credentials (no PyPI token, no deploy key, and a
+# read-only GITHUB_TOKEN). The release job takes only CHANGELOG.md from this
+# job's artifact and commits it itself. A failed changelog does not fail this
+# job, so it does not hold up the release, and a re-run of failed jobs does not
+# start the release again.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version being released'
+        required: true
+        type: string
+      previous_tag:
+        description: 'Previous release tag'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  generate:
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # /generate-changelog commits its change. The commit stays in this job;
+      # the release job commits CHANGELOG.md itself.
+      - name: Configure git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Update changelog with Claude
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: "/generate-changelog new version: ${{ inputs.version }}, old version: ${{ inputs.previous_tag }}"
+          # Authenticate to the Claude API via Workload Identity Federation
+          # (the workflow's OIDC token is exchanged for a short-lived access
+          # token) instead of a static API key.
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github_token: ${{ github.token }}
+          # --permission-mode auto: a tool call that needs permission and is outside the allowed tools runs
+          # only if Claude Code's safety review passes it. --model is set because Claude Code's default model
+          # changes between releases.
+          claude_args: |
+            --model claude-opus-4-6
+            --permission-mode auto
+            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+
+      - uses: actions/upload-artifact@v4
+        if: steps.claude.outcome == 'success'
+        continue-on-error: true
+        with:
+          name: changelog
+          path: CHANGELOG.md
+          if-no-files-found: error

@@ -51,10 +51,11 @@ Keep them when you add or edit a workflow.
 `--permission-mode acceptEdits` for those, and the `--permission-mode auto` in
 the workflow's `claude_args`, which comes after it, replaces it.
 
-`build-and-publish.yml`'s `publish` job holds the publishing credentials (the
-PyPI token and the deploy key) and does not call Claude. Claude writes the
-changelog in `generate-changelog.yml`, a job with none of those credentials,
-and the `publish` job takes only `CHANGELOG.md` from it. Keep it that way.
+`build-and-publish.yml`'s `publish` and `release` jobs hold the publishing
+credentials (the PyPI token and the deploy key) and do not call Claude. Claude
+writes the changelog in `generate-changelog.yml`, a job with none of those
+credentials that runs after the upload to PyPI, and the `release` job takes only
+`CHANGELOG.md` from it. Keep it that way.
 
 Exception (listed with its reason in an exemption table in
 `.github/scripts/check_workflow_hardening.py`): `test.yml`'s `test-e2e` job runs

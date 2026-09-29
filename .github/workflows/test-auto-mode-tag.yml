@@ -1,0 +1,71 @@
+# Temporary: runs Claude with the claude_args that tag mode builds for an @claude
+# mention (the action's own --permission-mode acceptEdits first, then each
+# repository's claude.yml claude_args) and checks that auto mode is what runs.
+# Delete this branch after the run.
+name: Test auto mode for @claude jobs
+
+on:
+  push:
+    branches: [test-auto-mode-tag]
+
+permissions: {}
+
+jobs:
+  tag-args:
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: claude-code-action
+            args: --allowedTools "Bash(bun install),Bash(bun test:*),Bash(bun run format),Bash(bun typecheck)" --model "claude-opus-4-7" --permission-mode auto
+          - repo: claude-code
+            args: --model claude-sonnet-4-6 --permission-mode auto
+          - repo: claude-agent-sdk-python
+            args: --model claude-opus-4-6 --permission-mode auto --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"
+    name: tag-args (${{ matrix.repo }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Claude with tag mode's claude_args
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            This is a test of permission handling. Do these steps in order and report each result:
+            1. Run `uname -sr` with the Bash tool.
+            2. Create a file named auto-mode-check.txt in the current directory that holds the line ok.
+            3. Run `git status --short` with the Bash tool.
+            Do not commit, push, or change anything else.
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github_token: ${{ github.token }}
+          claude_args: >-
+            --permission-mode acceptEdits
+            --allowedTools "Glob,Grep,LS,Read,Bash(git add:*),Bash(git commit:*),Bash(git rm:*)"
+            ${{ matrix.args }}
+
+      - name: Check the result
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          mode=$(jq -r '.[] | select(.type == "system" and .subtype == "init") | .permissionMode' "$EXECUTION_FILE" | head -1)
+          model=$(jq -r '.[] | select(.type == "system" and .subtype == "init") | .model' "$EXECUTION_FILE" | head -1)
+          denials=$(jq -c '[.[] | select(.type == "result") | .permission_denials[]? | {tool_name, input: (.tool_input | tostring | .[0:120])}]' "$EXECUTION_FILE")
+          bash_ok=$(jq -r '[.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result") | .content | tostring | select(test("Linux"))] | length' "$EXECUTION_FILE")
+          file=$(cat auto-mode-check.txt 2>/dev/null || echo MISSING)
+          status=$(git status --short | tr '\n' ' ')
+          summary="repo=${{ matrix.repo }} model=$model permissionMode=$mode uname_ran=$bash_ok file=$file git_status=[$status] denials=$denials"
+          echo "$summary"
+          echo "::notice title=${{ matrix.repo }}::$summary"
+          [ "$mode" = auto ] && [ "$file" = ok ] && [ "$bash_ok" -gt 0 ]

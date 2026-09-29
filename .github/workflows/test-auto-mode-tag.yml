@@ -25,6 +25,8 @@ jobs:
             args: --allowedTools "Bash(bun install),Bash(bun test:*),Bash(bun run format),Bash(bun typecheck)" --model "claude-opus-4-7" --permission-mode auto
           - repo: claude-code
             args: --model claude-sonnet-4-6 --permission-mode auto
+          - repo: control-old-model
+            args: --model claude-sonnet-4-5-20250929 --permission-mode auto
           - repo: claude-agent-sdk-python
             args: --model claude-opus-4-6 --permission-mode auto --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"
     name: tag-args (${{ matrix.repo }})
@@ -67,4 +69,5 @@ jobs:
           summary="repo=${{ matrix.repo }} model=$model permissionMode=$mode uname_ran=$bash_ok file=$file git_status=[$status] denials=$denials"
           echo "$summary"
           echo "::notice title=${{ matrix.repo }}::$summary"
+          if [ "${{ matrix.repo }}" = control-old-model ]; then [ "$mode" != auto ]; exit; fi
           [ "$mode" = auto ] && [ "$file" = ok ] && [ "$bash_ok" -gt 0 ]

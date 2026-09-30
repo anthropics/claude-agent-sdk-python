@@ -179,15 +179,14 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
     # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04-firewall
     needs: test # Run after unit tests pass
-    # Test only: this branch on the firewall runner, and main as main runs it.
+    # Test only: this branch, and main's code built with this branch's Dockerfile.test
+    # (which trusts the firewall's CA), both on the firewall runner.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {tree: branch, ref: '', runner: ubuntu-24.04-firewall}
-          - {tree: main, ref: main, runner: ubuntu-latest}
+        tree: [branch, main]
     permissions:
       contents: read
       # Required to mint the OIDC token exchanged for a Claude API access
@@ -197,8 +196,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.ref }}
+
+      - name: Use main's code (test only)
+        if: matrix.tree == 'main'
+        run: |
+          cp Dockerfile.test "$RUNNER_TEMP/Dockerfile.test"
+          git fetch -q --depth=1 origin main
+          git checkout -q FETCH_HEAD -- .
+          cp "$RUNNER_TEMP/Dockerfile.test" Dockerfile.test
+          echo "::notice title=main tree::$(git rev-parse --short FETCH_HEAD), $(git diff --stat FETCH_HEAD -- src e2e-tests pyproject.toml | tail -1)"
 
       - name: Build Docker test image
         # The egress firewall re-signs TLS with a per-run CA that containers don't

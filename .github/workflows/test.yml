@@ -181,13 +181,14 @@ jobs:
     # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
     runs-on: ubuntu-24.04-firewall
     needs: test # Run after unit tests pass
-    # Test only: the failing test four times in a fresh container, and main's code
-    # (built with this branch's Dockerfile.test, which trusts the firewall's CA) on the full suite.
+    # Test only: the fixed test four times in a fresh container, and the full suite once and twice.
     strategy:
       fail-fast: false
       matrix:
         include:
           - {tree: branch, runs: 4, tests: 'e2e-tests/test_include_partial_messages.py::test_include_partial_messages_stream_events'}
+          - {tree: branch, runs: 1, tests: 'e2e-tests/'}
+          - {tree: branch, runs: 2, tests: 'e2e-tests/'}
     permissions:
       contents: read
       # Required to mint the OIDC token exchanged for a Claude API access

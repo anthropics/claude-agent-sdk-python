@@ -730,10 +730,15 @@ class Query:
             "request": request,
         }
 
-        await self.transport.write(json.dumps(control_request) + "\n")
-
-        # Wait for response
+        # Every exit has to release the slot, including a cancellation
+        # delivered while the request is still being written. A host that
+        # bounds this call with asyncio.wait_for or anyio.move_on_after leaves
+        # through cancellation, and the reader would otherwise keep routing a
+        # late response into pending_control_results for a waiter that is gone.
         try:
+            await self.transport.write(json.dumps(control_request) + "\n")
+
+            # Wait for response
             with anyio.fail_after(timeout):
                 await event.wait()
 
@@ -747,10 +752,6 @@ class Query:
         except TimeoutError as e:
             raise Exception(f"Control request timeout: {request.get('subtype')}") from e
         finally:
-            # Every exit has to release the slot. A host that bounds this call
-            # with asyncio.wait_for or anyio.move_on_after leaves through
-            # cancellation, and the reader would otherwise keep routing a late
-            # response into pending_control_results for a waiter that is gone.
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
 

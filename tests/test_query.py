@@ -2162,6 +2162,30 @@ class TestSendControlRequestCancellation:
         assert query.pending_control_results == {}
 
     @pytest.mark.anyio
+    async def test_cancelled_request_during_write_releases_pending_entry(self):
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+        scope_holder: list[anyio.CancelScope] = []
+        request_id: str | None = None
+
+        async def write(payload):
+            nonlocal request_id
+            request_id = json.loads(payload)["request_id"]
+            # Cancel and then yield, so the cancellation is delivered inside
+            # the write rather than at the wait that follows it.
+            scope_holder[0].cancel()
+            await anyio.sleep(0)
+
+        query.transport.write = write
+
+        with anyio.CancelScope() as scope:
+            scope_holder.append(scope)
+            await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+        assert request_id is not None
+        assert query.pending_control_responses == {}
+        assert query.pending_control_results == {}
+
+    @pytest.mark.anyio
     async def test_successful_request_still_returns_its_response(self):
         query = Query(transport=AsyncMock(), is_streaming_mode=True)
 

@@ -181,12 +181,13 @@ jobs:
     # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
     runs-on: ubuntu-24.04-firewall
     needs: test # Run after unit tests pass
-    # Test only: this branch, and main's code built with this branch's Dockerfile.test
-    # (which trusts the firewall's CA), both on the firewall runner.
+    # Test only: this branch (main merged in, SDK 0.2.163), and the same with the SDK
+    # version set back to 0.2.162. The SDK sends its version to the CLI.
     strategy:
       fail-fast: false
       matrix:
-        tree: [branch, main]
+        tree: [v163, v162]
+        sample: [1, 2]
     permissions:
       contents: read
       # Required to mint the OIDC token exchanged for a Claude API access
@@ -197,14 +198,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use main's code (test only)
-        if: matrix.tree == 'main'
+      - name: Set the SDK version back to 0.2.162 (test only)
+        if: matrix.tree == 'v162'
         run: |
-          cp Dockerfile.test "$RUNNER_TEMP/Dockerfile.test"
-          git fetch -q --depth=1 origin main
-          git checkout -q FETCH_HEAD -- .
-          cp "$RUNNER_TEMP/Dockerfile.test" Dockerfile.test
-          echo "::notice title=main tree::$(git rev-parse --short FETCH_HEAD), $(git diff --stat FETCH_HEAD -- src e2e-tests pyproject.toml | tail -1)"
+          sed -i 's/^version = "0.2.163"$/version = "0.2.162"/' pyproject.toml
+          sed -i 's/^__version__ = "0.2.163"$/__version__ = "0.2.162"/' src/claude_agent_sdk/_version.py
+          echo "::notice title=v162::$(git diff --stat | tail -1)"
 
       - name: Build Docker test image
         # The egress firewall re-signs TLS with a per-run CA that containers don't
@@ -225,7 +224,7 @@ jobs:
           fi
 
       - name: CLI version in the image (test only)
-        run: echo "::notice title=${{ matrix.tree }} CLI::$(docker run --rm claude-sdk-test claude -v)"
+        run: echo "::notice title=${{ matrix.tree }}::CLI $(docker run --rm claude-sdk-test claude -v), SDK $(docker run --rm claude-sdk-test python -c 'import claude_agent_sdk as s; print(s.__version__)')"
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
@@ -245,7 +244,7 @@ jobs:
             -e ANTHROPIC_SERVICE_ACCOUNT_ID \
             -e ANTHROPIC_IDENTITY_TOKEN_FILE=/run/claude-identity-token \
             -v "$ANTHROPIC_IDENTITY_TOKEN_FILE:/run/claude-identity-token:ro" \
-            claude-sdk-test python -m pytest e2e-tests/test_include_partial_messages.py -v -m e2e -rfE --tb=short 2>&1 | tee "$RUNNER_TEMP/e2e.log" || {
+            claude-sdk-test python -m pytest e2e-tests/ -v -m e2e -rfE --tb=short 2>&1 | tee "$RUNNER_TEMP/e2e.log" || {
             # Test only: repeat the failures as annotations, since the log is not readable here.
             enc() { sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g'; }
             echo "::error title=e2e summary::$(grep -E '^(FAILED|ERROR) ' "$RUNNER_TEMP/e2e.log" | head -c 3000 | enc)"

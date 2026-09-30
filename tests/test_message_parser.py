@@ -1266,18 +1266,21 @@ class TestMessageParser:
                 ["Reached maximum number of turns"],
             ),
             (42, []),
+            ([{"code": 429}], []),
         ],
     )
     def test_parse_result_message_normalizes_malformed_errors(self, errors, expected):
         """A malformed `errors` field is normalized, not passed through raw.
 
-        A run that fails on an API error arrives as `subtype: "success"` with
-        `is_error: true` and exits 0, so ResultMessage.errors is then the only
-        channel carrying the reason. A bare string would make
-        `"; ".join(msg.errors)` iterate it character by character, and a stray
-        dict entry would raise TypeError in the caller's own code — far from the
-        cause. Keep it agreeing with ResultError.errors and the raised
+        The field is declared `list[str] | None`, and a bare string violates
+        that: `"; ".join(msg.errors)` then walks it character by character, and
+        a stray dict entry raises TypeError in the caller's own code — far from
+        the cause. Keep it agreeing with ResultError.errors and the raised
         exception text, which normalize the same field.
+
+        The last row is the boundary worth pinning: a non-empty list whose every
+        entry is discarded arrives as `[]`, indistinguishable from a CLI that
+        reported no errors, which is why the drop is logged rather than silent.
         """
         data = {
             "type": "result",

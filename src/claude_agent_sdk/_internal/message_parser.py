@@ -43,10 +43,16 @@ def _parse_result_errors(raw: Any) -> list[str] | None:
     normalization as :class:`ResultError.errors` and the raised exception text,
     so a bare string cannot iterate per character and stray non-string entries
     cannot raise ``TypeError`` in caller code.
+
+    Entries that normalization discards leave the same ``[]`` as a genuinely
+    empty list, so log when that happens rather than losing it silently.
     """
     if raw is None:
         return None
-    return _normalize_result_errors(raw)
+    normalized = _normalize_result_errors(raw)
+    if raw and not normalized:
+        logger.debug("Dropped unparsable result errors: %r", raw)
+    return normalized
 
 
 def _parse_origin(data: dict[str, Any]) -> MessageOrigin | None:

@@ -49,7 +49,10 @@ async def test_include_partial_messages_stream_events():
     # Should have SystemMessage(init) at the start
     assert message_types[0] == "SystemMessage"
     assert isinstance(collected_messages[0], SystemMessage)
-    assert collected_messages[0].subtype == "init"
+    assert collected_messages[0].subtype == "init", [
+        (type(m).__name__, getattr(m, "subtype", None), {k: (v if k in ("type", "subtype") else (sorted(v)[:8] if isinstance(v, (list, dict)) else type(v).__name__)) for k, v in (getattr(m, "data", None) or {}).items()})
+        for m in collected_messages[:3]
+    ]  # test only: show the leading messages
 
     # Should have multiple StreamEvent messages
     stream_events = [msg for msg in collected_messages if isinstance(msg, StreamEvent)]

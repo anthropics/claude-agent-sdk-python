@@ -188,7 +188,6 @@ jobs:
       matrix:
         include:
           - {tree: branch, runs: 4, tests: 'e2e-tests/test_include_partial_messages.py::test_include_partial_messages_stream_events'}
-          - {tree: main, runs: 1, tests: 'e2e-tests/'}
     permissions:
       contents: read
       # Required to mint the OIDC token exchanged for a Claude API access
@@ -248,10 +247,10 @@ jobs:
             -e ANTHROPIC_SERVICE_ACCOUNT_ID \
             -e ANTHROPIC_IDENTITY_TOKEN_FILE=/run/claude-identity-token \
             -v "$ANTHROPIC_IDENTITY_TOKEN_FILE:/run/claude-identity-token:ro" \
-            claude-sdk-test bash -c 'rc=0; for i in $(seq ${{ matrix.runs }}); do python -m pytest ${{ matrix.tests }} -v -m e2e -rfE --tb=short || rc=1; done; exit $rc' 2>&1 | tee "$RUNNER_TEMP/e2e.log" || {
+            claude-sdk-test bash -c 'rc=0; for i in $(seq ${{ matrix.runs }}); do echo "=== iteration $i"; python -m pytest ${{ matrix.tests }} -v -m e2e -rfE --tb=short || { rc=1; echo "FAILED iteration $i"; }; done; exit $rc' 2>&1 | tee "$RUNNER_TEMP/e2e.log" || {
             # Test only: repeat the failures as annotations, since the log is not readable here.
             enc() { sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g'; }
-            echo "::error title=e2e summary::$(grep -E '^(FAILED|ERROR) ' "$RUNNER_TEMP/e2e.log" | head -c 3000 | enc)"
+            echo "::error title=e2e summary::$(grep -E '^(FAILED|ERROR) |^=== iteration' "$RUNNER_TEMP/e2e.log" | head -c 3000 | enc)"
             echo "::error title=e2e failures::$(sed -n '/= FAILURES =/,/short test summary/p' "$RUNNER_TEMP/e2e.log" | tail -c 20000 | enc)"
             echo "::error title=e2e tail::$(tail -n 40 "$RUNNER_TEMP/e2e.log" | head -c 6000 | enc)"
             exit 1

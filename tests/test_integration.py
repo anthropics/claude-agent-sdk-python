@@ -166,7 +166,10 @@ class TestIntegration:
 
         async def _test():
             with (
-                patch("shutil.which", return_value=None),
+                patch(
+                    "claude_agent_sdk._internal.transport.subprocess_cli.find_executable",
+                    return_value=None,
+                ),
                 patch("pathlib.Path.exists", return_value=False),
                 pytest.raises(CLINotFoundError) as exc_info,
             ):

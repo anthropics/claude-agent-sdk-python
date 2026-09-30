@@ -21,6 +21,7 @@ from typing import Any
 import anyio
 
 from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
+from . import executable
 from .session_store_validation import _store_implements
 
 logger = logging.getLogger(__name__)
@@ -391,7 +392,12 @@ def _get_worktree_paths(cwd: str) -> list[str]:
     Returns empty list if git is unavailable or cwd is not in a repo.
     """
     try:
-        result = subprocess.run(
+        # executable.run resolves "git" from the absolute PATH entries only
+        # -- never a git / git.exe sitting in ``cwd`` or in the process's
+        # own working directory -- and raises ExecutableNotFoundError (an
+        # OSError) when there is none, so "git unavailable" still lands in
+        # the except clause below.
+        result = executable.run(
             ["git", "worktree", "list", "--porcelain"],
             cwd=cwd,
             capture_output=True,

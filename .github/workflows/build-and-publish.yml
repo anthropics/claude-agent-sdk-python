@@ -282,9 +282,23 @@ jobs:
       - name: Commit the changelog
         if: steps.changelog.outcome == 'success'
         continue-on-error: true
-        # Takes CHANGELOG.md and nothing else from the changelog job.
+        # Takes CHANGELOG.md and nothing else from the changelog job, after the
+        # same checks generate-changelog.yml runs before uploading it.
         run: |
-          cp "$RUNNER_TEMP/changelog/CHANGELOG.md" CHANGELOG.md
+          f="$RUNNER_TEMP/changelog/CHANGELOG.md"
+          if [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" -ne 1 ]; then
+            echo "::error::CHANGELOG.md is not a plain file"; exit 1
+          fi
+          if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+            echo "::error::CHANGELOG.md is larger than 1 MiB"; exit 1
+          fi
+          if LC_ALL=C grep -qaP '\x00' "$f"; then
+            echo "::error::CHANGELOG.md is not a text file"; exit 1
+          fi
+          if grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}' -e 'pypi-[A-Za-z0-9_-]{30,}' "$f"; then
+            echo "::error::CHANGELOG.md contains a string that looks like a credential"; exit 1
+          fi
+          cp -- "$f" CHANGELOG.md
           git add CHANGELOG.md
           git diff --cached --quiet || git commit -m "docs: update changelog for v$VERSION"
 

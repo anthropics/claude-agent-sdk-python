@@ -55,7 +55,8 @@ the workflow's `claude_args`, which comes after it, replaces it.
 credentials (the PyPI token and the deploy key) and do not call Claude. Claude
 writes the changelog in `generate-changelog.yml`, a job with none of those
 credentials that runs after the upload to PyPI, and the `release` job takes only
-`CHANGELOG.md` from it. Keep it that way.
+`CHANGELOG.md` from it. Both jobs refuse that file unless it is a plain text file
+with no credential-like strings in it. Keep it that way.
 
 Exception (listed with its reason in an exemption table in
 `.github/scripts/check_workflow_hardening.py`): `test.yml`'s `test-e2e` job runs

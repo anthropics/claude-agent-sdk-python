@@ -64,10 +64,33 @@ jobs:
             --permission-mode auto
             --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
 
-      - uses: actions/upload-artifact@v4
+      # The artifact is public (this is a public repository) and its CHANGELOG.md
+      # ends up on main, so upload only a plain text file with nothing in it that
+      # looks like a credential. The release job checks the file again.
+      - name: Check the changelog
+        id: check
         if: steps.claude.outcome == 'success'
+        continue-on-error: true
+        run: |
+          f=CHANGELOG.md
+          if [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" -ne 1 ]; then
+            echo "::error::CHANGELOG.md is not a plain file"; exit 1
+          fi
+          if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+            echo "::error::CHANGELOG.md is larger than 1 MiB"; exit 1
+          fi
+          if LC_ALL=C grep -qaP '\x00' "$f"; then
+            echo "::error::CHANGELOG.md is not a text file"; exit 1
+          fi
+          if grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}' -e 'pypi-[A-Za-z0-9_-]{30,}' "$f"; then
+            echo "::error::CHANGELOG.md contains a string that looks like a credential"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outcome == 'success'
         continue-on-error: true
         with:
           name: changelog
           path: CHANGELOG.md
           if-no-files-found: error
+          retention-days: 1

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.163
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.286
+- CI: pinned the model for issue triage to fix failures caused by the CLI's new default model (#1328)
+
 ## 0.2.162
 
 ### Internal/Other Changes

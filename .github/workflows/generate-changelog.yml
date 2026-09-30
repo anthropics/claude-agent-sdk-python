@@ -45,7 +45,8 @@ jobs:
       - name: Update changelog with Claude
         id: claude
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        # Test only: base-action, because the action does not run on push events.
+        uses: anthropics/claude-code-action/base-action@v1
         with:
           prompt: "/generate-changelog new version: ${{ inputs.version }}, old version: ${{ inputs.previous_tag }}"
           # Authenticate to the Claude API via Workload Identity Federation
@@ -55,7 +56,6 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          github_token: ${{ github.token }}
           # --permission-mode auto: a tool call that needs permission and is outside the allowed tools runs
           # only if Claude Code's safety review passes it. --model is set because Claude Code's default model
           # changes between releases.

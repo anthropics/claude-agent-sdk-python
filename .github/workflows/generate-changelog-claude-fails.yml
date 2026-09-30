@@ -1,0 +1,52 @@
+# Test only: generate-changelog.yml with its Claude step replaced.
+name: Generate Changelog (claude-fails, test only)
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version being released
+        required: true
+        type: string
+      previous_tag:
+        description: Previous release tag
+        required: false
+        type: string
+        default: ''
+jobs:
+  generate:
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: 'Update changelog with Claude (test: fails)'
+      id: claude
+      continue-on-error: true
+      run: exit 1
+    - name: Check the changelog
+      id: check
+      if: steps.claude.outcome == 'success'
+      continue-on-error: true
+      run: "f=CHANGELOG.md\nif [ -L \"$f\" ] || [ ! -f \"$f\" ] || [ \"$(stat -c %h \"$f\")\" -ne 1 ]; then\n  echo \"::error::CHANGELOG.md is not a plain file\"; exit 1\nfi\nif [ \"$(wc -c < \"$f\")\"\
+        \ -gt 1048576 ]; then\n  echo \"::error::CHANGELOG.md is larger than 1 MiB\"; exit 1\nfi\nif LC_ALL=C grep -qaP '\\x00' \"$f\"; then\n  echo \"::error::CHANGELOG.md is not a text file\"; exit 1\n\
+        fi\nif grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}'\
+        \ -e 'pypi-[A-Za-z0-9_-]{30,}' \"$f\"; then\n  echo \"::error::CHANGELOG.md contains a string that looks like a credential\"; exit 1\nfi\n"
+    - uses: actions/upload-artifact@v4
+      if: steps.check.outcome == 'success'
+      continue-on-error: true
+      with:
+        name: changelog-claude-fails
+        path: CHANGELOG.md
+        if-no-files-found: error
+        retention-days: 1

@@ -1,0 +1,58 @@
+# Test only: generate-changelog.yml with its Claude step replaced.
+name: Generate Changelog (bypass, test only)
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version being released
+        required: true
+        type: string
+      previous_tag:
+        description: Previous release tag
+        required: false
+        type: string
+        default: ''
+jobs:
+  generate:
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: 'Update changelog with Claude (test: writes a JWT, no generate-side check)'
+      id: claude
+      continue-on-error: true
+      run: 'python3 - <<''EOF''
+
+        import pathlib
+
+        p = pathlib.Path(''CHANGELOG.md'')
+
+        s = p.read_text()
+
+        entry = ''## 0.2.163\n\n### Internal/Other Changes\n\n- Test entry eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvOnRlc3QifQ.c2lnbmF0dXJl\n\n''
+
+        p.write_text(s.replace(''# Changelog\n\n'', ''# Changelog\n\n'' + entry, 1))
+
+        EOF
+
+        '
+    - uses: actions/upload-artifact@v4
+      if: steps.claude.outcome == 'success'
+      continue-on-error: true
+      with:
+        name: changelog-bypass
+        path: CHANGELOG.md
+        if-no-files-found: error
+        retention-days: 1

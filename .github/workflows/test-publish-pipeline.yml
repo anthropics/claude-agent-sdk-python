@@ -1,0 +1,369 @@
+# Test only: the changelog and release jobs of build-and-publish.yml, with the PyPI upload,
+# the push and the tag stubbed out. Generated from the real workflow files.
+name: Test publish pipeline
+on:
+  push:
+    branches:
+    - test-changelog-job
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+    - run: echo 'Stands in for the PyPI upload.'
+  changelog-real:
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/generate-changelog.yml
+    with:
+      version: 0.2.163
+      previous_tag: v0.2.162
+  release-real:
+    needs:
+    - publish
+    - changelog-real
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: 0.2.163
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Update version files
+      run: python scripts/update_version.py "$VERSION"
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: Commit version changes
+      run: 'git add pyproject.toml src/claude_agent_sdk/_version.py
+
+        git commit -m "chore: release v$VERSION"
+
+        '
+    - uses: actions/download-artifact@v4
+      id: changelog
+      continue-on-error: true
+      with:
+        name: changelog
+        path: ${{ runner.temp }}/changelog
+    - name: Commit the changelog
+      if: steps.changelog.outcome == 'success'
+      continue-on-error: true
+      run: "f=\"$RUNNER_TEMP/changelog/CHANGELOG.md\"\nif [ -L \"$f\" ] || [ ! -f \"$f\" ] || [ \"$(stat -c %h \"$f\")\" -ne 1 ]; then\n  echo \"::error::CHANGELOG.md is not a plain file\"; exit 1\nfi\n\
+        if [ \"$(wc -c < \"$f\")\" -gt 1048576 ]; then\n  echo \"::error::CHANGELOG.md is larger than 1 MiB\"; exit 1\nfi\nif LC_ALL=C grep -qaP '\\x00' \"$f\"; then\n  echo \"::error::CHANGELOG.md is not\
+        \ a text file\"; exit 1\nfi\nif grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}'\
+        \ -e 'pypi-[A-Za-z0-9_-]{30,}' \"$f\"; then\n  echo \"::error::CHANGELOG.md contains a string that looks like a credential\"; exit 1\nfi\ncp -- \"$f\" CHANGELOG.md\ngit add CHANGELOG.md\ngit diff\
+        \ --cached --quiet || git commit -m \"docs: update changelog for v$VERSION\"\n"
+    - name: Check the result instead of pushing
+      run: 'set -u
+
+        awk -v ver="$VERSION" ''/^## / { if (found) exit; if ($2 == ver) found=1; next } found { print }'' CHANGELOG.md > release_notes.md
+
+        echo ''--- commits ---''; git log -3 --format=''%h %s''
+
+        echo ''--- files in HEAD ---''; git show --name-only --format= HEAD
+
+        echo ''--- release notes ---''; cat release_notes.md
+
+        subject=$(git log -1 --format=%s)
+
+        files=$(git show --name-only --format= HEAD | sort | tr "\n" " ")
+
+        prev_files=$(git show --name-only --format= HEAD~1 | sort | tr "\n" " ")
+
+        status=$(git status --porcelain --untracked-files=no)
+
+        fail() { echo "::error title=real::$1"; exit 1; }
+
+        [ -z "$status" ] || fail "tracked files left modified: $status"
+
+        [ "$subject" = "docs: update changelog for v$VERSION" ] || fail "last commit is ''$subject''"
+
+        [ "$files" = "CHANGELOG.md " ] || fail "changelog commit touches: $files"
+
+        [ "$prev_files" = "pyproject.toml src/claude_agent_sdk/_version.py " ] || fail "version commit touches: $prev_files"
+
+        [ -s release_notes.md ] || fail "no release notes for $VERSION"
+
+        dels=$(git diff --numstat HEAD~1 HEAD -- CHANGELOG.md | cut -f2)
+
+        echo "::notice title=real::changelog committed alone ($files), $(grep -c . release_notes.md) release-note lines, $dels lines removed from the old changelog"
+
+        '
+  changelog-claude-fails:
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/generate-changelog-claude-fails.yml
+    with:
+      version: 0.2.163
+      previous_tag: v0.2.162
+  release-claude-fails:
+    needs:
+    - publish
+    - changelog-claude-fails
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: 0.2.163
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Update version files
+      run: python scripts/update_version.py "$VERSION"
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: Commit version changes
+      run: 'git add pyproject.toml src/claude_agent_sdk/_version.py
+
+        git commit -m "chore: release v$VERSION"
+
+        '
+    - uses: actions/download-artifact@v4
+      id: changelog
+      continue-on-error: true
+      with:
+        name: changelog-claude-fails
+        path: ${{ runner.temp }}/changelog
+    - name: Commit the changelog
+      if: steps.changelog.outcome == 'success'
+      continue-on-error: true
+      run: "f=\"$RUNNER_TEMP/changelog/CHANGELOG.md\"\nif [ -L \"$f\" ] || [ ! -f \"$f\" ] || [ \"$(stat -c %h \"$f\")\" -ne 1 ]; then\n  echo \"::error::CHANGELOG.md is not a plain file\"; exit 1\nfi\n\
+        if [ \"$(wc -c < \"$f\")\" -gt 1048576 ]; then\n  echo \"::error::CHANGELOG.md is larger than 1 MiB\"; exit 1\nfi\nif LC_ALL=C grep -qaP '\\x00' \"$f\"; then\n  echo \"::error::CHANGELOG.md is not\
+        \ a text file\"; exit 1\nfi\nif grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}'\
+        \ -e 'pypi-[A-Za-z0-9_-]{30,}' \"$f\"; then\n  echo \"::error::CHANGELOG.md contains a string that looks like a credential\"; exit 1\nfi\ncp -- \"$f\" CHANGELOG.md\ngit add CHANGELOG.md\ngit diff\
+        \ --cached --quiet || git commit -m \"docs: update changelog for v$VERSION\"\n"
+    - name: Check the result instead of pushing
+      run: 'set -u
+
+        awk -v ver="$VERSION" ''/^## / { if (found) exit; if ($2 == ver) found=1; next } found { print }'' CHANGELOG.md > release_notes.md
+
+        echo ''--- commits ---''; git log -3 --format=''%h %s''
+
+        echo ''--- files in HEAD ---''; git show --name-only --format= HEAD
+
+        echo ''--- release notes ---''; cat release_notes.md
+
+        subject=$(git log -1 --format=%s)
+
+        files=$(git show --name-only --format= HEAD | sort | tr "\n" " ")
+
+        prev_files=$(git show --name-only --format= HEAD~1 | sort | tr "\n" " ")
+
+        status=$(git status --porcelain --untracked-files=no)
+
+        fail() { echo "::error title=claude-fails::$1"; exit 1; }
+
+        [ -z "$status" ] || fail "tracked files left modified: $status"
+
+        [ "$subject" = "chore: release v$VERSION" ] || fail "expected no changelog commit, last commit is ''$subject''"
+
+        git diff --quiet HEAD~1 HEAD -- CHANGELOG.md || fail "CHANGELOG.md changed"
+
+        echo "::notice title=claude-fails::released without a changelog commit, as expected (download: ${{ steps.changelog.outcome }})"
+
+        '
+  changelog-leaky:
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/generate-changelog-leaky.yml
+    with:
+      version: 0.2.163
+      previous_tag: v0.2.162
+  release-leaky:
+    needs:
+    - publish
+    - changelog-leaky
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: 0.2.163
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Update version files
+      run: python scripts/update_version.py "$VERSION"
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: Commit version changes
+      run: 'git add pyproject.toml src/claude_agent_sdk/_version.py
+
+        git commit -m "chore: release v$VERSION"
+
+        '
+    - uses: actions/download-artifact@v4
+      id: changelog
+      continue-on-error: true
+      with:
+        name: changelog-leaky
+        path: ${{ runner.temp }}/changelog
+    - name: Commit the changelog
+      if: steps.changelog.outcome == 'success'
+      continue-on-error: true
+      run: "f=\"$RUNNER_TEMP/changelog/CHANGELOG.md\"\nif [ -L \"$f\" ] || [ ! -f \"$f\" ] || [ \"$(stat -c %h \"$f\")\" -ne 1 ]; then\n  echo \"::error::CHANGELOG.md is not a plain file\"; exit 1\nfi\n\
+        if [ \"$(wc -c < \"$f\")\" -gt 1048576 ]; then\n  echo \"::error::CHANGELOG.md is larger than 1 MiB\"; exit 1\nfi\nif LC_ALL=C grep -qaP '\\x00' \"$f\"; then\n  echo \"::error::CHANGELOG.md is not\
+        \ a text file\"; exit 1\nfi\nif grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}'\
+        \ -e 'pypi-[A-Za-z0-9_-]{30,}' \"$f\"; then\n  echo \"::error::CHANGELOG.md contains a string that looks like a credential\"; exit 1\nfi\ncp -- \"$f\" CHANGELOG.md\ngit add CHANGELOG.md\ngit diff\
+        \ --cached --quiet || git commit -m \"docs: update changelog for v$VERSION\"\n"
+    - name: Check the result instead of pushing
+      run: 'set -u
+
+        awk -v ver="$VERSION" ''/^## / { if (found) exit; if ($2 == ver) found=1; next } found { print }'' CHANGELOG.md > release_notes.md
+
+        echo ''--- commits ---''; git log -3 --format=''%h %s''
+
+        echo ''--- files in HEAD ---''; git show --name-only --format= HEAD
+
+        echo ''--- release notes ---''; cat release_notes.md
+
+        subject=$(git log -1 --format=%s)
+
+        files=$(git show --name-only --format= HEAD | sort | tr "\n" " ")
+
+        prev_files=$(git show --name-only --format= HEAD~1 | sort | tr "\n" " ")
+
+        status=$(git status --porcelain --untracked-files=no)
+
+        fail() { echo "::error title=leaky::$1"; exit 1; }
+
+        [ -z "$status" ] || fail "tracked files left modified: $status"
+
+        [ "$subject" = "chore: release v$VERSION" ] || fail "expected no changelog commit, last commit is ''$subject''"
+
+        git diff --quiet HEAD~1 HEAD -- CHANGELOG.md || fail "CHANGELOG.md changed"
+
+        echo "::notice title=leaky::released without a changelog commit, as expected (download: ${{ steps.changelog.outcome }})"
+
+        '
+  changelog-bypass:
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/generate-changelog-bypass.yml
+    with:
+      version: 0.2.163
+      previous_tag: v0.2.162
+  release-bypass:
+    needs:
+    - publish
+    - changelog-bypass
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: 0.2.163
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Update version files
+      run: python scripts/update_version.py "$VERSION"
+    - name: Configure git
+      run: 'git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git config user.name "github-actions[bot]"
+
+        '
+    - name: Commit version changes
+      run: 'git add pyproject.toml src/claude_agent_sdk/_version.py
+
+        git commit -m "chore: release v$VERSION"
+
+        '
+    - uses: actions/download-artifact@v4
+      id: changelog
+      continue-on-error: true
+      with:
+        name: changelog-bypass
+        path: ${{ runner.temp }}/changelog
+    - name: Commit the changelog
+      if: steps.changelog.outcome == 'success'
+      continue-on-error: true
+      run: "f=\"$RUNNER_TEMP/changelog/CHANGELOG.md\"\nif [ -L \"$f\" ] || [ ! -f \"$f\" ] || [ \"$(stat -c %h \"$f\")\" -ne 1 ]; then\n  echo \"::error::CHANGELOG.md is not a plain file\"; exit 1\nfi\n\
+        if [ \"$(wc -c < \"$f\")\" -gt 1048576 ]; then\n  echo \"::error::CHANGELOG.md is larger than 1 MiB\"; exit 1\nfi\nif LC_ALL=C grep -qaP '\\x00' \"$f\"; then\n  echo \"::error::CHANGELOG.md is not\
+        \ a text file\"; exit 1\nfi\nif grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}'\
+        \ -e 'pypi-[A-Za-z0-9_-]{30,}' \"$f\"; then\n  echo \"::error::CHANGELOG.md contains a string that looks like a credential\"; exit 1\nfi\ncp -- \"$f\" CHANGELOG.md\ngit add CHANGELOG.md\ngit diff\
+        \ --cached --quiet || git commit -m \"docs: update changelog for v$VERSION\"\n"
+    - name: Check the result instead of pushing
+      run: 'set -u
+
+        awk -v ver="$VERSION" ''/^## / { if (found) exit; if ($2 == ver) found=1; next } found { print }'' CHANGELOG.md > release_notes.md
+
+        echo ''--- commits ---''; git log -3 --format=''%h %s''
+
+        echo ''--- files in HEAD ---''; git show --name-only --format= HEAD
+
+        echo ''--- release notes ---''; cat release_notes.md
+
+        subject=$(git log -1 --format=%s)
+
+        files=$(git show --name-only --format= HEAD | sort | tr "\n" " ")
+
+        prev_files=$(git show --name-only --format= HEAD~1 | sort | tr "\n" " ")
+
+        status=$(git status --porcelain --untracked-files=no)
+
+        fail() { echo "::error title=bypass::$1"; exit 1; }
+
+        [ -z "$status" ] || fail "tracked files left modified: $status"
+
+        [ "$subject" = "chore: release v$VERSION" ] || fail "expected no changelog commit, last commit is ''$subject''"
+
+        git diff --quiet HEAD~1 HEAD -- CHANGELOG.md || fail "CHANGELOG.md changed"
+
+        echo "::notice title=bypass::released without a changelog commit, as expected (download: ${{ steps.changelog.outcome }})"
+
+        '
+  check-scripts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Run both checks on good and bad files
+      run: python3 .github/scripts/test_changelog_checks.py

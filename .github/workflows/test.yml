@@ -90,7 +90,9 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The Linux entry calls Claude on GitHub's egress-firewall runner (allow list:
+        # .github/egress-firewall.yaml). GitHub offers no such runner for macOS or Windows.
+        os: [ubuntu-24.04-firewall, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -142,6 +144,7 @@ jobs:
         run: python scripts/trust_workspace.py
 
       - name: Run end-to-end tests with real API
+        if: runner.os == 'Linux'
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
@@ -149,10 +152,33 @@ jobs:
         run: |
           python -m pytest e2e-tests/ -v -m e2e
 
+      # GitHub's egress-firewall runner is Linux only. On macOS and Windows the
+      # tests run as a separate user whose outbound traffic the OS firewall
+      # limits to the Claude API; the script checks the firewall before the tests.
+      - name: Run end-to-end tests with real API (macOS, OS firewall)
+        if: runner.os == 'macOS'
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        shell: bash
+        run: .github/scripts/run-e2e-firewalled-macos.sh e2e-tests/ -v -m e2e
+
+      - name: Run end-to-end tests with real API (Windows, OS firewall)
+        if: runner.os == 'Windows'
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        shell: powershell
+        run: .github/scripts/run-e2e-firewalled-windows.ps1 e2e-tests/ -v -m e2e
+
   test-e2e-docker:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
     needs: test # Run after unit tests pass
     permissions:
       contents: read
@@ -165,7 +191,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker test image
-        run: docker build -f Dockerfile.test -t claude-sdk-test .
+        # The egress firewall re-signs TLS with a per-run CA that containers don't
+        # trust. Hand it to the build as a secret; Dockerfile.test installs it.
+        run: |
+          set -o pipefail
+          args=()
+          ca=/var/lib/actions-firewall/rootCA.pem
+          if sudo test -f "$ca"; then
+            sudo cat "$ca" > "$RUNNER_TEMP/extra-ca.pem"
+            args=(--secret "id=extra_ca,src=$RUNNER_TEMP/extra-ca.pem")
+          fi
+          # Repeat the end of a failed build as an annotation, where it shows
+          # without opening the log.
+          if ! docker build "${args[@]}" -f Dockerfile.test -t claude-sdk-test . 2>&1 | tee "$RUNNER_TEMP/docker-build.log"; then
+            echo "::error title=docker build failed::$(tail -n 25 "$RUNNER_TEMP/docker-build.log" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            exit 1
+          fi
 
       - name: Set up Claude API auth (workload identity federation)
         uses: ./.github/actions/setup-claude-auth
@@ -189,7 +230,9 @@ jobs:
   test-examples:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
     needs: test-e2e # Run after e2e tests
     permissions:
       contents: read

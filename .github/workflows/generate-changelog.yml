@@ -1,0 +1,96 @@
+name: Generate Changelog
+
+# Called by build-and-publish.yml. Claude writes the new CHANGELOG.md here, in a
+# job that holds no publishing credentials (no PyPI token, no deploy key, and a
+# read-only GITHUB_TOKEN). The release job takes only CHANGELOG.md from this
+# job's artifact and commits it itself. A failed changelog does not fail this
+# job, so it does not hold up the release, and a re-run of failed jobs does not
+# start the release again.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version being released'
+        required: true
+        type: string
+      previous_tag:
+        description: 'Previous release tag'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  generate:
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # /generate-changelog commits its change. The commit stays in this job;
+      # the release job commits CHANGELOG.md itself.
+      - name: Configure git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Update changelog with Claude
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: "/generate-changelog new version: ${{ inputs.version }}, old version: ${{ inputs.previous_tag }}"
+          # Authenticate to the Claude API via Workload Identity Federation
+          # (the workflow's OIDC token is exchanged for a short-lived access
+          # token) instead of a static API key.
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github_token: ${{ github.token }}
+          # --permission-mode auto: a tool call that needs permission and is outside the allowed tools runs
+          # only if Claude Code's safety review passes it. --model is set because Claude Code's default model
+          # changes between releases.
+          claude_args: |
+            --model claude-opus-4-6
+            --permission-mode auto
+            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+
+      # The artifact is public (this is a public repository) and its CHANGELOG.md
+      # ends up on main, so upload only a plain text file with nothing in it that
+      # looks like a credential. The release job checks the file again.
+      - name: Check the changelog
+        id: check
+        if: steps.claude.outcome == 'success'
+        continue-on-error: true
+        run: |
+          f=CHANGELOG.md
+          if [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" -ne 1 ]; then
+            echo "::error::CHANGELOG.md is not a plain file"; exit 1
+          fi
+          if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+            echo "::error::CHANGELOG.md is larger than 1 MiB"; exit 1
+          fi
+          if LC_ALL=C grep -qaP '\x00' "$f"; then
+            echo "::error::CHANGELOG.md is not a text file"; exit 1
+          fi
+          if grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}' -e 'pypi-[A-Za-z0-9_-]{30,}' "$f"; then
+            echo "::error::CHANGELOG.md contains a string that looks like a credential"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outcome == 'success'
+        continue-on-error: true
+        with:
+          name: changelog
+          path: CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 1

@@ -14,7 +14,9 @@ jobs:
   claude-review:
     # Skip on forks since they don't have access to secrets
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # This job calls Claude, so it runs on GitHub's egress-firewall runner, which
+    # filters the job's outbound network traffic (allow list: .github/egress-firewall.yaml).
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read
       pull-requests: read
@@ -39,7 +41,9 @@ jobs:
         anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
         anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
 
-        claude_args: --model claude-opus-4-6
+        # --permission-mode auto: a tool call that needs permission runs only if Claude Code's
+        # safety review passes it. This step passes no --allowedTools list.
+        claude_args: --model claude-opus-4-6 --permission-mode auto
 
         # Direct prompt for automated review (no @claude mention needed)
         prompt: |

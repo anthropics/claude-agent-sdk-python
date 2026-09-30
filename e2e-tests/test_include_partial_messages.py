@@ -4,6 +4,7 @@ These tests verify that the SDK properly handles partial message streaming,
 including StreamEvent parsing and message interleaving.
 """
 
+import itertools
 from typing import Any
 
 import pytest
@@ -43,13 +44,14 @@ async def test_include_partial_messages_stream_events():
         async for message in client.receive_response():
             collected_messages.append(message)
 
-    # Verify we got the expected message types
-    message_types = [type(msg).__name__ for msg in collected_messages]
-
-    # Should have SystemMessage(init) at the start
-    assert message_types[0] == "SystemMessage"
-    assert isinstance(collected_messages[0], SystemMessage)
-    assert collected_messages[0].subtype == "init"
+    # Should start with SystemMessage(init). The CLI can send other system
+    # messages, such as commands_changed, ahead of it.
+    leading_system = list(
+        itertools.takewhile(lambda m: isinstance(m, SystemMessage), collected_messages)
+    )
+    assert "init" in [m.subtype for m in leading_system], [
+        m.subtype for m in leading_system
+    ]
 
     # Should have multiple StreamEvent messages
     stream_events = [msg for msg in collected_messages if isinstance(msg, StreamEvent)]

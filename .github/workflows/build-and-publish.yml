@@ -47,16 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     permissions:
-      contents: write
-      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
-      id-token: write
+      contents: read
     env:
       VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -228,6 +225,43 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
+  # Claude writes the changelog in a job of its own, which holds none of the
+  # publishing credentials. It runs once the upload to PyPI is done, so nothing
+  # it does can change what is uploaded.
+  changelog:
+    needs: publish
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
+    uses: ./.github/workflows/generate-changelog.yml
+    with:
+      version: ${{ inputs.version }}
+      previous_tag: ${{ inputs.previous_tag }}
+
+  release:
+    needs: [publish, changelog]
+    # A failed changelog does not hold up the release.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update version files
+        run: python scripts/update_version.py "$VERSION"
+
       - name: Configure git
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -238,22 +272,35 @@ jobs:
           git add pyproject.toml src/claude_agent_sdk/_version.py
           git commit -m "chore: release v$VERSION"
 
-      - name: Update changelog with Claude
+      - uses: actions/download-artifact@v4
+        id: changelog
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
         with:
-          prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ inputs.previous_tag }}"
-          # Authenticate to the Claude API via Workload Identity Federation
-          # (the workflow's OIDC token is exchanged for a short-lived access
-          # token) instead of a static API key.
-          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: |
-            --model claude-opus-4-6
-            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+          name: changelog
+          path: ${{ runner.temp }}/changelog
+
+      - name: Commit the changelog
+        if: steps.changelog.outcome == 'success'
+        continue-on-error: true
+        # Takes CHANGELOG.md and nothing else from the changelog job, after the
+        # same checks generate-changelog.yml runs before uploading it.
+        run: |
+          f="$RUNNER_TEMP/changelog/CHANGELOG.md"
+          if [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" -ne 1 ]; then
+            echo "::error::CHANGELOG.md is not a plain file"; exit 1
+          fi
+          if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+            echo "::error::CHANGELOG.md is larger than 1 MiB"; exit 1
+          fi
+          if LC_ALL=C grep -qaP '\x00' "$f"; then
+            echo "::error::CHANGELOG.md is not a text file"; exit 1
+          fi
+          if grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}' -e 'pypi-[A-Za-z0-9_-]{30,}' "$f"; then
+            echo "::error::CHANGELOG.md contains a string that looks like a credential"; exit 1
+          fi
+          cp -- "$f" CHANGELOG.md
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "docs: update changelog for v$VERSION"
 
       - name: Push to main
         run: |

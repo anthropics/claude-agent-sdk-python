@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example of using custom agents with Claude Code SDK.
+"""Example of using custom agents with Claude Agent SDK.
 
 This example demonstrates how to define and use custom agents with specific
 tools, prompts, and models.

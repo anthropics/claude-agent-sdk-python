@@ -2166,6 +2166,119 @@ class TestControlCancelRequest:
         assert "fast_1" not in q._inflight_requests
 
 
+class TestControlResponseAfterClose:
+    """Regression tests for #1340: a control-request handler that outlives
+    close() must not write to the closed transport. Previously the success
+    write failed, fell into ``except Exception``, and an error response was
+    written too, leaving an unretrieved CLIConnectionError on the task.
+    """
+
+    def _make_closing_transport(self, request: dict, attempted: list[str]):
+        """Yield ``request``, record each write's response subtype, and raise
+        CLIConnectionError on writes after close() like SubprocessCLITransport."""
+        mock_transport = AsyncMock()
+        state = {"closed": False}
+
+        async def mock_receive():
+            yield request
+            await anyio.sleep_forever()
+
+        async def mock_write(data):
+            attempted.append(json.loads(data)["response"]["subtype"])
+            if state["closed"]:
+                raise CLIConnectionError("ProcessTransport is not ready for writing")
+
+        async def mock_close():
+            state["closed"] = True
+
+        mock_transport.read_messages = mock_receive
+        mock_transport.write = mock_write
+        mock_transport.close = mock_close
+        mock_transport.is_ready = Mock(side_effect=lambda: not state["closed"])
+        return mock_transport
+
+    async def _run_hook_past_close(self, hook_result) -> list[str]:
+        """Close the query mid-hook, let the hook finish, return write attempts."""
+        hook_started = anyio.Event()
+        release = anyio.Event()
+
+        async def late_hook(input_data, tool_use_id, context):
+            hook_started.set()
+            try:
+                await release.wait()
+            except anyio.get_cancelled_exc_class():
+                # Finish anyway; the shield stops trio re-raising Cancelled.
+                with anyio.CancelScope(shield=True):
+                    await release.wait()
+            return hook_result()
+
+        attempted: list[str] = []
+        transport = self._make_closing_transport(
+            {
+                "type": "control_request",
+                "request_id": "hook_1",
+                "request": {"subtype": "hook_callback", "callback_id": "hook_0"},
+            },
+            attempted,
+        )
+        q = Query(transport=transport, is_streaming_mode=True)
+        q.hook_callbacks["hook_0"] = late_hook
+
+        await q.start()
+        with anyio.fail_after(5):
+            await hook_started.wait()
+        handler = q._inflight_requests["hook_1"]
+
+        await q.close()
+        release.set()
+        with anyio.fail_after(5):
+            await handler.wait()  # re-raises the handler task's exception
+        return attempted
+
+    @pytest.mark.anyio
+    async def test_hook_finishing_after_close_writes_no_response(self):
+        """A hook returning after close() writes no success response."""
+        attempted = await self._run_hook_past_close(lambda: {})
+
+        assert attempted == []
+
+    @pytest.mark.anyio
+    async def test_hook_raising_after_close_writes_no_error_response(self):
+        """A hook raising after close() writes no error response."""
+
+        def fail():
+            raise ValueError("hook failed after close")
+
+        attempted = await self._run_hook_past_close(fail)
+
+        assert attempted == []
+
+    @pytest.mark.anyio
+    async def test_failed_success_write_is_not_retried_as_error_response(self):
+        """A failed success write propagates instead of being retried as an
+        error response over the same broken transport."""
+
+        async def ok_hook(input_data, tool_use_id, context):
+            return {}
+
+        attempted: list[str] = []
+        transport = self._make_closing_transport({}, attempted)
+        await transport.close()  # CLI exited; the Query is still open
+        q = Query(transport=transport, is_streaming_mode=True)
+        q.hook_callbacks["hook_0"] = ok_hook
+
+        with pytest.raises(CLIConnectionError):
+            await q._handle_control_request(
+                {
+                    "type": "control_request",
+                    "request_id": "hook_1",
+                    "request": {"subtype": "hook_callback", "callback_id": "hook_0"},
+                }
+            )
+
+        assert attempted == ["success"]
+
+
 class TestProcessExitAfterErrorResult:
     """Regression tests for #913: when the CLI emits a result message with
     is_error=True (e.g. subtype=error_max_turns) and then exits non-zero,

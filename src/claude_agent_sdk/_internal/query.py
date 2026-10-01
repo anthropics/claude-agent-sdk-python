@@ -579,6 +579,8 @@ class Query:
         request_id = request["request_id"]
         request_data = request["request"]
         subtype = request_data["subtype"]
+        control_response: SDKControlResponse
+        handler_error: Exception | None = None
 
         try:
             response_data: dict[str, Any] = {}
@@ -676,24 +678,13 @@ class Query:
             else:
                 raise Exception(f"Unsupported control request subtype: {subtype}")
 
-            # Send success response
-            success_response: SDKControlResponse = {
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": request_id,
-                    "response": response_data,
-                },
-            }
-            await self.transport.write(json.dumps(success_response) + "\n")
-
         except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
             # already abandoned this request, so don't write a response.
             raise
         except Exception as e:
-            # Send error response
-            error_response: SDKControlResponse = {
+            handler_error = e
+            control_response = {
                 "type": "control_response",
                 "response": {
                     "subtype": "error",
@@ -701,7 +692,28 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+        else:
+            control_response = {
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": request_id,
+                    "response": response_data,
+                },
+            }
+
+        # Written outside the try so a failed write is not reported back as a
+        # handler error over the same broken transport.
+        if self._closed:
+            # The handler outlived close()'s cancellation; nothing will read
+            # the response (#1340).
+            logger.debug(
+                "Query closed; dropping response to control request %s",
+                request_id,
+                exc_info=handler_error,
+            )
+            return
+        await self.transport.write(json.dumps(control_response) + "\n")
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

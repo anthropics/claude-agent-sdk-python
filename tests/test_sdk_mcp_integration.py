@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 import threading
+import typing
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -23,6 +24,7 @@ import anyio
 import mcp.types
 import pytest
 import sniffio
+import typing_extensions
 from mcp.server import Server
 
 from claude_agent_sdk import (
@@ -2134,36 +2136,35 @@ class TestTypedDictMcpIntegration:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "module",
+        "typed_dict",
         [
             pytest.param(
-                "typing",
+                typing.TypedDict,
                 marks=pytest.mark.skipif(
                     sys.version_info < (3, 11),
                     reason="stdlib TypedDict ignores NotRequired before 3.11",
                 ),
+                id="typing",
             ),
-            "typing_extensions",
+            pytest.param(typing_extensions.TypedDict, id="typing_extensions"),
         ],
     )
     async def test_typeddict_schema_for_either_typeddict_spelling(
-        self, module: str
+        self, typed_dict: Any
     ) -> None:
-        # Regression for #1337: on 3.11+ a typing_extensions.TypedDict was not
-        # recognized and the tool was published with an empty schema.
-        import importlib
+        """A TypedDict built on typing or typing_extensions yields the same
+        schema on every Python version, rather than an empty one on 3.11+
+        where stdlib is_typeddict rejects the typing_extensions spelling."""
         from typing import Annotated
 
         from typing_extensions import NotRequired
 
-        typed_dict = importlib.import_module(module).TypedDict
-
-        class Address(typed_dict):  # type: ignore[misc,valid-type]
+        class Address(typed_dict):
             city: str
 
-        class Forecast(typed_dict):  # type: ignore[misc,valid-type]
+        class Forecast(typed_dict):
             latitude: Annotated[float, "Latitude coordinate"]
-            hours: NotRequired[Annotated[int, "Hours of forecast"]]  # type: ignore[valid-type]
+            hours: NotRequired[Annotated[int, "Hours of forecast"]]
             address: Address
 
         @tool("forecast", "Get a forecast", Forecast)

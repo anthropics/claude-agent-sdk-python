@@ -11,6 +11,8 @@ from claude_agent_sdk import (
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
     ResultMessage,
+    SessionStartHookInput,
+    SessionStartHookSpecificOutput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
 )
@@ -402,6 +404,18 @@ class TestHookInputTypes:
         }
         assert len(hook_input["permission_suggestions"]) == 1
 
+    def test_session_start_hook_input(self):
+        """Test SessionStartHookInput construction."""
+        hook_input: SessionStartHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+        }
+        assert hook_input["hook_event_name"] == "SessionStart"
+        assert hook_input["source"] == "startup"
+
 
 class TestHookSpecificOutputTypes:
     """Test hook-specific output type definitions."""
@@ -463,6 +477,15 @@ class TestHookSpecificOutputTypes:
             "stderr": "",
             "interrupted": False,
         }
+
+    def test_session_start_hook_specific_output(self):
+        """Test SessionStartHookSpecificOutput construction."""
+        output: SessionStartHookSpecificOutput = {
+            "hookEventName": "SessionStart",
+            "additionalContext": "Loaded project context",
+        }
+        assert output["hookEventName"] == "SessionStart"
+        assert output["additionalContext"] == "Loaded project context"
 
 
 class TestMcpServerStatusTypes:

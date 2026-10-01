@@ -90,6 +90,15 @@ class TestFilePathToSessionKey:
     def test_main_transcript_without_jsonl_suffix_returns_none(self) -> None:
         assert file_path_to_session_key(_p("proj", "sess.txt"), PROJECTS_DIR) is None
 
+    def test_empty_main_session_id_returns_none(self) -> None:
+        assert file_path_to_session_key(_p("proj", ".jsonl"), PROJECTS_DIR) is None
+
+    def test_empty_subagent_leaf_returns_none(self) -> None:
+        assert (
+            file_path_to_session_key(_p("proj", "sess", "subagents", ".jsonl"), PROJECTS_DIR)
+            is None
+        )
+
     def test_relpath_value_error_returns_none(self) -> None:
         """On Windows, ``os.path.relpath`` raises ``ValueError`` when the two
         paths are on different drives. The function must catch it and return

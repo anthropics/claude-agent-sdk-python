@@ -10,6 +10,7 @@ import base64
 import gc
 import json
 import logging
+import sys
 import threading
 import warnings
 from collections.abc import AsyncIterator
@@ -2130,6 +2131,60 @@ class TestTypedDictMcpIntegration:
         assert schema["properties"]["query"] == {"type": "string"}
         assert schema["properties"]["max_results"] == {"type": "integer"}
         assert sorted(schema["required"]) == ["max_results", "query"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "module",
+        [
+            pytest.param(
+                "typing",
+                marks=pytest.mark.skipif(
+                    sys.version_info < (3, 11),
+                    reason="stdlib TypedDict ignores NotRequired before 3.11",
+                ),
+            ),
+            "typing_extensions",
+        ],
+    )
+    async def test_typeddict_schema_for_either_typeddict_spelling(
+        self, module: str
+    ) -> None:
+        # Regression for #1337: on 3.11+ a typing_extensions.TypedDict was not
+        # recognized and the tool was published with an empty schema.
+        import importlib
+        from typing import Annotated
+
+        from typing_extensions import NotRequired
+
+        typed_dict = importlib.import_module(module).TypedDict
+
+        class Address(typed_dict):  # type: ignore[misc,valid-type]
+            city: str
+
+        class Forecast(typed_dict):  # type: ignore[misc,valid-type]
+            latitude: Annotated[float, "Latitude coordinate"]
+            hours: NotRequired[Annotated[int, "Hours of forecast"]]  # type: ignore[valid-type]
+            address: Address
+
+        @tool("forecast", "Get a forecast", Forecast)
+        async def forecast(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        config = create_sdk_mcp_server(name="te-typeddict-test", tools=[forecast])
+        async with connected(config) as client:
+            [listed] = await client.list_tools("srv")
+
+        schema = listed["inputSchema"]
+        assert schema["properties"] == {
+            "latitude": {"type": "number", "description": "Latitude coordinate"},
+            "hours": {"type": "integer", "description": "Hours of forecast"},
+            "address": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        }
+        assert sorted(schema["required"]) == ["address", "latitude"]
 
     @pytest.mark.anyio
     async def test_typeddict_tool_call_works(self) -> None:

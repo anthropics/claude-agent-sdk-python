@@ -702,12 +702,13 @@ class Query:
                 },
             }
 
-        # Written outside the try so a failed write is not reported back as a
+        # Write outside the try so a failed write is not reported back as a
         # handler error over the same broken transport.
         if self._closed:
             # The handler outlived close()'s cancellation; nothing will read
             # the response (#1340).
-            logger.debug(
+            logger.log(
+                logging.WARNING if handler_error else logging.DEBUG,
                 "Query closed; dropping response to control request %s",
                 request_id,
                 exc_info=handler_error,

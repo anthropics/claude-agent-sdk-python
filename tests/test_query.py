@@ -9,6 +9,7 @@ closing stdin until the CLI's run is over.
 """
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -2194,7 +2195,7 @@ class TestControlResponseAfterClose:
         mock_transport.read_messages = mock_receive
         mock_transport.write = mock_write
         mock_transport.close = mock_close
-        mock_transport.is_ready = Mock(side_effect=lambda: not state["closed"])
+        mock_transport.is_ready = Mock(return_value=True)
         return mock_transport
 
     async def _run_hook_past_close(self, hook_result) -> list[str]:
@@ -2243,15 +2244,19 @@ class TestControlResponseAfterClose:
         assert attempted == []
 
     @pytest.mark.anyio
-    async def test_hook_raising_after_close_writes_no_error_response(self):
-        """A hook raising after close() writes no error response."""
+    async def test_hook_raising_after_close_writes_no_error_response(self, caplog):
+        """A hook raising after close() writes no error response; its error is
+        logged instead."""
 
         def fail():
             raise ValueError("hook failed after close")
 
-        attempted = await self._run_hook_past_close(fail)
+        with caplog.at_level(logging.WARNING, logger="claude_agent_sdk"):
+            attempted = await self._run_hook_past_close(fail)
 
         assert attempted == []
+        [record] = caplog.records
+        assert isinstance(record.exc_info[1], ValueError)
 
     @pytest.mark.anyio
     async def test_failed_success_write_is_not_retried_as_error_response(self):

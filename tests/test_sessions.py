@@ -208,8 +208,7 @@ class TestHelpers:
         assert _extract_first_prompt_from_head(head) == "actual prompt"
 
     def test_extract_first_prompt_text_equal_to_tool_result(self):
-        # A user text block whose value is literally "tool_result" is a real
-        # prompt, not a tool_result content block (issue #1345).
+        """A text block equal to "tool_result" is a prompt, not a tool_result (#1345)."""
         head = (
             json.dumps(
                 {

@@ -885,8 +885,7 @@ class TestParityWithLiteParse:
         assert incremental == batch
 
     def test_parity_text_block_equal_to_tool_result(self) -> None:
-        """A text block whose value is ``"tool_result"`` is a real prompt in
-        both paths, not a tool_result block (issue #1345)."""
+        """A text block equal to "tool_result" is a prompt in both paths (#1345)."""
         sid = "44444444-4444-4444-8444-444444444444"
         k: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
         entries: list[dict[str, Any]] = [

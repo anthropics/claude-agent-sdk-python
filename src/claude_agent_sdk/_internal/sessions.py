@@ -295,9 +295,7 @@ def _extract_first_prompt_from_head(head: str) -> str:
             continue
 
         content = message.get("content")
-        # Skip tool_result-carrying user messages by block type, not by a raw
-        # substring match, so a text value of "tool_result" is not mistaken
-        # for a tool response.
+        # Skip tool_result-carrying user messages.
         if isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content
         ):

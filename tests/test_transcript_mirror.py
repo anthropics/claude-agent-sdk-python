@@ -190,6 +190,70 @@ class _RecordingStore(InMemorySessionStore):
 
 class TestTranscriptMirrorBatcher:
     @pytest.mark.anyio
+    @pytest.mark.parametrize("eager", [False, True])
+    async def test_cancelled_waiter_preserves_queued_entries(self, eager: bool) -> None:
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        started = anyio.Event()
+        release = anyio.Event()
+        store = _RecordingStore()
+        original_append = store.append
+
+        async def append(key: SessionKey, entries: list[Any]) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            await original_append(key, entries)
+
+        store.append = append  # type: ignore[method-assign]
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "n": 1}])
+        first = spawn_detached(batcher.flush())
+        with anyio.fail_after(2):
+            await started.wait()
+            if eager:
+                batcher.max_pending_entries = 0
+            batcher.enqueue(_main_path(), [{"type": "assistant", "n": 2}])
+            second = batcher._flush_task if eager else spawn_detached(batcher.flush())
+            assert second is not None
+            try:
+                await _wait_until(lambda: batcher._lock.statistics().tasks_waiting == 1)
+                second.cancel()
+                await second.wait()
+                # New frames must follow the retained batch when close flushes it.
+                batcher.max_pending_entries = MAX_PENDING_ENTRIES
+                batcher.enqueue(_main_path(), [{"type": "user", "n": 3}])
+            finally:
+                release.set()
+                await first.wait()
+            await batcher.close()
+        assert await store.load({"project_key": "proj", "session_id": "sess"}) == [
+            {"type": "user", "n": 1},
+            {"type": "assistant", "n": 2},
+            {"type": "user", "n": 3},
+        ]
+
+    @pytest.mark.anyio
+    async def test_already_cancelled_flush_preserves_pending_entries(self) -> None:
+        store = _RecordingStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=_noop_error
+        )
+        entries = [{"type": "assistant", "n": 1}]
+        batcher.enqueue(_main_path(), entries)
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await batcher.flush()
+        await batcher.close()
+        assert (
+            await store.load({"project_key": "proj", "session_id": "sess"}) == entries
+        )
+
+    @pytest.mark.anyio
     async def test_enqueue_then_flush_calls_store_append(self) -> None:
         store = _RecordingStore()
         batcher = TranscriptMirrorBatcher(

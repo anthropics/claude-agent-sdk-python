@@ -22,6 +22,25 @@ class CLINotFoundError(CLIConnectionError):
         super().__init__(message)
 
 
+class ControlRequestError(ClaudeSDKError):
+    """Raised when a control request to the CLI fails or times out.
+
+    Covers the control-protocol calls on :class:`ClaudeSDKClient` such as
+    ``interrupt()``, ``set_model()``, ``set_permission_mode()``,
+    ``toggle_mcp_server()`` and ``get_mcp_status()``.
+
+    Attributes:
+        subtype: The subtype of the control request that failed
+            (e.g. ``"mcp_toggle"``), if known.
+        error: The error text reported by the CLI, or a timeout description.
+    """
+
+    def __init__(self, error: str, subtype: str | None = None):
+        self.error = error
+        self.subtype = subtype
+        super().__init__(error)
+
+
 class ProcessError(ClaudeSDKError):
     """Raised when the CLI process fails."""
 

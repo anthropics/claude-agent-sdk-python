@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     import_session_to_store,
     project_key_for_directory,
 )
+from claude_agent_sdk._internal import session_import
 from claude_agent_sdk.types import SessionKey, SessionStoreEntry
 
 SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
@@ -127,6 +128,39 @@ class TestMainTranscript:
         assert spy.await_count == 1
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == entries
+
+    @pytest.mark.anyio
+    async def test_byte_batching_counts_utf8_bytes(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Multibyte JSONL text flushes at the byte threshold, even when its
+        Python character count is below that threshold."""
+        entries: list[SessionStoreEntry] = [
+            {"type": "user", "uuid": f"unicode-{i}", "content": "🚀" * 10}
+            for i in range(2)
+        ]
+        lines = [json.dumps(entry, ensure_ascii=False) for entry in entries]
+        line_bytes = len(lines[0].encode("utf-8"))
+        assert len(lines[0]) < line_bytes
+        monkeypatch.setattr(session_import, "MAX_PENDING_BYTES", line_bytes)
+        (claude_dir / f"{SESSION_ID}.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+        store = InMemorySessionStore()
+        spy = AsyncMock(wraps=store.append)
+        store.append = spy  # type: ignore[method-assign]
+
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert spy.await_count == 2
+        assert spy.await_args_list[0].args == (key, entries[:1])
+        assert spy.await_args_list[1].args == (key, entries[1:])
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,18 @@ from . import Transport
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024  # 1MB buffer limit
+
+# Set to any non-empty value to keep CLI discovery from using the CLI bundled
+# in the wheel. Spelled like CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK, and read the
+# same way, so the two behave alike.
+_NO_BUNDLE_ENV = "CLAUDE_AGENT_SDK_NO_BUNDLE"
+
+
+def _bundled_cli_opted_out() -> bool:
+    """Whether the caller asked discovery to ignore the bundled CLI."""
+    return bool(os.environ.get(_NO_BUNDLE_ENV))
+
+
 MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 # First Claude Code version that honors `client_composed` on user messages,
 # which `ClaudeAgentOptions.verbatim_prompts` relies on.
@@ -254,10 +266,13 @@ class SubprocessCLITransport(Transport):
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
-        # First, check for bundled CLI
-        bundled_cli = self._find_bundled_cli()
-        if bundled_cli:
-            return bundled_cli
+        # First, check for bundled CLI. It is checked before PATH, so a
+        # `claude` the caller installed and manages themselves is otherwise
+        # shadowed by the bundled copy with no way to say "use mine".
+        if not _bundled_cli_opted_out():
+            bundled_cli = self._find_bundled_cli()
+            if bundled_cli:
+                return bundled_cli
 
         # Fall back to system-wide search
         which_hit: str | None = None
@@ -315,6 +330,14 @@ class SubprocessCLITransport(Transport):
             # for a wrapper script, rather than a bare not-found error.
             return which_hit
 
+        opted_out_note = (
+            f"\n\n({_NO_BUNDLE_ENV} is set, so the CLI bundled with this "
+            "package was not considered. Unset it to fall back to the "
+            "bundled binary.)"
+            if _bundled_cli_opted_out()
+            else ""
+        )
+
         if platform.system() == "Windows":
             # npm's Windows install is a claude.cmd shim, which connect()
             # refuses (_reject_windows_batch_cli), so do not recommend it.
@@ -327,7 +350,7 @@ class SubprocessCLITransport(Transport):
                 "a claude.exe via ClaudeAgentOptions:\n"
                 "  ClaudeAgentOptions(cli_path='C:\\\\path\\\\to\\\\claude.exe')\n"
                 "\n(npm install -g @anthropic-ai/claude-code produces a claude.cmd "
-                "shim, which this SDK refuses to run on Windows.)"
+                "shim, which this SDK refuses to run on Windows.)" + opted_out_note
             )
         raise CLINotFoundError(
             "Claude Code not found. Install with:\n"
@@ -335,7 +358,7 @@ class SubprocessCLITransport(Transport):
             "\nIf already installed locally, try:\n"
             '  export PATH="$HOME/node_modules/.bin:$PATH"\n'
             "\nOr provide the path via ClaudeAgentOptions:\n"
-            "  ClaudeAgentOptions(cli_path='/path/to/claude')"
+            "  ClaudeAgentOptions(cli_path='/path/to/claude')" + opted_out_note
         )
 
     def _find_bundled_cli(self) -> str | None:

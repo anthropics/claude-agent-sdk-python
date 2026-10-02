@@ -444,6 +444,25 @@ class TestSubprocessCLITransport:
         display_idx = cmd.index("--thinking-display")
         assert cmd[display_idx : display_idx + 2] == ["--thinking-display", "omitted"]
 
+    def test_build_command_thinking_enabled_matches_max_thinking_tokens(self):
+        """enabled + budget_tokens sends the same flags as max_thinking_tokens."""
+
+        def thinking_flags(**kwargs):
+            cmd = SubprocessCLITransport(
+                prompt="test", options=make_options(**kwargs)
+            )._build_command()
+            return [
+                cmd[i : i + 2]
+                for i, arg in enumerate(cmd)
+                if arg in ("--thinking", "--max-thinking-tokens")
+            ]
+
+        assert (
+            thinking_flags(thinking={"type": "enabled", "budget_tokens": 1024})
+            == thinking_flags(max_thinking_tokens=1024)
+            == [["--max-thinking-tokens", "1024"]]
+        )
+
     def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
         """thinking takes precedence over deprecated max_thinking_tokens."""
         transport = SubprocessCLITransport(

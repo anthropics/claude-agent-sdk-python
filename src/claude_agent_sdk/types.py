@@ -2354,6 +2354,10 @@ class ClaudeAgentOptions:
     ``thinking={"type": "enabled", "budget_tokens": N}``, or
     ``thinking={"type": "disabled"}``. On newer models, this value is treated
     as on/off (0 = disabled, any other value = adaptive).
+
+    Sent to the CLI as ``--max-thinking-tokens N``, the same flag that
+    ``thinking={"type": "enabled", "budget_tokens": N}`` produces, so the two
+    behave identically.
     """
 
     thinking: ThinkingConfig | None = None
@@ -2362,7 +2366,9 @@ class ClaudeAgentOptions:
     - ``{"type": "adaptive"}`` — Claude decides when and how much to think
       (Opus 4.6+). Default for models that support it.
     - ``{"type": "enabled", "budget_tokens": N}`` — Fixed thinking token budget
-      (older models).
+      (older models). Sent to the CLI as ``--max-thinking-tokens N``, the same
+      flag as the deprecated ``max_thinking_tokens=N``, so on newer models it
+      is likewise treated as on/off rather than as a fixed budget.
     - ``{"type": "disabled"}`` — No extended thinking.
 
     When set, takes precedence over the deprecated ``max_thinking_tokens``.

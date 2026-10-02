@@ -1435,6 +1435,14 @@ class RateLimitEvent:
     session_id: str
 
 
+ConversationResetTrigger = Literal[
+    "clear",
+    "plan_mode_exit",
+    "fresh_session",
+    "onboarding",
+]
+
+
 @dataclass
 class ConversationResetMessage:
     """Emitted when the session's conversation is replaced without ending the
@@ -1455,11 +1463,18 @@ class ConversationResetMessage:
         uuid: Unique ID of this message.
         session_id: ID of the session that was reset (the outgoing session;
             messages after the reset carry a new ``session_id``).
+        trigger: The action or event that triggered the reset (e.g. ``"clear"``,
+            ``"plan_mode_exit"``, ``"fresh_session"``, or ``"onboarding"``).
+        user_message_uuid: UUID of the user message that caused the reset, if applicable.
+        timestamp: ISO 8601 timestamp string when the reset occurred.
     """
 
     new_conversation_id: str
     uuid: str
     session_id: str
+    trigger: ConversationResetTrigger | None = None
+    user_message_uuid: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass

@@ -1914,7 +1914,7 @@ class TestSubprocessCLITransport:
         settings_value = cmd[settings_idx + 1]
 
         parsed = json.loads(settings_value)
-        assert parsed == {"sandbox": {"enabled": True}}
+        assert parsed == {"sandbox": {"enabled": True, "failIfUnavailable": True}}
 
     def test_sandbox_network_config(self):
         """Test sandbox with full network configuration."""
@@ -3095,3 +3095,41 @@ class TestWindowsCmdMetacharacterRejection:
             cmd = transport._build_command()
         assert "--resume=title & % | notes" in cmd
         assert "--session-id=a>b" in cmd
+
+
+class TestSandboxFailIfUnavailableDefault:
+    """An enabled sandbox defaults failIfUnavailable to True (TypeScript parity)."""
+
+    @staticmethod
+    def _sandbox_setting(**kwargs: object) -> object:
+        import json
+
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(**kwargs)
+        )._build_command()
+        return json.loads(cmd[cmd.index("--settings") + 1])["sandbox"]
+
+    def test_enabled_without_key_defaults_to_true(self):
+        sandbox = {"enabled": True}
+        assert self._sandbox_setting(sandbox=sandbox) == {
+            "enabled": True,
+            "failIfUnavailable": True,
+        }
+        # The caller's dict is not mutated.
+        assert sandbox == {"enabled": True}
+
+    def test_explicit_false_is_preserved(self):
+        assert self._sandbox_setting(
+            sandbox={"enabled": True, "failIfUnavailable": False}
+        ) == {"enabled": True, "failIfUnavailable": False}
+
+    def test_not_enabled_gets_no_default(self):
+        assert self._sandbox_setting(sandbox={"enabled": False}) == {"enabled": False}
+        assert self._sandbox_setting(sandbox={"excludedCommands": ["git"]}) == {
+            "excludedCommands": ["git"]
+        }
+
+    def test_default_applies_when_merged_with_settings(self):
+        assert self._sandbox_setting(
+            settings='{"permissions": {}}', sandbox={"enabled": True}
+        ) == {"enabled": True, "failIfUnavailable": True}

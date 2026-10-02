@@ -520,7 +520,12 @@ class SubprocessCLITransport(Transport):
 
         # Merge sandbox settings
         if has_sandbox:
-            settings_obj["sandbox"] = self._options.sandbox
+            sandbox = dict(self._options.sandbox or {})
+            # Match the TypeScript SDK: an enabled sandbox fails closed when
+            # its dependencies are unavailable unless the caller opts out.
+            if sandbox.get("enabled") is True and "failIfUnavailable" not in sandbox:
+                sandbox["failIfUnavailable"] = True
+            settings_obj["sandbox"] = sandbox
 
         return json.dumps(settings_obj)
 

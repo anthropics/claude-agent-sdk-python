@@ -490,6 +490,7 @@ class TestMcpServerStatusTypes:
             "serverInfo": {"name": "my-server", "version": "1.2.3"},
             "config": {"type": "http", "url": "https://example.com"},
             "scope": "project",
+            "source": "sdk",
             "tools": [
                 {
                     "name": "greet",
@@ -504,8 +505,20 @@ class TestMcpServerStatusTypes:
         }
         assert status["name"] == "my-server"
         assert status["status"] == "connected"
+        assert status["source"] == "sdk"
         assert status["serverInfo"]["version"] == "1.2.3"
         assert status["tools"][0]["annotations"]["readOnly"] is True
+
+    def test_mcp_server_status_source_accepts_unrecognized_value(self):
+        """Test source values remain open-ended as the CLI adds sources."""
+        from claude_agent_sdk import McpServerStatus
+
+        status: McpServerStatus = {
+            "name": "future-server",
+            "status": "connected",
+            "source": "future-config-source",
+        }
+        assert status["source"] == "future-config-source"
 
     def test_mcp_server_status_minimal(self):
         """Test constructing a minimal McpServerStatus (only required fields)."""

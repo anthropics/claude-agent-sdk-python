@@ -43,6 +43,9 @@ async def import_session_to_store(
     live-mirror gap. Adapters should treat ``entry["uuid"]`` as an idempotency
     key so re-import is duplicate-safe.
 
+    Every transcript is checked for valid JSON before the first append, so a
+    corrupt or truncated file leaves the store unchanged.
+
     The destination ``project_key`` is the name of the on-disk project
     directory the session file was found in — the same key
     :func:`file_path_to_session_key` (and thus ``TranscriptMirrorBatcher``)
@@ -63,7 +66,8 @@ async def import_session_to_store(
         batch_size: Maximum entries per ``store.append()`` call. Default 500.
 
     Raises:
-        ValueError: If ``session_id`` is not a valid UUID.
+        ValueError: If ``session_id`` is not a valid UUID, or a transcript
+            contains invalid JSON (the error names the file and line).
         FileNotFoundError: If the session JSONL cannot be found on disk.
     """
     if not _validate_uuid(session_id):
@@ -82,6 +86,13 @@ async def import_session_to_store(
         batch_size = MAX_PENDING_ENTRIES
 
     main_key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    subagents_dir = resolved.with_suffix("") / "subagents"
+    to_check = [resolved]
+    if include_subagents:
+        to_check.extend(_collect_jsonl_files(subagents_dir))
+    for file_path in to_check:
+        _validate_jsonl_file(file_path)
+
     await _append_jsonl_file_in_batches(resolved, main_key, store, batch_size)
 
     if not include_subagents:
@@ -89,7 +100,6 @@ async def import_session_to_store(
 
     # Subagent transcripts live at <projectDir>/<sessionId>/subagents/**.
     session_dir = resolved.with_suffix("")
-    subagents_dir = session_dir / "subagents"
     for file_path in _collect_jsonl_files(subagents_dir):
         # subpath is the path relative to session_dir, '/'-joined, sans .jsonl —
         # e.g. subagents/agent-abc or subagents/workflows/run-1/agent-def.
@@ -116,6 +126,22 @@ async def import_session_to_store(
             # CLI-owned sidecar can never shadow it.
             meta_entry = cast(SessionStoreEntry, {**meta, "type": "agent_metadata"})
             await store.append(sub_key, [meta_entry])
+
+
+def _validate_jsonl_file(file_path: Path) -> None:
+    """Raise ``ValueError`` naming the file and line if any non-blank line of
+    ``file_path`` is not valid JSON."""
+    with file_path.open(encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Invalid JSON in {file_path} at line {line_no}"
+                ) from e
 
 
 async def _append_jsonl_file_in_batches(

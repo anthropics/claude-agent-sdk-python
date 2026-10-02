@@ -6,10 +6,14 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
+    ActiveGoal,
+    ActiveGoalMessage,
     AssistantMessage,
+    AuthStatusMessage,
     ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
+    PromptSuggestionMessage,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
@@ -21,8 +25,10 @@ from claude_agent_sdk.types import (
     TaskUpdatedMessage,
     TextBlock,
     ThinkingBlock,
+    ToolProgressMessage,
     ToolResultBlock,
     ToolUseBlock,
+    ToolUseSummaryMessage,
     UserMessage,
 )
 
@@ -1356,3 +1362,181 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+
+class TestTopLevelFrameParsing:
+    """Top-level frames the CLI emits beside user/assistant/system/result.
+
+    These used to fall into the unknown-type default and were dropped with a
+    debug log, so a consumer could never see them (#1294).
+    """
+
+    def test_parse_tool_progress(self):
+        message = parse_message(
+            {
+                "type": "tool_progress",
+                "tool_use_id": "toolu_01",
+                "tool_name": "Task",
+                "parent_tool_use_id": None,
+                "elapsed_time_seconds": 12.5,
+                "task_id": "task-7",
+                "subagent_type": "general-purpose",
+                "uuid": "msg-1",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, ToolProgressMessage)
+        assert message.tool_use_id == "toolu_01"
+        assert message.tool_name == "Task"
+        assert message.parent_tool_use_id is None
+        assert message.elapsed_time_seconds == 12.5
+        assert message.task_id == "task-7"
+        assert message.subagent_type == "general-purpose"
+        assert message.heartbeat is None
+        assert message.subagent_retry is None
+        assert message.uuid == "msg-1"
+        assert message.session_id == "sess-1"
+
+    def test_parse_tool_progress_heartbeat_with_retry(self):
+        retry = {
+            "agent_id": "agent-1",
+            "attempt": 2,
+            "max_retries": 5,
+            "retry_delay_ms": 4000,
+            "error_status": 529,
+            "error_category": "overloaded",
+        }
+        message = parse_message(
+            {
+                "type": "tool_progress",
+                "tool_use_id": "toolu_01",
+                "tool_name": "Task",
+                "parent_tool_use_id": "toolu_00",
+                "elapsed_time_seconds": 60,
+                "heartbeat": True,
+                "subagent_retry": retry,
+                "uuid": "msg-2",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, ToolProgressMessage)
+        assert message.heartbeat is True
+        assert message.parent_tool_use_id == "toolu_00"
+        assert message.subagent_retry == retry
+
+    def test_parse_tool_progress_missing_field(self):
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(
+                {
+                    "type": "tool_progress",
+                    "tool_use_id": "toolu_01",
+                    "uuid": "u",
+                    "session_id": "s",
+                }
+            )
+        assert "tool_progress" in str(exc_info.value)
+        assert "tool_name" in str(exc_info.value)
+
+    def test_parse_tool_use_summary(self):
+        message = parse_message(
+            {
+                "type": "tool_use_summary",
+                "summary": "Read three config files and ran the test suite.",
+                "preceding_tool_use_ids": ["toolu_01", "toolu_02", "toolu_03"],
+                "uuid": "msg-3",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, ToolUseSummaryMessage)
+        assert message.summary == "Read three config files and ran the test suite."
+        assert message.preceding_tool_use_ids == ["toolu_01", "toolu_02", "toolu_03"]
+        assert message.uuid == "msg-3"
+
+    def test_parse_auth_status(self):
+        message = parse_message(
+            {
+                "type": "auth_status",
+                "isAuthenticating": True,
+                "output": ["Opening browser…", "Waiting for login"],
+                "uuid": "msg-4",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, AuthStatusMessage)
+        assert message.is_authenticating is True
+        assert message.output == ["Opening browser…", "Waiting for login"]
+        assert message.error is None
+
+    def test_parse_auth_status_with_error(self):
+        message = parse_message(
+            {
+                "type": "auth_status",
+                "isAuthenticating": False,
+                "output": [],
+                "error": "Login timed out",
+                "uuid": "msg-5",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, AuthStatusMessage)
+        assert message.is_authenticating is False
+        assert message.error == "Login timed out"
+
+    def test_parse_active_goal(self):
+        message = parse_message(
+            {
+                "type": "active_goal",
+                "value": {
+                    "condition": "all tests pass",
+                    "iterations": 3,
+                    "set_at": 1758700000000,
+                    "tokens_at_start": 42000,
+                    "last_reason": "two tests still failing",
+                },
+                "uuid": "msg-6",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, ActiveGoalMessage)
+        assert message.value == ActiveGoal(
+            condition="all tests pass",
+            iterations=3,
+            set_at=1758700000000,
+            tokens_at_start=42000,
+            last_reason="two tests still failing",
+        )
+
+    def test_parse_active_goal_cleared(self):
+        message = parse_message(
+            {"type": "active_goal", "value": None, "uuid": "msg-7", "session_id": "s"}
+        )
+        assert isinstance(message, ActiveGoalMessage)
+        assert message.value is None
+
+    def test_parse_prompt_suggestion(self):
+        message = parse_message(
+            {
+                "type": "prompt_suggestion",
+                "suggestion": "Run the failing test in isolation",
+                "uuid": "msg-8",
+                "session_id": "sess-1",
+            }
+        )
+        assert isinstance(message, PromptSuggestionMessage)
+        assert message.suggestion == "Run the failing test in isolation"
+
+    @pytest.mark.parametrize(
+        "frame_type",
+        [
+            "tool_progress",
+            "tool_use_summary",
+            "auth_status",
+            "active_goal",
+            "prompt_suggestion",
+        ],
+    )
+    def test_incomplete_frames_raise_instead_of_vanishing(self, frame_type):
+        """A frame of a known type with fields missing is an error, not a skip."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message({"type": frame_type, "uuid": "u", "session_id": "s"})
+        assert frame_type in str(exc_info.value)

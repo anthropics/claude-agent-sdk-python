@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -685,7 +690,7 @@ class Query:
                     "response": response_data,
                 },
             }
-            await self.transport.write(json.dumps(success_response) + "\n")
+            await self._write_control_response(request_id, "success", success_response)
 
         except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
@@ -701,7 +706,49 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            await self._write_control_response(
+                request_id, "error", error_response, handler_error=e
+            )
+
+    async def _write_control_response(
+        self,
+        request_id: str,
+        subtype: Literal["success", "error"],
+        response: SDKControlResponse,
+        handler_error: Exception | None = None,
+    ) -> None:
+        """Write a control_response, unless the connection is already gone.
+
+        A handler can outlive ``close()``: ``_close_impl`` cancels the child
+        tasks but does not wait for them, so a hook callback that swallows
+        cancellation finishes afterwards and answers on the closed transport
+        (#1340). That write fails with ``CLIConnectionError``; treating the
+        failure as a handler error would write a *second* response to the
+        same closed transport, whose own ``CLIConnectionError`` is never
+        retrieved and surfaces in the loop's exception handler (asyncio) or
+        as "Unhandled exception in detached trio task" (trio). Once the query
+        is closed, or the write fails because the connection is, the response
+        is therefore dropped and logged instead — together with the handler
+        exception it was carrying, when there is one.
+        """
+        if self._closed:
+            logger.warning(
+                "Dropping %s control response for request %s: query is closed",
+                subtype,
+                request_id,
+                exc_info=handler_error,
+            )
+            return
+        try:
+            await self.transport.write(json.dumps(response) + "\n")
+        except CLIConnectionError as e:
+            logger.warning(
+                "Dropping %s control response for request %s: transport is closed (%s)",
+                subtype,
+                request_id,
+                e,
+                exc_info=handler_error,
+            )
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

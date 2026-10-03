@@ -705,8 +705,8 @@ class Query:
         # Write outside the try so a failed write is not reported back as a
         # handler error over the same broken transport.
         if self._closed:
-            # The handler outlived close()'s cancellation; nothing will read
-            # the response (#1340).
+            # close() is under way and the transport is about to be torn
+            # down; nothing will read the response (#1340).
             logger.log(
                 logging.WARNING if handler_error else logging.DEBUG,
                 "Query closed; dropping response to control request %s",

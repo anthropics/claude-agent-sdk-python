@@ -274,6 +274,18 @@ class TestOptions:
         assert options.model == "claude-sonnet-4-5"
         assert options.permission_prompt_tool_name == "CustomTool"
 
+    def test_claude_code_options_none_tool_lists_normalized_to_empty(self):
+        """Explicit None for the tool-list fields is treated as unset.
+
+        allowed_tools / disallowed_tools are typed list[str], but a plain
+        dataclass does not enforce that, so an explicit allowed_tools=None used
+        to be accepted and then raise TypeError far downstream when the list was
+        iterated. __post_init__ normalizes None to the empty-list default.
+        """
+        options = ClaudeAgentOptions(allowed_tools=None, disallowed_tools=None)
+        assert options.allowed_tools == []
+        assert options.disallowed_tools == []
+
 
 class TestHookInputTypes:
     """Test hook input type definitions."""

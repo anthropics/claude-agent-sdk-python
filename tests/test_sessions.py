@@ -207,6 +207,21 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "actual prompt"
 
+    def test_extract_first_prompt_text_equal_to_tool_result(self):
+        """A text block equal to "tool_result" is a prompt, not a tool_result (#1345)."""
+        head = (
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": [{"type": "text", "text": "tool_result"}]},
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "user", "message": {"content": "later prompt"}})
+            + "\n"
+        )
+        assert _extract_first_prompt_from_head(head) == "tool_result"
+
     def test_extract_first_prompt_content_blocks(self):
         head = (
             json.dumps(

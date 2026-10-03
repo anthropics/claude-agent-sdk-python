@@ -353,6 +353,15 @@ class _LiteSessionFile:
 def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
     """Opens a session file, stats it, and reads head + tail.
 
+    ``rename_session()`` / ``tag_session()`` append a standalone JSONL record
+    (``{"type":"custom-title",...}`` / ``{"type":"tag",...}``) to the file.
+    Once the transcript keeps growing past both the head and tail windows,
+    that record lands in the byte range between them and becomes invisible
+    to a plain head/tail read — the title or tag is silently lost even
+    though it is still on disk (see #1191). When that dead zone exists and
+    neither window shows a title or tag record, fall back to a full read so
+    the record stays visible for the life of the session.
+
     Returns None on any error or if file is empty.
     """
     try:
@@ -374,6 +383,14 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
                 f.seek(tail_offset)
                 tail_bytes = f.read(LITE_READ_BUF_SIZE)
                 tail = tail_bytes.decode("utf-8", errors="replace")
+
+            if tail_offset > LITE_READ_BUF_SIZE:
+                title_seen = '"customTitle"' in head or '"customTitle"' in tail
+                tag_seen = '{"type":"tag"' in head or '{"type":"tag"' in tail
+                if not (title_seen and tag_seen):
+                    f.seek(0)
+                    full = f.read().decode("utf-8", errors="replace")
+                    head = tail = full
 
             return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
     except OSError:
@@ -1546,18 +1563,26 @@ def _entries_to_jsonl(entries: list[Any]) -> str:
 def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
     """Build the head/tail/size lite shape from an in-memory JSONL string.
 
-    Matches ``_read_session_lite``'s byte semantics so the store path exposes
-    the same slice to ``_parse_session_info_from_lite`` as the disk path
-    would for the same transcript.
+    Matches ``_read_session_lite``'s byte semantics, including its dead-zone
+    fallback (see #1191): a title/tag record between the head and tail
+    windows is invisible to a plain slice, so when neither window shows one
+    this falls back to the full in-memory string, which costs nothing extra
+    since ``jsonl`` is already fully materialized.
     """
     buf = jsonl.encode("utf-8")
     size = len(buf)
     head = buf[:LITE_READ_BUF_SIZE].decode("utf-8", errors="replace")
+    tail_offset = max(0, size - LITE_READ_BUF_SIZE)
     tail = (
-        buf[max(0, size - LITE_READ_BUF_SIZE) :].decode("utf-8", errors="replace")
+        buf[tail_offset:].decode("utf-8", errors="replace")
         if size > LITE_READ_BUF_SIZE
         else head
     )
+    if tail_offset > LITE_READ_BUF_SIZE:
+        title_seen = '"customTitle"' in head or '"customTitle"' in tail
+        tag_seen = '{"type":"tag"' in head or '{"type":"tag"' in tail
+        if not (title_seen and tag_seen):
+            head = tail = buf.decode("utf-8", errors="replace")
     return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
 
 

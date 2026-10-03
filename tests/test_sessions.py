@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     list_subagents,
 )
 from claude_agent_sdk._internal.sessions import (
+    LITE_READ_BUF_SIZE,
     _build_conversation_chain,
     _extract_first_prompt_from_head,
     _extract_json_string_field,
@@ -1298,6 +1299,73 @@ class TestTagExtraction:
         sessions = list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].tag is None  # NOT "prod"
+
+    def test_title_and_tag_survive_growth_past_dead_zone(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """customTitle/tag records between the head and tail windows must
+        stay visible once the transcript keeps growing (regression for #1191).
+
+        ``rename_session()``/``tag_session()`` append a standalone record.
+        A plain head+tail read only sees the first and last
+        ``LITE_READ_BUF_SIZE`` bytes, so a record written early and then
+        pushed out of both windows by further conversation used to vanish —
+        the title silently reverted to the first prompt and the tag to
+        ``None``, even though both records were still on disk.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+
+        filler = json.dumps(
+            {"type": "user", "message": {"content": "x" * 500}}, **_COMPACT
+        )
+
+        def pad(nbytes: int) -> list[str]:
+            n = nbytes // (len(filler) + 1) + 1
+            return [filler] * n
+
+        lines = [
+            json.dumps(
+                {"type": "user", "message": {"content": "investigate the bug"}},
+                **_COMPACT,
+            ),
+        ]
+        # Push the file well past the head window before the title/tag land,
+        # then keep growing well past the tail window too, so the records
+        # sit strictly between both — the dead zone.
+        lines += pad(LITE_READ_BUF_SIZE)
+        lines.append(
+            json.dumps(
+                {
+                    "type": "custom-title",
+                    "customTitle": "Release checklist",
+                    "sessionId": sid,
+                },
+                **_COMPACT,
+            )
+        )
+        lines.append(
+            json.dumps({"type": "tag", "tag": "release", "sessionId": sid}, **_COMPACT)
+        )
+        lines += pad(LITE_READ_BUF_SIZE)
+
+        file_path.write_text("\n".join(lines) + "\n")
+        assert file_path.stat().st_size > 2 * LITE_READ_BUF_SIZE
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert len(sessions) == 1
+        assert sessions[0].custom_title == "Release checklist"
+        assert sessions[0].tag == "release"
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.custom_title == "Release checklist"
+        assert info.tag == "release"
 
     def test_parse_session_info_from_lite_helper(self, tmp_path: Path):
         """Direct test of the refactored _parse_session_info_from_lite helper."""

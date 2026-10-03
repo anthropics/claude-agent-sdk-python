@@ -294,6 +294,51 @@ class TestSubagents:
 
 class TestValidation:
     @pytest.mark.anyio
+    @pytest.mark.parametrize("batch_size", [2, 500])
+    @pytest.mark.parametrize("subagent", [False, True])
+    @pytest.mark.parametrize("interior", [False, True])
+    async def test_corrupt_transcript_leaves_store_unchanged(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        batch_size: int,
+        subagent: bool,
+        interior: bool,
+    ) -> None:
+        main_path = claude_dir / f"{SESSION_ID}.jsonl"
+        _write_jsonl(main_path, [_entry(i) for i in range(6)])
+        corrupt_path = main_path
+        if subagent:
+            sub_dir = claude_dir / SESSION_ID / "subagents"
+            _write_jsonl(sub_dir / "agent-aaa.jsonl", [_entry(10)])
+            corrupt_path = sub_dir / "agent-zzz.jsonl"
+            _write_jsonl(corrupt_path, [_entry(i) for i in range(6)])
+        with corrupt_path.open("a", encoding="utf-8") as f:
+            # The blank line still counts toward the physical error line.
+            f.write('\n{"type": "user", "uuid": "truncated')
+            if interior:
+                f.write("\n" + json.dumps(_entry(7)) + "\n")
+
+        store = InMemorySessionStore()
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        await store.append(key, [_entry(99)])
+        spy = AsyncMock(wraps=store.append)
+        store.append = spy  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError) as exc_info:
+            await import_session_to_store(
+                SESSION_ID, store, directory=str(cwd), batch_size=batch_size
+            )
+
+        spy.assert_not_awaited()
+        assert store.get_entries(key) == [_entry(99)]
+        assert await store.list_subkeys(key) == []
+        assert str(corrupt_path) in str(exc_info.value)
+        assert "line 8" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+    @pytest.mark.anyio
     async def test_invalid_uuid_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid session_id"):
             await import_session_to_store("../../etc/passwd", InMemorySessionStore())

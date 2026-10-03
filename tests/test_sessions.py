@@ -23,6 +23,7 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _is_programmatic_session,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -1082,6 +1083,214 @@ class TestGetSessionMessages:
         assert len(messages) == 2
 
 
+class TestIncludeProgrammatic:
+    """Tests for list_sessions(include_programmatic=...)."""
+
+    @staticmethod
+    def _write_session(
+        project_dir: Path, prompt: str, mtime: float, **first_extras
+    ) -> str:
+        sid = str(uuid.uuid4())
+        u1 = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry(
+                "user", u1, None, sid, content=prompt, **first_extras
+            ),
+            _make_transcript_entry(
+                "assistant", str(uuid.uuid4()), u1, sid, content="ok"
+            ),
+        ]
+        path = _write_transcript(project_dir, sid, entries)
+        os.utime(path, (mtime, mtime))
+        return sid
+
+    def _setup(self, claude_config_dir: Path, tmp_path: Path) -> tuple[str, dict]:
+        """Writes two interactive sessions and five programmatic ones.
+
+        The programmatic sessions are the newest, so filtering after
+        pagination would push the interactive ones off the first page.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        write = self._write_session
+        sids = {
+            "cli": write(project_dir, "cli", 1000, entrypoint="cli"),
+            "none": write(project_dir, "no entrypoint", 999),
+            "sdk-py": write(project_dir, "py", 2000, entrypoint="sdk-py"),
+            "sdk-ts": write(project_dir, "ts", 2001, entrypoint="sdk-ts"),
+            "sdk-cli": write(project_dir, "print", 2002, entrypoint="sdk-cli"),
+            "daemon": write(
+                project_dir, "daemon", 2003, entrypoint="cli", sessionKind="daemon"
+            ),
+            "daemon-worker": write(
+                project_dir, "worker", 2004, sessionKind="daemon-worker"
+            ),
+        }
+        return project_path, sids
+
+    def test_default_includes_programmatic(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path, sids = self._setup(claude_config_dir, tmp_path)
+        listed = list_sessions(directory=project_path, include_worktrees=False)
+        assert {s.session_id for s in listed} == set(sids.values())
+
+    def test_exclude_programmatic_for_directory(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path, sids = self._setup(claude_config_dir, tmp_path)
+        listed = list_sessions(
+            directory=project_path,
+            include_worktrees=False,
+            include_programmatic=False,
+        )
+        assert [s.session_id for s in listed] == [sids["cli"], sids["none"]]
+
+    def test_exclude_programmatic_across_projects(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        _, sids = self._setup(claude_config_dir, tmp_path)
+        listed = list_sessions(include_programmatic=False)
+        assert [s.session_id for s in listed] == [sids["cli"], sids["none"]]
+
+    def test_exclude_programmatic_across_worktrees(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        project_path, sids = self._setup(claude_config_dir, tmp_path)
+        worktree_path = str(tmp_path / "proj-wt")
+        Path(worktree_path).mkdir()
+        worktree_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(worktree_path)
+        )
+        wt_cli = self._write_session(worktree_dir, "wt cli", 500, entrypoint="cli")
+        self._write_session(worktree_dir, "wt py", 3000, entrypoint="sdk-py")
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.sessions._get_worktree_paths",
+            lambda cwd: [
+                os.path.realpath(project_path),
+                os.path.realpath(worktree_path),
+            ],
+        )
+
+        listed = list_sessions(directory=project_path, include_programmatic=False)
+        assert [s.session_id for s in listed] == [sids["cli"], sids["none"], wt_cli]
+
+    def test_filter_applies_before_pagination(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path, sids = self._setup(claude_config_dir, tmp_path)
+        listed = list_sessions(
+            directory=project_path,
+            include_worktrees=False,
+            include_programmatic=False,
+            limit=1,
+            offset=1,
+        )
+        assert [s.session_id for s in listed] == [sids["none"]]
+
+    def test_entrypoint_falls_back_to_tail(self):
+        head = '{"type":"user","parentUuid":null}\n'
+        tail = '{"type":"assistant","entrypoint":"sdk-py"}\n'
+        assert _is_programmatic_session(head, tail) is True
+
+    def test_head_entrypoint_wins_over_tail(self):
+        tail = '{"type":"assistant","entrypoint":"sdk-py"}\n'
+        head = '{"type":"user","parentUuid":null,"entrypoint":"cli"}\n'
+        assert _is_programmatic_session(head, tail) is False
+        # An empty head value still counts as found, as in the TypeScript SDK.
+        head = '{"type":"user","parentUuid":null,"entrypoint":""}\n'
+        assert _is_programmatic_session(head, tail) is False
+
+    def test_session_kind_read_from_first_transcript_record(self):
+        # A metadata line without parentUuid precedes the first record; a
+        # later record's sessionKind is not consulted.
+        head = (
+            '{"type":"permission-mode","permissionMode":"default"}\n'
+            '{"type":"user","parentUuid":null,"sessionKind":"daemon"}\n'
+        )
+        assert _is_programmatic_session(head, "") is True
+
+        head = (
+            '{"type":"user","parentUuid":null}\n'
+            '{"type":"assistant","parentUuid":"x","sessionKind":"daemon"}\n'
+        )
+        assert _is_programmatic_session(head, "") is False
+
+    def test_interactive_session_kind_not_programmatic(self):
+        head = '{"type":"user","parentUuid":null,"sessionKind":"interactive"}\n'
+        assert _is_programmatic_session(head, "") is False
+
+
+class TestIncludeSystemMessages:
+    """Tests for get_session_messages(include_system_messages=...)."""
+
+    def _setup(self, claude_config_dir: Path, tmp_path: Path) -> tuple[str, str, dict]:
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = {k: str(uuid.uuid4()) for k in ("u1", "s1", "meta", "a1")}
+        entries = [
+            _make_transcript_entry("user", ids["u1"], None, sid, content="hi"),
+            # System entries carry their payload at the top level, not in
+            # a message field.
+            _make_transcript_entry(
+                "system",
+                ids["s1"],
+                ids["u1"],
+                sid,
+                subtype="compact_boundary",
+                level="info",
+            )
+            | {"content": "Conversation compacted"},
+            _make_transcript_entry("system", ids["meta"], ids["s1"], sid, isMeta=True),
+            _make_transcript_entry(
+                "assistant", ids["a1"], ids["meta"], sid, content="hello"
+            ),
+        ]
+        _write_transcript(project_dir, sid, entries)
+        return project_path, sid, ids
+
+    def test_default_excludes_system(self, claude_config_dir: Path, tmp_path: Path):
+        project_path, sid, ids = self._setup(claude_config_dir, tmp_path)
+        messages = get_session_messages(sid, directory=project_path)
+        assert [m.uuid for m in messages] == [ids["u1"], ids["a1"]]
+
+    def test_includes_system_when_requested(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path, sid, ids = self._setup(claude_config_dir, tmp_path)
+        messages = get_session_messages(
+            sid, directory=project_path, include_system_messages=True
+        )
+        # isMeta system entries stay hidden, like isMeta user entries.
+        assert [m.uuid for m in messages] == [ids["u1"], ids["s1"], ids["a1"]]
+        assert [m.type for m in messages] == ["user", "system", "assistant"]
+        assert messages[1].session_id == sid
+        assert messages[1].message is None
+
+    def test_pagination_counts_system_messages(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path, sid, ids = self._setup(claude_config_dir, tmp_path)
+        messages = get_session_messages(
+            sid,
+            directory=project_path,
+            include_system_messages=True,
+            limit=1,
+            offset=1,
+        )
+        assert [m.uuid for m in messages] == [ids["s1"]]
+
+
 class TestBuildConversationChain:
     """Unit tests for the _build_conversation_chain helper."""
 
@@ -1140,6 +1349,10 @@ class TestSessionMessageType:
         )
         assert msg.parent_tool_use_id == "toolu_1"
         assert msg.parent_agent_id == "agent-1"
+
+    def test_system_type(self):
+        msg = SessionMessage(type="system", uuid="abc", session_id="sess", message=None)
+        assert msg.type == "system"
 
 
 # ---------------------------------------------------------------------------

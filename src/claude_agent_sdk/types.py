@@ -1777,17 +1777,21 @@ class SDKSessionInfo:
 
 @dataclass
 class SessionMessage:
-    """A user or assistant message from a session transcript.
+    """A user, assistant, or system message from a session transcript.
 
     Returned by ``get_session_messages()`` for reading historical session
     data. Fields match the SDK wire protocol types (SDKUserMessage /
     SDKAssistantMessage).
 
     Attributes:
-        type: Message type — ``"user"`` or ``"assistant"``.
+        type: Message type — ``"user"`` or ``"assistant"``, or ``"system"``
+            when ``include_system_messages=True`` is passed to
+            ``get_session_messages()`` / ``get_session_messages_from_store()``.
         uuid: Unique message identifier.
         session_id: ID of the session this message belongs to.
-        message: Raw Anthropic API message dict (role, content, etc.).
+        message: Raw Anthropic API message dict (role, content, etc.). For
+            ``"system"`` entries this is usually ``None``: their payload
+            (``subtype``, ``content``) lives outside ``message``.
         parent_tool_use_id: For messages returned by ``get_subagent_messages()``
             / ``get_subagent_messages_from_store()``, the id of the Agent
             ``tool_use`` block in the parent session that spawned the subagent
@@ -1801,7 +1805,7 @@ class SessionMessage:
             top-level session messages.
     """
 
-    type: Literal["user", "assistant"]
+    type: Literal["user", "assistant", "system"]
     uuid: str
     session_id: str
     message: Any

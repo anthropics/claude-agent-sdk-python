@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.2.163
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.286
+- CI: pinned the model for issue triage to fix failures caused by the CLI's new default model (#1328)
+
+## 0.2.162
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.285
+
+## 0.2.161
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.284
+
+## 0.2.160
+
+### Bug Fixes
+
+- **Fixed follow-up turns failing after background subagents**: When using `query()` with hooks, `can_use_tool`, or SDK MCP servers, stdin was closed too early if a subagent finished just before the turn's result arrived. Follow-up turns would then fail with "Stream closed" and the model would report the tool as refused. The SDK now listens for the CLI's `session_state_changed` messages and keeps stdin open until the CLI reports `idle`, matching the TypeScript SDK's behavior. A bounded wait ceiling (configurable via `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, default 10 minutes) prevents indefinite hangs. Older CLIs without state events fall back to the previous close-at-first-result behavior. (#1190, #1279)
+
+### Documentation
+
+- Aligned docstrings with the code and fixed docstring formatting (#1293)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.283
+- CI: skip wheels over PyPI's per-file limit instead of failing the release (#1309)
+
+## 0.2.159
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.281
+- Pinned default model for e2e tests to `claude-opus-5` to work around CI failures with the CLI's new default model (#1287)
+
+## 0.2.158
+
+### New Features
+
+- **`verbatim_prompts` option**: Added `ClaudeAgentOptions.verbatim_prompts` (default `False`). When `True`, user messages are delivered to the CLI exactly as written — no `@path` file expansion and no slash-command dispatch. This prevents untrusted text inlined into prompts from triggering unintended file reads or command execution. Works with `query()`, `ClaudeSDKClient.connect()`, and `ClaudeSDKClient.query()` for both string and async-iterable prompts. Requires CLI 2.1.248+; a warning is logged on older CLIs. (#1269)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.280
+- CI improvements: recompressed wheels and raised the PyPI pre-flight threshold (#1283)
+
+## 0.2.156
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.276
+
+## 0.2.155
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.275
+
+## 0.2.154
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.274
+
+## 0.2.153
+
+### New Features
+
+- **`snapshot` option for system prompts**: Added a `snapshot` field to `SystemPromptPreset` and a new `SystemPromptCustom` typed dict. When `snapshot` is True, the session keeps the system prompt recorded on its first request, improving prompt-caching behavior across resumed sessions. When False, the prompt is rebuilt on every request, useful for iterating on `append` text. Requires CLI 2.1.257+ (#1268)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.273
+
 ## 0.2.152
 
 ### Internal/Other Changes

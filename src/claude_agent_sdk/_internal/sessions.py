@@ -1704,7 +1704,7 @@ async def list_sessions_from_store(
         ``include_worktrees`` is a filesystem concept and is not honored on
         the store path — the store operates on a single ``project_key``.
 
-    .. note::
+    Note:
         If the store implements ``list_session_summaries``, this is one batch
         summary call plus one cheap ``list_sessions()`` enumeration to
         gap-fill sessions missing a sidecar or whose sidecar is stale

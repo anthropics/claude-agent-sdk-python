@@ -73,10 +73,10 @@ async def check_bash_command(
 async def add_custom_instructions(
     input_data: HookInput, tool_use_id: str | None, context: HookContext
 ) -> HookJSONOutput:
-    """Add custom instructions when a session starts."""
+    """Add custom context when the user submits a prompt."""
     return {
         "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
+            "hookEventName": "UserPromptSubmit",
             "additionalContext": "My favorite color is hot pink",
         }
     }

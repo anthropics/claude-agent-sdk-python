@@ -2108,8 +2108,9 @@ class ClaudeAgentOptions:
     Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
     flag. When ``sandbox`` is also set, the settings are merged with the sandbox
     settings and passed as one JSON string: an inline string is parsed
-    directly, and a path is read from disk (a missing file is logged and only
-    the sandbox settings are passed).
+    directly (malformed JSON raises an error), and a path is read from disk
+    (a missing file is logged and only the sandbox settings are passed;
+    a file containing malformed JSON raises an error naming the file).
 
     These are loaded into the "flag settings" layer, which has the highest
     priority among user-controlled settings.

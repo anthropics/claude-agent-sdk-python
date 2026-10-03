@@ -22,13 +22,13 @@ Run the checks that match your change before opening a pull request:
 
 ```bash
 # Lint and automatically fix issues
-python -m ruff check src/ tests/ --fix
+python -m ruff check src/ tests/ scripts/ --fix
 
-# Format source and tests
-python -m ruff format src/ tests/
+# Format source, tests, and scripts
+python -m ruff format src/ tests/ scripts/
 
-# Typecheck the SDK package
-python -m mypy src/
+# Typecheck the SDK package and scripts
+python -m mypy src/ scripts/
 
 # Run the test suite
 python -m pytest tests/
@@ -48,4 +48,3 @@ Conventional Commits style, such as:
 - `fix(query): surface result error text`
 - `docs(types): clarify hooks dispatch behavior`
 - `deps: bump mcp lower bound`
-

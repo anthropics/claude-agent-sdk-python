@@ -154,6 +154,39 @@ def _canonicalize_path(d: str) -> str:
         return unicodedata.normalize("NFC", d)
 
 
+def _project_dir_records_cwd(project_dir: Path, project_path: str) -> bool:
+    """Return whether a project directory contains a transcript for ``project_path``.
+
+    Long project paths need this identity check when the SDK-computed hash does
+    not match the CLI-computed hash. A shared truncated filename prefix is not
+    sufficient because distinct paths can have the same first 200 sanitized
+    characters.
+    """
+    canonical_project_path = os.path.normcase(_canonicalize_path(project_path))
+    try:
+        entries = project_dir.iterdir()
+        for entry in entries:
+            name = entry.name
+            if not name.endswith(".jsonl") or not _validate_uuid(name[:-6]):
+                continue
+
+            lite = _read_session_lite(entry)
+            if lite is None:
+                continue
+            recorded_cwd = _extract_json_string_field(
+                lite.head, "cwd"
+            ) or _extract_json_string_field(lite.tail, "cwd")
+            if (
+                recorded_cwd is not None
+                and os.path.normcase(_canonicalize_path(recorded_cwd))
+                == canonical_project_path
+            ):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _find_project_dir(project_path: str) -> Path | None:
     """Finds the project directory for a given path.
 
@@ -161,7 +194,8 @@ def _find_project_dir(project_path: str) -> Path | None:
     Bun.hash while the SDK under Node.js uses simpleHash — for paths that
     exceed MAX_SANITIZED_LENGTH, these produce different directory suffixes.
     This function falls back to prefix-based scanning when the exact match
-    doesn't exist.
+    doesn't exist, but verifies a candidate against the ``cwd`` recorded in
+    its transcripts before returning it.
     """
     exact = _get_project_dir(project_path)
     if exact.is_dir():
@@ -175,12 +209,26 @@ def _find_project_dir(project_path: str) -> Path | None:
 
     prefix = sanitized[:MAX_SANITIZED_LENGTH]
     projects_dir = _get_projects_dir()
+    matches: list[Path] = []
     try:
         for entry in projects_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith(prefix + "-"):
-                return entry
+            if (
+                entry.is_dir()
+                and entry.name.startswith(prefix + "-")
+                and _project_dir_records_cwd(entry, project_path)
+            ):
+                matches.append(entry)
     except OSError:
-        pass
+        return None
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        logger.warning(
+            "Multiple session directories match long project path %s; "
+            "refusing to select one arbitrarily",
+            project_path,
+        )
     return None
 
 
@@ -602,59 +650,25 @@ def _list_sessions_for_project(
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
         return _apply_sort_limit_offset(sessions, limit, offset)
 
-    # Worktree-aware scanning: find all project dirs matching any worktree
-    projects_dir = _get_projects_dir()
+    # Worktree-aware scanning: resolve each worktree independently. In
+    # particular, long paths must use _find_project_dir's transcript-backed
+    # identity check rather than trusting a shared truncated filename prefix.
     case_insensitive = sys.platform == "win32"
-
-    # Sort worktree paths by sanitized prefix length (longest first) so
-    # more specific matches take priority over shorter ones
-    indexed = []
-    for wt in worktree_paths:
-        sanitized = _sanitize_path(wt)
-        prefix = sanitized.lower() if case_insensitive else sanitized
-        indexed.append((wt, prefix))
-    indexed.sort(key=lambda x: len(x[1]), reverse=True)
-
-    try:
-        all_dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
-    except OSError:
-        # Fall back to single project dir
-        project_dir = _find_project_dir(canonical_dir)
-        if project_dir is None:
-            return _apply_sort_limit_offset([], limit, offset)
-        sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_limit_offset(sessions, limit, offset)
-
     all_sessions: list[SDKSessionInfo] = []
     seen_dirs: set[str] = set()
 
-    # Always include the user's actual directory (handles subdirectories
-    # like /repo/packages/my-app that won't match worktree root prefixes)
-    canonical_project_dir = _find_project_dir(canonical_dir)
-    if canonical_project_dir is not None:
-        dir_base = canonical_project_dir.name
-        seen_dirs.add(dir_base.lower() if case_insensitive else dir_base)
-        sessions = _read_sessions_from_dir(canonical_project_dir, canonical_dir)
-        all_sessions.extend(sessions)
-
-    for entry in all_dirents:
-        dir_name = entry.name.lower() if case_insensitive else entry.name
+    # Always include the user's actual directory (handles subdirectories like
+    # /repo/packages/my-app that are not themselves worktree roots), followed
+    # by every worktree reported by git.
+    for project_path in [canonical_dir, *worktree_paths]:
+        project_dir = _find_project_dir(project_path)
+        if project_dir is None:
+            continue
+        dir_name = project_dir.name.lower() if case_insensitive else project_dir.name
         if dir_name in seen_dirs:
             continue
-
-        for wt_path, prefix in indexed:
-            # Only use startswith for truncated paths (>MAX_SANITIZED_LENGTH)
-            # where a hash suffix follows. For short paths, require exact match
-            # to avoid /root/project matching /root/project-foo.
-            is_match = dir_name == prefix or (
-                len(prefix) >= MAX_SANITIZED_LENGTH
-                and dir_name.startswith(prefix + "-")
-            )
-            if is_match:
-                seen_dirs.add(dir_name)
-                sessions = _read_sessions_from_dir(entry, wt_path)
-                all_sessions.extend(sessions)
-                break
+        seen_dirs.add(dir_name)
+        all_sessions.extend(_read_sessions_from_dir(project_dir, project_path))
 
     deduped = _deduplicate_by_session_id(all_sessions)
     return _apply_sort_limit_offset(deduped, limit, offset)

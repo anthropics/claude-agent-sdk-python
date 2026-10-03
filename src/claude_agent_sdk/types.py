@@ -219,6 +219,26 @@ class PermissionUpdate:
 
 
 # Tool callback types
+class McpServerProvenance(TypedDict):
+    """MCP server identity and the source of its definition.
+
+    ``source == "sdk"`` identifies a host-registered in-process server. Other
+    sources identify configured servers; unknown sources must not be treated as
+    ``sdk``. Server names from configuration are untrusted display text.
+    """
+
+    name: str
+    source: str
+
+
+class MatchedAskRule(TypedDict):
+    """User-configured ask rule that forced a permission prompt."""
+
+    source: str
+    tool_name: str
+    rule_content: NotRequired[str]
+
+
 @dataclass
 class ToolPermissionContext:
     """Context information for tool permission callbacks."""
@@ -252,6 +272,27 @@ class ToolPermissionContext:
     button labels or compact UI."""
     description: str | None = None
     """Human-readable subtitle for the permission UI."""
+    mcp_server: McpServerProvenance | None = None
+    """MCP server provenance, absent for non-MCP tools and older CLIs.
+    Missing provenance never implies an SDK-registered server.
+    Key trust decisions on ``source``, not the server name or tool-name prefix."""
+    default_to_no: bool | None = None
+    """When true, do not preselect approval or offer a one-key approve shortcut."""
+    suppress_always_allow_rule: bool | None = None
+    """When true, omit persistent approval options that grant broader access."""
+    matched_ask_rule: MatchedAskRule | None = None
+    """Ask rule that forced this prompt while preserving the tool's own reason.
+    Hosts should honor the user's intent to prompt even when the decision reason
+    would otherwise permit automatic approval. Sanitize rule text for display."""
+    decision_reason_type: str | None = None
+    """Structured reason for escalation (e.g. ``rule`` or ``safetyCheck``).
+    For compound commands, ``subcommandResults`` can contain safety checks;
+    consult ``classifier_approvable`` rather than relying on this value alone."""
+    classifier_approvable: bool | None = None
+    """Whether safety checks may be classifier-approved, absent if none apply.
+    False means at least one safety check requires manual approval."""
+    requires_user_interaction: bool | None = None
+    """When true, the user must answer in the session rather than one-tap approval."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -2454,6 +2495,13 @@ class SDKControlPermissionRequest(TypedDict):
     description: NotRequired[str]
     tool_use_id: str
     agent_id: NotRequired[str]
+    mcp_server: NotRequired[McpServerProvenance]
+    default_to_no: NotRequired[bool]
+    suppress_always_allow_rule: NotRequired[bool]
+    matched_ask_rule: NotRequired[MatchedAskRule]
+    decision_reason_type: NotRequired[str]
+    classifier_approvable: NotRequired[bool]
+    requires_user_interaction: NotRequired[bool]
 
 
 class SDKControlInitializeRequest(TypedDict):

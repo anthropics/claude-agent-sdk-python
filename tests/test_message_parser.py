@@ -1,5 +1,7 @@
 """Tests for message parser error handling."""
 
+import logging
+
 import pytest
 
 from claude_agent_sdk._errors import MessageParseError
@@ -1295,6 +1297,43 @@ class TestMessageParser:
         message = parse_message(data)
         assert isinstance(message, ResultMessage)
         assert message.errors == expected
+
+    @pytest.mark.parametrize(
+        ("errors", "expected", "should_log"),
+        [
+            (None, None, False),
+            ([], [], False),
+            ("", [], False),
+            ("  ", [], True),
+            (["valid", {"code": 429}], ["valid"], False),
+            ([{"code": 429}], [], True),
+            (0, [], True),
+            (False, [], True),
+            ({}, [], True),
+        ],
+    )
+    def test_parse_result_message_logs_only_when_errors_are_dropped(
+        self, errors, expected, should_log, caplog
+    ):
+        """Only malformed values collapsed to an empty list need a debug log."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 2000,
+            "duration_api_ms": 1500,
+            "is_error": True,
+            "num_turns": 1,
+            "session_id": "session_overload",
+            "errors": errors,
+        }
+        with caplog.at_level(
+            logging.DEBUG, logger="claude_agent_sdk._internal.message_parser"
+        ):
+            message = parse_message(data)
+
+        assert isinstance(message, ResultMessage)
+        assert message.errors == expected
+        assert ("Dropped unparsable result errors" in caplog.text) is should_log
 
     def test_parse_result_message_with_api_error_status(self):
         """ResultMessage surfaces api_error_status for failed API calls.

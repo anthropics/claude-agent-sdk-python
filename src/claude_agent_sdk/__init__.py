@@ -410,10 +410,8 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
 def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
     """Turn a tool's declared input_schema into the JSON Schema sent on the wire."""
     if isinstance(tool_def.input_schema, dict):
-        if (
-            "type" in tool_def.input_schema
-            and "properties" in tool_def.input_schema
-            and isinstance(tool_def.input_schema["type"], str)
+        if "type" in tool_def.input_schema and isinstance(
+            tool_def.input_schema["type"], str
         ):
             return tool_def.input_schema
         properties = {

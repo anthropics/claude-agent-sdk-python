@@ -1018,6 +1018,29 @@ async def test_json_schema_constraints_are_enforced():
 
 
 @pytest.mark.anyio
+async def test_json_schema_without_properties_is_used_verbatim():
+    """A JSON Schema needs no `properties` key to be a JSON Schema.
+
+    `additionalProperties: false` says "no arguments", which is the whole
+    point of the tool, and reading the keywords as parameter names makes every
+    call fail on a required `type` property that the model was never told about.
+    """
+    schema = {"type": "object", "additionalProperties": False}
+
+    @tool("noop", "Takes nothing", schema)
+    async def noop(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "OK"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[noop])
+    async with connected(config) as client:
+        ok = await client.call_tool("srv", "noop", {})
+        extra = await client.call_tool("srv", "noop", {"name": "x"})
+
+    assert texts(ok) == ["OK"]
+    assert extra["isError"] is True
+
+
+@pytest.mark.anyio
 async def test_invalid_tool_schema_is_an_error_result():
     """A schema jsonschema cannot use fails the call the same way on every mcp
     version: as an error result, not a protocol error."""

@@ -105,6 +105,7 @@ from .types import (
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionMode,
+    PermissionPrompts,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
     PermissionResult,
@@ -628,6 +629,7 @@ __all__ = [
     "ClaudeSDKClient",
     # Types
     "PermissionMode",
+    "PermissionPrompts",
     "EffortLevel",
     "McpServerConfig",
     "McpSdkServerConfig",

@@ -31,8 +31,10 @@ async def test_completed_transcripts_are_released_during_listing(
     async def load(store: SessionStore, sid: str, directory: str | None) -> str:
         nonlocal live, peak
         await anyio.sleep(0)
-        # Also collect on interpreters without immediate reference counting.
-        gc.collect()
+        # Collect at the bound for interpreters without immediate reference
+        # counting; already-released transcripts need no full GC per load.
+        if live >= sessions._STORE_LIST_LOAD_CONCURRENCY:
+            gc.collect()
         value = TrackedJSONL(
             '{"type":"user","uuid":"' + sid + '","message":{"content":"hello"}}\n'
         )

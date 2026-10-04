@@ -607,7 +607,7 @@ def create_sdk_mcp_server(
             result = await tool_def.handler(arguments)
             return CallToolResult.model_validate(
                 {
-                    "content": _convert_tool_content(result.get("content", [])),
+                    "content": _convert_tool_content(result["content"]),
                     "isError": result.get("is_error", False),
                 }
             )

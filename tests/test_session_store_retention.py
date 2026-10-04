@@ -101,3 +101,72 @@ async def test_parse_errors_preserve_identity_input_order_and_load_completion(
     assert caught.value is errors[0]
     assert finished.index(1) < finished.index(0)
     assert sorted(finished) == list(range(len(listing)))
+
+
+@pytest.mark.parametrize(
+    "cancelling_stage", ["_jsonl_to_lite", "_parse_session_info_from_lite"]
+)
+async def test_cancellation_during_derivation_releases_transcripts_and_loads(
+    monkeypatch: pytest.MonkeyPatch, cancelling_stage: str
+) -> None:
+    class TrackedJSONL(str):
+        pass
+
+    concurrency = sessions._STORE_LIST_LOAD_CONCURRENCY
+    listing = [
+        {"session_id": str(uuid.UUID(int=i + 1)), "mtime": i}
+        for i in range(concurrency * 2)
+    ]
+    started: set[str] = set()
+    finished: set[str] = set()
+    transcripts: list[weakref.ReferenceType[TrackedJSONL]] = []
+    all_started = anyio.Event()
+    stage_reached = False
+    first_started: str | None = None
+
+    async def load(store: SessionStore, sid: str, directory: str | None) -> str:
+        nonlocal first_started
+        if first_started is None:
+            first_started = sid
+        value = TrackedJSONL(
+            '{"type":"user","uuid":"' + sid + '","message":{"content":"hello"}}\n'
+        )
+        transcripts.append(weakref.ref(value))
+        started.add(sid)
+        if len(started) == concurrency:
+            all_started.set()
+        try:
+            if sid == first_started:
+                await all_started.wait()
+                return value
+            await anyio.sleep_forever()
+        finally:
+            finished.add(sid)
+
+    original_stage = getattr(sessions, cancelling_stage)
+
+    def cancel_during_derivation(*args: Any) -> Any:
+        nonlocal stage_reached
+        stage_reached = True
+        # Parsing is synchronous: request cancellation here, then let it be
+        # delivered at the next checkpoint rather than pretending it can
+        # interrupt the parser midway through its Python call.
+        cancel_scope.cancel()
+        return original_stage(*args)
+
+    monkeypatch.setattr(sessions, "_load_store_entries_as_jsonl", load)
+    monkeypatch.setattr(sessions, cancelling_stage, cancel_during_derivation)
+    with anyio.fail_after(5):
+        with anyio.CancelScope() as cancel_scope:
+            await sessions._derive_infos_via_load(
+                cast(SessionStore, object()), listing, "/project", "/project"
+            )
+            pytest.fail("listing swallowed cancellation")
+
+    assert stage_reached
+    assert cancel_scope.cancelled_caught
+    assert len(started) == concurrency
+    assert finished == started
+    gc.collect()
+    # Covers the completed transcript and payloads in cancelled load frames.
+    assert all(reference() is None for reference in transcripts)

@@ -739,8 +739,13 @@ class Query:
             await self.transport.write(json.dumps(control_request) + "\n")
 
             # Wait for response
-            with anyio.fail_after(timeout):
-                await event.wait()
+            try:
+                with anyio.fail_after(timeout):
+                    await event.wait()
+            except TimeoutError as e:
+                raise Exception(
+                    f"Control request timeout: {request.get('subtype')}"
+                ) from e
 
             result = self.pending_control_results.pop(request_id)
 
@@ -749,8 +754,6 @@ class Query:
 
             response_data = result.get("response", {})
             return response_data if isinstance(response_data, dict) else {}
-        except TimeoutError as e:
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
         finally:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)

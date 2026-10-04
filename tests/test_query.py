@@ -2208,6 +2208,26 @@ class TestSendControlRequestCancellation:
         assert query.pending_control_responses == {}
         assert query.pending_control_results == {}
 
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_transport_write_timeout_is_preserved(self, backend):
+        timeout_error = TimeoutError("transport write timed out")
+        query = Query(transport=AsyncMock(), is_streaming_mode=True)
+
+        async def write(payload):
+            raise timeout_error
+
+        query.transport.write = write
+
+        async def run_test():
+            with pytest.raises(TimeoutError) as raised:
+                await query._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+            assert raised.value is timeout_error
+            assert query.pending_control_responses == {}
+            assert query.pending_control_results == {}
+
+        anyio.run(run_test, backend=backend)
+
 
 class TestControlCancelRequest:
     """Tests for control_cancel_request handling (issue #739).

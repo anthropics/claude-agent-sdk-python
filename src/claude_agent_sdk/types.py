@@ -1148,6 +1148,16 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    user_message_uuid: str | None = None
+    """Client UUID of the user message this reply answers, when reported by the
+    CLI. Usually present on the first reply frame; synthetic turns may report
+    new attribution after consuming queued user messages."""
+    user_message_uuids: list[str] | None = None
+    """User-message UUIDs consumed so far, in consumption order. Present on
+    the same frames as ``user_message_uuid``. Capped at 64 entries, so the list
+    may be incomplete when more inputs are consumed. A missing UUID does not
+    prove its input was not consumed. Older CLIs may report only
+    ``user_message_uuid``."""
 
 
 @dataclass
@@ -1375,6 +1385,19 @@ class ResultMessage:
     result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
     that) from results of injected turns such as background-task
     notifications (``{"kind": "task-notification"}``)."""
+    user_message_uuid: str | None = None
+    """Client UUID of the user message that triggered this turn, on both
+    success and error results. ``None`` when not reported by the CLI."""
+    user_message_uuids: list[str] | None = None
+    """User-message UUIDs consumed by this turn, in consumption order (up to
+    64 UUIDs). The list may be incomplete when more inputs are consumed; a
+    missing UUID does not prove its input was not consumed. May include messages
+    folded in after the first reply. Older CLIs may report only
+    ``user_message_uuid``."""
+    queued_turn_count: int | None = None
+    """Pending user sends when this result was produced. Sends may coalesce
+    into fewer turns, so this is not a count of remaining results. ``None``
+    when not reported by the CLI."""
 
 
 @dataclass
@@ -1385,6 +1408,16 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+    user_message_uuid: str | None = None
+    """Client UUID of the user message this stream answers, when reported by the
+    CLI. Usually present on the first non-ping event; synthetic turns may report
+    new attribution after consuming queued user messages."""
+    user_message_uuids: list[str] | None = None
+    """User-message UUIDs consumed so far, in consumption order. Present on
+    the same events as ``user_message_uuid``. Capped at 64 entries, so the list
+    may be incomplete when more inputs are consumed. A missing UUID does not
+    prove its input was not consumed. Older CLIs may report only
+    ``user_message_uuid``."""
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits

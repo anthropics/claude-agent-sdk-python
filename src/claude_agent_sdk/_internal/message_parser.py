@@ -50,7 +50,7 @@ def _parse_result_errors(raw: Any) -> list[str] | None:
     if raw is None:
         return None
     normalized = _normalize_result_errors(raw)
-    if raw and not normalized:
+    if not normalized and not (isinstance(raw, (list, str)) and not raw):
         logger.debug("Dropped unparsable result errors: %r", raw)
     return normalized
 

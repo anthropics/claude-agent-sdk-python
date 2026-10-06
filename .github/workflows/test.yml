@@ -88,6 +88,11 @@ jobs:
       # Required to mint the OIDC token exchanged for a Claude API access
       # token (workload identity federation)
       id-token: write
+    # Windows e2e has failed intermittently, on a different test each time, since it
+    # moved behind the OS firewall. Until that is fixed, a Windows failure stays red
+    # on the job but doesn't fail the Test run, so it can't make Auto Release skip a
+    # CLI bump. Linux and macOS e2e still gate.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       matrix:
         # The Linux entry calls Claude on GitHub's egress-firewall runner (allow list:
@@ -149,8 +154,14 @@ jobs:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        shell: bash
         run: |
-          python -m pytest e2e-tests/ -v -m e2e
+          # Repeat the failures and their assertion lines as an annotation, where
+          # they show without opening the log.
+          if ! python -m pytest e2e-tests/ -v -m e2e 2>&1 | tee "$RUNNER_TEMP/e2e.log"; then
+            echo "::error title=e2e tests failed::$(.github/scripts/e2e-failure-summary.sh "$RUNNER_TEMP/e2e.log")"
+            exit 1
+          fi
 
       # GitHub's egress-firewall runner is Linux only. On macOS and Windows the
       # tests run as a separate user whose outbound traffic the OS firewall
@@ -218,14 +229,18 @@ jobs:
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
         # Bind-mount the identity token file so the background refresher on
         # the host keeps the in-container copy fresh too
+        shell: bash
         run: |
-          docker run --rm \
+          if ! docker run --rm \
             -e ANTHROPIC_FEDERATION_RULE_ID \
             -e ANTHROPIC_ORGANIZATION_ID \
             -e ANTHROPIC_SERVICE_ACCOUNT_ID \
             -e ANTHROPIC_IDENTITY_TOKEN_FILE=/run/claude-identity-token \
             -v "$ANTHROPIC_IDENTITY_TOKEN_FILE:/run/claude-identity-token:ro" \
-            claude-sdk-test python -m pytest e2e-tests/ -v -m e2e
+            claude-sdk-test python -m pytest e2e-tests/ -v -m e2e 2>&1 | tee "$RUNNER_TEMP/e2e.log"; then
+            echo "::error title=e2e tests failed::$(.github/scripts/e2e-failure-summary.sh "$RUNNER_TEMP/e2e.log")"
+            exit 1
+          fi
 
   test-examples:
     # Skip on forks since they can't mint the OIDC token used for Claude API auth

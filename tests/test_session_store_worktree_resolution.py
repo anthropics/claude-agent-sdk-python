@@ -418,6 +418,106 @@ async def test_listing_remains_scoped_to_single_project_key(
     ] == [SID]
 
 
+async def test_removed_worktree_remains_addressable_by_known_original_path(
+    worktree_session: WorktreeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing a worktree must not make its existing store key unreachable."""
+    f = worktree_session
+    store = await f.imported()
+    original_key = f.key(f.worktree)
+    subprocess.run(
+        ["git", "-C", str(f.repo), "worktree", "remove", str(f.worktree)],
+        check=True,
+    )
+    shutil.rmtree(f.config / "projects")
+    assert not f.worktree.exists()
+    assert f.key(f.worktree) == original_key
+
+    async def unexpected_git(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("an exact store hit must not need a live worktree")
+
+    monkeypatch.setattr(anyio, "run_process", unexpected_git)
+    directory = str(f.worktree)
+    info = await get_session_info_from_store(store, SID, directory=directory)
+    assert info is not None and info.first_prompt == "Worktree history"
+    messages = await get_session_messages_from_store(store, SID, directory=directory)
+    assert [m.uuid for m in messages] == [USER_ID, ASSISTANT_ID]
+    assert await list_subagents_from_store(store, SID, directory=directory) == ["local"]
+    submessages = await get_subagent_messages_from_store(
+        store, SID, "local", directory=directory
+    )
+    assert [m.uuid for m in submessages] == [USER_ID, ASSISTANT_ID]
+    assert [
+        s.session_id for s in await list_sessions_from_store(store, directory=directory)
+    ] == [SID]
+
+    await rename_session_via_store(store, SID, "Recovered", directory=directory)
+    await tag_session_via_store(store, SID, "recovered", directory=directory)
+    original = await store.load(original_key)
+    assert original is not None and original[:2] == f.entries
+    assert [e["type"] for e in original] == ["user", "assistant", "custom-title", "tag"]
+    materialized = await materialize_resume_session(f.options(store, f.worktree))
+    assert materialized is not None
+    try:
+        project = materialized.config_dir / "projects" / original_key["project_key"]
+        assert [
+            json.loads(line)
+            for line in (project / f"{SID}.jsonl").read_text().splitlines()
+        ] == original
+        assert [
+            json.loads(line)
+            for line in (project / SID / "subagents" / "agent-local.jsonl")
+            .read_text()
+            .splitlines()
+        ] == f.entries
+    finally:
+        await materialized.cleanup()
+
+    fork = await fork_session_via_store(store, SID, directory=directory)
+    assert (
+        len(
+            await get_session_messages_from_store(
+                store, fork.session_id, directory=directory
+            )
+        )
+        == 2
+    )
+    await delete_session_via_store(store, SID, directory=directory)
+    assert await store.load(original_key) is None
+    assert await store.list_subkeys(original_key) == []
+    assert await store.load(f.key(f.repo)) is None
+    assert store.size == 1  # Only the fork remains.
+    assert not f.worktree.exists()
+
+
+async def test_parent_lookup_does_not_discover_removed_worktree(
+    worktree_session: WorktreeSession,
+) -> None:
+    """Known-path recovery is distinct from discovering an unregistered key."""
+    f = worktree_session
+    store = await f.imported()
+    assert (
+        len(await get_session_messages_from_store(store, SID, directory=str(f.repo)))
+        == 2
+    )
+    subprocess.run(
+        ["git", "-C", str(f.repo), "worktree", "remove", str(f.worktree)],
+        check=True,
+    )
+    assert not f.worktree.exists()
+    assert await get_session_info_from_store(store, SID, directory=str(f.repo)) is None
+    assert (
+        await get_session_messages_from_store(store, SID, directory=str(f.repo)) == []
+    )
+    assert await list_subagents_from_store(store, SID, directory=str(f.repo)) == []
+    assert await list_sessions_from_store(store, directory=str(f.repo)) == []
+    assert await materialize_resume_session(f.options(store, f.repo)) is None
+    await delete_session_via_store(store, SID, directory=str(f.repo))
+    assert await store.load(f.key(f.worktree)) == f.entries
+    assert await store.list_subkeys(f.key(f.worktree)) == ["subagents/agent-local"]
+    assert store.size == 1
+
+
 async def test_empty_direct_stream_takes_priority_over_worktree(
     worktree_session: WorktreeSession,
 ) -> None:

@@ -2672,6 +2672,36 @@ class TestControlRequestTimeout:
     """A control request the CLI never answers raises a typed, selectable error."""
 
     @pytest.mark.anyio
+    async def test_reader_timeout_propagates_without_control_timeout_wrapper(self):
+        """A reader failure wakes the request without expiring its response wait."""
+        reader_error = TimeoutError("reader transport deadline")
+        request_written = anyio.Event()
+        transport = _make_mock_transport(messages=[])
+
+        async def fail_reader():
+            await request_written.wait()
+            # Keep the transport's async-iterator interface without yielding data.
+            for message in ():
+                yield message
+            raise reader_error
+
+        transport.read_messages = fail_reader
+        transport.write.side_effect = lambda _data: request_written.set()
+        q = Query(transport=transport, is_streaming_mode=True)
+        await q.start()
+        try:
+            # The reader must fail fast, well before the control-request deadline.
+            with anyio.fail_after(1):
+                with pytest.raises(TimeoutError) as excinfo:
+                    await q._send_control_request({"subtype": "interrupt"}, timeout=60)
+
+            assert excinfo.value is reader_error
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+        finally:
+            await q.close()
+
+    @pytest.mark.anyio
     async def test_unanswered_control_request_raises_typed_error(self):
         """`except ClaudeSDKError` must catch a control request timeout.
 

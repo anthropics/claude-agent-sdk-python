@@ -741,21 +741,21 @@ class Query:
         try:
             with anyio.fail_after(timeout):
                 await event.wait()
-
-            result = self.pending_control_results.pop(request_id)
-            self.pending_control_responses.pop(request_id, None)
-
-            if isinstance(result, Exception):
-                raise result
-
-            response_data = result.get("response", {})
-            return response_data if isinstance(response_data, dict) else {}
         except TimeoutError as e:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
             raise ControlRequestTimeoutError(
                 subtype=request.get("subtype"), timeout=timeout
             ) from e
+
+        result = self.pending_control_results.pop(request_id)
+        self.pending_control_responses.pop(request_id, None)
+
+        if isinstance(result, Exception):
+            raise result
+
+        response_data = result.get("response", {})
+        return response_data if isinstance(response_data, dict) else {}
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

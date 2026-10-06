@@ -905,3 +905,27 @@ class TestParityWithLiteParse:
         assert batch.first_prompt == "tool_result"
         batch.file_size = None
         assert incremental == batch
+
+    def test_parity_nested_meta_flags(self) -> None:
+        """Nested isMeta/isCompactSummary don't skip a prompt in either path (#1345)."""
+        sid = "55555555-5555-4555-8555-555555555555"
+        k: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            _user(
+                "real prompt",
+                ts="2024-04-01T00:00:00.000Z",
+                cwd="/w",
+                toolUseResult={"isMeta": True, "isCompactSummary": True},
+            ),
+            _user("later prompt", ts="2024-04-01T00:00:01.000Z"),
+        ]
+        folded = fold_session_summary(None, k, entries)
+        incremental = summary_entry_to_sdk_info(folded, "/w")
+        jsonl = _entries_to_jsonl(entries)
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(jsonl, folded["mtime"]), "/w"
+        )
+        assert incremental is not None and batch is not None
+        assert batch.first_prompt == "real prompt"
+        batch.file_size = None
+        assert incremental == batch

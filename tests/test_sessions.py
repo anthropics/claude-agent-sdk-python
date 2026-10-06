@@ -193,6 +193,21 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "real prompt"
 
+    def test_extract_first_prompt_skips_compact_summary(self):
+        head = (
+            json.dumps(
+                {
+                    "type": "user",
+                    "isCompactSummary": True,
+                    "message": {"content": "summary"},
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "user", "message": {"content": "real prompt"}})
+            + "\n"
+        )
+        assert _extract_first_prompt_from_head(head) == "real prompt"
+
     def test_extract_first_prompt_skips_tool_result(self):
         head = (
             json.dumps(
@@ -208,7 +223,7 @@ class TestHelpers:
         assert _extract_first_prompt_from_head(head) == "actual prompt"
 
     def test_extract_first_prompt_text_equal_to_tool_result(self):
-        """A text block equal to "tool_result" is a prompt, not a tool_result (#1345)."""
+        """A text block equal to "tool_result" is a prompt, not a tool block (#1345)."""
         head = (
             json.dumps(
                 {
@@ -221,6 +236,22 @@ class TestHelpers:
             + "\n"
         )
         assert _extract_first_prompt_from_head(head) == "tool_result"
+
+    def test_extract_first_prompt_ignores_nested_meta_flags(self):
+        """Only top-level isMeta/isCompactSummary skip a prompt (#1345)."""
+        head = (
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "real prompt"},
+                    "toolUseResult": {"isMeta": True, "isCompactSummary": True},
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "user", "message": {"content": "later prompt"}})
+            + "\n"
+        )
+        assert _extract_first_prompt_from_head(head) == "real prompt"
 
     def test_extract_first_prompt_content_blocks(self):
         head = (

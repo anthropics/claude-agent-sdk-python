@@ -95,13 +95,14 @@ async def test_include_partial_messages_stream_events():
 async def test_include_partial_messages_thinking_deltas():
     """Test that thinking content is streamed incrementally via deltas."""
 
+    # Ask for summarized thinking explicitly. Since CLI 2.1.287 thinking text is
+    # omitted unless requested: the thinking_delta events still arrive, but with
+    # empty text.
     options = ClaudeAgentOptions(
         include_partial_messages=True,
         model="claude-sonnet-4-5",
         max_turns=2,
-        env={
-            "MAX_THINKING_TOKENS": "8000",
-        },
+        thinking={"type": "enabled", "budget_tokens": 8000, "display": "summarized"},
     )
 
     thinking_deltas = []

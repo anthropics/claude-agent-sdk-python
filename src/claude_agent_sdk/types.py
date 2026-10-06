@@ -764,6 +764,9 @@ class McpServerStatus(TypedDict):
     scope: NotRequired[str]
     """Configuration scope (e.g., project, user, local, claudeai, managed)."""
 
+    source: NotRequired[str]
+    """Server source (e.g., 'sdk'; other values are allowed)."""
+
     tools: NotRequired[list[McpToolInfo]]
     """Tools provided by this server (available when connected)."""
 

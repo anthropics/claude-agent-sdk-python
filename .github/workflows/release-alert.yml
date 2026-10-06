@@ -1,8 +1,9 @@
 name: Alert on blocked or failed releases
 
 # Posts to Slack when a release can't go out:
-# - Test fails on a CLI bump commit on main, so Auto Release skips that bump.
-# - Auto Release on CLI Bump or Publish to PyPI fails part-way.
+# - Test fails, times out or is cancelled on a CLI bump commit on main, so Auto
+#   Release skips that bump.
+# - Auto Release on CLI Bump or Publish to PyPI fails, times out or is cancelled.
 on:
   workflow_run:
     workflows: ["Test", "Auto Release on CLI Bump", "Publish to PyPI"]
@@ -16,7 +17,7 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     if: |
-      github.event.workflow_run.conclusion == 'failure' && (
+      contains(fromJSON('["failure", "timed_out", "cancelled"]'), github.event.workflow_run.conclusion) && (
         github.event.workflow_run.name != 'Test' || (
           github.event.workflow_run.event == 'push' &&
           startsWith(github.event.workflow_run.head_commit.message, 'chore: bump bundled CLI version to')
@@ -27,6 +28,7 @@ jobs:
         id: build
         env:
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
@@ -47,9 +49,9 @@ jobs:
           fi
 
           if [ "$WORKFLOW_NAME" = "Test" ]; then
-            HEADLINE="Release blocked: Test failed on a CLI bump, so Auto Release skipped it"
+            HEADLINE="Release blocked: Test ended $CONCLUSION on a CLI bump, so Auto Release skipped it"
           else
-            HEADLINE="Release failed: $WORKFLOW_NAME"
+            HEADLINE="Release failed: $WORKFLOW_NAME ended $CONCLUSION"
           fi
           export HEADLINE
 
@@ -61,7 +63,9 @@ jobs:
                 {type:"section", text:{type:"mrkdwn",
                   text:(":rotating_light: *" + (env.HEADLINE|esc) + "* in " + env.GITHUB_REPOSITORY)}},
                 {type:"section", text:{type:"mrkdwn",
-                  text:("*Commit:* " + (env.COMMIT_MESSAGE | split("\n")[0] | esc)
+                  text:("*Commit:* "
+                        + ((env.COMMIT_MESSAGE // "") | split("\n")[0] // ""
+                           | if . == "" then "(no commit message)" else esc end)
                         + " (" + env.HEAD_SHA[0:7] + ")\n<" + env.RUN_URL + "|View run>")}}
               ]
             }')

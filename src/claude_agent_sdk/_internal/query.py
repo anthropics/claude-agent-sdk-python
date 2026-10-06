@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
@@ -60,14 +61,36 @@ DEFAULT_RUN_END_CEILING_MS = 600_000
 _MAX_RUN_END_CEILING_MS = 2**31 - 1
 
 
+def _parse_ceiling_ms(raw: Any) -> int | None:
+    """Parse one millisecond spelling the CLI accepts, or ``None`` if invalid.
+
+    A plain integer is read exactly, so a very large value keeps the precision
+    a float round-trip would cost it. Anything else goes through ``float``, so
+    the scientific notation the CLI also reads (``1e6``) is honored. A value
+    that is not finite or not integral is rejected rather than truncated,
+    which keeps ``0.5`` from collapsing into the ``0`` that means no limit.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value != int(value):
+        return None
+    return int(value)
+
+
 def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    a non-negative integer is taken as written, in plain decimal or in the
+    integral scientific notation the CLI also reads (``1e6``). Anything else
+    falls back to the CLI's default of 10 minutes.
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -75,11 +98,10 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
         raw = os.environ.get(_RUN_END_CEILING_ENV)
     if raw is None:
         return DEFAULT_RUN_END_CEILING_MS
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
+    value = _parse_ceiling_ms(raw)
+    if value is None or value < 0:
         return DEFAULT_RUN_END_CEILING_MS
-    return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
+    return value
 
 
 def _error_result_text(message: dict[str, Any]) -> str:

@@ -65,9 +65,9 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    anything that is not a non-negative integer millisecond value falls back to
+    the CLI's default of 10 minutes (the CLI itself also reads spellings such
+    as ``1e6``).
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -75,10 +75,20 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
         raw = os.environ.get(_RUN_END_CEILING_ENV)
     if raw is None:
         return DEFAULT_RUN_END_CEILING_MS
+    raw_text = raw.strip() if isinstance(raw, str) else raw
     try:
-        value = int(raw)
+        value = int(raw_text)
     except (TypeError, ValueError):
-        return DEFAULT_RUN_END_CEILING_MS
+        try:
+            numeric = float(raw_text)
+        except (TypeError, ValueError, OverflowError):
+            return DEFAULT_RUN_END_CEILING_MS
+        if not numeric.is_integer():
+            return DEFAULT_RUN_END_CEILING_MS
+        try:
+            value = int(numeric)
+        except (TypeError, ValueError, OverflowError):
+            return DEFAULT_RUN_END_CEILING_MS
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 

@@ -1,5 +1,7 @@
 """Tests for message parser error handling."""
 
+from typing import get_args
+
 import pytest
 
 from claude_agent_sdk._errors import MessageParseError
@@ -7,13 +9,16 @@ from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
     AssistantMessage,
+    CommandLifecycleMessage,
     ConversationResetMessage,
     DeferredToolUse,
     HookEventMessage,
+    Message,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -1356,3 +1361,214 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    @pytest.mark.parametrize(
+        ("attribution", "expected_uuid", "expected_uuids"),
+        [
+            ({}, None, None),
+            ({"user_message_uuid": "user-1"}, "user-1", None),
+            ({"user_message_uuids": []}, None, []),
+            (
+                {
+                    "user_message_uuid": "user-1",
+                    "user_message_uuids": ["user-1", "user-2"],
+                },
+                "user-1",
+                ["user-1", "user-2"],
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("message_type", "payload"),
+        [
+            ("assistant", {"message": {"content": [], "model": "claude-test"}}),
+            (
+                "stream_event",
+                {
+                    "uuid": "stream-1",
+                    "session_id": "session-1",
+                    "event": {"type": "content_block_delta"},
+                },
+            ),
+        ],
+    )
+    def test_parse_message_preserves_user_message_attribution(
+        self, attribution, expected_uuid, expected_uuids, message_type, payload
+    ):
+        message = parse_message({"type": message_type, **payload, **attribution})
+        expected_type = AssistantMessage if message_type == "assistant" else StreamEvent
+        assert type(message) is expected_type
+        assert message.user_message_uuid == expected_uuid
+        assert message.user_message_uuids == expected_uuids
+
+    @pytest.mark.parametrize("subtype", ["success", "error_max_turns"])
+    @pytest.mark.parametrize(
+        ("attribution", "expected_uuid", "expected_uuids", "queue_count"),
+        [
+            ({}, None, None, None),
+            ({"user_message_uuid": "user-1"}, "user-1", None, 0),
+            ({"user_message_uuids": []}, None, [], 2),
+            (
+                {"user_message_uuid": "user-1", "user_message_uuids": ["user-1"] * 65},
+                "user-1",
+                ["user-1"] * 65,
+                0,
+            ),
+        ],
+    )
+    def test_parse_result_preserves_user_message_attribution_and_queue_count(
+        self, subtype, attribution, expected_uuid, expected_uuids, queue_count
+    ):
+        queue = {} if queue_count is None else {"queued_turn_count": queue_count}
+        message = parse_message(
+            {
+                "type": "result",
+                "subtype": subtype,
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": subtype != "success",
+                "num_turns": 1,
+                "session_id": "session-1",
+                **attribution,
+                **queue,
+            }
+        )
+        assert type(message) is ResultMessage
+        assert message.user_message_uuid == expected_uuid
+        assert message.user_message_uuids == expected_uuids
+        assert message.queued_turn_count == queue_count
+
+    def test_absent_user_message_attribution_does_not_carry_to_later_message(self):
+        stamped = parse_message(
+            {
+                "type": "assistant",
+                "message": {"content": [], "model": "claude-test"},
+                "user_message_uuid": "user-1",
+                "user_message_uuids": ["user-1"],
+            }
+        )
+        unstamped = parse_message(
+            {"type": "assistant", "message": {"content": [], "model": "claude-test"}}
+        )
+        changed = parse_message(
+            {
+                "type": "assistant",
+                "message": {"content": [], "model": "claude-test"},
+                "user_message_uuid": "user-2",
+                "user_message_uuids": ["user-2"],
+            }
+        )
+        assert stamped.user_message_uuid == "user-1"
+        assert unstamped.user_message_uuid is None
+        assert unstamped.user_message_uuids is None
+        assert changed.user_message_uuid == "user-2"
+        assert changed.user_message_uuids == ["user-2"]
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            "queued",
+            "started",
+            "completed",
+            "cancelled",
+            "discarded",
+            "refused",
+            "future_state",
+        ],
+    )
+    def test_parse_command_lifecycle_message(self, state):
+        data = {
+            "type": "command_lifecycle",
+            "command_uuid": "command-1",
+            "state": state,
+            "uuid": "event-1",
+            "session_id": "session-1",
+        }
+        message = parse_message(data)
+        assert type(message) is CommandLifecycleMessage
+        assert message.command_uuid == "command-1"
+        assert message.state == state
+        assert message.uuid == "event-1"
+        assert message.session_id == "session-1"
+
+    @pytest.mark.parametrize("missing", ["command_uuid", "state", "uuid", "session_id"])
+    def test_command_lifecycle_requires_wire_fields(self, missing):
+        data = {
+            "type": "command_lifecycle",
+            "command_uuid": "command-1",
+            "state": "queued",
+            "uuid": "event-1",
+            "session_id": "session-1",
+        }
+        del data[missing]
+        with pytest.raises(
+            MessageParseError, match="Missing required field in command_lifecycle"
+        ):
+            parse_message(data)
+
+    def test_command_lifecycle_is_publicly_exported_and_in_message_union(self):
+        from claude_agent_sdk import CommandLifecycleMessage as PublicLifecycleMessage
+
+        assert PublicLifecycleMessage is CommandLifecycleMessage
+        assert CommandLifecycleMessage in get_args(Message)
+
+    @pytest.mark.parametrize(
+        ("message_type", "original_fields", "new_fields"),
+        [
+            (
+                AssistantMessage,
+                (
+                    "content",
+                    "model",
+                    "parent_tool_use_id",
+                    "error",
+                    "usage",
+                    "message_id",
+                    "stop_reason",
+                    "session_id",
+                    "uuid",
+                ),
+                ("user_message_uuid", "user_message_uuids"),
+            ),
+            (
+                ResultMessage,
+                (
+                    "subtype",
+                    "duration_ms",
+                    "duration_api_ms",
+                    "is_error",
+                    "num_turns",
+                    "session_id",
+                    "stop_reason",
+                    "total_cost_usd",
+                    "usage",
+                    "result",
+                    "structured_output",
+                    "model_usage",
+                    "permission_denials",
+                    "deferred_tool_use",
+                    "errors",
+                    "api_error_status",
+                    "uuid",
+                    "terminal_reason",
+                    "origin",
+                ),
+                ("user_message_uuid", "user_message_uuids", "queued_turn_count"),
+            ),
+            (
+                StreamEvent,
+                ("uuid", "session_id", "event", "parent_tool_use_id"),
+                ("user_message_uuid", "user_message_uuids"),
+            ),
+        ],
+    )
+    def test_new_optional_fields_keep_existing_positional_construction(
+        self, message_type, original_fields, new_fields
+    ):
+        """Fields listed here are the fixed positional APIs from the base branch."""
+        args = [object() for _ in original_fields]
+        message = message_type(*args)
+
+        for field, value in zip(original_fields, args, strict=True):
+            assert getattr(message, field) is value
+        assert all(getattr(message, field) is None for field in new_fields)

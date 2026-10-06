@@ -18,6 +18,7 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    CommandLifecycleMessage,
     PermissionResultAllow,
     ResultMessage,
     SystemMessage,
@@ -162,6 +163,59 @@ def _make_mock_transport(messages, control_requests=None):
     mock_transport.write = AsyncMock()
     mock_transport.is_ready = Mock(return_value=True)
     return mock_transport
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio", "trio"])
+async def test_query_serializes_user_uuid_and_yields_command_lifecycle_messages(
+    anyio_backend,
+):
+    async def prompt():
+        yield {
+            "type": "user",
+            "uuid": "input-command-1",
+            "message": {"role": "user", "content": "/help"},
+            "parent_tool_use_id": None,
+            "session_id": "test",
+        }
+
+    transport = _make_mock_transport(
+        messages=[
+            {
+                "type": "command_lifecycle",
+                "command_uuid": "input-command-1",
+                "state": "queued",
+                "uuid": "event-queued",
+                "session_id": "test",
+            },
+            {
+                **_ASSISTANT_AND_RESULT[1],
+                "user_message_uuids": ["input-command-1"],
+            },
+            {
+                "type": "command_lifecycle",
+                "command_uuid": "input-command-1",
+                "state": "completed",
+                "uuid": "event-completed",
+                "session_id": "test",
+            },
+        ]
+    )
+    with patch(
+        "claude_agent_sdk._internal.query.Query.initialize",
+        new_callable=AsyncMock,
+    ):
+        messages = [
+            message async for message in query(prompt=prompt(), transport=transport)
+        ]
+    written = [json.loads(call.args[0]) for call in transport.write.await_args_list]
+    assert any(message.get("uuid") == "input-command-1" for message in written)
+    assert [type(message) for message in messages] == [
+        CommandLifecycleMessage,
+        ResultMessage,
+        CommandLifecycleMessage,
+    ]
+    assert messages[1].user_message_uuids == ["input-command-1"]
 
 
 _ASSISTANT_AND_RESULT = [

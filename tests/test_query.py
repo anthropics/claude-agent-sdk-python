@@ -1925,6 +1925,41 @@ class TestQueryTrioBackend:
         mock_transport.is_ready = Mock(return_value=True)
         return mock_transport
 
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_pending_control_request_unblocks_on_close(self, backend):
+        """An in-flight control request must fail promptly when Query closes."""
+
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+
+                errors: list[Exception] = []
+
+                async def interrupt():
+                    try:
+                        await q.interrupt()
+                    except Exception as exc:
+                        errors.append(exc)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(interrupt)
+                    while not q.pending_control_responses:
+                        await anyio.sleep(0)
+                    await q.close()
+
+                with pytest.raises(CLIConnectionError, match="Query is closed"):
+                    await q.interrupt()
+
+                assert len(errors) == 1
+                assert isinstance(errors[0], CLIConnectionError)
+                assert str(errors[0]) == "Query closed while waiting for control response"
+                assert q.pending_control_responses == {}
+                assert q.pending_control_results == {}
+
+        anyio.run(_test, backend=backend)
+
     def test_receive_messages_unblocks_on_close_under_trio(self):
         """Consumer blocked in receive_messages() must unblock on close().
 

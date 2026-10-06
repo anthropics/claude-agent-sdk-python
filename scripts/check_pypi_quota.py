@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 PYPI_PROJECT_LIMIT_BYTES = 50 * 1024**3  # 50 GiB (increased from PyPI default 10 GiB)
-PYPI_FILE_LIMIT_BYTES = 100 * 1024**2  # 100 MiB
+PYPI_FILE_LIMIT_BYTES = 250 * 1024**2  # 250 MiB (increased from PyPI default 100 MiB)
 
 
 def fetch_project_files(package: str) -> list[dict[str, Any]]:
@@ -56,7 +56,7 @@ def main() -> int:
         "--file-limit",
         type=int,
         default=PYPI_FILE_LIMIT_BYTES,
-        help="Per-file size limit in bytes (default: PyPI's 100 MiB)",
+        help="Per-file size limit in bytes (default: 250 MiB)",
     )
     parser.add_argument(
         "--warn-threshold",

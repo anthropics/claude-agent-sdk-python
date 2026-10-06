@@ -88,6 +88,11 @@ jobs:
       # Required to mint the OIDC token exchanged for a Claude API access
       # token (workload identity federation)
       id-token: write
+    # Windows e2e has failed intermittently, on a different test each time, since it
+    # moved behind the OS firewall. Until that is fixed, a Windows failure stays red
+    # on the job but doesn't fail the Test run, so it can't make Auto Release skip a
+    # CLI bump. Linux and macOS e2e still gate.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       matrix:
         # The Linux entry calls Claude on GitHub's egress-firewall runner (allow list:

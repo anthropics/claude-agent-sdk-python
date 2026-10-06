@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     import_session_to_store,
     project_key_for_directory,
 )
+from claude_agent_sdk._internal import session_import
 from claude_agent_sdk.types import SessionKey, SessionStoreEntry
 
 SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
@@ -293,6 +294,44 @@ class TestSubagents:
 
 
 class TestValidation:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("trailing_newline", [True, False])
+    async def test_lines_appended_after_validation_are_not_imported(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        monkeypatch: pytest.MonkeyPatch,
+        trailing_newline: bool,
+    ) -> None:
+        # A live writer can append between the validation pass and the import
+        # pass; only the validated bytes may be imported.
+        main_path = claude_dir / f"{SESSION_ID}.jsonl"
+        _write_jsonl(main_path, [_entry(0), _entry(1)])
+        if not trailing_newline:
+            main_path.write_text(main_path.read_text().rstrip("\n"))
+        validate = session_import._validate_jsonl_file
+
+        def validate_then_append(file_path: Path) -> int:
+            size = validate(file_path)
+            with file_path.open("a", encoding="utf-8") as f:
+                f.write(
+                    ("" if trailing_newline else "\n") + json.dumps(_entry(2)) + "\n"
+                )
+                f.write('{"type": "user", "uuid": "truncated')
+            return size
+
+        monkeypatch.setattr(
+            session_import, "_validate_jsonl_file", validate_then_append
+        )
+        store = InMemorySessionStore()
+        await import_session_to_store(
+            SESSION_ID, store, directory=str(cwd), batch_size=1
+        )
+
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(key) == [_entry(0), _entry(1)]
+
     @pytest.mark.anyio
     @pytest.mark.parametrize("batch_size", [2, 500])
     @pytest.mark.parametrize("subagent", [False, True])

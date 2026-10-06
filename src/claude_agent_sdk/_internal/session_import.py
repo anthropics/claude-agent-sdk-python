@@ -90,17 +90,20 @@ async def import_session_to_store(
     to_check = [resolved]
     if include_subagents:
         to_check.extend(_collect_jsonl_files(subagents_dir))
-    for file_path in to_check:
-        _validate_jsonl_file(file_path)
+    # Import only the bytes that were validated, so lines a live writer appends
+    # in between are left for the next catch-up instead of failing mid-import.
+    validated = {file_path: _validate_jsonl_file(file_path) for file_path in to_check}
 
-    await _append_jsonl_file_in_batches(resolved, main_key, store, batch_size)
+    await _append_jsonl_file_in_batches(
+        resolved, main_key, store, batch_size, validated[resolved]
+    )
 
     if not include_subagents:
         return
 
     # Subagent transcripts live at <projectDir>/<sessionId>/subagents/**.
     session_dir = resolved.with_suffix("")
-    for file_path in _collect_jsonl_files(subagents_dir):
+    for file_path in to_check[1:]:
         # subpath is the path relative to session_dir, '/'-joined, sans .jsonl —
         # e.g. subagents/agent-abc or subagents/workflows/run-1/agent-def.
         # Matches file_path_to_session_key() so list_subkeys() and
@@ -112,7 +115,9 @@ async def import_session_to_store(
             "session_id": session_id,
             "subpath": "/".join(rel_parts),
         }
-        await _append_jsonl_file_in_batches(file_path, sub_key, store, batch_size)
+        await _append_jsonl_file_in_batches(
+            file_path, sub_key, store, batch_size, validated[file_path]
+        )
 
         # The on-disk .jsonl does NOT contain agent_metadata entries — those
         # are only sent to live mirrors and persisted in the .meta.json
@@ -128,20 +133,23 @@ async def import_session_to_store(
             await store.append(sub_key, [meta_entry])
 
 
-def _validate_jsonl_file(file_path: Path) -> None:
+def _validate_jsonl_file(file_path: Path) -> int:
     """Raise ``ValueError`` naming the file and line if any non-blank line of
-    ``file_path`` is not valid JSON."""
-    with file_path.open(encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.rstrip("\n")
+    ``file_path`` is not valid JSON. Returns the number of bytes validated."""
+    size = 0
+    with file_path.open("rb") as f:
+        for line_no, raw in enumerate(f, start=1):
+            size += len(raw)
+            line = raw.rstrip(b"\r\n")
             if not line:
                 continue
             try:
-                json.loads(line)
-            except json.JSONDecodeError as e:
+                json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 raise ValueError(
                     f"Invalid JSON in {file_path} at line {line_no}"
                 ) from e
+    return size
 
 
 async def _append_jsonl_file_in_batches(
@@ -149,16 +157,22 @@ async def _append_jsonl_file_in_batches(
     key: SessionKey,
     store: SessionStore,
     batch_size: int,
+    limit: int,
 ) -> None:
-    """Stream-read a JSONL file line-by-line, parsing each line and flushing to
-    ``store.append()`` in batches of ``batch_size`` entries (or
-    ``MAX_PENDING_BYTES`` of line text, whichever comes first). Skips blank
-    lines."""
+    """Stream-read the first ``limit`` bytes of a JSONL file line-by-line,
+    parsing each line and flushing to ``store.append()`` in batches of
+    ``batch_size`` entries (or ``MAX_PENDING_BYTES`` of line text, whichever
+    comes first). Skips blank lines."""
     batch: list[SessionStoreEntry] = []
     nbytes = 0
-    with file_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.rstrip("\n")
+    consumed = 0
+    with file_path.open("rb") as f:
+        for raw in f:
+            if consumed >= limit:
+                break
+            raw = raw[: limit - consumed]
+            consumed += len(raw)
+            line = raw.rstrip(b"\r\n").decode("utf-8")
             if not line:
                 continue
             batch.append(json.loads(line))

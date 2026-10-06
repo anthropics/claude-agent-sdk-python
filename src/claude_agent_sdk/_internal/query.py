@@ -854,6 +854,47 @@ class Query:
             }
         )
 
+    async def set_mcp_servers(self, servers: dict[str, Any]) -> None:
+        """Replace the dynamically-managed MCP servers (authoritative).
+
+        The CLI's ``mcp_set_servers`` control request is authoritative: it
+        replaces the whole dynamically-managed server set. Any in-process SDK
+        server registered at construction (``sdk_mcp_servers``) is part of that
+        set, so it is re-included here automatically -- otherwise its tools would
+        disappear from the running session. Entries in ``servers`` take
+        precedence on a name collision, and an SDK entry carrying an ``instance``
+        is (re-)registered so its tools keep routing.
+
+        Args:
+            servers: The external (and/or new SDK) servers to apply. An SDK
+                config includes its in-process ``instance``; it is stripped
+                before the config reaches the CLI, exactly as at startup.
+        """
+        # Pre-seed with the already-registered SDK servers so an authoritative
+        # replace cannot drop them (serialized instance-stripped, as at init).
+        servers_for_cli: dict[str, Any] = {
+            name: {"type": "sdk", "name": name} for name in self.sdk_mcp_servers
+        }
+        for name, config in servers.items():
+            if isinstance(config, dict) and config.get("type") == "sdk":
+                instance = config.get("instance")
+                if instance is not None:
+                    # (Re-)register the in-process server so its tools route back
+                    # here via _handle_sdk_mcp_request.
+                    self.sdk_mcp_servers[name] = instance
+                    self._sdk_mcp_bridges[name] = SdkMcpBridge(name, instance)
+                servers_for_cli[name] = {
+                    k: v for k, v in config.items() if k != "instance"
+                }
+            else:
+                servers_for_cli[name] = config
+        await self._send_control_request(
+            {
+                "subtype": "mcp_set_servers",
+                "servers": servers_for_cli,
+            }
+        )
+
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task.
 

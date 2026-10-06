@@ -18,6 +18,7 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     UserMessage,
+    create_sdk_mcp_server,
     query,
 )
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
@@ -153,6 +154,19 @@ def _create_mock_transport_with_control_responses():
 
     mock_transport.read_messages = control_protocol_generator
     return mock_transport
+
+
+def _find_control_request(mock_transport, subtype: str) -> dict[str, Any] | None:
+    """Return the first control request of `subtype` written to the transport."""
+    for call in mock_transport.write.call_args_list:
+        try:
+            msg = json.loads(call[0][0].strip())
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        req = msg.get("request", {})
+        if msg.get("type") == "control_request" and req.get("subtype") == subtype:
+            return req
+    return None
 
 
 class TestClaudeSDKClientStreaming:
@@ -637,6 +651,102 @@ class TestClaudeSDKClientStreaming:
         client = ClaudeSDKClient()
         with pytest.raises(CLIConnectionError, match="Not connected"):
             await client.toggle_mcp_server("my-server", True)
+
+    @pytest.mark.anyio
+    async def test_set_mcp_servers(self):
+        """Test set_mcp_servers sends correct control request."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            async with ClaudeSDKClient() as client:
+                await client.set_mcp_servers(
+                    {
+                        "my-http": {
+                            "type": "http",
+                            "url": "https://example.com/mcp",
+                            "headers": {"Authorization": "Bearer TOK"},
+                        }
+                    }
+                )
+                req = _find_control_request(mock_transport, "mcp_set_servers")
+                assert req is not None, "mcp_set_servers control request not found"
+                assert req["servers"] == {
+                    "my-http": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer TOK"},
+                    }
+                }
+
+    @pytest.mark.anyio
+    async def test_set_mcp_servers_preserves_registered_sdk_servers(self):
+        """An authoritative replace must not drop the in-process SDK servers.
+
+        mcp_set_servers replaces the whole dynamically-managed set, so a push
+        that named only the external server would silently remove the SDK
+        server's tools from the running session.
+        """
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            sdk_server = create_sdk_mcp_server(name="my-tools", tools=[])
+            options = ClaudeAgentOptions(mcp_servers={"my-tools": sdk_server})
+
+            async with ClaudeSDKClient(options=options) as client:
+                await client.set_mcp_servers(
+                    {"my-http": {"type": "http", "url": "https://example.com/mcp"}}
+                )
+                req = _find_control_request(mock_transport, "mcp_set_servers")
+                assert req is not None, "mcp_set_servers control request not found"
+                servers = req["servers"]
+                # The SDK server is re-sent instance-stripped, exactly as at startup.
+                assert servers["my-tools"] == {"type": "sdk", "name": "my-tools"}
+                assert servers["my-http"] == {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                }
+
+    @pytest.mark.anyio
+    async def test_set_mcp_servers_registers_a_new_sdk_server_and_strips_instance(self):
+        """A new SDK server is registered in-process and its instance never hits the CLI."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            sdk_server = create_sdk_mcp_server(name="late-tools", tools=[])
+
+            async with ClaudeSDKClient() as client:
+                await client.set_mcp_servers({"late-tools": sdk_server})
+
+                req = _find_control_request(mock_transport, "mcp_set_servers")
+                assert req is not None, "mcp_set_servers control request not found"
+                # instance is not JSON-serializable and is stripped before the wire.
+                assert req["servers"]["late-tools"] == {
+                    "type": "sdk",
+                    "name": "late-tools",
+                }
+                # ...but it IS registered so its tool calls route back in-process.
+                assert client._query is not None
+                assert "late-tools" in client._query.sdk_mcp_servers
+
+    @pytest.mark.anyio
+    async def test_set_mcp_servers_not_connected(self):
+        """Test set_mcp_servers when not connected raises error."""
+
+        client = ClaudeSDKClient()
+        with pytest.raises(CLIConnectionError, match="Not connected"):
+            await client.set_mcp_servers({})
 
     @pytest.mark.anyio
     async def test_stop_task(self):

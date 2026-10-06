@@ -573,6 +573,14 @@ class Query:
             # of the run) so they don't stall on early exit.
             self._run_final = True
             self._end_run()
+            # A clean stdout EOF is not an exception, but no control response can
+            # arrive after the reader exits. Preserve any response or richer
+            # error already recorded by checking the shared helper first.
+            self._fail_pending_control_requests(
+                CLIConnectionError(
+                    "Query message reader closed while waiting for control response"
+                )
+            )
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.

@@ -174,13 +174,17 @@ class PermissionUpdate:
         if self.type in ["addRules", "replaceRules", "removeRules"]:
             # Rules-based variants require rules and behavior
             if self.rules is not None:
-                result["rules"] = [
-                    {
-                        "toolName": rule.tool_name,
-                        "ruleContent": rule.rule_content,
-                    }
-                    for rule in self.rules
-                ]
+                # ruleContent is optional in the control protocol
+                # ({toolName: string, ruleContent?: string}), and the CLI
+                # rejects null. A rule without content, such as the WebSearch
+                # suggestion, has to go out with the key absent.
+                wire_rules: list[dict[str, Any]] = []
+                for rule in self.rules:
+                    wire_rule: dict[str, Any] = {"toolName": rule.tool_name}
+                    if rule.rule_content is not None:
+                        wire_rule["ruleContent"] = rule.rule_content
+                    wire_rules.append(wire_rule)
+                result["rules"] = wire_rules
             if self.behavior is not None:
                 result["behavior"] = self.behavior
 

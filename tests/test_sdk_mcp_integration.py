@@ -200,6 +200,32 @@ async def test_initialize_reports_real_server_info_and_capabilities():
     assert result["serverInfo"]["version"] == "3.2.1"
     assert result["protocolVersion"] == INITIALIZE_PARAMS["protocolVersion"]
     assert "tools" in result["capabilities"]
+    # Nothing was asked for, so nothing is advertised.
+    assert "instructions" not in result
+
+
+@pytest.mark.anyio
+async def test_server_instructions_reach_the_initialize_result():
+    """``instructions`` is how a server tells the model how to use its tools.
+    It rides in the handshake rather than in any tool, and Claude Code reads
+    it from there."""
+
+    @tool("noop", "Does nothing", {})
+    async def noop(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    config = create_sdk_mcp_server(
+        name="hello",
+        tools=[noop],
+        instructions="Call noop before anything else.",
+    )
+    client = SdkMcpClient({"hello": config})
+    try:
+        response = await client.request("hello", "initialize", INITIALIZE_PARAMS)
+    finally:
+        await client.aclose()
+
+    assert response["result"]["instructions"] == "Call noop before anything else."
 
 
 @pytest.mark.anyio
@@ -778,6 +804,242 @@ async def test_max_result_size_chars_declared_as_a_field_on_a_subclass_flows_too
         [listed] = await client.list_tools("srv")
 
     assert listed["_meta"] == {"anthropic/maxResultSizeChars": 444}
+
+
+@pytest.mark.anyio
+async def test_search_hint_and_always_load_annotations_flow_to_cli():
+    """``searchHint`` and ``alwaysLoad`` are Claude Code's, not MCP's, so like
+    ``maxResultSizeChars`` they go out in the tool's ``_meta`` rather than in
+    ``annotations``: the CLI reads ``anthropic/searchHint`` to match a tool
+    when tools are discovered by search, and ``anthropic/alwaysLoad`` to keep
+    one loaded instead."""
+
+    @tool(
+        "grep_logs",
+        "Search the request logs",
+        {"pattern": str},
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            searchHint="logs traces requests",
+            alwaysLoad=False,
+        ),
+    )
+    async def grep_logs(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool(
+        "deploy",
+        "Ship the current build",
+        {},
+        annotations=ToolAnnotations(alwaysLoad=True),
+    )
+    async def deploy(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool("plain", "Nothing special", {})
+    async def plain(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the documented usage stays warning-free
+        config = create_sdk_mcp_server(name="srv", tools=[grep_logs, deploy, plain])
+
+    async with connected(config) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+
+    # alwaysLoad=False is the default rather than a request, so no key for it:
+    # a reader that tests for the key's presence would otherwise see the
+    # opposite of what the tool asked for.
+    assert tools["grep_logs"]["_meta"] == {
+        "anthropic/searchHint": "logs traces requests",
+    }
+    # The MCP hint still travels where MCP hints travel.
+    assert tools["grep_logs"]["annotations"]["readOnlyHint"] is True
+    assert tools["deploy"]["_meta"] == {"anthropic/alwaysLoad": True}
+    # A tool that asked for neither gets no _meta at all.
+    assert tools["plain"].get("_meta") is None
+
+
+@pytest.mark.anyio
+async def test_search_hint_and_always_load_take_either_spelling():
+    """Both spellings work, on the decorator and on a hand-built SdkMcpTool."""
+    # The snake_case names fold into the wire ones rather than sitting in
+    # model_extra under a spelling nothing reads.
+    folded = ToolAnnotations(search_hint="tables rows", always_load=True)
+    assert folded == ToolAnnotations(searchHint="tables rows", alwaysLoad=True)
+    assert folded.model_extra == {}
+
+    @tool(
+        "snake",
+        "Uses the snake_case spelling",
+        {},
+        annotations=ToolAnnotations(search_hint="tables rows", always_load=True),
+    )
+    async def snake(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    hand_built = SdkMcpTool(
+        name="hand_built",
+        description="Constructed without the decorator",
+        input_schema={},
+        handler=snake.handler,
+        annotations=ToolAnnotations(
+            searchHint="ad hoc", always_load=True, max_result_size_chars=99
+        ),
+    )
+
+    config = create_sdk_mcp_server(name="srv", tools=[snake, hand_built])
+    async with connected(config) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+
+    assert tools["snake"]["_meta"] == {
+        "anthropic/searchHint": "tables rows",
+        "anthropic/alwaysLoad": True,
+    }
+    # Claude Code's three keys coexist in one _meta.
+    assert tools["hand_built"]["_meta"] == {
+        "anthropic/maxResultSizeChars": 99,
+        "anthropic/searchHint": "ad hoc",
+        "anthropic/alwaysLoad": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_search_hint_and_always_load_declared_on_a_subclass_flow_too():
+    class Declared(mcp.types.ToolAnnotations):
+        searchHint: str | None = None  # noqa: N815 - the wire spelling
+        alwaysLoad: bool | None = None  # noqa: N815 - the wire spelling
+
+    @tool(
+        "declared",
+        "Uses a typed subclass",
+        {},
+        annotations=Declared(searchHint="declared hint", alwaysLoad=True),
+    )
+    async def declared(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    config = create_sdk_mcp_server(name="srv", tools=[declared])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+
+    assert listed["_meta"] == {
+        "anthropic/searchHint": "declared hint",
+        "anthropic/alwaysLoad": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_tool_takes_search_hint_and_always_load_as_arguments():
+    """The TypeScript SDK takes these two as arguments of ``tool()`` next to
+    ``annotations`` rather than as fields of it, so the same call works here.
+    Given both, the argument wins over the annotation."""
+
+    @tool(
+        "grep_logs",
+        "Search the request logs",
+        {"pattern": str},
+        search_hint="logs traces requests",
+        always_load=True,
+    )
+    async def grep_logs(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool(
+        "overridden",
+        "Argument and annotation disagree",
+        {},
+        annotations=ToolAnnotations(readOnlyHint=True, searchHint="from the class"),
+        search_hint="from the argument",
+    )
+    async def overridden(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    # They are kept on the SdkMcpTool the way annotations are.
+    assert grep_logs.search_hint == "logs traces requests"
+    assert grep_logs.always_load is True
+
+    config = create_sdk_mcp_server(name="srv", tools=[grep_logs, overridden])
+    async with connected(config) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+
+    assert tools["grep_logs"]["_meta"] == {
+        "anthropic/searchHint": "logs traces requests",
+        "anthropic/alwaysLoad": True,
+    }
+    assert tools["overridden"]["_meta"] == {"anthropic/searchHint": "from the argument"}
+    assert tools["overridden"]["annotations"]["readOnlyHint"] is True
+
+
+@pytest.mark.anyio
+async def test_server_always_load_marks_every_tool():
+    """``create_sdk_mcp_server(always_load=True)`` is the TypeScript SDK's
+    server-level flag, and there is no server-level field on the wire for it:
+    it lands as ``alwaysLoad`` on each of the server's tools and leaves the
+    rest of their metadata alone."""
+
+    @tool("first", "One", {})
+    async def first(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool("second", "Two", {}, search_hint="tables rows")
+    async def second(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool(
+        "third",
+        "Three",
+        {},
+        annotations=ToolAnnotations(maxResultSizeChars=500_000),
+        always_load=False,
+    )
+    async def third(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    config = create_sdk_mcp_server(
+        name="srv", tools=[first, second, third], always_load=True
+    )
+    async with connected(config) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+
+    assert tools["first"]["_meta"] == {"anthropic/alwaysLoad": True}
+    assert tools["second"]["_meta"] == {
+        "anthropic/searchHint": "tables rows",
+        "anthropic/alwaysLoad": True,
+    }
+    # The server asked for every tool, so one that turned it down is included
+    # anyway, with the metadata it did ask for left intact.
+    assert tools["third"]["_meta"] == {
+        "anthropic/maxResultSizeChars": 500_000,
+        "anthropic/alwaysLoad": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_a_falsy_search_hint_or_always_load_sends_no_key():
+    """Turning either one off is the default, and the TypeScript SDK sends no
+    key for it. A key that is present but false would read as "on" to anything
+    that goes by the key being there."""
+
+    @tool("off", "Asked for neither", {}, search_hint="", always_load=False)
+    async def off(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool(
+        "off_by_annotation",
+        "Asked for neither, on the annotations object",
+        {},
+        annotations=ToolAnnotations(searchHint="", alwaysLoad=False),
+    )
+    async def off_by_annotation(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    config = create_sdk_mcp_server(name="srv", tools=[off, off_by_annotation])
+    async with connected(config) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+
+    assert "_meta" not in tools["off"]
+    assert "_meta" not in tools["off_by_annotation"]
 
 
 @pytest.mark.anyio

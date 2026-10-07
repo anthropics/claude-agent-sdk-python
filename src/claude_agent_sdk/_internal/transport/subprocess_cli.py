@@ -499,8 +499,12 @@ class SubprocessCLITransport(Transport):
         if has_settings:
             assert self._options.settings is not None
             settings_str = self._options.settings.strip()
-            # Check if settings is a JSON string or a file path
-            if settings_str.startswith("{") and settings_str.endswith("}"):
+            # Check if settings is a JSON string or a file path. Any value
+            # starting with "{" is treated as inline JSON and parsed
+            # strictly: also requiring the closing brace would let a
+            # truncated string (e.g. '{model:sonnet') fall through to the
+            # file-path branch and be silently dropped as "file not found".
+            if settings_str.startswith("{"):
                 # Inline JSON string: parse strictly. A malformed inline
                 # string must fail loudly -- silently dropping it would
                 # discard the caller's entire settings object (model,

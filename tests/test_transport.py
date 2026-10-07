@@ -1921,6 +1921,30 @@ class TestSubprocessCLITransport:
         # it must be gone -- the error now says what actually happened.
         assert "treating as file path" not in caplog.text
 
+    def test_malformed_inline_settings_missing_brace_raises(self, caplog):
+        """Inline JSON missing the closing brace must raise, not be treated as a path.
+
+        The discriminator used to require both braces, so a truncated string
+        like '{model:sonnet' fell into the file-path branch and was silently
+        dropped with a misleading "Settings file not found" warning.
+        """
+        import logging
+
+        malformed = "{model:sonnet"
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=malformed, sandbox=sandbox),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING),
+            pytest.raises(ValueError, match="inline settings string"),
+        ):
+            transport._build_settings_value()
+
+        assert "Settings file not found" not in caplog.text
+
     def test_malformed_settings_file_with_sandbox_raises_naming_file(self, tmp_path):
         """Malformed settings file + sandbox must raise an error naming the file."""
         bad_file = tmp_path / "settings.json"

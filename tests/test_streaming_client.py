@@ -806,6 +806,61 @@ class TestClaudeSDKClientStreaming:
                 assert "tools" not in second
 
     @pytest.mark.anyio
+    async def test_set_mcp_servers_closes_a_bridge_replaced_by_an_external_server(self):
+        """A replaced in-process server is stopped, not just deregistered.
+
+        _close_impl only acloses bridges still in _sdk_mcp_bridges, and the
+        session's task is detached rather than tracked in _child_tasks, so a
+        bridge dropped without aclose() would run for the rest of the process.
+        """
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            sdk_server = create_sdk_mcp_server(name="tools", tools=[])
+            options = ClaudeAgentOptions(mcp_servers={"tools": sdk_server})
+
+            async with ClaudeSDKClient(options=options) as client:
+                assert client._query is not None
+                old_bridge = client._query._sdk_mcp_bridges["tools"]
+
+                await client.set_mcp_servers(
+                    {"tools": {"type": "http", "url": "https://example.com/mcp"}}
+                )
+
+                assert "tools" not in client._query._sdk_mcp_bridges
+                assert old_bridge._closed is True
+
+    @pytest.mark.anyio
+    async def test_set_mcp_servers_closes_a_bridge_replaced_by_a_new_sdk_server(self):
+        """Re-registering a name hands its traffic to a new bridge; stop the old one."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = _create_mock_transport_with_control_responses()
+            mock_transport_class.return_value = mock_transport
+
+            options = ClaudeAgentOptions(
+                mcp_servers={"tools": create_sdk_mcp_server(name="tools", tools=[])}
+            )
+
+            async with ClaudeSDKClient(options=options) as client:
+                assert client._query is not None
+                old_bridge = client._query._sdk_mcp_bridges["tools"]
+
+                replacement = create_sdk_mcp_server(name="tools", tools=[])
+                await client.set_mcp_servers({"tools": replacement})
+
+                new_bridge = client._query._sdk_mcp_bridges["tools"]
+                assert new_bridge is not old_bridge
+                assert old_bridge._closed is True
+                assert client._query.sdk_mcp_servers["tools"] is replacement["instance"]
+
+    @pytest.mark.anyio
     async def test_set_mcp_servers_leaves_local_state_untouched_on_failure(self):
         """A rejected control request must not leave a half-applied local registry.
 

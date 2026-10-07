@@ -909,14 +909,38 @@ class Query:
                 "servers": servers_for_cli,
             }
         )
+        # A bridge dropped from _sdk_mcp_bridges is no longer reached by the
+        # aclose() loop in _close_impl, and its session's task is detached
+        # rather than tracked in _child_tasks -- so it has to be stopped here
+        # or it runs for the rest of the process. Collect the outgoing ones and
+        # close them after the swap, so traffic routes to the new bridge while
+        # the old one winds down (as SdkMcpBridge.handle does when it replaces
+        # a finished session).
+        retired: list[SdkMcpBridge] = []
         for name in removed:
             self.sdk_mcp_servers.pop(name, None)
-            self._sdk_mcp_bridges.pop(name, None)
+            bridge = self._sdk_mcp_bridges.pop(name, None)
+            if bridge is not None:
+                retired.append(bridge)
         for name, instance in added.items():
             # (Re-)register the in-process server so its tools route back here
             # via _handle_sdk_mcp_request.
+            previous = self._sdk_mcp_bridges.get(name)
+            if previous is not None:
+                retired.append(previous)
             self.sdk_mcp_servers[name] = instance
             self._sdk_mcp_bridges[name] = SdkMcpBridge(name, instance)
+        for bridge in retired:
+            # The CLI has already applied the new set; failing to wind down a
+            # replaced server must not fail the call.
+            try:
+                await bridge.aclose()
+            except Exception:
+                logger.warning(
+                    "Error closing replaced SDK MCP server %r",
+                    bridge.name,
+                    exc_info=True,
+                )
 
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task.

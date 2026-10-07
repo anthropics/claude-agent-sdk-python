@@ -419,11 +419,15 @@ _JSON_SCHEMA_KEYWORDS = frozenset(
         "$id",
         "$ref",
         "$schema",
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
         "additionalProperties",
         "allOf",
         "anyOf",
         "contains",
         "definitions",
+        "dependencies",
         "dependentRequired",
         "dependentSchemas",
         "else",
@@ -438,13 +442,40 @@ _JSON_SCHEMA_KEYWORDS = frozenset(
         "then",
         "unevaluatedItems",
         "unevaluatedProperties",
+        # 2020-12 assertion keywords
+        "minProperties",
+        "maxProperties",
+        "propertyNames",
+        "minContains",
+        "maxContains",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "enum",
+        "const",
+        "format",
+        "contentEncoding",
+        "contentMediaType",
+        # non-combinator metadata that still names a schema
+        "readOnly",
+        "writeOnly",
+        "deprecated",
     }
 )
 
 # The JSON values a schema keyword holds. A parameter map holds a Python type
 # in every slot, so a keyword carrying one of these is describing the schema
-# rather than naming a parameter.
-_SCHEMA_SHAPED_VALUES: tuple[type, ...] = (dict, list, str, bool)
+# rather than naming a parameter. Numeric and null keywords ({minProperties: 1},
+# {minimum: 0.5}) count too, so int/float/None are included.
+_SCHEMA_SHAPED_VALUES: tuple[type, ...] = (dict, list, str, bool, int, float, type(None))
 
 
 def _is_json_schema(schema: dict[str, Any]) -> bool:

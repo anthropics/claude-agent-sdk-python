@@ -1078,6 +1078,29 @@ async def test_a_parameter_named_after_a_schema_keyword_is_still_a_parameter():
 
 
 @pytest.mark.anyio
+async def test_constraint_keyword_schema_is_not_treated_as_parameters():
+    """Assertion/applicator keywords also name a schema.
+
+    `{minProperties: 1}` etc. hold JSON constants or nested objects, not Python
+    types, so they must route to the JSON Schema branch (and receive the
+    required root `type: "object"`), not to the {name: type} parameter map.
+    """
+    schema = {"minProperties": 1}
+
+    @tool("constrained", "Takes constrained args", schema)
+    async def constrained(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "OK" if args else "empty"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[constrained])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        result = await client.call_tool("srv", "constrained", {"x": 1})
+
+    assert listed["inputSchema"] == {"type": "object", "minProperties": 1}
+    assert texts(result) == ["OK"]
+
+
+@pytest.mark.anyio
 async def test_json_schema_without_properties_is_used_verbatim():
     """A JSON Schema needs no `properties` key to be a JSON Schema.
 

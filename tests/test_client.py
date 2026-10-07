@@ -1,5 +1,6 @@
 """Tests for Claude SDK client functionality."""
 
+import json
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -287,6 +288,90 @@ class TestQueryFunction:
                 )
 
         anyio.run(_test)
+
+
+class TestClaudeSDKClientMessageDelivery:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio", "trio"])
+    async def test_query_serializes_async_iterable_user_uuid(self, anyio_backend):
+        from claude_agent_sdk import ClaudeSDKClient
+
+        async def prompt():
+            yield {
+                "type": "user",
+                "uuid": "input-command-1",
+                "message": {"role": "user", "content": "/help"},
+                "parent_tool_use_id": None,
+            }
+
+        transport = AsyncMock()
+        client = ClaudeSDKClient()
+        client._transport = transport
+        client._query = object()
+        await client.query(prompt())
+        written = json.loads(transport.write.await_args.args[0])
+        assert written["uuid"] == "input-command-1"
+        assert written["session_id"] == "default"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio", "trio"])
+    async def test_receive_messages_delivers_lifecycle_before_and_after_result(
+        self, anyio_backend
+    ):
+        from claude_agent_sdk import (
+            ClaudeSDKClient,
+            CommandLifecycleMessage,
+            ResultMessage,
+        )
+
+        frames = [
+            {
+                "type": "command_lifecycle",
+                "command_uuid": "input-command-1",
+                "state": "queued",
+                "uuid": "event-queued",
+                "session_id": "test",
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 0,
+                "session_id": "test",
+                "user_message_uuids": ["input-command-1"],
+            },
+            {
+                "type": "command_lifecycle",
+                "command_uuid": "input-command-1",
+                "state": "completed",
+                "uuid": "event-completed",
+                "session_id": "test",
+            },
+        ]
+
+        class RawMessages:
+            async def receive_messages(self):
+                for frame in frames:
+                    yield frame
+
+        client = ClaudeSDKClient()
+        client._query = RawMessages()
+        messages = [message async for message in client.receive_messages()]
+        assert [type(message) for message in messages] == [
+            CommandLifecycleMessage,
+            ResultMessage,
+            CommandLifecycleMessage,
+        ]
+        assert messages[1].user_message_uuids == ["input-command-1"]
+
+        client._query = RawMessages()
+        response = [message async for message in client.receive_response()]
+        assert [type(message) for message in response] == [
+            CommandLifecycleMessage,
+            ResultMessage,
+        ]
 
 
 class TestClaudeSDKClientTrioBackend:

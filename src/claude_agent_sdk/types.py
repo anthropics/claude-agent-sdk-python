@@ -1137,7 +1137,12 @@ class UserMessage:
 
 @dataclass
 class AssistantMessage:
-    """Assistant message with content blocks."""
+    """Assistant message with content blocks.
+
+    For async iterable input, caller-supplied top-level user UUIDs can be
+    echoed in the attribution fields. Missing fields mean this frame is
+    unstamped and do not inherit attribution from an earlier frame.
+    """
 
     content: list[ContentBlock]
     model: str
@@ -1148,6 +1153,12 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    user_message_uuid: str | None = None
+    """UUID of the user input attributed to this response, when supplied by the CLI."""
+    user_message_uuids: list[str] | None = None
+    """UUIDs of merged user inputs attributed to this response, when supplied by the CLI.
+
+    The producer can return an incomplete list; see :class:`ResultMessage`."""
 
 
 @dataclass
@@ -1156,6 +1167,24 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+
+@dataclass
+class CommandLifecycleMessage:
+    """Lifecycle event for a submitted user prompt, including a slash command.
+
+    ``command_uuid`` identifies the submitted command, while ``uuid`` identifies
+    this lifecycle event. Known states are ``queued``, ``started``,
+    ``completed``, ``cancelled``, ``discarded``, and ``refused``. Newer CLI
+    versions may emit additional states. Completion can arrive after a
+    :class:`ResultMessage`, so long-lived clients should use
+    :meth:`ClaudeSDKClient.receive_messages` continuously.
+    """
+
+    command_uuid: str
+    state: str
+    uuid: str
+    session_id: str
 
 
 class TaskUsage(TypedDict):
@@ -1338,7 +1367,17 @@ class ModelUsage(TypedDict):
 
 @dataclass
 class ResultMessage:
-    """Result message with cost and usage information."""
+    """Result message with cost, usage, and optional input attribution.
+
+    Async iterable input can carry caller-supplied top-level UUIDs. A merged
+    turn can report several UUIDs, but the producer limits the list to 64 so it
+    can be incomplete. A missing UUID does not prove non-consumption. Queued
+    input folded into an already-running synthetic turn can receive fresh
+    attribution. Unstamped frames do not inherit a prior frame's values.
+    ``queued_turn_count`` counts
+    pending user sends, not expected results or background work; zero does not
+    mean the entire session is idle. Older CLIs can omit all these fields.
+    """
 
     subtype: str
     duration_ms: int
@@ -1375,16 +1414,35 @@ class ResultMessage:
     result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
     that) from results of injected turns such as background-task
     notifications (``{"kind": "task-notification"}``)."""
+    user_message_uuid: str | None = None
+    """UUID of the user input attributed to this result, when supplied by the CLI."""
+    user_message_uuids: list[str] | None = None
+    """UUIDs of merged user inputs attributed to this result, when supplied by the CLI.
+
+    The producer can return an incomplete list; see this class's documentation."""
+    queued_turn_count: int | None = None
+    """Number of pending user sends reported by the CLI, when available."""
 
 
 @dataclass
 class StreamEvent:
-    """Stream event for partial message updates during streaming."""
+    """Stream event for partial message updates during streaming.
+
+    For async iterable input, caller-supplied top-level user UUIDs can be
+    echoed in the attribution fields. Missing fields mean this frame is
+    unstamped and do not inherit attribution from an earlier frame.
+    """
 
     uuid: str
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+    user_message_uuid: str | None = None
+    """UUID of the user input attributed to this event, when supplied by the CLI."""
+    user_message_uuids: list[str] | None = None
+    """UUIDs of merged user inputs attributed to this event, when supplied by the CLI.
+
+    The producer can return an incomplete list; see :class:`ResultMessage`."""
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
@@ -1502,6 +1560,7 @@ Message = (
     | SystemMessage
     | ResultMessage
     | StreamEvent
+    | CommandLifecycleMessage
     | RateLimitEvent
     | ConversationResetMessage
 )

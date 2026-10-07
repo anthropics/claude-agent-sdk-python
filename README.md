@@ -253,8 +253,32 @@ async with ClaudeSDKClient(options=options) as client:
 See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
 
 - `ClaudeAgentOptions` - Configuration options
-- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
+- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage`, `CommandLifecycleMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
+
+### Streaming input attribution and command lifecycle
+
+When passing an async iterable to `query()` or `ClaudeSDKClient.query()`, you
+may supply a top-level `uuid` on each user message. The CLI can attribute an
+assistant message, stream event, or result to that input through
+`user_message_uuid` and `user_message_uuids`. A merged turn can contain several
+input UUIDs. The list is capped at 64 entries by the producer and can be
+incomplete, so a missing UUID does not prove that the input was not consumed.
+
+Queued input folded into an already-running synthetic turn can receive fresh
+attribution. Frames without attribution fields are unstamped; do not infer
+attribution from an earlier frame. Older CLIs may omit this metadata entirely. On a
+`ResultMessage`, `queued_turn_count` is the number of pending user sends. It
+does not count expected result messages or background work, and zero does not
+mean the whole session is idle.
+
+`CommandLifecycleMessage` reports submitted user-prompt states, including slash
+commands: `queued`, `started`, `completed`, `cancelled`, `discarded`, and
+`refused`; newer CLIs can emit other states. Its `command_uuid` identifies the
+submitted command, while `uuid`
+identifies this lifecycle event. Completion can arrive after a `ResultMessage`,
+so long-lived clients should continuously consume `receive_messages()` rather
+than wait only on `receive_response()`. Older CLIs may omit lifecycle events.
 
 ## Error Handling
 

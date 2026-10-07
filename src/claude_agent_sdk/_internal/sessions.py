@@ -230,6 +230,10 @@ def _extract_last_json_string_field(text: str, key: str) -> str | None:
     """Like _extract_json_string_field but finds the LAST occurrence."""
     patterns = [f'"{key}":"', f'"{key}": "']
     last_value: str | None = None
+    # Each pattern is scanned separately, so compare positions rather than
+    # letting the later pattern's match overwrite an earlier one's: with both
+    # spacings present, the last match by POSITION has to win.
+    last_idx = -1
     for pattern in patterns:
         search_from = 0
         while True:
@@ -244,7 +248,9 @@ def _extract_last_json_string_field(text: str, key: str) -> str | None:
                     i += 2
                     continue
                 if text[i] == '"':
-                    last_value = _unescape_json_string(text[value_start:i])
+                    if idx > last_idx:
+                        last_idx = idx
+                        last_value = _unescape_json_string(text[value_start:i])
                     break
                 i += 1
             search_from = i + 1

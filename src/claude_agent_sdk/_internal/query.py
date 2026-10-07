@@ -13,6 +13,8 @@ import anyio
 from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
     TERMINAL_TASK_STATUSES,
+    MatchedAskRule,
+    McpServerProvenance,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -590,6 +592,8 @@ class Query:
                 if not self.can_use_tool:
                     raise Exception("canUseTool callback is not provided")
 
+                mcp_server_data = permission_request.get("mcp_server")
+                matched_ask_rule_data = permission_request.get("matched_ask_rule")
                 context = ToolPermissionContext(
                     signal=None,  # TODO: Add abort signal support
                     suggestions=[
@@ -605,6 +609,35 @@ class Query:
                     title=permission_request.get("title"),
                     display_name=permission_request.get("display_name"),
                     description=permission_request.get("description"),
+                    mcp_server=(
+                        McpServerProvenance(
+                            name=mcp_server_data["name"],
+                            source=mcp_server_data["source"],
+                        )
+                        if isinstance(mcp_server_data, dict)
+                        else None
+                    ),
+                    decision_reason_type=permission_request.get("decision_reason_type"),
+                    classifier_approvable=permission_request.get(
+                        "classifier_approvable"
+                    ),
+                    default_to_no=permission_request.get("default_to_no"),
+                    suppress_always_allow_rule=permission_request.get(
+                        "suppress_always_allow_rule"
+                    ),
+                    matched_ask_rule=(
+                        MatchedAskRule(
+                            source=matched_ask_rule_data["source"],
+                            tool_name=matched_ask_rule_data["tool_name"],
+                            rule_content=matched_ask_rule_data.get("rule_content"),
+                        )
+                        if isinstance(matched_ask_rule_data, dict)
+                        else None
+                    ),
+                    requires_user_interaction=permission_request.get(
+                        "requires_user_interaction"
+                    ),
+                    request_id=request_id,
                 )
 
                 response = await self.can_use_tool(
@@ -635,6 +668,16 @@ class Query:
                 else:
                     raise TypeError(
                         f"Tool permission callback must return PermissionResult (PermissionResultAllow or PermissionResultDeny), got {type(response)}"
+                    )
+                # Echo the request's tool_use_id so the CLI can match the
+                # decision to the call, as the TypeScript SDK does, and pass
+                # the host's classification of the decision along when given.
+                tool_use_id = permission_request.get("tool_use_id")
+                if tool_use_id is not None:
+                    response_data["toolUseID"] = tool_use_id
+                if response.decision_classification is not None:
+                    response_data["decisionClassification"] = (
+                        response.decision_classification
                     )
 
             elif subtype == "hook_callback":

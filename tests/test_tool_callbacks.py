@@ -352,6 +352,206 @@ class TestToolPermissionCallbacks:
         assert received_context.description == "rm -rf /tmp/x"
 
     @pytest.mark.anyio
+    async def test_permission_callback_receives_provenance_and_decision_fields(
+        self,
+    ):
+        """MCP provenance and the decision fields reach the callback (#1295)."""
+        from claude_agent_sdk.types import MatchedAskRule, McpServerProvenance
+
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "req-provenance",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "mcp__srv__deploy",
+                    "input": {"target": "prod"},
+                    "permission_suggestions": [],
+                    "tool_use_id": "toolu_01PROV",
+                    "mcp_server": {"name": "srv", "source": "project"},
+                    "decision_reason": "Safety check: deploys to production",
+                    "decision_reason_type": "safetyCheck",
+                    "classifier_approvable": False,
+                    "default_to_no": True,
+                    "suppress_always_allow_rule": True,
+                    "requires_user_interaction": False,
+                    "matched_ask_rule": {
+                        "source": "projectSettings",
+                        "tool_name": "mcp__srv__deploy",
+                        "rule_content": "prod",
+                    },
+                },
+            }
+        )
+
+        assert received_context is not None
+        assert received_context.mcp_server == McpServerProvenance(
+            name="srv", source="project"
+        )
+        assert received_context.decision_reason_type == "safetyCheck"
+        assert received_context.classifier_approvable is False
+        assert received_context.default_to_no is True
+        assert received_context.suppress_always_allow_rule is True
+        assert received_context.requires_user_interaction is False
+        assert received_context.matched_ask_rule == MatchedAskRule(
+            source="projectSettings",
+            tool_name="mcp__srv__deploy",
+            rule_content="prod",
+        )
+        assert received_context.request_id == "req-provenance"
+
+    @pytest.mark.anyio
+    async def test_permission_callback_fields_absent_on_older_cli(self):
+        """A request without the newer fields leaves them None, not missing."""
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        query = Query(
+            transport=MockTransport(),
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+            hooks=None,
+        )
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "req-old",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Read",
+                    "input": {"file_path": "/etc/hosts"},
+                    "permission_suggestions": [],
+                    "tool_use_id": "toolu_01OLD",
+                },
+            }
+        )
+
+        assert received_context is not None
+        assert received_context.mcp_server is None
+        assert received_context.decision_reason_type is None
+        assert received_context.classifier_approvable is None
+        assert received_context.default_to_no is None
+        assert received_context.suppress_always_allow_rule is None
+        assert received_context.matched_ask_rule is None
+        assert received_context.requires_user_interaction is None
+
+    @pytest.mark.anyio
+    async def test_permission_response_carries_tool_use_id_and_classification(
+        self,
+    ):
+        """The response echoes toolUseID and carries decisionClassification."""
+
+        async def allow_permanently(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            return PermissionResultAllow(decision_classification="user_permanent")
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=allow_permanently,
+            hooks=None,
+        )
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "req-allow",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "input": {"command": "ls"},
+                    "permission_suggestions": [],
+                    "tool_use_id": "toolu_01ALLOW",
+                },
+            }
+        )
+
+        response = json.loads(transport.written_messages[-1])["response"]
+        assert response["subtype"] == "success"
+        assert response["response"] == {
+            "behavior": "allow",
+            "updatedInput": {"command": "ls"},
+            "toolUseID": "toolu_01ALLOW",
+            "decisionClassification": "user_permanent",
+        }
+
+    @pytest.mark.anyio
+    async def test_deny_response_carries_classification_only_when_set(self):
+        async def deny(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultDeny:
+            return PermissionResultDeny(
+                message="not in CI", decision_classification="user_reject"
+            )
+
+        async def deny_unclassified(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultDeny:
+            return PermissionResultDeny(message="nope")
+
+        for callback, expected in (
+            (
+                deny,
+                {
+                    "behavior": "deny",
+                    "message": "not in CI",
+                    "toolUseID": "toolu_01DENY",
+                    "decisionClassification": "user_reject",
+                },
+            ),
+            (
+                deny_unclassified,
+                {"behavior": "deny", "message": "nope", "toolUseID": "toolu_01DENY"},
+            ),
+        ):
+            transport = MockTransport()
+            query = Query(
+                transport=transport,
+                is_streaming_mode=True,
+                can_use_tool=callback,
+                hooks=None,
+            )
+            await query._handle_control_request(
+                {
+                    "type": "control_request",
+                    "request_id": "req-deny",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Bash",
+                        "input": {"command": "rm -rf /"},
+                        "permission_suggestions": [],
+                        "tool_use_id": "toolu_01DENY",
+                    },
+                }
+            )
+            response = json.loads(transport.written_messages[-1])["response"]
+            assert response["response"] == expected
+
+    @pytest.mark.anyio
     async def test_callback_exception_handling(self):
         """Test that callback exceptions are properly handled."""
 

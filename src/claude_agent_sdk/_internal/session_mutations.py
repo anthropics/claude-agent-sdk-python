@@ -89,8 +89,10 @@ def rename_session(
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
     # Matches CLI guard — empty/whitespace titles are rejected rather than
-    # overloaded as "clear title".
-    stripped = title.strip()
+    # overloaded as "clear title". Sanitize Unicode (bidi/zero-width/format
+    # chars) like tag_session so a title and a tag — twin user-controlled
+    # fields surfaced identically by list_sessions — get the same treatment.
+    stripped = _sanitize_unicode(title).strip()
     if not stripped:
         raise ValueError("title must be non-empty")
 
@@ -464,9 +466,13 @@ def _build_fork_lines(
     # Derive title: explicit > original customTitle > original aiTitle > first
     # prompt. Suffix with " (fork)" for derived titles. listSessions reads the
     # LAST custom-title from the tail, so this entry is what surfaces.
-    fork_title = title.strip() if title else None
+    # Sanitize Unicode like tag_session/rename_session: an explicit title is a
+    # twin user-controlled field, and a derived title carries forward content
+    # from the source transcript (aiTitle / first prompt) that may not be
+    # trusted — both must be cleaned before they surface in list_sessions.
+    fork_title = _sanitize_unicode(title).strip() if title else None
     if not fork_title:
-        fork_title = f"{derive_title() or 'Forked session'} (fork)"
+        fork_title = f"{_sanitize_unicode(derive_title() or 'Forked session')} (fork)"
 
     lines.append(
         json.dumps(
@@ -790,7 +796,8 @@ async def rename_session_via_store(
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
-    stripped = title.strip()
+    # Sanitize Unicode like tag_session_via_store (twin metadata field).
+    stripped = _sanitize_unicode(title).strip()
     if not stripped:
         raise ValueError("title must be non-empty")
     project_key = project_key_for_directory(directory)

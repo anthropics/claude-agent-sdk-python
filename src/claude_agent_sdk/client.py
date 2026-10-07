@@ -95,6 +95,16 @@ class ClaudeSDKClient:
     ) -> None:
         """Connect to Claude with a prompt or message stream."""
 
+        # Reconnecting from a second event loop has to be refused here, before
+        # anything is built: _connect_inner() would spawn a transport and
+        # overwrite self._transport and self._query, leaving the first
+        # subprocess with nothing holding it. That is the leak
+        # ensure_same_loop() describes, reached without ever calling it.
+        # Outside the try below on purpose, since the failure path there runs
+        # disconnect() and the existing connection is still the live one.
+        if self._query is not None:
+            self._query.ensure_same_loop()
+
         from ._internal.session_resume import materialize_resume_session
         from ._internal.session_store_validation import validate_session_store_options
 

@@ -342,6 +342,9 @@ class Query:
         ``disconnect()`` before reconnecting: ``connect()`` replaces the
         transport without closing the old one, so skipping it strands the
         first child until the interpreter's atexit handler signals it.
+        ``ClaudeSDKClient.connect()`` calls this before it builds anything, so
+        reconnecting across loops hits the same error rather than quietly
+        taking that route.
         """
         if self._loop_token is None or current_loop_token() is self._loop_token:
             return

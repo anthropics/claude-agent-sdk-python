@@ -230,6 +230,9 @@ def test_reuse_on_a_second_event_loop_raises(backend: str, tmp_path: Path) -> No
     async def server_info() -> dict[str, Any] | None:
         return await client.get_server_info()
 
+    async def reconnect() -> None:
+        await client.connect()
+
     assert anyio.run(first, backend=backend) == ["echo:first"]
     transport = client._transport
     assert isinstance(transport, SubprocessCLITransport)
@@ -243,6 +246,12 @@ def test_reuse_on_a_second_event_loop_raises(backend: str, tmp_path: Path) -> No
         # Before the guard: this sat waiting out the control-request timeout.
         with pytest.raises(CLIConnectionError, match="different event loop"):
             anyio.run(control, backend=backend)
+        # Before the guard: connect() built a second transport and dropped
+        # the first one on the floor, so the error the caller was supposed to
+        # see never came and the child was stranded instead.
+        with pytest.raises(CLIConnectionError, match="different event loop"):
+            anyio.run(reconnect, backend=backend)
+        assert client._transport is transport
         # Unguarded on purpose: it answers from the initialization result
         # cached at connect() and never touches the loop, so there is nothing
         # to fail silently.

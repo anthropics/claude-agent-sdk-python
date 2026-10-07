@@ -85,13 +85,11 @@ class TranscriptMirrorBatcher:
         if (
             self._pending_entries > self.max_pending_entries
             or self._pending_bytes > self.max_pending_bytes
-        ):
-            # Fire-and-forget on the current backend via the SDK's sniffio-
-            # dispatched spawner; the lock in _drain() serializes against any
-            # in-flight flush so append ordering holds. _drain() is contracted
-            # never to raise; spawn_detached logs if that contract is ever
-            # violated (parity with asyncio's unretrieved-exception warning).
-            self._flush_task = spawn_detached(self._drain())
+        ) and (self._flush_task is None or self._flush_task.done()):
+            # Keep at most one eager drain queued behind an in-flight append.
+            # Once that drain acquires the lock it clears the scheduling slot,
+            # allowing one successor to queue while its append is in flight.
+            self._flush_task = spawn_detached(self._drain(eager=True))
 
     async def flush(self) -> None:
         """Flush all pending entries, serialized after any in-flight eager flush."""
@@ -110,16 +108,20 @@ class TranscriptMirrorBatcher:
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(f"[TranscriptMirrorBatcher] close flush failed: {e}")
 
-    async def _drain(self) -> None:
+    async def _drain(self, *, eager: bool = False) -> None:
         """Await any prior flush, detach the pending buffer, then send.
 
         Keep entries queued until the lock is acquired so cancelling a
-        waiting flush cannot discard them. Once detached, ``enqueue`` can
-        accumulate into a fresh buffer while this append is in flight.
+        waiting flush cannot discard them. An eager drain clears its scheduling
+        slot only after acquiring the lock, so enqueues can coalesce onto one
+        waiter while another append is in flight. Once detached, ``enqueue``
+        can accumulate into a fresh buffer while this append is in flight.
         Adapter and ``on_error`` callback errors are caught and logged.
         """
         errors: list[tuple[SessionKey, str]] = []
         async with self._lock:
+            if eager:
+                self._flush_task = None
             items = self._pending
             self._pending = []
             self._pending_entries = 0

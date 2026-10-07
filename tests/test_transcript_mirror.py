@@ -238,6 +238,50 @@ class TestTranscriptMirrorBatcher:
         ]
 
     @pytest.mark.anyio
+    async def test_eager_flush_coalesces_waiters_behind_in_flight_append(self) -> None:
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        started = anyio.Event()
+        release = anyio.Event()
+        store = _RecordingStore()
+        original_append = store.append
+
+        async def append(key: SessionKey, entries: list[Any]) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            await original_append(key, entries)
+
+        store.append = append  # type: ignore[method-assign]
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "n": 1}])
+        first = spawn_detached(batcher.flush())
+
+        with anyio.fail_after(2):
+            await started.wait()
+            batcher.max_pending_entries = 0
+            for n in range(2, 22):
+                batcher.enqueue(_main_path(), [{"type": "assistant", "n": n}])
+                await anyio.sleep(0)
+
+            waiter = batcher._flush_task
+            assert waiter is not None
+            assert batcher._lock.statistics().tasks_waiting == 1
+
+            release.set()
+            await first.wait()
+            await waiter.wait()
+            await batcher.close()
+
+        assert [
+            entry["n"] for _key, entries in store.append_calls for entry in entries
+        ] == list(range(1, 22))
+
+    @pytest.mark.anyio
     async def test_already_cancelled_flush_preserves_pending_entries(self) -> None:
         store = _RecordingStore()
         batcher = TranscriptMirrorBatcher(

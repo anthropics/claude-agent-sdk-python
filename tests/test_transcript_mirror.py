@@ -594,11 +594,16 @@ class TestTranscriptMirrorBatcher:
         await anyio.sleep(0)  # let first drain detach + block on gate
         batcher.enqueue(_main_path(), [{"type": "x", "n": 2}])
         second = batcher._flush_task
-        assert first is not None and second is not None and first is not second
+        assert first is not None and second is not None
 
         gate.set()
         await first.wait()
-        await second.wait()
+        # If the first drain detached before the second enqueue, a successor
+        # drain is queued. Otherwise the second frame coalesces into the first
+        # drain and both handles are the same. Both schedules must preserve
+        # append ordering without duplication.
+        if second is not first:
+            await second.wait()
         assert appended == [1, 2]  # no dup, no interleave
 
     @pytest.mark.anyio

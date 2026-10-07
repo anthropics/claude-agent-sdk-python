@@ -1715,6 +1715,22 @@ class TestListSubagents:
         result = list_subagents(sid, directory=project_path)
         assert sorted(result) == ["nested", "top"]
 
+    def test_dedupes_agent_id_across_subdirectories(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Duplicate IDs are returned once in their first-seen order."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=["top"]
+        )
+        nested = subagents_dir / "workflows" / "run-1"
+        nested.mkdir(parents=True)
+        (nested / "agent-nested.jsonl").write_text("{}\n")
+        (nested / "agent-top.jsonl").write_text("{}\n")
+
+        assert list_subagents(sid, directory=project_path) == ["top", "nested"]
+
     def test_searches_all_projects_without_directory(self, claude_config_dir: Path):
         """When directory is omitted, all project directories are searched."""
         project_dir = _make_project_dir(claude_config_dir, "/some/project")

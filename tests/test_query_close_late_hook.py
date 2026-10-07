@@ -10,6 +10,12 @@ control_response to the same closed transport, and that second
 exception handler, on trio in the "Unhandled exception in detached trio
 task" warning. The late response must instead be dropped and logged.
 
+The complement is tested too: ``_close_impl`` sets ``_closed`` before the
+final mirror flush, but child handlers are still running and the transport
+is still open during that flush, so a response finishing in that window
+must still be delivered — the drop gate is ``_transport_closed``, not
+``_closed``.
+
 Every test here runs under both asyncio and trio (``anyio_backend`` in
 conftest.py). No CLI or subprocess is involved.
 """
@@ -82,6 +88,30 @@ class SyntheticTransport(Transport):
 
     async def end_input(self) -> None:
         pass
+
+
+class BlockingMirrorBatcher:
+    """Stands in for ``TranscriptMirrorBatcher`` during close().
+
+    ``close()`` sets ``entered`` and then waits for ``release``, holding
+    ``_close_impl`` in the final mirror flush: the window in which
+    ``_closed`` is already True but child handlers still run and the
+    transport is still open.
+    """
+
+    def __init__(self, entered: anyio.Event, release: anyio.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    def enqueue(self, file_path: str, entries: list[Any]) -> None:
+        pass
+
+    async def flush(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        self.entered.set()
+        await self.release.wait()
 
 
 async def _wait_for_handler_done(q: Query) -> None:
@@ -237,4 +267,61 @@ async def test_hook_business_error_still_writes_error_response() -> None:
     assert transport.late_writes == []
 
     await q.close()
+    q.close_receive_stream()
+
+
+async def test_hook_response_written_during_mirror_flush_on_close() -> None:
+    """A hook that finishes while close() is still in the mirror flush must
+    have its response written: _closed is already True at that point, but the
+    transport is still open and the handler still runs, so a drop gated on
+    _closed would lose the response."""
+    transport = SyntheticTransport()
+    batcher_entered = anyio.Event()
+    batcher_release = anyio.Event()
+    hook_started = anyio.Event()
+    go = anyio.Event()
+
+    async def waiting_hook(input_data, tool_use_id, context):
+        hook_started.set()
+        await go.wait()
+        return {}
+
+    q = Query(transport=transport, is_streaming_mode=True)
+    q.hook_callbacks["hook_0"] = waiting_hook
+    q.set_transcript_mirror_batcher(
+        BlockingMirrorBatcher(batcher_entered, batcher_release)
+    )
+
+    await q.start()
+    with anyio.fail_after(5):
+        await hook_started.wait()
+
+    with anyio.fail_after(5):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(q.close)
+            try:
+                # close() is now parked in the batcher's flush.
+                await batcher_entered.wait()
+                assert q._closed
+                assert not transport.closed
+
+                # The hook finishes inside the flush window; its handler must
+                # still answer on the open transport.
+                go.set()
+                await _wait_for_handler_done(q)
+
+                responses = [
+                    f for f in transport.writes if f.get("type") == "control_response"
+                ]
+                assert len(responses) == 1
+                assert responses[0]["response"]["subtype"] == "success"
+                assert responses[0]["response"]["request_id"] == _REQUEST_ID
+                assert transport.late_writes == []
+            finally:
+                # Let close() finish tearing down even if an assertion above
+                # failed: close() shields _close_impl from cancellation, so
+                # leaving it parked here would hang the task group forever
+                # instead of surfacing the failure.
+                batcher_release.set()
+
     q.close_receive_stream()

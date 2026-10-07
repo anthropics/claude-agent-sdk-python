@@ -15,10 +15,13 @@ from claude_agent_sdk import (
     SubagentStartHookSpecificOutput,
 )
 from claude_agent_sdk.types import (
+    AssistantMessageError,
     PermissionRuleValue,
     PermissionUpdate,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
+    RateLimitType,
+    TaskNotificationOriginSubkind,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -30,6 +33,46 @@ from claude_agent_sdk.types import (
 def test_effort_level_is_exported():
     """EffortLevel is part of the public package API for downstream wrappers."""
     assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
+
+
+def test_literal_unions_cover_what_the_cli_sends():
+    """These three carry every value the CLI can put in the field.
+
+    message_parser passes them through without validating, so a value missing
+    here is one a type checker calls impossible while it arrives at runtime.
+    The reference is the TypeScript SDK published alongside the same CLI:
+    SDKAssistantMessageError, the SDKRateLimitInfo rateLimitType union and the
+    MessageOrigin subkind union in sdk.d.ts.
+    """
+    assert set(get_args(AssistantMessageError)) == {
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "billing_error",
+        "rate_limit",
+        "overloaded",
+        "invalid_request",
+        "model_not_found",
+        "server_error",
+        "unknown",
+        "max_output_tokens",
+        "cloud_credential_error",
+    }
+    assert set(get_args(RateLimitType)) == {
+        "five_hour",
+        "seven_day",
+        "seven_day_opus",
+        "seven_day_sonnet",
+        "seven_day_overage_included",
+        "overage",
+    }
+    assert set(get_args(TaskNotificationOriginSubkind)) == {
+        "scheduled-trigger",
+        "peer-send-message",
+        "projects-relay",
+        "session-inbox",
+    }
 
 
 class TestPermissionUpdate:

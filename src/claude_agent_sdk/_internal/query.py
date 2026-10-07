@@ -865,6 +865,17 @@ class Query:
         precedence on a name collision, and an SDK entry carrying an ``instance``
         is (re-)registered so its tools keep routing.
 
+        A caller entry that takes the name of a registered SDK server replaces
+        it for the session, so that server is also deregistered here -- leaving
+        it in ``sdk_mcp_servers`` would let the pre-seed above silently resurrect
+        it on a later call. An SDK entry sent *without* an ``instance`` is a
+        re-declaration of the server already registered under that name, not a
+        replacement, so it keeps its registration.
+
+        The local registry and bridges are updated only after the CLI accepts
+        the new set: a failed or timed-out control request leaves this process's
+        view of the servers exactly as it was, rather than diverging from the CLI.
+
         Args:
             servers: The external (and/or new SDK) servers to apply. An SDK
                 config includes its in-process ``instance``; it is stripped
@@ -875,18 +886,22 @@ class Query:
         servers_for_cli: dict[str, Any] = {
             name: {"type": "sdk", "name": name} for name in self.sdk_mcp_servers
         }
+        # Stage the registry changes; they are applied below only once the CLI
+        # has accepted the new set.
+        added: dict[str, Any] = {}
+        removed: set[str] = set()
         for name, config in servers.items():
             if isinstance(config, dict) and config.get("type") == "sdk":
                 instance = config.get("instance")
                 if instance is not None:
-                    # (Re-)register the in-process server so its tools route back
-                    # here via _handle_sdk_mcp_request.
-                    self.sdk_mcp_servers[name] = instance
-                    self._sdk_mcp_bridges[name] = SdkMcpBridge(name, instance)
+                    added[name] = instance
                 servers_for_cli[name] = {
                     k: v for k, v in config.items() if k != "instance"
                 }
             else:
+                # A non-SDK entry takes over this name for the session; any
+                # in-process server registered under it is gone with it.
+                removed.add(name)
                 servers_for_cli[name] = config
         await self._send_control_request(
             {
@@ -894,6 +909,14 @@ class Query:
                 "servers": servers_for_cli,
             }
         )
+        for name in removed:
+            self.sdk_mcp_servers.pop(name, None)
+            self._sdk_mcp_bridges.pop(name, None)
+        for name, instance in added.items():
+            # (Re-)register the in-process server so its tools route back here
+            # via _handle_sdk_mcp_request.
+            self.sdk_mcp_servers[name] = instance
+            self._sdk_mcp_bridges[name] = SdkMcpBridge(name, instance)
 
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task.

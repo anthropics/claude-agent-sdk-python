@@ -81,8 +81,9 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 def _simple_hash(s: str) -> str:
     """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
-    for ch in s:
-        char = ord(ch)
+    data = s.encode("utf-16-le", "surrogatepass")
+    for i in range(0, len(data), 2):
+        char = int.from_bytes(data[i : i + 2], "little")
         h = (h << 5) - h + char
         # Emulate JS `hash |= 0` (coerce to 32-bit signed int)
         h = h & 0xFFFFFFFF
@@ -107,7 +108,8 @@ def _sanitize_path(name: str) -> str:
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
-    sanitized = _SANITIZE_RE.sub("-", name)
+    # JS replaces per UTF-16 code unit, so astral chars become two hyphens
+    sanitized = _SANITIZE_RE.sub(lambda m: "-" * (2 if ord(m[0]) > 0xFFFF else 1), name)
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)

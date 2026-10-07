@@ -80,7 +80,13 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
         parsed = Decimal(str(raw).strip())
     except (InvalidOperation, ValueError):
         return DEFAULT_RUN_END_CEILING_MS
-    if not parsed.is_finite() or parsed < 0 or parsed != parsed.to_integral_value():
+    if not parsed.is_finite() or parsed < 0:
+        return DEFAULT_RUN_END_CEILING_MS
+    # Clamp before converting to int: a compact exponent such as 1e1000000
+    # must not expand into a multi-megabit Python integer.
+    if parsed > _MAX_RUN_END_CEILING_MS:
+        return _MAX_RUN_END_CEILING_MS
+    if parsed != parsed.to_integral_value():
         return DEFAULT_RUN_END_CEILING_MS
     return int(parsed)
 

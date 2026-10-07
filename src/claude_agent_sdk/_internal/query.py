@@ -97,6 +97,11 @@ def _parse_run_end_ceiling_ms(raw: Any) -> int | None:
                 if shift >= 0:
                     if sign == "-":
                         return None
+                    if coefficient == 0:
+                        # "0e19" is still zero; handle it before the
+                        # large-shift guard so the 0 = no-limit semantics
+                        # survive any exponent.
+                        return 0
                     if shift > 18 or coefficient >= _MAX_PARSEABLE_MAGNITUDE:
                         # Far above the sleeper's clamp; identical downstream.
                         return _MAX_RUN_END_CEILING_MS

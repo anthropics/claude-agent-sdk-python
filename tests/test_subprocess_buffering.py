@@ -342,6 +342,7 @@ class TestSubprocessBuffering:
             transport = SubprocessCLITransport(prompt="test", options=make_options())
             transport._stdout_stream = stream
             transport._process = MagicMock()
+            transport._process.returncode = None
             transport._process.wait = AsyncMock(return_value=0)
 
             messages: list[dict[str, Any]] = []
@@ -372,6 +373,7 @@ class TestSubprocessBuffering:
             transport = SubprocessCLITransport(prompt="test", options=make_options())
             transport._stdout_stream = stream
             transport._process = MagicMock()
+            transport._process.returncode = None
             transport._process.wait = AsyncMock(return_value=0)
 
             messages: list[dict[str, Any]] = []
@@ -391,6 +393,7 @@ class TestSubprocessBuffering:
         async def _run() -> None:
             transport = SubprocessCLITransport(prompt="t", options=make_options(**opts))
             transport._process = MagicMock()
+            transport._process.returncode = None
             transport._process.wait = AsyncMock(return_value=0)
             transport._stdout_stream = MockTextReceiveStream(chunks)
             transport._stderr_stream = MockTextReceiveStream([])
@@ -523,6 +526,7 @@ class TestSubprocessBuffering:
 
             transport = SubprocessCLITransport(prompt="t", options=make_options())
             transport._process = MagicMock()
+            transport._process.returncode = None
             transport._process.wait = AsyncMock(return_value=0)
             transport._stdout_stream = ClosingStream(
                 [json.dumps({"type": "result", "subtype": "success"})]

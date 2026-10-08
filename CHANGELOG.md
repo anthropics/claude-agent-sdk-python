@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.165
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.294
+- CI: alert Slack when a release is blocked or fails (#1368)
+
 ## 0.2.164
 
 ### Internal/Other Changes

@@ -16,7 +16,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_simple_structured_output():
     """Test structured output with file counting requiring tool use."""
 
@@ -65,7 +65,7 @@ async def test_simple_structured_output():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_nested_structured_output():
     """Test structured output with nested objects and arrays."""
 
@@ -117,7 +117,7 @@ async def test_nested_structured_output():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_structured_output_with_enum():
     """Test structured output with enum constraints requiring code analysis."""
 
@@ -164,7 +164,7 @@ async def test_structured_output_with_enum():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_structured_output_with_tools():
     """Test structured output when agent uses tools."""
 

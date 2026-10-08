@@ -27,11 +27,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install build dependencies
-        run: pip install build twine wheel
+        run: |
+          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -45,16 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     permissions:
-      contents: write
-      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
-      id-token: write
+      contents: read
     env:
       VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -105,9 +104,61 @@ jobs:
           import urllib.request
 
           QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
-          THRESHOLD_BYTES = 47.5 * 1024**3  # Fail above 95% (2.5 GiB buffer)
+          # Temporary: fail above 49.9 GiB (0.1 GiB buffer). Safe only if QUOTA_BYTES is
+          # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
+          # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
+          THRESHOLD_BYTES = 49.9 * 1024**3
+          # PyPI per-file limit (increased from default 100 MiB, pypi/support#12263). If PyPI
+          # changes it for this project, update this and PYPI_FILE_LIMIT_BYTES in
+          # scripts/check_pypi_quota.py.
+          FILE_LIMIT_BYTES = 250 * 1024**2
 
           version = os.environ.get("VERSION", "")
+
+          # PyPI rejects any file above its per-file limit, and the upload step sends the
+          # files one at a time, so an oversized file would stop the upload part-way. A wheel
+          # that is too large is left out of the upload, with a warning, so that the rest of
+          # the release still goes out. `pip install` on that platform then gets the sdist,
+          # which has no bundled CLI. Keep this check above the PyPI fetch, so that it still
+          # runs and names the file when the fetch fails.
+          sizes = []
+          for d in ("dist", "sdist"):
+              if os.path.isdir(d):
+                  for fn in sorted(os.listdir(d)):
+                      sizes.append((os.path.getsize(os.path.join(d, fn)), d, fn))
+          if sizes:
+              size, _, fn = max(sizes)
+              print(f"Largest file:       {size / 1024**2:.2f} MiB of the {FILE_LIMIT_BYTES / 1024**2:.0f} MiB PyPI per-file limit ({size:,} bytes, {fn})")
+          limit = (
+              f"PyPI's per-file limit is {FILE_LIMIT_BYTES:,} bytes "
+              f"({FILE_LIMIT_BYTES / 1024**2:.0f} MiB), as recorded in FILE_LIMIT_BYTES in "
+              ".github/workflows/build-and-publish.yml."
+          )
+          fix = (
+              "Make each listed file smaller, or ask PyPI to raise this project's per-file "
+              "limit (https://docs.pypi.org/project-management/storage-limits/) and then "
+              "raise FILE_LIMIT_BYTES to match."
+          )
+          oversized = [(size, d, fn) for size, d, fn in sizes if size > FILE_LIMIT_BYTES]
+          names = ", ".join(f"{fn} ({size:,} bytes)" for size, _, fn in oversized)
+          # Only wheels can be left out. Without the sdist there is nothing to fall back to,
+          # and without any wheel the release would bundle the CLI for nobody.
+          wheels_left = [fn for size, d, fn in sizes if d == "dist" and size <= FILE_LIMIT_BYTES]
+          if any(d != "dist" for _, d, _ in oversized) or (oversized and not wheels_left):
+              print(
+                  f"::error::Too large for PyPI: {names}. {limit} "
+                  f"This run uploaded nothing to PyPI. {fix}"
+              )
+              sys.exit(1)
+          if oversized:
+              for _, d, fn in oversized:
+                  os.remove(os.path.join(d, fn))
+              print(
+                  f"::warning::Not published to PyPI, too large: {names}. {limit} "
+                  "The rest of this release goes ahead without them. `pip install` on each platform "
+                  "listed gets the sdist, which has no bundled CLI. The wheels are still in "
+                  f"this run's build artifacts. {fix}"
+              )
 
           # Fetch current usage from PyPI JSON API
           try:
@@ -116,9 +167,11 @@ jobs:
               ) as r:
                   data = json.load(r)
           except Exception as exc:
-              print(f"::warning::Could not fetch PyPI metadata: {exc}")
-              print("Skipping quota pre-flight check.")
-              sys.exit(0)
+              # Fail closed: without the current size, an upload could run into PyPI's
+              # quota part-way and leave only some of the release's files public.
+              print(f"::error::Could not read this project's current size from PyPI: {exc}")
+              print("Nothing was uploaded. Re-run this job once pypi.org responds.")
+              sys.exit(1)
 
           current_total = sum(
               f["size"]
@@ -173,6 +226,43 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
+  # Claude writes the changelog in a job of its own, which holds none of the
+  # publishing credentials. It runs once the upload to PyPI is done, so nothing
+  # it does can change what is uploaded.
+  changelog:
+    needs: publish
+    permissions:
+      contents: read
+      # Required to mint the OIDC token exchanged for a Claude API access token (Workload Identity Federation)
+      id-token: write
+    uses: ./.github/workflows/generate-changelog.yml
+    with:
+      version: ${{ inputs.version }}
+      previous_tag: ${{ inputs.previous_tag }}
+
+  release:
+    needs: [publish, changelog]
+    # A failed changelog does not hold up the release.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update version files
+        run: python scripts/update_version.py "$VERSION"
+
       - name: Configure git
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -183,22 +273,35 @@ jobs:
           git add pyproject.toml src/claude_agent_sdk/_version.py
           git commit -m "chore: release v$VERSION"
 
-      - name: Update changelog with Claude
+      - uses: actions/download-artifact@v4
+        id: changelog
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
         with:
-          prompt: "/generate-changelog new version: ${{ env.VERSION }}, old version: ${{ inputs.previous_tag }}"
-          # Authenticate to the Claude API via Workload Identity Federation
-          # (the workflow's OIDC token is exchanged for a short-lived access
-          # token) instead of a static API key.
-          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: |
-            --model claude-opus-4-6
-            --allowedTools 'Bash(git add:*),Bash(git commit:*),Edit'
+          name: changelog
+          path: ${{ runner.temp }}/changelog
+
+      - name: Commit the changelog
+        if: steps.changelog.outcome == 'success'
+        continue-on-error: true
+        # Takes CHANGELOG.md and nothing else from the changelog job, after the
+        # same checks generate-changelog.yml runs before uploading it.
+        run: |
+          f="$RUNNER_TEMP/changelog/CHANGELOG.md"
+          if [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" -ne 1 ]; then
+            echo "::error::CHANGELOG.md is not a plain file"; exit 1
+          fi
+          if [ "$(wc -c < "$f")" -gt 1048576 ]; then
+            echo "::error::CHANGELOG.md is larger than 1 MiB"; exit 1
+          fi
+          if LC_ALL=C grep -qaP '\x00' "$f"; then
+            echo "::error::CHANGELOG.md is not a text file"; exit 1
+          fi
+          if grep -qaE -e '-----BEGIN [A-Z ]*PRIVATE KEY' -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ' -e 'sk-ant-[A-Za-z0-9_-]{16,}' -e '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}' -e 'github_pat_[A-Za-z0-9_]{30,}' -e 'pypi-[A-Za-z0-9_-]{30,}' "$f"; then
+            echo "::error::CHANGELOG.md contains a string that looks like a credential"; exit 1
+          fi
+          cp -- "$f" CHANGELOG.md
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "docs: update changelog for v$VERSION"
 
       - name: Push to main
         run: |

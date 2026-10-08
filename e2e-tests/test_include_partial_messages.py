@@ -4,6 +4,7 @@ These tests verify that the SDK properly handles partial message streaming,
 including StreamEvent parsing and message interleaving.
 """
 
+import itertools
 from typing import Any
 
 import pytest
@@ -21,7 +22,7 @@ from claude_agent_sdk.types import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_include_partial_messages_stream_events():
     """Test that include_partial_messages produces StreamEvent messages."""
 
@@ -43,13 +44,14 @@ async def test_include_partial_messages_stream_events():
         async for message in client.receive_response():
             collected_messages.append(message)
 
-    # Verify we got the expected message types
-    message_types = [type(msg).__name__ for msg in collected_messages]
-
-    # Should have SystemMessage(init) at the start
-    assert message_types[0] == "SystemMessage"
-    assert isinstance(collected_messages[0], SystemMessage)
-    assert collected_messages[0].subtype == "init"
+    # Should start with SystemMessage(init). The CLI can send other system
+    # messages, such as commands_changed, ahead of it.
+    leading_system = list(
+        itertools.takewhile(lambda m: isinstance(m, SystemMessage), collected_messages)
+    )
+    assert "init" in [m.subtype for m in leading_system], [
+        m.subtype for m in leading_system
+    ]
 
     # Should have multiple StreamEvent messages
     stream_events = [msg for msg in collected_messages if isinstance(msg, StreamEvent)]
@@ -89,17 +91,18 @@ async def test_include_partial_messages_stream_events():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_include_partial_messages_thinking_deltas():
     """Test that thinking content is streamed incrementally via deltas."""
 
+    # Ask for summarized thinking explicitly. Since CLI 2.1.287 thinking text is
+    # omitted unless requested: the thinking_delta events still arrive, but with
+    # empty text.
     options = ClaudeAgentOptions(
         include_partial_messages=True,
         model="claude-sonnet-4-5",
         max_turns=2,
-        env={
-            "MAX_THINKING_TOKENS": "8000",
-        },
+        thinking={"type": "enabled", "budget_tokens": 8000, "display": "summarized"},
     )
 
     thinking_deltas = []
@@ -127,7 +130,7 @@ async def test_include_partial_messages_thinking_deltas():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_partial_messages_disabled_by_default():
     """Test that partial messages are not included when option is not set."""
 

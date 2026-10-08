@@ -4,6 +4,17 @@ import os
 
 import pytest
 
+# The CLI's default model, used by tests that don't set `model=` and by
+# `set_model(None)`. Left to the CLI, it changes between CLI releases: 2.1.280
+# moved it from claude-opus-5 to claude-opus-5-5, and for the organization CI
+# runs under, the API rejects claude-opus-5-5 requests from the public CLI with
+# a 400 ("This model requires Claude Code to attest its permission mode in
+# metadata.user_id"). Pin the model the suite last passed on. ANTHROPIC_MODEL
+# would not cover `set_model(None)`, which goes back to the CLI's default, not
+# to ANTHROPIC_MODEL. A test's own `model=` still wins, and a value already
+# set in the environment is kept.
+os.environ.setdefault("ANTHROPIC_DEFAULT_MODEL", "claude-opus-5")
+
 
 @pytest.fixture(scope="session")
 def api_key():
@@ -17,12 +28,15 @@ def api_key():
     return key
 
 
-@pytest.fixture(scope="session")
-def event_loop_policy():
-    """Use the default event loop policy for all async tests."""
-    import asyncio
+@pytest.fixture
+def anyio_backend() -> str:
+    """Pin e2e tests to the asyncio backend.
 
-    return asyncio.get_event_loop_policy()
+    Unit tests run under both asyncio and trio (see tests/conftest.py), but
+    e2e tests make real API calls, so running them under both backends would
+    double cost and runtime without exercising any additional SDK code.
+    """
+    return "asyncio"
 
 
 def pytest_configure(config):

@@ -1,11 +1,8 @@
 """Backend-parametrized tests for the ``session_store`` code path.
 
 The batcher, resume helpers, and store-backed listing are exercised under
-both asyncio and trio so neither backend can regress the other. The
-existing per-module tests (``test_transcript_mirror.py``,
-``test_session_resume.py``, ``test_session_helpers_store.py``) cover
-behavior in depth under pytest-asyncio; these cover the cross-backend
-surface.
+both asyncio and trio via the ``anyio_backend`` fixture in ``conftest.py``,
+covering the cross-backend surface the per-module tests reach less directly.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ from claude_agent_sdk._internal.transcript_mirror_batcher import (
 )
 from claude_agent_sdk.types import SessionKey, SessionStore, SessionStoreEntry
 
-BACKENDS = ["asyncio", "trio"]
+pytestmark = pytest.mark.anyio
 
 
 class _RecordingStore:
@@ -58,77 +55,58 @@ def _entry(uid: str) -> SessionStoreEntry:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_batcher_eager_flush_via_spawn_detached(backend: str) -> None:
+async def test_batcher_eager_flush_via_spawn_detached() -> None:
     store = _RecordingStore()
-
-    async def _body() -> None:
-        b = _batcher(store, max_pending_entries=0)
-        # Threshold 0 triggers the spawn_detached eager-flush path from a
-        # sync call site — this is where the asyncio-under-trio crash lived.
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
-        await anyio.sleep(0.05)
-
-    anyio.run(_body, backend=backend)
+    b = _batcher(store, max_pending_entries=0)
+    # Threshold 0 triggers the spawn_detached eager-flush path from a
+    # sync call site — this is where the asyncio-under-trio crash lived.
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
+    await anyio.sleep(0.05)
     assert len(store.calls) == 1
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_batcher_eager_flush_preserves_order(backend: str) -> None:
+async def test_batcher_eager_flush_preserves_order() -> None:
     store = _RecordingStore(delay=0.02)
-
-    async def _body() -> None:
-        b = _batcher(store, max_pending_entries=0)
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
-        await anyio.sleep(0)
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("b")])
-        await anyio.sleep(0)
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("c")])
-        await b.flush()
-        await anyio.sleep(0.1)
-
-    anyio.run(_body, backend=backend)
+    b = _batcher(store, max_pending_entries=0)
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
+    await anyio.sleep(0)
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("b")])
+    await anyio.sleep(0)
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("c")])
+    await b.flush()
+    await anyio.sleep(0.1)
     seen = [e.get("uuid") for _k, entries in store.calls for e in entries]
     assert seen == ["a", "b", "c"]
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_batcher_timeout_reports_via_on_error(backend: str) -> None:
+async def test_batcher_timeout_reports_via_on_error() -> None:
     store = _RecordingStore(delay=10.0)
     errors: list[str] = []
 
     async def _on_error(_key: SessionKey | None, msg: str) -> None:
         errors.append(msg)
 
-    async def _body() -> None:
-        b = TranscriptMirrorBatcher(
-            store=cast(SessionStore, store),
-            projects_dir="/tmp/p",
-            on_error=_on_error,
-            send_timeout=0.05,
-        )
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
-        await b.flush()
-
-    anyio.run(_body, backend=backend)
+    b = TranscriptMirrorBatcher(
+        store=cast(SessionStore, store),
+        projects_dir="/tmp/p",
+        on_error=_on_error,
+        send_timeout=0.05,
+    )
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
+    await b.flush()
     assert len(errors) == 1
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_batcher_close_flushes_under_cancelled_scope(backend: str) -> None:
+async def test_batcher_close_flushes_under_cancelled_scope() -> None:
     """``close()`` shields its final flush so the last batch reaches the
     store even when teardown runs under a cancelled scope.
     """
     store = _RecordingStore()
-
-    async def _body() -> None:
-        b = _batcher(store)
-        b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
-        with anyio.CancelScope() as scope:
-            scope.cancel()
-            await b.close()
-
-    anyio.run(_body, backend=backend)
+    b = _batcher(store)
+    b.enqueue("/tmp/p/proj/sid.jsonl", [_entry("a")])
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        await b.close()
     assert len(store.calls) == 1
 
 
@@ -137,20 +115,15 @@ def test_batcher_close_flushes_under_cancelled_scope(backend: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_with_timeout_times_out(backend: str) -> None:
+async def test_with_timeout_times_out() -> None:
     async def _slow() -> None:
         await anyio.sleep(10.0)
 
-    async def _body() -> None:
-        with pytest.raises(RuntimeError, match="timed out"):
-            await session_resume._with_timeout(_slow(), 0.05, "test.load()")
-
-    anyio.run(_body, backend=backend)
+    with pytest.raises(RuntimeError, match="timed out"):
+        await session_resume._with_timeout(_slow(), 0.05, "test.load()")
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_rmtree_with_retry_under_cancelled_scope(backend: str, tmp_path: Path) -> None:
+async def test_rmtree_with_retry_under_cancelled_scope(tmp_path: Path) -> None:
     """Cleanup runs at ``__aexit__``, often under a cancelled scope (client
     disconnect mid-turn). The happy-path rmtree must run synchronously
     before any checkpoint, or the materialized-transcript tempdir leaks.
@@ -159,12 +132,9 @@ def test_rmtree_with_retry_under_cancelled_scope(backend: str, tmp_path: Path) -
     d.mkdir()
     (d / "f").write_text("x")
 
-    async def _body() -> None:
-        with anyio.CancelScope() as scope:
-            scope.cancel()
-            await session_resume._rmtree_with_retry(d)
-
-    anyio.run(_body, backend=backend)
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        await session_resume._rmtree_with_retry(d)
     assert not d.exists()
 
 
@@ -217,20 +187,16 @@ def _user_entry(text: str) -> SessionStoreEntry:
     )
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_list_sessions_from_store_one_load_fails(backend: str, tmp_path: Path) -> None:
+async def test_list_sessions_from_store_one_load_fails(tmp_path: Path) -> None:
     """One adapter failure degrades that row; the listing still succeeds."""
     store = _ListStore(
         {_SID_A: [_user_entry("hello")], _SID_B: [_user_entry("world")]},
         fail_on={_SID_B: RuntimeError("backend down")},
     )
 
-    async def _body() -> list[Any]:
-        return await list_sessions_from_store(
-            cast(SessionStore, store), directory=str(tmp_path)
-        )
-
-    result = anyio.run(_body, backend=backend)
+    result = await list_sessions_from_store(
+        cast(SessionStore, store), directory=str(tmp_path)
+    )
     sids = {r.session_id for r in result}
     assert sids == {_SID_A, _SID_B}
     by_sid = {r.session_id: r for r in result}

@@ -7,10 +7,10 @@ Exercises the SessionStore-backed code paths in
 
 from __future__ import annotations
 
-import asyncio
 import uuid as uuid_mod
 from typing import Any
 
+import anyio
 import pytest
 
 from claude_agent_sdk import (
@@ -26,9 +26,10 @@ from claude_agent_sdk import (
     rename_session_via_store,
     tag_session_via_store,
 )
+from claude_agent_sdk._internal import sessions as _sessions
 from claude_agent_sdk.types import SessionKey, SessionStore
 
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +248,10 @@ class TestListSessionsFromStore:
         """list_sessions_from_store must not issue unbounded concurrent
         store.load() calls — large listings would otherwise exhaust adapter
         connection pools. Regression for the paginate-after-filter refactor."""
-        from claude_agent_sdk._internal import sessions as _sessions
 
         in_flight = 0
         peak = 0
-        gate = asyncio.Event()
+        gate = anyio.Event()
 
         class SlowStore(InMemorySessionStore):
             # Force the per-session load() fallback path under test.
@@ -275,14 +275,20 @@ class TestListSessionsFromStore:
                 [{"type": "user", "uuid": f"u{i}"}],
             )
 
-        task = asyncio.create_task(list_sessions_from_store(store, directory=DIR))
-        # Let the gather schedule and saturate the semaphore.
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert peak <= _sessions._STORE_LIST_LOAD_CONCURRENCY
-        assert peak > 0
-        gate.set()
-        result = await task
+        result: list[Any] = []
+        peak_at_saturation = 0
+
+        async def _run() -> None:
+            result.extend(await list_sessions_from_store(store, directory=DIR))
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_run)
+            # Let the loader schedule and saturate the semaphore.
+            for _ in range(5):
+                await anyio.sleep(0)
+            peak_at_saturation = peak
+            gate.set()
+        assert 0 < peak_at_saturation <= _sessions._STORE_LIST_LOAD_CONCURRENCY
         assert peak == _sessions._STORE_LIST_LOAD_CONCURRENCY
         assert len(result) <= n
 
@@ -451,6 +457,71 @@ class TestSubagentsFromStore:
         )
         msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
         assert len(msgs) == 1
+        assert msgs[0].parent_tool_use_id is None
+        assert msgs[0].parent_agent_id is None
+
+    async def test_parent_ids_recovered_from_agent_metadata_entry(self) -> None:
+        """toolUseId / parentAgentId on the agent_metadata entry (the store's
+        copy of the .meta.json sidecar) are stamped on every message; when the
+        metadata was rewritten (e.g. on resume) the last entry wins."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        sub_key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": sid,
+            "subpath": "subagents/agent-x",
+        }
+        u = str(uuid_mod.uuid4())
+        a = str(uuid_mod.uuid4())
+        await store.append(
+            sub_key,
+            [
+                {"type": "agent_metadata", "agentType": "gp", "toolUseId": "toolu_old"},
+                _user("hi", u, None, sid),
+                _assistant("hello", a, u, sid),
+                {
+                    "type": "agent_metadata",
+                    "agentType": "gp",
+                    "toolUseId": "toolu_new",
+                    "parentAgentId": "a-parent",
+                },
+            ],  # type: ignore[arg-type]
+        )
+        msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
+        assert [m.uuid for m in msgs] == [u, a]
+        assert all(m.parent_tool_use_id == "toolu_new" for m in msgs)
+        assert all(m.parent_agent_id == "a-parent" for m in msgs)
+
+    async def test_parent_ids_ignore_non_string_metadata(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        sub_key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": sid,
+            "subpath": "subagents/agent-x",
+        }
+        u = str(uuid_mod.uuid4())
+        await store.append(
+            sub_key,
+            [
+                {"type": "agent_metadata", "toolUseId": 7, "parentAgentId": None},
+                _user("hi", u, None, sid),
+            ],  # type: ignore[arg-type]
+        )
+        msgs = await get_subagent_messages_from_store(store, sid, "x", directory=DIR)
+        assert len(msgs) == 1
+        assert msgs[0].parent_tool_use_id is None
+        assert msgs[0].parent_agent_id is None
+
+    async def test_session_messages_parent_ids_are_none(self) -> None:
+        """Top-level get_session_messages_from_store never sets parent ids."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=1)
+        msgs = await get_session_messages_from_store(store, sid, directory=DIR)
+        assert len(msgs) == 2
+        assert all(m.parent_tool_use_id is None for m in msgs)
+        assert all(m.parent_agent_id is None for m in msgs)
 
     async def test_list_subagents_dedupes_agent_id_across_subpaths(self) -> None:
         """Parity with TS: the same agent ID under multiple subpaths

@@ -117,7 +117,7 @@ def _entry(role: str, n: int, parent: str | None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_live_conformance(s3_client: Any, run_prefix: str) -> None:
     counter = 0
 
@@ -136,7 +136,7 @@ async def test_live_conformance(s3_client: Any, run_prefix: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_live_materialize_round_trip(
     s3_client: Any, run_prefix: str, tmp_path: Path, isolated_home: Path
 ) -> None:
@@ -192,7 +192,7 @@ async def test_live_materialize_round_trip(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_live_batcher_50_entries(
     s3_client: Any, run_prefix: str, tmp_path: Path
 ) -> None:

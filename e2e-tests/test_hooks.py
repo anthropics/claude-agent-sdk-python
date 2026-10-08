@@ -13,7 +13,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_hook_with_permission_decision_and_reason():
     """Test that hooks with permissionDecision and reason fields work end-to-end."""
     hook_invocations = []
@@ -70,7 +70,7 @@ async def test_hook_with_permission_decision_and_reason():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_hook_with_continue_and_stop_reason():
     """Test that hooks with continue_=False and stopReason fields work end-to-end."""
     hook_invocations = []
@@ -113,7 +113,7 @@ async def test_hook_with_continue_and_stop_reason():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_hook_with_additional_context():
     """Test that hooks with hookSpecificOutput work end-to-end."""
     hook_invocations = []

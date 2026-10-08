@@ -64,6 +64,50 @@ class TestCancel:
         anyio.run(_test, backend="trio")
 
 
+class TestWaiterCancellation:
+    """Cancelling a task that is waiting in ``.wait()`` must cancel that
+    waiter, and only the waiter: the wrapped task keeps running."""
+
+    @staticmethod
+    def _run(backend: str) -> None:
+        async def _test():
+            release = anyio.Event()
+            finished = anyio.Event()
+
+            async def coro():
+                await release.wait()
+                finished.set()
+
+            handle = spawn_detached(coro())
+            waiter_returned = False
+
+            async def waiter():
+                nonlocal waiter_returned
+                await handle.wait()
+                waiter_returned = True
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(waiter)
+                await anyio.sleep(0.05)
+                tg.cancel_scope.cancel()
+
+            assert waiter_returned is False
+            assert handle.done() is False
+            release.set()
+            with anyio.fail_after(2):
+                await finished.wait()
+                await handle.wait()
+            assert handle.done() is True
+
+        anyio.run(_test, backend=backend)
+
+    def test_cancelled_waiter_asyncio(self):
+        self._run("asyncio")
+
+    def test_cancelled_waiter_trio(self):
+        self._run("trio")
+
+
 class TestDoneCallback:
     def test_done_callback_asyncio(self):
         async def _test():

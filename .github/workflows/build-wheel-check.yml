@@ -6,7 +6,12 @@ on:
   pull_request:
     paths:
       - 'scripts/build_wheel.py'
+      - 'scripts/requirements-recompress.txt'
       - 'scripts/download_cli.py'
+      # Imported by download_cli.py: it decides which versions the build accepts.
+      - 'scripts/_cli_version_validation.py'
+      # The pin build_wheel.py reads to decide which CLI goes into the wheels.
+      - 'src/claude_agent_sdk/_cli_version.py'
       - '.github/workflows/build-and-publish.yml'
       - '.github/workflows/build-wheel-check.yml'
       - 'pyproject.toml'
@@ -37,11 +42,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install build dependencies
-        run: pip install build twine wheel
+        run: |
+          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --skip-sdist --clean
+        run: python scripts/build_wheel.py --skip-sdist --clean --recompress zopfli
         shell: bash
 
       - name: Verify wheel filename contains expected platform tag

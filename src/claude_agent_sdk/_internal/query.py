@@ -4,19 +4,15 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
-from mcp.types import (
-    CallToolRequest,
-    CallToolRequestParams,
-    ListToolsRequest,
-)
 
-from .._errors import ProcessError
+from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
+    TERMINAL_TASK_STATUSES,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -28,6 +24,7 @@ from ..types import (
     ToolPermissionContext,
 )
 from ._task_compat import TaskHandle, spawn_detached
+from .sdk_mcp_bridge import SdkMcpBridge
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -37,6 +34,80 @@ if TYPE_CHECKING:
     from .transcript_mirror_batcher import TranscriptMirrorBatcher
 
 logger = logging.getLogger(__name__)
+
+# Task types whose completion runs a follow-up turn, and which therefore may
+# still need the control channel after the turn's result frame.
+#
+# This mirrors the set the CLI itself holds a result back for, which is
+# narrower than its notion of "delegated agent work". The types left out are
+# left out on purpose, and none of them is merely an oversight:
+#   - background shells and monitors run indefinitely by design, so deferring
+#     the close on one withholds it forever rather than briefly;
+#   - teammates are long-lived too — their status stays running for their whole
+#     lifetime, so they never settle the ledger;
+#   - remote agents can be long-running monitors the CLI likewise refuses to
+#     wait on.
+# Anything added here must be a type that reliably reaches a terminal status,
+# or it will hang the query (see Query._track_task_lifecycle).
+DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+
+# The CLI's own wait for background work once stdin is closed; the SDK bounds
+# its wait for the CLI's "idle" by the same value (Query._arm_run_end_ceiling).
+_RUN_END_CEILING_ENV = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
+DEFAULT_RUN_END_CEILING_MS = 600_000
+# The longest ceiling honored (~24.8 days), as in the TypeScript SDK, whose
+# timers cannot run longer; it also keeps a huge value convertible to float.
+_MAX_RUN_END_CEILING_MS = 2**31 - 1
+
+
+def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
+    """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
+
+    ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
+    environment, as it does for the CLI subprocess. ``0`` means no limit;
+    anything that is not a plain non-negative integer falls back to the CLI's
+    default of 10 minutes (the CLI itself also reads spellings such as
+    ``1e6``).
+    """
+    if _RUN_END_CEILING_ENV in options_env:
+        raw: Any = options_env[_RUN_END_CEILING_ENV]
+    else:
+        raw = os.environ.get(_RUN_END_CEILING_ENV)
+    if raw is None:
+        return DEFAULT_RUN_END_CEILING_MS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_RUN_END_CEILING_MS
+    return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
+
+
+def _error_result_text(message: dict[str, Any]) -> str:
+    """Pick the most informative text from a ``result`` frame with ``is_error``.
+
+    Terminal errors the CLI raises itself (``error_max_turns``,
+    ``error_during_execution``, ...) carry their prose in ``errors[]``. A run
+    that ends on an API failure instead arrives as ``subtype: "success"`` with
+    ``is_error: true``, an empty ``errors[]`` and the "API Error: ..." prose in
+    ``result`` — falling back to the subtype there produced the self-
+    contradictory "Claude Code returned an error result: success". Prefer
+    ``errors[]``, then ``result``, then a non-success ``subtype``, then the
+    HTTP status, mirroring the TypeScript SDK's choice of ``result`` for the
+    ``success`` subtype.
+    """
+    errors = _normalize_result_errors(message.get("errors"))
+    if errors:
+        return "; ".join(errors)
+    result = message.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    subtype = message.get("subtype")
+    if isinstance(subtype, str) and subtype and subtype != "success":
+        return subtype
+    status = message.get("api_error_status")
+    if status is not None:
+        return f"API error (HTTP {status})"
+    return "unknown error"
 
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
@@ -56,6 +127,20 @@ def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
         else:
             converted[key] = value
     return converted
+
+
+def stamp_user_message(
+    message: dict[str, Any], verbatim_prompts: bool
+) -> dict[str, Any]:
+    """Apply ``ClaudeAgentOptions.verbatim_prompts`` to an outgoing user message.
+
+    Returns ``message`` unchanged when the option is off; otherwise a copy with
+    ``client_composed`` set to ``True`` (overwriting any caller-supplied value)
+    so the CLI delivers the text as written.
+    """
+    if not verbatim_prompts:
+        return message
+    return {**message, "client_composed": True}
 
 
 class Query:
@@ -83,8 +168,12 @@ class Query:
         initialize_timeout: float = 60.0,
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
+        system_prompt_snapshot: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
         include_hook_events: bool = False,
+        forward_subagent_text: bool = False,
+        verbatim_prompts: bool = False,
+        run_end_ceiling_ms: int = DEFAULT_RUN_END_CEILING_MS,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -98,12 +187,23 @@ class Query:
             agents: Optional agent definitions to send via initialize
             exclude_dynamic_sections: Optional preset-prompt flag to send via
                 initialize (see ``SystemPromptPreset``)
+            system_prompt_snapshot: Optional system-prompt flag to send via
+                initialize (see ``SystemPromptPreset.snapshot``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
             include_hook_events: When True, the CLI emits hook lifecycle
                 events (hook_started, hook_progress, hook_response) into the
                 message stream. Sent as ``includeHookEvents`` in the
                 initialize request to the CLI.
+            forward_subagent_text: Ask the CLI (via initialize) to forward
+                subagent text/thinking blocks, not just tool_use/tool_result
+            verbatim_prompts: Mark every outgoing user message
+                ``client_composed`` so the CLI delivers it as written (no
+                ``@path`` expansion, no slash-command dispatch)
+            run_end_ceiling_ms: How long the run stays open past a result
+                with no new turn while the CLI still reports ``running``;
+                ``0`` waits for ``idle`` however long it takes (see
+                ``run_end_ceiling_ms()``)
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -111,10 +211,18 @@ class Query:
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
+        self._sdk_mcp_bridges = {
+            name: SdkMcpBridge(name, server)
+            for name, server in self.sdk_mcp_servers.items()
+        }
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
+        self._system_prompt_snapshot = system_prompt_snapshot
         self._skills = skills
         self._include_hook_events = include_hook_events
+        self._forward_subagent_text = forward_subagent_text
+        self._verbatim_prompts = verbatim_prompts
+        self._run_end_ceiling_ms = run_end_ceiling_ms
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -134,13 +242,41 @@ class Query:
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
 
-        # Track first result for proper stream closure with SDK MCP servers
-        self._first_result_event = anyio.Event()
-        # Set to the result's error text when the most recent message is a
-        # result with is_error=True. Used to replace the generic "exit code 1"
-        # ProcessError with the structured error the CLI already reported.
-        # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
-        self._last_error_result_text: str | None = None
+        # Set when the run is over, so the stdin-closing waiter can wake; see
+        # _read_messages and _inflight_tasks below (#1088, #1190). Work the CLI
+        # takes up after the run ended swaps in a fresh event (_reopen_run).
+        self._run_ended_event = anyio.Event()
+        self._result_received = False
+        # The CLI's latest session_state_changed state, or None while it sends
+        # none (a CLI too old to honor CLAUDE_CODE_SDK_READS_SESSION_STATE).
+        # A CLI that reports state stays "running" while a background agent
+        # is live or its completion is still to be handled, and reports
+        # "idle" once no further turn is owed.
+        self._session_state: str | None = None
+        # Ends the run if no new turn starts within the ceiling after a result
+        # (_arm_run_end_ceiling). The generation tells a sleeper that fired
+        # after it was cleared or re-armed to stand down.
+        self._run_end_ceiling_task: TaskHandle | None = None
+        self._run_end_ceiling_generation = 0
+        # A main-thread turn is under way (its assistant/stream_event frames
+        # have started and its result has not arrived): the ceiling counts
+        # only the wait between turns, so it is not armed meanwhile.
+        self._turn_in_progress = False
+        # Set once stdin is closed or the reader is gone: the run then stays
+        # ended, since nothing can wait on a reopened one.
+        self._run_final = False
+        # Task IDs of started-but-not-finished tasks. A result frame only ends
+        # one turn, not the run: background tasks keep running past it and
+        # still need stdin for hook/SDK-MCP control responses (see #1088), so
+        # a result that arrives while this set is non-empty must not close
+        # stdin.
+        self._inflight_tasks: set[str] = set()
+        # Set to the result payload when the most recent message is a result
+        # with is_error=True. Used to replace the generic "exit code 1"
+        # ProcessError with a ResultError carrying what the CLI already
+        # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
+        # (Query.ts), but keeps the whole payload rather than just the text.
+        self._last_error_result: dict[str, Any] | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -157,8 +293,9 @@ class Query:
     def report_mirror_error(self, key: "SessionKey | None", error: str) -> None:
         """Surface a :meth:`SessionStore.append` failure as a system message.
 
-        Called from the batcher's ``on_error``; the dropped batch is not
-        retried (at-most-once delivery), so this is the consumer's only signal.
+        Called from the batcher's ``on_error`` once a batch has been dropped
+        (after its retries, or after a single timed-out attempt), so this is
+        the consumer's only signal.
         Non-blocking — if the message buffer is full the error is logged and
         dropped rather than back-pressuring the read loop.
         """
@@ -214,10 +351,14 @@ class Query:
             request["agents"] = self._agents
         if self._exclude_dynamic_sections is not None:
             request["excludeDynamicSections"] = self._exclude_dynamic_sections
+        if self._system_prompt_snapshot is not None:
+            request["systemPromptSnapshot"] = self._system_prompt_snapshot
         # 'all' and omitted are equivalent at the wire level (no filter), so
         # only send the field when it's an explicit list.
         if isinstance(self._skills, list):
             request["skills"] = self._skills
+        if self._forward_subagent_text:
+            request["forwardSubagentText"] = True
 
         if self._include_hook_events:
             request["includeHookEvents"] = True
@@ -302,6 +443,23 @@ class Query:
                         )
                     continue
 
+                # Track task lifecycle frames so results can tell "one turn
+                # ended" apart from "the run is done" (see #1088).
+                if msg_type == "system":
+                    had_tasks_in_flight = bool(self._inflight_tasks)
+                    self._track_task_lifecycle(message)
+                    if had_tasks_in_flight and not self._inflight_tasks:
+                        # The ceiling left the last tracked agent alone; the
+                        # wait between turns starts over now that it settled.
+                        self._rearm_run_end_ceiling_between_turns()
+                    if message.get("subtype") == "session_state_changed":
+                        self._on_session_state(message.get("state"))
+                        # Frames the CLI sent only because the transport asked
+                        # for them (CLAUDE_CODE_SDK_READS_SESSION_STATE); the
+                        # caller did not opt in.
+                        if message.get("sdk_host_only") is True:
+                            continue
+
                 # Track results for proper stream closure
                 if msg_type == "result":
                     # Flush pending transcript mirror entries before yielding
@@ -309,14 +467,29 @@ class Query:
                     # SessionStore being up to date for this turn.
                     if self._transcript_mirror_batcher is not None:
                         await self._transcript_mirror_batcher.flush()
-                    self._first_result_event.set()
+                    self._result_received = True
+                    self._turn_in_progress = False
+                    # A result ends a turn, not necessarily the run: a
+                    # background agent that finished just before it still
+                    # wakes the session for another turn, whose hook,
+                    # permission and SDK MCP requests need stdin. A CLI that
+                    # reports session state stays "running" while such a turn
+                    # is owed, so wait for "idle" (some hosts send it just
+                    # before the result). Without state events the result is
+                    # all there is to go on.
+                    if (
+                        self._session_state in (None, "idle")
+                        or not self._has_bidirectional_needs()
+                    ):
+                        self._maybe_end_run()
+                    elif self._session_state != "requires_action":
+                        # While the SDK is still answering a request the
+                        # ceiling waits for the "running" that follows.
+                        self._arm_run_end_ceiling()
                     if message.get("is_error"):
-                        errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
-                        )
+                        self._last_error_result = message
                     else:
-                        self._last_error_result_text = None
+                        self._last_error_result = None
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -325,7 +498,18 @@ class Query:
                     # marker means the conversation moved on; a ProcessError
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
-                    self._last_error_result_text = None
+                    self._last_error_result = None
+                    # A main-thread turn is under way, so the ceiling stops
+                    # (it counts only the wait between turns, as the CLI's
+                    # does) and the run reopens even if the ceiling ended it
+                    # while no state changed.
+                    if (
+                        msg_type in ("assistant", "stream_event")
+                        and message.get("parent_tool_use_id") is None
+                    ):
+                        self._turn_in_progress = True
+                        self._reopen_run()
+                        self._clear_run_end_ceiling()
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -335,31 +519,48 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            # Signal all pending control requests so they fail fast instead of timing out
-            for request_id, event in list(self.pending_control_responses.items()):
-                if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = e
-                    event.set()
             # When the CLI emits a result with is_error=True (e.g.
-            # error_max_turns, error_during_execution) it then exits non-zero
-            # on purpose, for shell-script consumers. The trailing ProcessError
-            # carries no information beyond "exit code 1" — replace it with the
-            # structured error the CLI already reported so the exception is
-            # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
-            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+            # error_max_turns, error_during_execution, or an API failure) it
+            # then exits non-zero on purpose, for shell-script consumers. The
+            # trailing ProcessError carries no information beyond "exit code
+            # 1" — replace it with a ResultError carrying what the CLI already
+            # reported so the exception is actionable and typed. Mirrors the
+            # TypeScript SDK (Query.ts readMessages).
+            pending_error: Exception = e
+            if isinstance(e, ProcessError) and self._last_error_result is not None:
                 error_text = (
                     f"Claude Code returned an error result: "
-                    f"{self._last_error_result_text}"
+                    f"{_error_result_text(self._last_error_result)}"
                 )
+                # stderr deliberately not carried over: the transport's value is
+                # a generic placeholder, and the result text is the real cause.
+                pending_error = ResultError(
+                    error_text, data=self._last_error_result, exit_code=e.exit_code
+                )
+                pending_error.__cause__ = e
                 logger.debug(
-                    "Replacing ProcessError (exit code %s) with result error text",
+                    "Replacing ProcessError (exit code %s) with ResultError",
                     e.exit_code,
                 )
             else:
                 error_text = str(e)
                 logger.error(f"Fatal error in message reader: {e}")
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            # Signal all pending control requests so they fail fast instead of
+            # timing out. This includes an `initialize` still in flight when the
+            # CLI reports an error result during startup (e.g. a refused
+            # resume), so that path sees the same actionable text.
+            for request_id, event in list(self.pending_control_responses.items()):
+                if request_id not in self.pending_control_results:
+                    self.pending_control_results[request_id] = pending_error
+                    event.set()
+            # Put the error in the stream so iterators can raise it. The typed
+            # exception rides along so receive_messages() re-raises it as-is
+            # (ResultError / ProcessError with its exit code,
+            # CLIJSONDecodeError, ...) instead of flattening it to a bare
+            # Exception(str).
+            await self._message_send.send(
+                {"type": "error", "error": error_text, "exception": pending_error}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -368,9 +569,10 @@ class Query:
             if self._transcript_mirror_batcher is not None:
                 with anyio.CancelScope(shield=True):
                     await self._transcript_mirror_batcher.flush()
-            # Unblock any waiters (e.g. string-prompt path waiting for first
-            # result) so they don't stall for the full timeout on early exit.
-            self._first_result_event.set()
+            # Unblock any waiters (e.g. string-prompt path waiting for the end
+            # of the run) so they don't stall on early exit.
+            self._run_final = True
+            self._end_run()
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
@@ -474,7 +676,10 @@ class Query:
                 mcp_response = await self._handle_sdk_mcp_request(
                     server_name, mcp_message
                 )
-                # Wrap the MCP response as expected by the control protocol
+                if mcp_response is None:
+                    # JSON-RPC notifications get no reply, but the control
+                    # request that carried one still expects an ack.
+                    mcp_response = {"jsonrpc": "2.0", "result": {}}
                 response_data = {"mcp_response": mcp_response}
 
             else:
@@ -556,21 +761,18 @@ class Query:
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Handle an MCP request for an SDK server.
+    ) -> dict[str, Any] | None:
+        """Route a JSON-RPC message from the CLI to the named SDK MCP server.
 
-        This acts as a bridge between JSONRPC messages from the CLI
-        and the in-process MCP server. Ideally the MCP SDK would provide
-        a method to handle raw JSONRPC, but for now we route manually.
-
-        Args:
-            server_name: Name of the SDK MCP server
-            message: The JSONRPC message
-
-        Returns:
-            The response message
+        Returns the JSON-RPC response for requests, or ``None`` when the
+        message was a notification or response and there is nothing to send
+        back. A message that cannot be delivered at all (unknown server,
+        malformed JSON-RPC, a session that went away underneath it) is
+        answered with a JSON-RPC error so the CLI's MCP client can fail that
+        one request.
         """
-        if server_name not in self.sdk_mcp_servers:
+        bridge = self._sdk_mcp_bridges.get(server_name)
+        if bridge is None:
             return {
                 "jsonrpc": "2.0",
                 "id": message.get("id"),
@@ -579,154 +781,13 @@ class Query:
                     "message": f"Server '{server_name}' not found",
                 },
             }
-
-        server = self.sdk_mcp_servers[server_name]
-        method = message.get("method")
-        params = message.get("params", {})
-
         try:
-            # TODO: Python MCP SDK lacks the Transport abstraction that TypeScript has.
-            # TypeScript: server.connect(transport) allows custom transports
-            # Python: server.run(read_stream, write_stream) requires actual streams
-            #
-            # This forces us to manually route methods. When Python MCP adds Transport
-            # support, we can refactor to match the TypeScript approach.
-            if method == "initialize":
-                # Handle MCP initialization - hardcoded for tools only, no listChanged
-                return {
-                    "jsonrpc": "2.0",
-                    "id": message.get("id"),
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {
-                            "tools": {}  # Tools capability without listChanged
-                        },
-                        "serverInfo": {
-                            "name": server.name,
-                            "version": server.version or "1.0.0",
-                        },
-                    },
-                }
-
-            elif method == "tools/list":
-                request = ListToolsRequest(method=method)
-                handler = server.request_handlers.get(ListToolsRequest)
-                if handler:
-                    result = await handler(request)
-                    # Convert MCP result to JSONRPC response
-                    tools_data = []
-                    for tool in result.root.tools:  # type: ignore[union-attr]
-                        tool_data: dict[str, Any] = {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "inputSchema": (
-                                tool.inputSchema.model_dump()
-                                if hasattr(tool.inputSchema, "model_dump")
-                                else tool.inputSchema
-                            )
-                            if tool.inputSchema
-                            else {},
-                        }
-                        if tool.annotations:
-                            tool_data["annotations"] = tool.annotations.model_dump(
-                                exclude_none=True
-                            )
-                        if tool.meta:
-                            tool_data["_meta"] = tool.meta
-                        tools_data.append(tool_data)
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": message.get("id"),
-                        "result": {"tools": tools_data},
-                    }
-
-            elif method == "tools/call":
-                call_request = CallToolRequest(
-                    method=method,
-                    params=CallToolRequestParams(
-                        name=params.get("name"), arguments=params.get("arguments", {})
-                    ),
-                )
-                handler = server.request_handlers.get(CallToolRequest)
-                if handler:
-                    result = await handler(call_request)
-                    # Convert MCP result to JSONRPC response
-                    content = []
-                    for item in result.root.content:  # type: ignore[union-attr]
-                        item_type = getattr(item, "type", None)
-                        if item_type == "text":
-                            content.append(
-                                {"type": "text", "text": getattr(item, "text", "")}
-                            )
-                        elif item_type == "image":
-                            content.append(
-                                {
-                                    "type": "image",
-                                    "data": getattr(item, "data", ""),
-                                    "mimeType": getattr(item, "mimeType", ""),
-                                }
-                            )
-                        elif item_type == "resource_link":
-                            parts = []
-                            name = getattr(item, "name", None)
-                            uri = getattr(item, "uri", None)
-                            desc = getattr(item, "description", None)
-                            if name:
-                                parts.append(name)
-                            if uri:
-                                parts.append(str(uri))
-                            if desc:
-                                parts.append(desc)
-                            content.append(
-                                {
-                                    "type": "text",
-                                    "text": "\n".join(parts)
-                                    if parts
-                                    else "Resource link",
-                                }
-                            )
-                        elif item_type == "resource":
-                            resource = getattr(item, "resource", None)
-                            if resource and hasattr(resource, "text"):
-                                content.append({"type": "text", "text": resource.text})
-                            else:
-                                logger.warning(
-                                    "Binary embedded resource cannot be converted to text, skipping"
-                                )
-                        else:
-                            logger.warning(
-                                "Unsupported content type %r in tool result, skipping",
-                                item_type,
-                            )
-
-                    response_data = {"content": content}
-                    if hasattr(result.root, "isError") and result.root.isError:
-                        response_data["isError"] = True  # type: ignore[assignment]
-
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": message.get("id"),
-                        "result": response_data,
-                    }
-
-            elif method == "notifications/initialized":
-                # Handle initialized notification - just acknowledge it
-                return {"jsonrpc": "2.0", "result": {}}
-
-            # Add more methods here as MCP SDK adds them (resources, prompts, etc.)
-            # This is the limitation Ashwin pointed out - we have to manually update
-
-            return {
-                "jsonrpc": "2.0",
-                "id": message.get("id"),
-                "error": {"code": -32601, "message": f"Method '{method}' not found"},
-            }
-
+            return await bridge.handle(message)
         except Exception as e:
             return {
                 "jsonrpc": "2.0",
                 "id": message.get("id"),
-                "error": {"code": -32603, "message": str(e)},
+                "error": {"code": -32603, "message": str(e) or type(e).__name__},
             }
 
     async def get_mcp_status(self) -> dict[str, Any]:
@@ -815,41 +876,270 @@ class Query:
             }
         )
 
-    async def wait_for_result_and_end_input(self) -> None:
-        """Wait for the first result (if needed) then close stdin.
+    def _track_task_lifecycle(self, message: dict[str, Any]) -> None:
+        """Track in-flight tasks from ``system`` task lifecycle frames.
 
-        If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until the first result arrives. The control protocol
-        requires stdin to remain open for the entire conversation, so no
-        timeout is applied. The event is guaranteed to fire: either when the
-        result message arrives, or in _read_messages' finally block if the
-        process exits early.
+        ``task_started`` marks a task in flight; ``task_notification`` or a
+        ``task_updated`` patch with a terminal status clears it. Terminal
+        completion can arrive as either frame (not every terminal task emits
+        a notification), so both are handled; ``discard`` keeps the pair
+        idempotent.
+
+        This is a mitigation, not a complete answer to #1088. An empty set
+        means "nothing we know of is running", which is not the same as "the
+        run is over": a task that settles *before* the turn's result frame
+        leaves the set empty at that result, even though the completion may
+        still wake the parent for a continuation turn (#1190). No ledger can
+        close that gap; the CLI's session state does (see _read_messages),
+        and this ledger remains the guard for CLIs that do not report it.
+
+        Only delegated agent work is tracked (``DEFERRING_TASK_TYPES``). A
+        background *shell* — ``Bash(run_in_background=True)`` on a dev server or
+        ``tail -f`` — is also reported through these frames, but it may never
+        reach a terminal status, and the CLI in stream-json mode only exits on
+        stdin EOF. Tracking one would therefore withhold the close forever
+        rather than briefly: no terminal frame, no process exit, so not even the
+        reader's ``finally`` runs. Agent tasks are the ones whose completion
+        wakes the parent for the follow-up turn this relies on; shells and
+        monitors are bounded by the CLI's own post-close cleanup instead.
+
+        ``background_tasks_changed`` is deliberately *not* consumed, in either
+        direction. Its payload is the live *background* set, while a subagent is
+        registered in the foreground and only flips to backgrounded later,
+        without a second ``task_started``. So the snapshot omits tracked work
+        that is still running: narrowing against it would drop an agent that
+        goes on to outlive its turn, which is the very close-too-early bug this
+        method exists to prevent. Widening from it is no better — the snapshot
+        spans every background task type and carries nothing marking an
+        observer agent, whose start and terminal frames are both suppressed, so
+        it could admit an id no later frame ever clears. The lifecycle frames
+        are the only self-consistent source here (see #1088).
         """
-        if self.sdk_mcp_servers or self.hooks:
-            logger.debug(
-                "Waiting for first result before closing stdin "
-                f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
-            )
-            await self._first_result_event.wait()
+        subtype = message.get("subtype")
+        task_id = message.get("task_id")
+        if not task_id:
+            return
+        if subtype == "task_started":
+            if message.get("task_type") in DEFERRING_TASK_TYPES:
+                self._inflight_tasks.add(task_id)
+        elif subtype == "task_notification":
+            self._inflight_tasks.discard(task_id)
+        elif subtype == "task_updated":
+            patch = message.get("patch")
+            status = patch.get("status") if isinstance(patch, dict) else None
+            if status in TERMINAL_TASK_STATUSES:
+                self._inflight_tasks.discard(task_id)
 
+    def _on_session_state(self, state: Any) -> None:
+        """Track the CLI's ``session_state_changed`` state (#1190)."""
+        self._session_state = state
+        if state == "idle":
+            if self._result_received:
+                self._maybe_end_run()
+            return
+        # Work the CLI took up after the run ended (a finished background task
+        # woke it) reopens the run until the next "idle".
+        self._reopen_run()
+        if state == "requires_action":
+            # The host is answering a request; stdin must outlast it.
+            self._clear_run_end_ceiling()
+        else:
+            self._rearm_run_end_ceiling_between_turns()
+
+    def _maybe_end_run(self) -> None:
+        """End the run unless a tracked background task is still in flight.
+
+        One turn ended, but background tasks that are still running may need
+        hook/SDK-MCP control responses over stdin; closing it now silently
+        disables hooks and fails SDK-MCP calls with "Stream closed" (#1088).
+        Each task completion wakes the parent for a follow-up turn, so a later
+        result (or "idle") ends the run then. A CLI that reports session state
+        never reports "idle" with an agent still live, so this matters for
+        CLIs that report "idle" at every turn end or not at all.
+        """
+        if self._inflight_tasks:
+            logger.debug(
+                "Turn ended with %d task(s) in flight; keeping stdin open",
+                len(self._inflight_tasks),
+            )
+            return
+        self._end_run()
+
+    def _end_run(self) -> None:
+        """The run is over: wake the stdin-closing waiter. Idempotent."""
+        self._clear_run_end_ceiling()
+        self._run_ended_event.set()
+
+    def _reopen_run(self) -> None:
+        """Reopen an ended run for work that started after it ended.
+
+        A waiter the ended run already woke still closes stdin; this makes a
+        later wait (``stream_input``'s, once its prompts are all written)
+        wait for the new work too. Once stdin is closed, or the reader is
+        gone, the run stays ended.
+        """
+        if self._run_ended_event.is_set() and not self._run_final:
+            self._run_ended_event = anyio.Event()
+
+    def _arm_run_end_ceiling(self) -> None:
+        """End the run anyway once the ceiling passes with no new turn.
+
+        The CLI's own background-wait ceiling only counts once stdin is
+        closed, so without this work that never finishes would hold
+        "running", and stdin, open forever. It counts only the wait between
+        turns: restarted at each result and whenever the CLI reports
+        "running" again, cleared by main-thread turn activity and by
+        "requires_action", and never armed while a turn is under way.
+        """
+        self._clear_run_end_ceiling()
+        if (
+            self._run_end_ceiling_ms <= 0
+            or self._run_ended_event.is_set()
+            or self._run_final
+            # A frame read while close() is under way (the result branch
+            # awaits a mirror flush) must not leave a sleeper behind.
+            or self._closed
+            or self._turn_in_progress
+            or not self._has_bidirectional_needs()
+        ):
+            return
+        self._run_end_ceiling_task = self.spawn_task(
+            self._end_run_at_ceiling(self._run_end_ceiling_generation)
+        )
+
+    def _rearm_run_end_ceiling_between_turns(self) -> None:
+        """Restart the ceiling if the run is between turns, past a result,
+        with the CLI still reporting work ("running")."""
+        if self._result_received and self._session_state not in (
+            None,
+            "idle",
+            "requires_action",
+        ):
+            self._arm_run_end_ceiling()
+
+    async def _end_run_at_ceiling(self, generation: int) -> None:
+        await anyio.sleep(min(self._run_end_ceiling_ms, _MAX_RUN_END_CEILING_MS) / 1000)
+        # Cleared or re-armed while this sleeper was already waking up.
+        if generation != self._run_end_ceiling_generation:
+            return
+        self._run_end_ceiling_task = None
+        if self._inflight_tasks:
+            # A tracked background agent is still running and may still need
+            # stdin for its hook, permission and SDK MCP requests (#1088), so
+            # it is not cut off, as without session state. The ceiling starts
+            # over once it settles (_read_messages).
+            logger.debug(
+                "No 'idle' %dms after the last result, but %d tracked task(s) "
+                "still in flight; keeping stdin open",
+                self._run_end_ceiling_ms,
+                len(self._inflight_tasks),
+            )
+            return
+        logger.debug(
+            "No 'idle' %dms after the last result; ending the run",
+            self._run_end_ceiling_ms,
+        )
+        self._end_run()
+
+    def _clear_run_end_ceiling(self) -> None:
+        self._run_end_ceiling_generation += 1
+        task, self._run_end_ceiling_task = self._run_end_ceiling_task, None
+        if task is not None:
+            task.cancel()
+
+    def _has_bidirectional_needs(self) -> bool:
+        """Whether the CLI may still send control requests that need a reply.
+
+        SDK MCP servers, hooks, and the ``can_use_tool`` permission callback
+        are all served over the control protocol: the CLI writes a
+        ``control_request`` to stdout and blocks until the SDK writes the
+        matching ``control_response`` to stdin. Closing stdin while any of
+        these are configured makes every later request fail CLI-side with
+        "Stream closed". Mirrors the TypeScript SDK's ``hasBidirectionalNeeds``.
+        """
+        return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
+
+    async def wait_for_result_and_end_input(self) -> None:
+        """Wait for the end of the run (if needed) then close stdin.
+
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
+        bidirectional communication, keeps stdin open until the run ends: the
+        CLI's "idle" session state after a result, or, from a CLI that reports
+        no session state, the first result with no tracked tasks in flight. A
+        result frame ends one turn, not necessarily the run: background tasks
+        keep running past it, or have just finished and still wake the parent
+        for a follow-up turn, and those turns need stdin for control responses
+        (#1088, #1190).
+
+        The wait is bounded between turns: if the CLI still reports
+        "running" ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` (10 minutes by
+        default, ``0`` for no limit) after a result with no new turn, the run
+        ends anyway (``_arm_run_end_ceiling``). A turn under way, a request
+        the SDK is still answering and a tracked background agent still in
+        flight (#1088) stop that clock. The event is guaranteed to fire: when
+        the run ends as above, or in _read_messages' finally block if the
+        process exits early.
+
+        Known limitation: from a CLI that reports no session state, a result
+        for an earlier prompt of an ``AsyncIterable`` still ends the run even
+        when a later prompt is already queued CLI-side, so control requests
+        from that later turn can find stdin closed. Single-message and string
+        prompts, the common one-shot shapes, are fully covered.
+        """
+        if self._has_bidirectional_needs():
+            logger.debug(
+                "Waiting for the run to end before closing stdin "
+                f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={self.can_use_tool is not None})"
+            )
+            await self._run_ended_event.wait()
+
+        self._run_final = True
+        self._clear_run_end_ceiling()
         await self.transport.end_input()
 
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
+        waits for the run to end before closing stdin to allow
+        bidirectional control protocol communication. Each prompt written
+        owes a run of its own, so the wait is for the last prompt's run, not
+        an earlier one's.
         """
+        written = 0
         try:
             async for message in stream:
                 if self._closed:
                     break
-                await self.transport.write(json.dumps(message) + "\n")
-
-            await self.wait_for_result_and_end_input()
+                # This prompt owes a run of its own, result included: an
+                # earlier one having ended does not end it.
+                self._reopen_run()
+                self._result_received = False
+                self._clear_run_end_ceiling()
+                await self.transport.write(
+                    json.dumps(stamp_user_message(message, self._verbatim_prompts))
+                    + "\n"
+                )
+                written += 1
         except Exception as e:
-            logger.debug(f"Error streaming input: {e}")
+            # A user-supplied prompt iterable (or the write) failed. Don't
+            # leave stdin open — the CLI would wait for input forever and the
+            # consumer's `async for` would never finish — fall through and
+            # close it like a normal end of input.
+            logger.error("Prompt stream failed; closing stdin: %s", e)
+        try:
+            if written:
+                await self.wait_for_result_and_end_input()
+            else:
+                # Nothing was sent, so no result will arrive to release the
+                # hold; close immediately (mirrors the TypeScript SDK's
+                # messageCount guard).
+                self._run_final = True
+                await self.transport.end_input()
+        except Exception as e:
+            logger.debug(f"Error closing input stream: {e}")
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
@@ -858,12 +1148,49 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
+                exc = message.get("exception")
+                if isinstance(exc, Exception):
+                    raise exc
                 raise Exception(message.get("error", "Unknown error"))
 
             yield message
 
     async def close(self) -> None:
-        """Close the query and transport."""
+        """Close the query and transport.
+
+        Shielded: this runs on the cancellation path (``__aexit__`` after a
+        cancelled task), and an unshielded await here would abort before
+        ``transport.close()`` ever ran, leaking the CLI subprocess.
+
+        Unlike ``transport.close()``'s shield, this one is not bounded, and it
+        covers three awaits that can reach user-supplied code:
+
+        - The final mirror flush below, which reaches a user-supplied
+          ``SessionStore``. That flush was already shielded on its own before
+          this scope existed, so nothing here makes it worse.
+        - Stopping the in-process MCP servers, which cancels any tool call
+          still running. ``SdkMcpBridge`` bounds that wait itself: a tool
+          that does not react to cancellation (one blocked in a worker
+          thread, say) is given up on after a grace period of a few seconds
+          per server.
+        - ``transport.close()``. For a custom ``Transport`` (accepted by
+          ``query(transport=...)`` and ``ClaudeSDKClient(transport=...)``) that
+          is arbitrary user code, and an enclosing anyio cancel scope can no
+          longer interrupt it: a custom ``close()`` that never returns hangs
+          ``disconnect()``.
+          ``Transport.close()`` documents the resulting contract —
+          implementations must bound their own awaits. Bounding it here instead
+          would only abandon a wedged transport half-closed, which is the very
+          leak this shield exists to prevent, so the obligation belongs on the
+          implementation.
+
+        The SDK's own ``SubprocessCLITransport.close()`` bounds every await
+        (~20s worst case).
+        """
+        with anyio.CancelScope(shield=True):
+            await self._close_impl()
+
+    async def _close_impl(self) -> None:
         self._closed = True
         # Final-flush mirror entries before tearing down so .return()/break
         # don't drop the current turn when the process exits immediately.
@@ -871,6 +1198,8 @@ class Query:
             await self._transcript_mirror_batcher.close()
         for task in list(self._child_tasks):
             task.cancel()
+        for bridge in self._sdk_mcp_bridges.values():
+            await bridge.aclose()
         if self._read_task is not None and not self._read_task.done():
             self._read_task.cancel()
             await self._read_task.wait()

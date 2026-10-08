@@ -8,8 +8,10 @@ Covers ``fold_session_summary``, ``summary_entry_to_sdk_info``,
 from __future__ import annotations
 
 import uuid as uuid_mod
+from functools import partial
 from typing import Any
 
+import anyio
 import pytest
 
 from claude_agent_sdk import (
@@ -19,6 +21,7 @@ from claude_agent_sdk import (
     list_sessions_from_store,
     project_key_for_directory,
 )
+from claude_agent_sdk._internal import sessions as _sessions
 from claude_agent_sdk._internal.session_summary import summary_entry_to_sdk_info
 from claude_agent_sdk._internal.sessions import (
     _entries_to_jsonl,
@@ -341,7 +344,7 @@ class TestSummaryEntryToSdkInfo:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 class TestInMemoryListSessionSummaries:
     async def test_tracks_appends(self) -> None:
         store = InMemorySessionStore()
@@ -397,7 +400,7 @@ class TestInMemoryListSessionSummaries:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 class TestListSessionsFromStoreFastPath:
     async def test_fast_path_skips_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With list_session_summaries() available, load() must NOT be called."""
@@ -774,13 +777,9 @@ class TestListSessionsFromStoreFastPath:
     async def test_gap_fill_bounded_concurrency(self) -> None:
         """Gap-fill reuses the bounded per-session load helper, so
         ``_STORE_LIST_LOAD_CONCURRENCY`` applies to the missing-session set."""
-        import asyncio
-
-        from claude_agent_sdk._internal import sessions as _sessions
-
         in_flight = 0
         peak = 0
-        gate = asyncio.Event()
+        gate = anyio.Event()
 
         class PartialSlowStore(InMemorySessionStore):
             async def list_session_summaries(self, project_key: str):  # noqa: ANN201
@@ -803,12 +802,14 @@ class TestListSessionsFromStoreFastPath:
                 [_user(f"p{i}")],
             )
 
-        task = asyncio.create_task(list_sessions_from_store(store, directory=DIR))
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert 0 < peak <= _sessions._STORE_LIST_LOAD_CONCURRENCY
-        gate.set()
-        await task
+        peak_at_saturation = 0
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(partial(list_sessions_from_store, store, directory=DIR))
+            for _ in range(5):
+                await anyio.sleep(0)
+            peak_at_saturation = peak
+            gate.set()
+        assert 0 < peak_at_saturation <= _sessions._STORE_LIST_LOAD_CONCURRENCY
         assert peak == _sessions._STORE_LIST_LOAD_CONCURRENCY
 
 

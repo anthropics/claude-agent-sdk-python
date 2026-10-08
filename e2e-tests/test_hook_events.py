@@ -15,7 +15,7 @@ from claude_agent_sdk import (
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_pre_tool_use_hook_with_additional_context():
     """Test PreToolUse hook returning additionalContext field end-to-end."""
     hook_invocations: list[dict[str, Any]] = []
@@ -62,7 +62,7 @@ async def test_pre_tool_use_hook_with_additional_context():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_post_tool_use_hook_with_tool_use_id():
     """Test PostToolUse hook receives tool_use_id field end-to-end."""
     hook_invocations: list[dict[str, Any]] = []
@@ -110,7 +110,7 @@ async def test_post_tool_use_hook_with_tool_use_id():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notification_hook():
     """Test Notification hook fires end-to-end."""
     hook_invocations: list[dict[str, Any]] = []
@@ -157,7 +157,7 @@ async def test_notification_hook():
 
 
 @pytest.mark.e2e
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_multiple_hooks_together():
     """Test registering multiple hook event types together end-to-end."""
     all_invocations: list[dict[str, Any]] = []

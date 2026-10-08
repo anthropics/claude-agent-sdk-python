@@ -1,0 +1,40 @@
+# Hosts that jobs on GitHub's egress-firewall runner (runs-on: ubuntu-24.04-firewall)
+# may reach. All other hosts are blocked, apart from any that GitHub's firewall allows
+# by default. Add a host only when a workflow step needs it, name it in full (no '*'), and say what uses it.
+mode: enforce
+allow:
+  # Claude API: model requests, trading the workflow's GitHub identity token for a
+  # short-lived API token, and fetching the Claude GitHub App's token in claude.yml and
+  # claude-code-review.yml
+  - api.anthropic.com
+  # GitHub API: calls made by the Claude Code action, and by gh in scripts/gh.sh and
+  # scripts/edit-issue-labels.sh
+  - api.github.com
+  # Claude Code install script: fetched by the Claude Code action, by test.yml
+  # ("Install Claude Code") and by Dockerfile.test
+  - claude.ai
+  # Claude Code binary, downloaded by the install script
+  - downloads.claude.ai
+  # Bun and Python release downloads (oven-sh/setup-bun inside the Claude Code action,
+  # actions/setup-python in claude.yml and test.yml)
+  - release-assets.githubusercontent.com
+  # npm packages for the Claude Code action (bun install)
+  - registry.npmjs.org
+  # Python packages (pip install in claude.yml, test.yml and Dockerfile.test)
+  - pypi.org
+  - files.pythonhosted.org
+  # apt packages bubblewrap and socat, which the Claude Code action installs when a
+  # workflow admits users without write access (claude-issue-triage.yml)
+  - azure.archive.ubuntu.com
+  - archive.ubuntu.com
+  - security.ubuntu.com
+  # Docker Hub: test.yml's test-e2e-docker job pulls python:3.12-slim for Dockerfile.test
+  - registry-1.docker.io
+  - auth.docker.io
+  # Docker Hub's image layer downloads: registry-1.docker.io redirects them to
+  # one of these hosts (the last is the storage origin Docker's docs name)
+  - production.cloudfront.docker.com
+  - production.cloudflare.docker.com
+  - docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+  # Debian packages: apt-get inside Dockerfile.test
+  - deb.debian.org

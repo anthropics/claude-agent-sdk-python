@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from . import Transport
@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
-    HookEvent,
-    HookMatcher,
     McpStatusResponse,
     Message,
     PermissionMode,
     ResultMessage,
+    _configure_can_use_tool,
+    _hooks_to_internal_format,
 )
 
 
@@ -69,32 +69,26 @@ class ClaudeSDKClient:
         options: ClaudeAgentOptions | None = None,
         transport: Transport | None = None,
     ):
-        """Initialize Claude SDK client."""
+        """Initialize Claude SDK client.
+
+        Args:
+            options: Configuration for the session (defaults to
+                `ClaudeAgentOptions()` if None).
+            transport: Optional custom `Transport`. When provided it is used
+                instead of the default subprocess transport, and the CLI-flag
+                options in `options` are not applied to it; see `query()` for
+                what the SDK does and does not configure on a custom transport.
+        """
         if options is None:
             options = ClaudeAgentOptions()
         self.options = options
         self._custom_transport = transport
         self._transport: Transport | None = None
         self._query: Any | None = None
+        # Captured at connect() so every prompt in a session is stamped
+        # consistently, matching the value Query uses for streamed prompts.
+        self._verbatim_prompts = False
         self._materialized: MaterializedResume | None = None
-
-    def _convert_hooks_to_internal_format(
-        self, hooks: dict[HookEvent, list[HookMatcher]]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Convert HookMatcher format to internal Query format."""
-        internal_hooks: dict[str, list[dict[str, Any]]] = {}
-        for event, matchers in hooks.items():
-            internal_hooks[event] = []
-            for matcher in matchers:
-                # Convert HookMatcher to internal dict format
-                internal_matcher: dict[str, Any] = {
-                    "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
-                    "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],
-                }
-                if hasattr(matcher, "timeout") and matcher.timeout is not None:
-                    internal_matcher["timeout"] = matcher.timeout
-                internal_hooks[event].append(internal_matcher)
-        return internal_hooks
 
     async def connect(
         self, prompt: str | AsyncIterable[dict[str, Any]] | None = None
@@ -149,7 +143,7 @@ class ClaudeSDKClient:
         prompt: str | AsyncIterable[dict[str, Any]] | None,
         actual_prompt: AsyncIterable[dict[str, Any]],
     ) -> None:
-        from ._internal.query import Query
+        from ._internal.query import Query, run_end_ceiling_ms, stamp_user_message
         from ._internal.session_resume import (
             apply_materialized_options,
             build_mirror_batcher,
@@ -157,25 +151,7 @@ class ClaudeSDKClient:
         from ._internal.transport.subprocess_cli import SubprocessCLITransport
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
-        if self.options.can_use_tool:
-            # canUseTool callback requires streaming mode (AsyncIterable prompt)
-            if isinstance(prompt, str):
-                raise ValueError(
-                    "can_use_tool callback requires streaming mode. "
-                    "Please provide prompt as an AsyncIterable instead of a string."
-                )
-
-            # canUseTool and permission_prompt_tool_name are mutually exclusive
-            if self.options.permission_prompt_tool_name:
-                raise ValueError(
-                    "can_use_tool callback cannot be used with permission_prompt_tool_name. "
-                    "Please use one or the other."
-                )
-
-            # Automatically set permission_prompt_tool_name to "stdio" for control protocol
-            options = replace(self.options, permission_prompt_tool_name="stdio")
-        else:
-            options = self.options
+        options = _configure_can_use_tool(self.options)
 
         if self._materialized is not None:
             options = apply_materialized_options(options, self._materialized)
@@ -204,14 +180,19 @@ class ClaudeSDKClient:
         )
         initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Extract exclude_dynamic_sections from preset system prompt for the
-        # initialize request (older CLIs ignore unknown initialize fields).
+        # Extract exclude_dynamic_sections and snapshot from the system prompt
+        # for the initialize request (older CLIs ignore unknown initialize fields).
         exclude_dynamic_sections: bool | None = None
+        system_prompt_snapshot: bool | None = None
         sp = self.options.system_prompt
         if isinstance(sp, dict) and sp.get("type") == "preset":
             eds = sp.get("exclude_dynamic_sections")
             if isinstance(eds, bool):
                 exclude_dynamic_sections = eds
+        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+            snapshot = sp.get("snapshot")
+            if isinstance(snapshot, bool):
+                system_prompt_snapshot = snapshot
 
         # Convert agents to dict format for initialize request
         agents_dict: dict[str, dict[str, Any]] | None = None
@@ -221,19 +202,26 @@ class ClaudeSDKClient:
                 for name, agent_def in self.options.agents.items()
             }
 
+        self._verbatim_prompts = self.options.verbatim_prompts
+
         # Create Query to handle control protocol
         self._query = Query(
             transport=self._transport,
             is_streaming_mode=True,  # ClaudeSDKClient always uses streaming mode
             can_use_tool=self.options.can_use_tool,
-            hooks=self._convert_hooks_to_internal_format(self.options.hooks)
+            hooks=_hooks_to_internal_format(self.options.hooks)
             if self.options.hooks
             else None,
             sdk_mcp_servers=sdk_mcp_servers,
             initialize_timeout=initialize_timeout,
             agents=agents_dict,
             exclude_dynamic_sections=exclude_dynamic_sections,
+            system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
+            include_hook_events=self.options.include_hook_events,
+            forward_subagent_text=self.options.forward_subagent_text,
+            verbatim_prompts=self._verbatim_prompts,
+            run_end_ceiling_ms=run_end_ceiling_ms(self.options.env),
         )
 
         if self.options.session_store is not None:
@@ -264,7 +252,9 @@ class ClaudeSDKClient:
                 "parent_tool_use_id": None,
                 "session_id": "default",
             }
-            await self._transport.write(json.dumps(message) + "\n")
+            await self._transport.write(
+                json.dumps(stamp_user_message(message, self._verbatim_prompts)) + "\n"
+            )
         elif prompt is not None and isinstance(prompt, AsyncIterable):
             self._query.spawn_task(self._query.stream_input(prompt))
 
@@ -293,6 +283,8 @@ class ClaudeSDKClient:
         if not self._query or not self._transport:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
+        from ._internal.query import stamp_user_message
+
         # Handle string prompts
         if isinstance(prompt, str):
             message = {
@@ -301,14 +293,18 @@ class ClaudeSDKClient:
                 "parent_tool_use_id": None,
                 "session_id": session_id,
             }
-            await self._transport.write(json.dumps(message) + "\n")
+            await self._transport.write(
+                json.dumps(stamp_user_message(message, self._verbatim_prompts)) + "\n"
+            )
         else:
             # Handle AsyncIterable prompts - stream them
             async for msg in prompt:
                 # Ensure session_id is set on each message
                 if "session_id" not in msg:
                     msg["session_id"] = session_id
-                await self._transport.write(json.dumps(msg) + "\n")
+                await self._transport.write(
+                    json.dumps(stamp_user_message(msg, self._verbatim_prompts)) + "\n"
+                )
 
     async def interrupt(self) -> None:
         """Send interrupt signal (only works with streaming mode)."""
@@ -348,9 +344,8 @@ class ClaudeSDKClient:
 
         Args:
             model: The model to use, or None to use default. Examples:
-                - 'claude-sonnet-4-5'
-                - 'claude-opus-4-1-20250805'
-                - 'claude-opus-4-20250514'
+                - 'claude-sonnet-5'
+                - 'claude-opus-5'
 
         Example:
             ```python
@@ -359,7 +354,7 @@ class ClaudeSDKClient:
                 await client.query("Help me understand this problem")
 
                 # Switch to a different model for implementation
-                await client.set_model('claude-sonnet-4-5')
+                await client.set_model('claude-sonnet-5')
                 await client.query("Now implement the solution")
             ```
         """
@@ -370,10 +365,9 @@ class ClaudeSDKClient:
     async def rewind_files(self, user_message_id: str) -> None:
         """Rewind tracked files to their state at a specific user message.
 
-        Requires:
-            - `enable_file_checkpointing=True` to track file changes
-            - `extra_args={"replay-user-messages": None}` to receive UserMessage
-              objects with `uuid` in the response stream
+        Requires `enable_file_checkpointing=True` to track file changes, and
+        `extra_args={"replay-user-messages": None}` to receive UserMessage
+        objects with `uuid` in the response stream.
 
         Args:
             user_message_id: UUID of the user message to rewind to. This should be
@@ -450,20 +444,25 @@ class ClaudeSDKClient:
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task (only works with streaming mode).
 
-        After this resolves, a `task_notification` system message with
-        status `'stopped'` will be emitted by the CLI in the message stream.
+        After this resolves, the CLI reports the task's end in the message
+        stream as a `TaskUpdatedMessage` whose `status` is terminal (`"killed"`
+        for a stopped task). A `TaskNotificationMessage` with status
+        `"stopped"` may follow, but is sometimes suppressed, so clear the task
+        id on a terminal status from either message (see `TERMINAL_TASK_STATUSES`).
 
         Args:
-            task_id: The task ID from `task_notification` events.
+            task_id: The task ID from `TaskStartedMessage` (the `task_started`
+                system message).
 
         Example:
             ```python
             async with ClaudeSDKClient() as client:
                 await client.query("Start a long-running task")
 
-                # Listen for task_notification to get task_id, then:
+                # Read task_id from the TaskStartedMessage, then:
                 await client.stop_task("task-abc123")
-                # A task_notification with status 'stopped' will follow
+                # A TaskUpdatedMessage with a terminal status follows
+                # (a TaskNotificationMessage may too)
             ```
         """
         if not self._query:
@@ -548,7 +547,8 @@ class ClaudeSDKClient:
         - Server capabilities
 
         Returns:
-            Dictionary with server info, or None if not in streaming mode
+            Dictionary with server info from the initialize response, or None
+            while `connect()` is still in progress
 
         Example:
             ```python
@@ -606,7 +606,12 @@ class ClaudeSDKClient:
                 return
 
     async def disconnect(self) -> None:
-        """Disconnect from Claude."""
+        """Disconnect from Claude.
+
+        Any SDK MCP tool call still running is cancelled first; a tool that
+        does not react to cancellation (one blocked in a worker thread, say)
+        is given up on after a grace period of a few seconds per server.
+        """
         if self._query:
             await self._query.close()
             self._query.close_receive_stream()

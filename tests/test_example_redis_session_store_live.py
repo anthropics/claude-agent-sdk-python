@@ -22,7 +22,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 REDIS_URL = os.environ.get("SESSION_STORE_REDIS_URL")
 if not REDIS_URL:
@@ -49,6 +48,13 @@ from claude_agent_sdk._internal.transcript_mirror_batcher import (  # noqa: E402
 )
 from claude_agent_sdk.testing import run_session_store_conformance  # noqa: E402
 
+
+@pytest.fixture
+def anyio_backend() -> str:
+    # ``redis.asyncio`` has no trio backend.
+    return "asyncio"
+
+
 # Import the example adapter directly from examples/ without polluting sys.path.
 _EXAMPLE_PATH = (
     Path(__file__).parent.parent
@@ -69,7 +75,7 @@ RedisSessionStore = _module.RedisSessionStore
 SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def live_prefix() -> AsyncIterator[str]:
     """Per-test random key prefix; SCAN+DEL everything under it on teardown."""
     prefix = f"test-{uuid.uuid4().hex[:8]}"
@@ -91,7 +97,7 @@ def _make_store(prefix: str) -> SessionStore:
 
 
 class TestLiveConformance:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_conformance(self, live_prefix: str) -> None:
         # The harness calls make_store() once per contract for isolation. Give
         # each call its own sub-prefix so contracts don't see each other's
@@ -105,7 +111,7 @@ class TestLiveConformance:
 
 
 class TestLiveRoundTrip:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_mirror_then_resume(
         self,
         live_prefix: str,

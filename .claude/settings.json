@@ -1,9 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m ruff check src/ tests/ --fix)",
-      "Bash(python -m ruff format src/ tests/)",
-      "Bash(python -m mypy src/)",
+      "Bash(python -m ruff check src/ tests/ scripts/ --fix)",
+      "Bash(python -m ruff format src/ tests/ scripts/)",
+      "Bash(python -m mypy src/ scripts/)",
       "Bash(python -m pytest tests/)",
       "Bash(python -m pytest tests/*)"
     ],
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m ruff check src/ tests/ --fix && python -m ruff format src/ tests/"
+            "command": "python -m ruff check src/ tests/ scripts/ --fix && python -m ruff format src/ tests/ scripts/"
           }
         ],
         "matcher": "Edit|Write|MultiEdit"

@@ -1,4 +1,9 @@
-"""Pytest configuration for tests."""
+"""Pytest configuration: run every ``@pytest.mark.anyio`` test under both
+asyncio and trio, so CI catches backend-specific regressions in either."""
+
+import pytest
 
 
-# No async plugin needed since we're using sync tests with anyio.run()
+@pytest.fixture(params=["asyncio", "trio"])
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return request.param

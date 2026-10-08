@@ -1,0 +1,79 @@
+name: Alert on blocked or failed releases
+
+# Posts to Slack when a release can't go out:
+# - Test fails, times out or is cancelled on a CLI bump commit on main, so Auto
+#   Release skips that bump.
+# - Auto Release on CLI Bump or Publish to PyPI fails, times out or is cancelled.
+on:
+  workflow_run:
+    workflows: ["Test", "Auto Release on CLI Bump", "Publish to PyPI"]
+    types: [completed]
+    branches: [main]
+
+# No step uses GITHUB_TOKEN; the only credential is the Slack bot token.
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: |
+      contains(fromJSON('["failure", "timed_out", "cancelled"]'), github.event.workflow_run.conclusion) && (
+        github.event.workflow_run.name != 'Test' || (
+          github.event.workflow_run.event == 'push' &&
+          startsWith(github.event.workflow_run.head_commit.message, 'chore: bump bundled CLI version to')
+        )
+      )
+    steps:
+      - name: Build Slack payload
+        id: build
+        env:
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          SLACK_CHANNEL: C09HY5E0K60
+        run: |
+          set -euo pipefail
+
+          # Same mrkdwn escape and self-test as slack-issue-notification.yml.
+          ESC='def esc:
+                 gsub("&";"&amp;")
+                 | gsub("<";"&lt;")
+                 | gsub(">";"&gt;")
+                 | gsub("[[:cntrl:]]";" ");'
+          probe=$(jq -rn "$ESC"' "<&>" | esc')
+          if [ "$probe" != '&lt;&amp;&gt;' ]; then
+            echo "::error::mrkdwn escape self-test failed (got '$probe'); refusing to post"
+            exit 1
+          fi
+
+          if [ "$WORKFLOW_NAME" = "Test" ]; then
+            HEADLINE="Release blocked: Test ended $CONCLUSION on a CLI bump, so Auto Release skipped it"
+          else
+            HEADLINE="Release failed: $WORKFLOW_NAME ended $CONCLUSION"
+          fi
+          export HEADLINE
+
+          payload=$(jq -nc "$ESC"'
+            {
+              channel: env.SLACK_CHANNEL,
+              text: (env.HEADLINE + " (" + env.GITHUB_REPOSITORY + ")"),
+              blocks: [
+                {type:"section", text:{type:"mrkdwn",
+                  text:(":rotating_light: *" + (env.HEADLINE|esc) + "* in " + env.GITHUB_REPOSITORY)}},
+                {type:"section", text:{type:"mrkdwn",
+                  text:("*Commit:* "
+                        + ((env.COMMIT_MESSAGE // "") | split("\n")[0] // ""
+                           | if . == "" then "(no commit message)" else esc end)
+                        + " (" + env.HEAD_SHA[0:7] + ")\n<" + env.RUN_URL + "|View run>")}}
+              ]
+            }')
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1 (sha-pinned)
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: ${{ steps.build.outputs.payload }}

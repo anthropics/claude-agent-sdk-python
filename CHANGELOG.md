@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.164
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.292
+- CI: security hardening for GitHub Actions workflows that call Claude — egress-firewall runner, network allow list, auto permission mode, and a check workflow to enforce them (#1329)
+- CI: raised PyPI per-file limit guard to 250 MiB to match the updated project limit (#1366)
+- Tests: fixed thinking-deltas e2e test for CLI 2.1.287+ by using explicit thinking display options (#1367)
+
+## 0.2.163
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.286
+- CI: pinned the model for issue triage to fix failures caused by the CLI's new default model (#1328)
+
+## 0.2.162
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.285
+
+## 0.2.161
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.284
+
 ## 0.2.160
 
 ### Bug Fixes

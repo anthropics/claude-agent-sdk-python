@@ -3095,3 +3095,25 @@ class TestWindowsCmdMetacharacterRejection:
             cmd = transport._build_command()
         assert "--resume=title & % | notes" in cmd
         assert "--session-id=a>b" in cmd
+
+
+class TestPluginSkipMcpDiscovery:
+    """SdkPluginConfig.skipMcpDiscovery selects --plugin-dir-no-mcp."""
+
+    def test_skip_mcp_discovery_uses_no_mcp_flag(self):
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                plugins=[
+                    {"type": "local", "path": "/tmp/a", "skipMcpDiscovery": True},
+                    {"type": "local", "path": "/tmp/b"},
+                    {"type": "local", "path": "/tmp/c", "skipMcpDiscovery": False},
+                ]
+            ),
+        )
+        cmd = transport._build_command()
+        assert cmd[cmd.index("/tmp/a") - 1] == "--plugin-dir-no-mcp"
+        assert cmd[cmd.index("/tmp/b") - 1] == "--plugin-dir"
+        assert cmd[cmd.index("/tmp/c") - 1] == "--plugin-dir"
+        assert cmd.count("--plugin-dir-no-mcp") == 1
+        assert cmd.count("--plugin-dir") == 2

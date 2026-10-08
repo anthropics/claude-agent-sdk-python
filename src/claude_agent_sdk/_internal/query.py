@@ -13,15 +13,25 @@ import anyio
 from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
     TERMINAL_TASK_STATUSES,
+    ElicitationContext,
+    ElicitationRequest,
+    ElicitationResult,
+    OnElicitation,
+    OnUserDialog,
     PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
     PermissionUpdate,
+    SDKControlElicitationRequest,
     SDKControlPermissionRequest,
     SDKControlRequest,
+    SDKControlRequestUserDialogRequest,
     SDKControlResponse,
     SDKHookCallbackRequest,
     ToolPermissionContext,
+    UserDialogContext,
+    UserDialogRequest,
+    UserDialogResult,
 )
 from ._task_compat import TaskHandle, spawn_detached
 from .sdk_mcp_bridge import SdkMcpBridge
@@ -173,6 +183,10 @@ class Query:
         forward_subagent_text: bool = False,
         verbatim_prompts: bool = False,
         run_end_ceiling_ms: int = DEFAULT_RUN_END_CEILING_MS,
+        on_elicitation: OnElicitation | None = None,
+        on_user_dialog: OnUserDialog | None = None,
+        supported_dialog_kinds: list[str] | None = None,
+        per_task_stop_affordance: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -199,6 +213,11 @@ class Query:
                 with no new turn while the CLI still reports ``running``;
                 ``0`` waits for ``idle`` however long it takes (see
                 ``run_end_ceiling_ms()``)
+            on_elicitation: Optional callback for MCP elicitation requests
+            on_user_dialog: Optional callback for user dialog requests
+            supported_dialog_kinds: Dialog kinds to declare via initialize
+            per_task_stop_affordance: Declare per-task stop support via
+                initialize
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -217,6 +236,10 @@ class Query:
         self._forward_subagent_text = forward_subagent_text
         self._verbatim_prompts = verbatim_prompts
         self._run_end_ceiling_ms = run_end_ceiling_ms
+        self.on_elicitation = on_elicitation
+        self.on_user_dialog = on_user_dialog
+        self._supported_dialog_kinds = supported_dialog_kinds
+        self._per_task_stop_affordance = per_task_stop_affordance
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -353,6 +376,10 @@ class Query:
             request["skills"] = self._skills
         if self._forward_subagent_text:
             request["forwardSubagentText"] = True
+        if self._supported_dialog_kinds is not None:
+            request["supportedDialogKinds"] = self._supported_dialog_kinds
+        if self._per_task_stop_affordance:
+            request["perTaskStopAffordance"] = True
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(
@@ -672,6 +699,80 @@ class Query:
                     # request that carried one still expects an ack.
                     mcp_response = {"jsonrpc": "2.0", "result": {}}
                 response_data = {"mcp_response": mcp_response}
+
+            elif subtype == "elicitation":
+                elicitation_request: SDKControlElicitationRequest = request_data  # type: ignore[assignment]
+                if not self.on_elicitation:
+                    # Decline rather than error, as the TypeScript SDK does.
+                    response_data = {"action": "decline"}
+                else:
+                    if (
+                        "mcp_server_name" not in elicitation_request
+                        or "message" not in elicitation_request
+                    ):
+                        raise Exception(
+                            "Missing mcp_server_name or message for elicitation request"
+                        )
+                    elicitation_result = await self.on_elicitation(
+                        ElicitationRequest(
+                            server_name=elicitation_request["mcp_server_name"],
+                            message=elicitation_request["message"],
+                            mode=elicitation_request.get("mode"),
+                            url=elicitation_request.get("url"),
+                            elicitation_id=elicitation_request.get("elicitation_id"),
+                            requested_schema=elicitation_request.get(
+                                "requested_schema"
+                            ),
+                            title=elicitation_request.get("title"),
+                            display_name=elicitation_request.get("display_name"),
+                            description=elicitation_request.get("description"),
+                        ),
+                        ElicitationContext(
+                            signal=None,  # TODO: Add abort signal support
+                            request_id=request_id,
+                        ),
+                    )
+                    if not isinstance(elicitation_result, ElicitationResult):
+                        raise TypeError(
+                            f"Elicitation callback must return ElicitationResult, got {type(elicitation_result)}"
+                        )
+                    response_data = {"action": elicitation_result.action}
+                    if elicitation_result.content is not None:
+                        response_data["content"] = elicitation_result.content
+
+            elif subtype == "request_user_dialog":
+                dialog_request: SDKControlRequestUserDialogRequest = request_data  # type: ignore[assignment]
+                if not self.on_user_dialog:
+                    # Stay silent rather than cancel, as the TypeScript SDK
+                    # does: on a shared session another client may be the
+                    # dialog's renderer, and a reply from here would settle it
+                    # first. The CLI cancels an unanswered dialog at its
+                    # deadline. Returning skips the success write below.
+                    logger.debug(
+                        "No on_user_dialog handler for request_user_dialog "
+                        f"(kind={dialog_request.get('dialog_kind')}); not answering"
+                    )
+                    return
+                if "dialog_kind" not in dialog_request:
+                    raise Exception("Missing dialog_kind for user dialog request")
+                dialog_result = await self.on_user_dialog(
+                    UserDialogRequest(
+                        dialog_kind=dialog_request["dialog_kind"],
+                        payload=dialog_request.get("payload") or {},
+                        tool_use_id=dialog_request.get("tool_use_id"),
+                    ),
+                    UserDialogContext(
+                        signal=None,  # TODO: Add abort signal support
+                        request_id=request_id,
+                    ),
+                )
+                if not isinstance(dialog_result, UserDialogResult):
+                    raise TypeError(
+                        f"User dialog callback must return UserDialogResult, got {type(dialog_result)}"
+                    )
+                response_data = {"behavior": dialog_result.behavior}
+                if dialog_result.behavior == "completed":
+                    response_data["result"] = dialog_result.result
 
             else:
                 raise Exception(f"Unsupported control request subtype: {subtype}")
@@ -1041,25 +1142,33 @@ class Query:
     def _has_bidirectional_needs(self) -> bool:
         """Whether the CLI may still send control requests that need a reply.
 
-        SDK MCP servers, hooks, and the ``can_use_tool`` permission callback
-        are all served over the control protocol: the CLI writes a
-        ``control_request`` to stdout and blocks until the SDK writes the
-        matching ``control_response`` to stdin. Closing stdin while any of
-        these are configured makes every later request fail CLI-side with
-        "Stream closed". Mirrors the TypeScript SDK's ``hasBidirectionalNeeds``.
+        SDK MCP servers, hooks, and the ``can_use_tool``, ``on_elicitation``
+        and ``on_user_dialog`` callbacks are all served over the control
+        protocol: the CLI writes a ``control_request`` to stdout and blocks
+        until the SDK writes the matching ``control_response`` to stdin.
+        Closing stdin while any of these are configured makes every later
+        request fail CLI-side with "Stream closed". Mirrors the TypeScript
+        SDK's ``hasBidirectionalNeeds``.
         """
-        return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
+        return bool(
+            self.sdk_mcp_servers
+            or self.hooks
+            or self.can_use_tool
+            or self.on_elicitation
+            or self.on_user_dialog
+        )
 
     async def wait_for_result_and_end_input(self) -> None:
         """Wait for the end of the run (if needed) then close stdin.
 
-        If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
-        bidirectional communication, keeps stdin open until the run ends: the
-        CLI's "idle" session state after a result, or, from a CLI that reports
-        no session state, the first result with no tracked tasks in flight. A
-        result frame ends one turn, not necessarily the run: background tasks
-        keep running past it, or have just finished and still wake the parent
-        for a follow-up turn, and those turns need stdin for control responses
+        If SDK MCP servers, hooks, or a callback answered over the control
+        protocol (see ``_has_bidirectional_needs``) require bidirectional
+        communication, keeps stdin open until the run ends: the CLI's "idle"
+        session state after a result, or, from a CLI that reports no session
+        state, the first result with no tracked tasks in flight. A result frame
+        ends one turn, not necessarily the run: background tasks keep running
+        past it, or have just finished and still wake the parent for a
+        follow-up turn, and those turns need stdin for control responses
         (#1088, #1190).
 
         The wait is bounded between turns: if the CLI still reports
@@ -1082,7 +1191,9 @@ class Query:
                 "Waiting for the run to end before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
                 f"has_hooks={bool(self.hooks)}, "
-                f"has_can_use_tool={self.can_use_tool is not None})"
+                f"has_can_use_tool={self.can_use_tool is not None}, "
+                f"has_on_elicitation={self.on_elicitation is not None}, "
+                f"has_on_user_dialog={self.on_user_dialog is not None})"
             )
             await self._run_ended_event.wait()
 
@@ -1093,9 +1204,10 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
-        waits for the run to end before closing stdin to allow
-        bidirectional control protocol communication. Each prompt written
+        If SDK MCP servers, hooks, or a callback answered over the control
+        protocol (see ``_has_bidirectional_needs``) are present, waits for the
+        run to end before closing stdin to allow bidirectional control
+        protocol communication. Each prompt written
         owes a run of its own, so the wait is for the last prompt's run, not
         an earlier one's.
         """

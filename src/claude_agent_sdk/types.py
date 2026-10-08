@@ -281,6 +281,7 @@ CanUseTool = Callable[
 
 
 ##### Hook types
+# Mirrors HOOK_EVENTS in the TypeScript SDK; keep in sync.
 HookEvent = (
     Literal["PreToolUse"]
     | Literal["PostToolUse"]
@@ -292,6 +293,29 @@ HookEvent = (
     | Literal["Notification"]
     | Literal["SubagentStart"]
     | Literal["PermissionRequest"]
+    | Literal["PostToolBatch"]
+    | Literal["UserPromptExpansion"]
+    | Literal["SessionStart"]
+    | Literal["SessionEnd"]
+    | Literal["StopFailure"]
+    | Literal["PostCompact"]
+    | Literal["PreModelSwitch"]
+    | Literal["PostModelSwitch"]
+    | Literal["PermissionDenied"]
+    | Literal["Setup"]
+    | Literal["TeammateIdle"]
+    | Literal["TaskCreated"]
+    | Literal["TaskCompleted"]
+    | Literal["Elicitation"]
+    | Literal["ElicitationResult"]
+    | Literal["ConfigChange"]
+    | Literal["WorktreeCreate"]
+    | Literal["WorktreeRemove"]
+    | Literal["InstructionsLoaded"]
+    | Literal["CwdChanged"]
+    | Literal["FileChanged"]
+    | Literal["DirectoryAdded"]
+    | Literal["MessageDisplay"]
 )
 
 
@@ -308,9 +332,10 @@ class BaseHookInput(TypedDict):
 # agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
 # declared per-hook here because SubagentStartHookInput/SubagentStopHookInput
 # need them as *required*, and PEP 655 forbids narrowing NotRequired->Required
-# in a TypedDict subclass. The four tool-lifecycle types below are the only
-# ones the CLI actually populates (the other BaseHookInput consumers don't
-# have a toolUseContext in scope at their build site).
+# in a TypedDict subclass. The four tool-lifecycle types below and
+# PostToolBatchHookInput are the only ones the CLI actually populates (the
+# other BaseHookInput consumers don't have a toolUseContext in scope at their
+# build site).
 class _SubagentContextMixin(TypedDict, total=False):
     """Optional sub-agent attribution fields for tool-lifecycle hooks.
 
@@ -418,6 +443,263 @@ class PermissionRequestHookInput(BaseHookInput, _SubagentContextMixin):
     permission_suggestions: NotRequired[list[Any]]
 
 
+class PostToolBatchToolCall(TypedDict):
+    """One tool call in a PostToolBatch hook's ``tool_calls``."""
+
+    tool_name: str
+    tool_input: dict[str, Any]
+    tool_use_id: str
+    tool_response: NotRequired[Any]
+    """The tool result as sent to the model, e.g. a string for Bash and Read.
+
+    This can differ from ``PostToolUseHookInput.tool_response`` for the same
+    call, which carries the tool's structured output.
+    """
+
+
+class PostToolBatchHookInput(BaseHookInput, _SubagentContextMixin):
+    """Input data for PostToolBatch hook events."""
+
+    hook_event_name: Literal["PostToolBatch"]
+    tool_calls: list[PostToolBatchToolCall]
+
+
+class UserPromptExpansionHookInput(BaseHookInput):
+    """Input data for UserPromptExpansion hook events."""
+
+    hook_event_name: Literal["UserPromptExpansion"]
+    expansion_type: Literal["slash_command", "mcp_prompt"]
+    command_name: str
+    command_args: str
+    command_source: NotRequired[str]
+    prompt: str
+
+
+class SessionStartHookInput(BaseHookInput):
+    """Input data for SessionStart hook events.
+
+    As of CLI 2.1.283, SessionStart events fired while the CLI process starts
+    (``source`` of ``"startup"``, ``"resume"`` or ``"fork"``) run before the
+    SDK registers its hook callbacks, so SDK callbacks do not receive them.
+    Callbacks do receive SessionStart events fired later in the session, such
+    as ``source="compact"``. To run code at startup, run it before connecting.
+    """
+
+    hook_event_name: Literal["SessionStart"]
+    source: Literal["startup", "resume", "clear", "compact", "fork"]
+    agent_type: NotRequired[str]
+    model: NotRequired[str]
+    session_title: NotRequired[str]
+    seconds_since_last_response: NotRequired[float]
+    context_tokens: NotRequired[int]
+    prompt_cache_likely_expired: NotRequired[bool]
+    estimated_cache_write_usd: NotRequired[float]
+
+
+class SessionEndHookInput(BaseHookInput):
+    """Input data for SessionEnd hook events."""
+
+    hook_event_name: Literal["SessionEnd"]
+    reason: Literal["clear", "resume", "logout", "prompt_input_exit", "other"]
+
+
+class StopFailureHookInput(BaseHookInput):
+    """Input data for StopFailure hook events."""
+
+    hook_event_name: Literal["StopFailure"]
+    error: str
+    """Error category, e.g. ``"rate_limit"`` or ``"overloaded"``."""
+    error_details: NotRequired[str]
+    last_assistant_message: NotRequired[str]
+
+
+class PostCompactHookInput(BaseHookInput):
+    """Input data for PostCompact hook events."""
+
+    hook_event_name: Literal["PostCompact"]
+    trigger: Literal["manual", "auto"]
+    compact_summary: str
+
+
+class PreModelSwitchHookInput(BaseHookInput):
+    """Input data for PreModelSwitch hook events."""
+
+    hook_event_name: Literal["PreModelSwitch"]
+    from_model: str
+    to_model: str
+    requested_model: str | None
+    source: Literal["command", "picker", "sdk"]
+    context_tokens: int
+    prompt_cache_warm: bool
+    cache_ttl: Literal["5m", "1h"]
+    estimated_cache_write_usd: float
+    pricing: Literal["configured", "catalog", "default"]
+
+
+class PostModelSwitchHookInput(BaseHookInput):
+    """Input data for PostModelSwitch hook events."""
+
+    hook_event_name: Literal["PostModelSwitch"]
+    from_model: str
+    to_model: str
+    requested_model: str | None
+    source: Literal["command", "picker", "sdk", "auto", "resume"]
+    context_tokens: int
+    prompt_cache_warm: bool
+    cache_ttl: Literal["5m", "1h"]
+    estimated_cache_write_usd: float
+    pricing: Literal["configured", "catalog", "default"]
+
+
+class PermissionDeniedHookInput(BaseHookInput):
+    """Input data for PermissionDenied hook events."""
+
+    hook_event_name: Literal["PermissionDenied"]
+    tool_name: str
+    tool_input: dict[str, Any]
+    tool_use_id: str
+    reason: str
+    mcp_server: NotRequired[dict[str, str]]
+    """The MCP server serving the tool, as ``{"name": ..., "source": ...}``."""
+
+
+class SetupHookInput(BaseHookInput):
+    """Input data for Setup hook events."""
+
+    hook_event_name: Literal["Setup"]
+    trigger: Literal["init", "maintenance"]
+
+
+class TeammateIdleHookInput(BaseHookInput):
+    """Input data for TeammateIdle hook events."""
+
+    hook_event_name: Literal["TeammateIdle"]
+    teammate_name: str
+    team_name: str
+
+
+class TaskCreatedHookInput(BaseHookInput):
+    """Input data for TaskCreated hook events."""
+
+    hook_event_name: Literal["TaskCreated"]
+    task_id: str
+    task_subject: str
+    task_description: NotRequired[str]
+    teammate_name: NotRequired[str]
+    team_name: NotRequired[str]
+
+
+class TaskCompletedHookInput(BaseHookInput):
+    """Input data for TaskCompleted hook events."""
+
+    hook_event_name: Literal["TaskCompleted"]
+    task_id: str
+    task_subject: str
+    task_description: NotRequired[str]
+    teammate_name: NotRequired[str]
+    team_name: NotRequired[str]
+
+
+class ElicitationHookInput(BaseHookInput):
+    """Input data for Elicitation hook events."""
+
+    hook_event_name: Literal["Elicitation"]
+    mcp_server_name: str
+    message: str
+    mode: NotRequired[Literal["form", "url"]]
+    url: NotRequired[str]
+    elicitation_id: NotRequired[str]
+    requested_schema: NotRequired[dict[str, Any]]
+
+
+class ElicitationResultHookInput(BaseHookInput):
+    """Input data for ElicitationResult hook events."""
+
+    hook_event_name: Literal["ElicitationResult"]
+    mcp_server_name: str
+    elicitation_id: NotRequired[str]
+    mode: NotRequired[Literal["form", "url"]]
+    action: Literal["accept", "decline", "cancel"]
+    content: NotRequired[dict[str, Any]]
+
+
+class ConfigChangeHookInput(BaseHookInput):
+    """Input data for ConfigChange hook events."""
+
+    hook_event_name: Literal["ConfigChange"]
+    source: Literal[
+        "user_settings",
+        "project_settings",
+        "local_settings",
+        "policy_settings",
+        "skills",
+    ]
+    file_path: NotRequired[str]
+
+
+class WorktreeCreateHookInput(BaseHookInput):
+    """Input data for WorktreeCreate hook events."""
+
+    hook_event_name: Literal["WorktreeCreate"]
+    name: str
+
+
+class WorktreeRemoveHookInput(BaseHookInput):
+    """Input data for WorktreeRemove hook events."""
+
+    hook_event_name: Literal["WorktreeRemove"]
+    worktree_path: str
+
+
+class InstructionsLoadedHookInput(BaseHookInput):
+    """Input data for InstructionsLoaded hook events."""
+
+    hook_event_name: Literal["InstructionsLoaded"]
+    file_path: str
+    memory_type: Literal["User", "Project", "Local", "Managed"]
+    load_reason: Literal[
+        "session_start", "nested_traversal", "path_glob_match", "include", "compact"
+    ]
+    globs: NotRequired[list[str]]
+    trigger_file_path: NotRequired[str]
+    parent_file_path: NotRequired[str]
+
+
+class CwdChangedHookInput(BaseHookInput):
+    """Input data for CwdChanged hook events."""
+
+    hook_event_name: Literal["CwdChanged"]
+    old_cwd: str
+    new_cwd: str
+
+
+class FileChangedHookInput(BaseHookInput):
+    """Input data for FileChanged hook events."""
+
+    hook_event_name: Literal["FileChanged"]
+    file_path: str
+    event: Literal["change", "add", "unlink"]
+
+
+class DirectoryAddedHookInput(BaseHookInput):
+    """Input data for DirectoryAdded hook events."""
+
+    hook_event_name: Literal["DirectoryAdded"]
+    directory: str
+    source: Literal["slash_command", "register_repo_root"]
+
+
+class MessageDisplayHookInput(BaseHookInput):
+    """Input data for MessageDisplay hook events."""
+
+    hook_event_name: Literal["MessageDisplay"]
+    turn_id: str
+    message_id: str
+    index: int
+    final: bool
+    delta: str
+
+
 # Union type for all hook inputs
 HookInput = (
     PreToolUseHookInput
@@ -430,6 +712,29 @@ HookInput = (
     | NotificationHookInput
     | SubagentStartHookInput
     | PermissionRequestHookInput
+    | PostToolBatchHookInput
+    | UserPromptExpansionHookInput
+    | SessionStartHookInput
+    | SessionEndHookInput
+    | StopFailureHookInput
+    | PostCompactHookInput
+    | PreModelSwitchHookInput
+    | PostModelSwitchHookInput
+    | PermissionDeniedHookInput
+    | SetupHookInput
+    | TeammateIdleHookInput
+    | TaskCreatedHookInput
+    | TaskCompletedHookInput
+    | ElicitationHookInput
+    | ElicitationResultHookInput
+    | ConfigChangeHookInput
+    | WorktreeCreateHookInput
+    | WorktreeRemoveHookInput
+    | InstructionsLoadedHookInput
+    | CwdChangedHookInput
+    | FileChangedHookInput
+    | DirectoryAddedHookInput
+    | MessageDisplayHookInput
 )
 
 

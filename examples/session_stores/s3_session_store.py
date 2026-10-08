@@ -162,10 +162,13 @@ class S3SessionStore(SessionStore):
             partial(self._client.list_objects_v2, **kwargs)
         )
 
-    async def _get_object(self, **kwargs: Any) -> Any:
-        return await anyio.to_thread.run_sync(
-            partial(self._client.get_object, **kwargs)
-        )
+    async def _read_object(self, **kwargs: Any) -> Any:
+        def read_and_close() -> Any:
+            result = self._client.get_object(**kwargs)
+            with contextlib.closing(result["Body"]) as body:
+                return body.read()
+
+        return await anyio.to_thread.run_sync(read_and_close)
 
     async def _delete_objects(self, **kwargs: Any) -> Any:
         return await anyio.to_thread.run_sync(
@@ -233,8 +236,7 @@ class S3SessionStore(SessionStore):
 
         async def fetch(i: int, object_key: str) -> None:
             async with sem:
-                result = await self._get_object(Bucket=self._bucket, Key=object_key)
-                raw = await anyio.to_thread.run_sync(result["Body"].read)
+                raw = await self._read_object(Bucket=self._bucket, Key=object_key)
                 bodies[i] = (
                     raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
                 )

@@ -76,8 +76,13 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     if raw is None:
         return DEFAULT_RUN_END_CEILING_MS
     try:
-        value = int(raw)
+        # int() rejects CLI-compatible spellings such as "1e6"; float()
+        # accepts those and still parses plain integers / whitespace.
+        as_float = float(str(raw).strip())
     except (TypeError, ValueError):
+        return DEFAULT_RUN_END_CEILING_MS
+    value = int(as_float)
+    if value != as_float:
         return DEFAULT_RUN_END_CEILING_MS
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 

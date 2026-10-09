@@ -1894,6 +1894,130 @@ class TestSubprocessCLITransport:
         settings_idx = cmd.index("--settings")
         assert cmd[settings_idx + 1] == "/path/to/settings.json"
 
+    def test_malformed_inline_settings_with_sandbox_raises(self, caplog):
+        """Malformed inline JSON + sandbox must raise, not silently drop settings.
+
+        Regression test for https://github.com/anthropics/claude-agent-sdk-python/issues/1335:
+        one trailing comma used to cost the entire settings object while the
+        run looked healthy (only sandbox survived), accompanied by a
+        misleading "treating as file path" warning naming the JSON text.
+        """
+        import logging
+
+        malformed = '{"model":"sonnet",}'
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=malformed, sandbox=sandbox),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING),
+            pytest.raises(ValueError, match="inline settings string"),
+        ):
+            transport._build_settings_value()
+
+        # The old misleading warning named the JSON text as a "file path";
+        # it must be gone -- the error now says what actually happened.
+        assert "treating as file path" not in caplog.text
+
+    def test_malformed_inline_settings_missing_brace_raises(self, caplog):
+        """Inline JSON missing the closing brace must raise, not be treated as a path.
+
+        The discriminator used to require both braces, so a truncated string
+        like '{model:sonnet' fell into the file-path branch and was silently
+        dropped with a misleading "Settings file not found" warning.
+        """
+        import logging
+
+        malformed = "{model:sonnet"
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=malformed, sandbox=sandbox),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING),
+            pytest.raises(ValueError, match="inline settings string"),
+        ):
+            transport._build_settings_value()
+
+        assert "Settings file not found" not in caplog.text
+
+    def test_malformed_settings_file_with_sandbox_raises_naming_file(self, tmp_path):
+        """Malformed settings file + sandbox must raise an error naming the file."""
+        bad_file = tmp_path / "settings.json"
+        bad_file.write_text('{"model":"sonnet",}', encoding="utf-8")
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=str(bad_file), sandbox=sandbox),
+        )
+
+        with pytest.raises(ValueError, match="settings file") as exc_info:
+            transport._build_settings_value()
+        assert str(bad_file) in str(exc_info.value)
+
+    def test_missing_settings_file_with_sandbox_degrades(self, caplog):
+        """Nonexistent settings path + sandbox keeps the documented degradation."""
+        import json
+        import logging
+
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="/nonexistent/settings.json", sandbox=sandbox
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            value = transport._build_settings_value()
+
+        # Only sandbox survives, and the missing file is logged (not raised).
+        assert json.loads(value) == {"sandbox": sandbox}
+        assert "Settings file not found" in caplog.text
+
+    def test_malformed_inline_settings_without_sandbox_passes_through(self):
+        """Without sandbox, settings are passed to the CLI verbatim (it rejects)."""
+        malformed = '{"model":"sonnet",}'
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=malformed),
+        )
+
+        assert transport._build_settings_value() == malformed
+
+    def test_malformed_inline_settings_connect_wraps_error(self):
+        """connect() wraps settings errors in CLIConnectionError and sets _exit_error."""
+        from unittest.mock import patch
+
+        from claude_agent_sdk._errors import ClaudeSDKError, CLIConnectionError
+
+        malformed = '{"model":"sonnet",}'
+        sandbox = {"enabled": True}
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=malformed, sandbox=sandbox),
+        )
+        # Skip CLI discovery and the version probe; _build_command() is what
+        # must raise here.
+        transport._cli_path = "/usr/bin/claude"
+
+        async def _test():
+            with (
+                patch.dict(os.environ, {"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"}),
+                pytest.raises(CLIConnectionError, match="inline settings"),
+            ):
+                await transport.connect()
+
+            # The failure is recorded as a proper SDK error, not a bare
+            # JSONDecodeError escaping the hierarchy.
+            assert isinstance(transport._exit_error, ClaudeSDKError)
+
+        anyio.run(_test)
+
     def test_build_command_sandbox_minimal(self):
         """Test sandbox with minimal configuration."""
         import json

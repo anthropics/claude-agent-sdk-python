@@ -2108,6 +2108,67 @@ class TestTypedDictMcpIntegration:
     """Tests for TypedDict schemas flowing through create_sdk_mcp_server."""
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("total", [True, False])
+    @pytest.mark.parametrize(
+        "wrapper",
+        ["{q}[{t}]", 'Annotated[{q}[{t}], "desc"]', '{q}[Annotated[{t}, "desc"]]'],
+    )
+    async def test_postponed_requiredness(
+        self, monkeypatch: pytest.MonkeyPatch, total: bool, wrapper: str
+    ) -> None:
+        import sys
+        from types import ModuleType
+
+        typing_module = "typing" if sys.version_info >= (3, 11) else "typing_extensions"
+
+        module = ModuleType("_postponed_tool_params")
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        query_type = wrapper.format(q="Required", t="str")
+        limit_type = wrapper.format(q="NotRequired", t="int")
+        exec(
+            f"""from __future__ import annotations
+from {typing_module} import Annotated, NotRequired, Required, TypedDict
+
+class Base(TypedDict, total={not total}):
+    inherited: int
+
+class Params(Base, total={total}):
+    query: {query_type}
+    limit: {limit_type}
+    default: int
+""",
+            module.__dict__,
+        )
+        calls: list[dict[str, Any]] = []
+
+        @tool("search", "Search", module.Params)
+        async def search(args: dict[str, Any]) -> dict[str, Any]:
+            calls.append(args)
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        default_key = "default" if total else "inherited"
+        valid = {"query": "test", default_key: 1}
+        config = create_sdk_mcp_server(name="srv", tools=[search])
+        async with connected(config) as client:
+            [listed] = await client.list_tools("srv")
+            schema = listed["inputSchema"]
+            assert schema["required"] == sorted(["query", default_key])
+            for name, kind in [("query", "string"), ("limit", "integer")]:
+                expected = {"type": kind}
+                if "Annotated" in wrapper:
+                    expected["description"] = "desc"
+                assert schema["properties"][name] == expected
+
+            result = await client.call_tool("srv", "search", valid)
+            assert texts(result) == ["ok"]
+            missing = await client.call_tool("srv", "search", {default_key: 1})
+            assert missing["isError"] is True
+            assert texts(missing) == [
+                "Input validation error: 'query' is a required property"
+            ]
+        assert calls == [valid]
+
+    @pytest.mark.anyio
     async def test_typeddict_tool_schema_in_list_tools(self) -> None:
         from typing import TypedDict
 

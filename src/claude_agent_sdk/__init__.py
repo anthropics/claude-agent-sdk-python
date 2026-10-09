@@ -418,12 +418,27 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
 def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     """Convert a TypedDict class to a JSON Schema dict."""
     hints = _get_type_hints(td_class, include_extras=True)
+    required_keys = set(getattr(td_class, "__required_keys__", hints.keys()))
 
     properties: dict[str, Any] = {}
     for field_name, field_type in hints.items():
         properties[field_name] = _python_type_to_json_schema(field_type)
+        # Postponed annotations can leave __required_keys__ incorrect. Prefer
+        # evaluated qualifiers, including those nested inside Annotated/ReadOnly.
+        while True:
+            origin: Any = get_origin(field_type)
+            qualifier = getattr(origin, "_name", None)
+            if qualifier == "Required":
+                required_keys.add(field_name)
+                break
+            if qualifier == "NotRequired":
+                required_keys.discard(field_name)
+                break
+            if origin is Annotated or qualifier == "ReadOnly":
+                field_type = get_args(field_type)[0]
+            else:
+                break
 
-    required_keys = getattr(td_class, "__required_keys__", set(properties.keys()))
     schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,

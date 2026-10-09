@@ -24,6 +24,7 @@ from claude_agent_sdk.types import (
     HookSpecificOutput,
     PermissionRuleValue,
     PermissionUpdate,
+    PermissionUpdateDestination,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
     SessionStartHookSpecificOutput,
@@ -70,6 +71,44 @@ class TestPermissionUpdate:
         assert update.mode == "acceptEdits"
         assert update.rules is None
         assert update.to_dict() == wire
+
+    def test_destination_is_always_on_the_wire(self):
+        """The CLI's schema requires destination on every variant.
+
+        An entry without it makes the CLI drop the whole updatedPermissions array
+        and log a warning, so the update never lands and the callback is asked
+        again. The TypeScript PermissionUpdate declares the field non-optional.
+        """
+        for update in (
+            PermissionUpdate(type="setMode", mode="plan"),
+            PermissionUpdate(type="addDirectories", directories=["/tmp/a"]),
+            PermissionUpdate(
+                type="addRules",
+                rules=[PermissionRuleValue(tool_name="Bash", rule_content="ls:*")],
+                behavior="allow",
+            ),
+        ):
+            assert update.to_dict()["destination"] == "session"
+
+    def test_from_dict_without_destination_defaults_to_session(self):
+        update = PermissionUpdate.from_dict({"type": "setMode", "mode": "plan"})
+        assert update.destination == "session"
+        assert update.to_dict()["destination"] == "session"
+
+    def test_explicit_none_destination_still_sends_session(self):
+        """destination used to be Optional, so callers may still pass None.
+
+        Writing null into the control request fails the CLI's schema exactly
+        like leaving the key out, so it has to coalesce rather than pass through.
+        """
+        update = PermissionUpdate(type="setMode", mode="plan", destination=None)  # type: ignore[arg-type]
+        assert update.to_dict()["destination"] == "session"
+
+    def test_cli_arg_is_a_destination(self):
+        """The CLI and the TypeScript SDK both accept cliArg; this one did not."""
+        assert "cliArg" in get_args(PermissionUpdateDestination)
+        update = PermissionUpdate(type="setMode", mode="plan", destination="cliArg")
+        assert update.to_dict()["destination"] == "cliArg"
 
     def test_from_dict_directories(self):
         wire = {

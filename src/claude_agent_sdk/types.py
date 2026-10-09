@@ -5,7 +5,7 @@ import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeAlias, cast
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired, Required, TypedDict
@@ -128,7 +128,7 @@ class AgentDefinition:
 
 # Permission Update types (matching TypeScript SDK)
 PermissionUpdateDestination = Literal[
-    "userSettings", "projectSettings", "localSettings", "session"
+    "userSettings", "projectSettings", "localSettings", "session", "cliArg"
 ]
 
 PermissionBehavior = Literal["allow", "deny", "ask"]
@@ -158,7 +158,11 @@ class PermissionUpdate:
     behavior: PermissionBehavior | None = None
     mode: PermissionMode | None = None
     directories: list[str] | None = None
-    destination: PermissionUpdateDestination | None = None
+    # Required on every variant of the TypeScript PermissionUpdate, and the CLI
+    # drops the whole updatedPermissions array when it is missing, with only a
+    # warn-level log. "session" is the conservative default: it holds for this
+    # run and writes nothing to a settings file the caller did not name.
+    destination: PermissionUpdateDestination = "session"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert PermissionUpdate to dictionary format matching TypeScript control protocol."""
@@ -166,9 +170,12 @@ class PermissionUpdate:
             "type": self.type,
         }
 
-        # Add destination for all variants
-        if self.destination is not None:
-            result["destination"] = self.destination
+        # Add destination for all variants. The annotation no longer admits None,
+        # but a caller written against the old optional field can still pass it,
+        # and a null on the wire fails the CLI's schema the same way a missing
+        # key does, so fall back to the default here too.
+        destination = cast("PermissionUpdateDestination | None", self.destination)
+        result["destination"] = destination or "session"
 
         # Handle different type variants
         if self.type in ["addRules", "replaceRules", "removeRules"]:
@@ -214,7 +221,7 @@ class PermissionUpdate:
             behavior=data.get("behavior"),
             mode=data.get("mode"),
             directories=data.get("directories"),
-            destination=data.get("destination"),
+            destination=data.get("destination") or "session",
         )
 
 

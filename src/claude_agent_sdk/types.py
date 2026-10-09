@@ -1152,10 +1152,126 @@ class AssistantMessage:
 
 @dataclass
 class SystemMessage:
-    """System message with metadata."""
+    """System message with metadata.
+
+    For ``subtype == "init"``, ``data`` is the session metadata frame
+    described by :class:`SystemInitData`.
+    """
 
     subtype: str
     data: dict[str, Any]
+
+
+class SystemInitMcpServer(TypedDict):
+    """An MCP server listed in :class:`SystemInitData`."""
+
+    name: str
+    status: str
+    source: NotRequired[str]
+    """Where the server definition came from: ``"sdk"``, ``"plugin"``, or a
+    config scope such as ``"user"`` or ``"project"``. Absent on CLIs that
+    predate the field."""
+
+
+class SystemInitPlugin(TypedDict):
+    """A loaded plugin listed in :class:`SystemInitData`."""
+
+    name: str
+    path: str
+    version: NotRequired[str]
+    """The version declared in the plugin's manifest, verbatim. Omitted when
+    the manifest declares none."""
+
+
+class SystemInitPluginError(TypedDict):
+    """A plugin load failure listed in :class:`SystemInitData`."""
+
+    plugin: str
+    """``name@marketplace``, or a positional tag such as ``inline[0]`` or
+    ``synced[0]`` when a directory entry failed before it had a name."""
+    type: str
+    """Failure category from an open set (e.g. ``"path-not-found"``,
+    ``"manifest-validation-error"``). Treat unknown values as a generic
+    failure."""
+    message: str
+    path: NotRequired[str]
+    """Present only when a ``plugins``, ``--plugin-dir`` or synced directory
+    entry did not load at all: that entry's path, resolved against the cwd.
+    Use it to match a positional ``plugin`` tag to your entry."""
+
+
+# Fast mode state reported in SystemInitData.
+FastModeState = Literal["off", "cooldown", "on"]
+
+# Why fast mode can't serve right now, reported in SystemInitData. Newer CLIs
+# may send values not listed here.
+FastModeDisabledReason = Literal[
+    "free",
+    "preference",
+    "extra_usage_disabled",
+    "network_error",
+    "unknown",
+    "not_first_party",
+    "disabled_by_env",
+    "model_not_allowed",
+    "sdk_opt_in_required",
+    "pending",
+]
+
+
+class SystemInitData(TypedDict):
+    """Shape of :attr:`SystemMessage.data` for a ``system``/``init`` message.
+
+    The CLI emits this session metadata at the start of each turn: model,
+    working directory, tools, MCP servers, slash commands, permission mode,
+    and the capabilities list for feature detection. Mirrors the fields the
+    TypeScript SDK reference documents for ``SDKSystemMessage``, with the same
+    key names as on the wire.
+
+    The parser does not validate the payload, so this describes what the CLI
+    sends rather than a guarantee. Narrow with a cast once you have checked
+    the subtype::
+
+        if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            init = cast(SystemInitData, msg.data)
+            print(init["model"], init.get("capabilities", []))
+    """
+
+    type: Literal["system"]
+    subtype: Literal["init"]
+    uuid: str
+    session_id: str
+    agents: NotRequired[list[str]]
+    apiKeySource: str
+    """Where the API credential came from: ``"ANTHROPIC_API_KEY"``,
+    ``"apiKeyHelper"``, ``"/login managed key"``, or ``"none"`` (no API key
+    in use, e.g. a claude.ai login or a third-party cloud provider)."""
+    betas: NotRequired[list[str]]
+    claude_code_version: str
+    cwd: str
+    tools: list[str]
+    mcp_servers: list[SystemInitMcpServer]
+    model: str
+    permissionMode: PermissionMode
+    slash_commands: list[str]
+    terminal_slash_commands: NotRequired[list[str]]
+    """Entries of ``slash_commands`` whose interface is bound to the local
+    terminal (e.g. ``exit``). Present only when non-empty."""
+    output_style: str
+    skills: list[str]
+    plugins: list[SystemInitPlugin]
+    plugin_errors: NotRequired[list[SystemInitPluginError]]
+    """Plugin load failures. The CLI omits the key when nothing failed, but
+    an omitted key does not by itself assert a clean load (older CLIs and
+    some hosted sessions never send it)."""
+    fast_mode_state: NotRequired[FastModeState]
+    fast_mode_disabled_reason: NotRequired[FastModeDisabledReason]
+    """Names the check that blocks fast mode, when something does."""
+    capabilities: NotRequired[list[str]]
+    """Protocol capabilities this CLI supports (e.g.
+    ``"interrupt_receipt_v1"``), for feature detection instead of comparing
+    ``claude_code_version``. Open set: ignore values you don't recognize.
+    Absent on CLIs before 2.1.205."""
 
 
 class TaskUsage(TypedDict):

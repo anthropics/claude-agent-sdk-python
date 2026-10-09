@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -60,14 +61,79 @@ DEFAULT_RUN_END_CEILING_MS = 600_000
 _MAX_RUN_END_CEILING_MS = 2**31 - 1
 
 
+# Integral scientific-notation spellings the CLI also reads, e.g. "1e6".
+_SCI_NOTATION_RE = re.compile(r"([+-]?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)")
+# Parsed magnitudes at or above this are clamped to _MAX_RUN_END_CEILING_MS
+# by the sleeper anyway; parsing stops here so an absurd exponent such as
+# "1e999999999" cannot make the parser build a gigantic int.
+_MAX_PARSEABLE_MAGNITUDE = 10**18
+
+
+def _parse_run_end_ceiling_ms(raw: Any) -> int | None:
+    """Parse a run-end ceiling value; ``None`` when it is not a valid spelling.
+
+    Accepts plain integers (with surrounding whitespace, as ``int`` does) and
+    integral scientific-notation spellings the CLI also reads, such as
+    ``1e6``. Non-integral and negative values are invalid.
+    """
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        match = _SCI_NOTATION_RE.fullmatch(text)
+        if match is None:
+            try:
+                value = int(text)
+            except ValueError:
+                return None
+        else:
+            try:
+                sign, int_part, frac_part, exp = match.groups()
+                frac_part = frac_part or ""
+                coefficient = int(int_part + frac_part)
+                shift = int(exp) - len(frac_part)
+                if shift >= 0:
+                    if sign == "-":
+                        return None
+                    if coefficient == 0:
+                        # "0e19" is still zero; handle it before the
+                        # large-shift guard so the 0 = no-limit semantics
+                        # survive any exponent.
+                        return 0
+                    if shift > 18 or coefficient >= _MAX_PARSEABLE_MAGNITUDE:
+                        # Far above the sleeper's clamp; identical downstream.
+                        return _MAX_RUN_END_CEILING_MS
+                    value = coefficient * 10**shift
+                else:
+                    if -shift > 18:
+                        # coefficient / 10**k with a huge k is integral only
+                        # when the coefficient itself is 0.
+                        return 0 if coefficient == 0 else None
+                    divisor = 10 ** (-shift)
+                    if coefficient % divisor:
+                        return None
+                    value = coefficient // divisor
+                    value = -value if sign == "-" else value
+            except ValueError:
+                return None
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+    return value if value >= 0 else None
+
+
 def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    anything that is not a non-negative integer — or an integral
+    scientific-notation spelling of one, such as ``1e6`` — falls back to the
+    CLI's default of 10 minutes.
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -75,11 +141,8 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
         raw = os.environ.get(_RUN_END_CEILING_ENV)
     if raw is None:
         return DEFAULT_RUN_END_CEILING_MS
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_RUN_END_CEILING_MS
-    return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
+    value = _parse_run_end_ceiling_ms(raw)
+    return value if value is not None else DEFAULT_RUN_END_CEILING_MS
 
 
 def _error_result_text(message: dict[str, Any]) -> str:

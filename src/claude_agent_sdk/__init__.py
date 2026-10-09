@@ -16,14 +16,15 @@ from typing import (
     get_origin,
 )
 
+# typing_extensions ships its own TypedDict on every Python version, and the
+# stdlib is_typeddict doesn't recognize classes built from it.
+from typing_extensions import is_typeddict
+
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
-    from typing import is_typeddict
 else:
-    # On 3.10, stdlib is_typeddict doesn't recognize typing_extensions.TypedDict
-    # subclasses, and stdlib get_type_hints doesn't strip NotRequired markers.
+    # On 3.10, stdlib get_type_hints doesn't strip NotRequired markers.
     from typing_extensions import get_type_hints as _get_type_hints
-    from typing_extensions import is_typeddict
 
 import jsonschema
 from mcp.types import CallToolResult, Tool

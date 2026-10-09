@@ -16,7 +16,7 @@ import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 
@@ -417,6 +417,23 @@ def _get_worktree_paths(cwd: str) -> list[str]:
 # Field extraction — shared by list_sessions and get_session_info
 # ---------------------------------------------------------------------------
 
+# Sessions the TypeScript SDK's includeProgrammatic filter treats as headless.
+_PROGRAMMATIC_ENTRYPOINTS = frozenset({"sdk-cli", "sdk-ts", "sdk-py"})
+_DAEMON_SESSION_KINDS = frozenset({"daemon", "daemon-worker"})
+
+
+def _is_programmatic_session(head: str, tail: str) -> bool:
+    """Returns True for SDK-started (headless) or daemon sessions."""
+    entrypoint = _extract_json_string_field(head, "entrypoint")
+    if entrypoint is None:
+        entrypoint = _extract_last_json_string_field(tail, "entrypoint")
+    if entrypoint in _PROGRAMMATIC_ENTRYPOINTS:
+        return True
+    # sessionKind is read from the first transcript record only.
+    first_record = next((ln for ln in head.split("\n") if '"parentUuid":' in ln), head)
+    session_kind = _extract_json_string_field(first_record, "sessionKind")
+    return session_kind in _DAEMON_SESSION_KINDS
+
 
 def _parse_session_info_from_lite(
     session_id: str,
@@ -517,12 +534,15 @@ def _parse_session_info_from_lite(
 
 
 def _read_sessions_from_dir(
-    project_dir: Path, project_path: str | None = None
+    project_dir: Path,
+    project_path: str | None = None,
+    include_programmatic: bool = True,
 ) -> list[SDKSessionInfo]:
     """Reads session files from a single project directory.
 
-    Each file gets a stat + head/tail read. Filters out sidechain sessions
-    and metadata-only sessions (no title/summary/prompt).
+    Each file gets a stat + head/tail read. Filters out sidechain sessions,
+    metadata-only sessions (no title/summary/prompt), and — when
+    ``include_programmatic`` is False — SDK-started and daemon sessions.
     """
     try:
         entries = list(project_dir.iterdir())
@@ -541,6 +561,8 @@ def _read_sessions_from_dir(
 
         lite = _read_session_lite(entry)
         if lite is None:
+            continue
+        if not include_programmatic and _is_programmatic_session(lite.head, lite.tail):
             continue
 
         info = _parse_session_info_from_lite(session_id, lite, project_path)
@@ -581,6 +603,7 @@ def _list_sessions_for_project(
     limit: int | None,
     offset: int,
     include_worktrees: bool,
+    include_programmatic: bool = True,
 ) -> list[SDKSessionInfo]:
     """Lists sessions for a specific project directory (and its worktrees)."""
     canonical_dir = _canonicalize_path(directory)
@@ -599,7 +622,9 @@ def _list_sessions_for_project(
         project_dir = _find_project_dir(canonical_dir)
         if project_dir is None:
             return []
-        sessions = _read_sessions_from_dir(project_dir, canonical_dir)
+        sessions = _read_sessions_from_dir(
+            project_dir, canonical_dir, include_programmatic=include_programmatic
+        )
         return _apply_sort_limit_offset(sessions, limit, offset)
 
     # Worktree-aware scanning: find all project dirs matching any worktree
@@ -622,7 +647,9 @@ def _list_sessions_for_project(
         project_dir = _find_project_dir(canonical_dir)
         if project_dir is None:
             return _apply_sort_limit_offset([], limit, offset)
-        sessions = _read_sessions_from_dir(project_dir, canonical_dir)
+        sessions = _read_sessions_from_dir(
+            project_dir, canonical_dir, include_programmatic=include_programmatic
+        )
         return _apply_sort_limit_offset(sessions, limit, offset)
 
     all_sessions: list[SDKSessionInfo] = []
@@ -634,7 +661,11 @@ def _list_sessions_for_project(
     if canonical_project_dir is not None:
         dir_base = canonical_project_dir.name
         seen_dirs.add(dir_base.lower() if case_insensitive else dir_base)
-        sessions = _read_sessions_from_dir(canonical_project_dir, canonical_dir)
+        sessions = _read_sessions_from_dir(
+            canonical_project_dir,
+            canonical_dir,
+            include_programmatic=include_programmatic,
+        )
         all_sessions.extend(sessions)
 
     for entry in all_dirents:
@@ -652,7 +683,9 @@ def _list_sessions_for_project(
             )
             if is_match:
                 seen_dirs.add(dir_name)
-                sessions = _read_sessions_from_dir(entry, wt_path)
+                sessions = _read_sessions_from_dir(
+                    entry, wt_path, include_programmatic=include_programmatic
+                )
                 all_sessions.extend(sessions)
                 break
 
@@ -660,7 +693,9 @@ def _list_sessions_for_project(
     return _apply_sort_limit_offset(deduped, limit, offset)
 
 
-def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
+def _list_all_sessions(
+    limit: int | None, offset: int, include_programmatic: bool = True
+) -> list[SDKSessionInfo]:
     """Lists sessions across all project directories."""
     projects_dir = _get_projects_dir()
 
@@ -671,7 +706,11 @@ def _list_all_sessions(limit: int | None, offset: int) -> list[SDKSessionInfo]:
 
     all_sessions: list[SDKSessionInfo] = []
     for project_dir in project_dirs:
-        all_sessions.extend(_read_sessions_from_dir(project_dir))
+        all_sessions.extend(
+            _read_sessions_from_dir(
+                project_dir, include_programmatic=include_programmatic
+            )
+        )
 
     deduped = _deduplicate_by_session_id(all_sessions)
     return _apply_sort_limit_offset(deduped, limit, offset)
@@ -682,6 +721,7 @@ def list_sessions(
     limit: int | None = None,
     offset: int = 0,
     include_worktrees: bool = True,
+    include_programmatic: bool = True,
 ) -> list[SDKSessionInfo]:
     """Lists sessions with metadata extracted from stat + head/tail reads.
 
@@ -701,6 +741,11 @@ def list_sessions(
         include_worktrees: When ``directory`` is provided and the directory
             is inside a git repository, include sessions from all git
             worktree paths. Defaults to ``True``.
+        include_programmatic: Include programmatic/headless sessions (SDK
+            entrypoints ``sdk-cli``, ``sdk-ts``, ``sdk-py``) and
+            daemon/daemon-worker sessions. Defaults to ``True`` for backward
+            compatibility. Pass ``False`` to match the sessions an
+            interactive ``/resume`` picker shows.
 
     Returns:
         List of ``SDKSessionInfo`` sorted by ``last_modified`` descending.
@@ -727,8 +772,10 @@ def list_sessions(
             )
     """
     if directory:
-        return _list_sessions_for_project(directory, limit, offset, include_worktrees)
-    return _list_all_sessions(limit, offset)
+        return _list_sessions_for_project(
+            directory, limit, offset, include_worktrees, include_programmatic
+        )
+    return _list_all_sessions(limit, offset, include_programmatic)
 
 
 # ---------------------------------------------------------------------------
@@ -1020,10 +1067,15 @@ def _build_conversation_chain(
     return chain
 
 
-def _is_visible_message(entry: _TranscriptEntry) -> bool:
+def _is_visible_message(
+    entry: _TranscriptEntry, include_system_messages: bool = False
+) -> bool:
     """Returns True if the entry should be included in the returned messages."""
     entry_type = entry.get("type")
-    if entry_type != "user" and entry_type != "assistant":
+    if entry_type == "system":
+        if not include_system_messages:
+            return False
+    elif entry_type not in ("user", "assistant"):
         return False
     if entry.get("isMeta"):
         return False
@@ -1043,11 +1095,16 @@ def _to_session_message(
 ) -> SessionMessage:
     """Converts a transcript entry dict into a SessionMessage."""
     entry_type = entry.get("type")
-    # Narrow to the Literal type — _is_visible_message already guarantees
-    # this is "user" or "assistant".
-    msg_type: str = "user" if entry_type == "user" else "assistant"
+    # Narrow to the Literal type — callers filter to these three types first.
+    msg_type: Literal["user", "assistant", "system"]
+    if entry_type == "user":
+        msg_type = "user"
+    elif entry_type == "system":
+        msg_type = "system"
+    else:
+        msg_type = "assistant"
     return SessionMessage(
-        type=msg_type,  # type: ignore[arg-type]
+        type=msg_type,
         uuid=entry.get("uuid", ""),
         session_id=entry.get("sessionId", ""),
         message=entry.get("message"),
@@ -1061,6 +1118,7 @@ def get_session_messages(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    include_system_messages: bool = False,
 ) -> list[SessionMessage]:
     """Reads a session's conversation messages from its JSONL transcript file.
 
@@ -1073,6 +1131,10 @@ def get_session_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+        include_system_messages: When ``True``, include system messages
+            (e.g. compact boundaries, informational notices) alongside
+            user/assistant messages. Defaults to ``False`` for backward
+            compatibility.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
@@ -1107,20 +1169,21 @@ def get_session_messages(
         return []
 
     entries = _parse_transcript_entries(content)
-    return _entries_to_session_messages(entries, limit, offset)
+    return _entries_to_session_messages(entries, limit, offset, include_system_messages)
 
 
 def _entries_to_session_messages(
     entries: list[_TranscriptEntry],
     limit: int | None,
     offset: int,
+    include_system_messages: bool = False,
 ) -> list[SessionMessage]:
     """Builds the conversation chain from parsed entries and applies paging.
 
     Shared by the filesystem and SessionStore-backed paths.
     """
     chain = _build_conversation_chain(entries)
-    visible = [e for e in chain if _is_visible_message(e)]
+    visible = [e for e in chain if _is_visible_message(e, include_system_messages)]
     messages = [_to_session_message(e) for e in visible]
 
     # Apply offset and limit
@@ -1862,6 +1925,7 @@ async def get_session_messages_from_store(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    include_system_messages: bool = False,
 ) -> list[SessionMessage]:
     """Read a session's conversation messages from a :class:`SessionStore`.
 
@@ -1876,6 +1940,10 @@ async def get_session_messages_from_store(
             Defaults to the current working directory.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+        include_system_messages: When ``True``, include system messages
+            (e.g. compact boundaries, informational notices) alongside
+            user/assistant messages. Defaults to ``False`` for backward
+            compatibility.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Empty
@@ -1889,7 +1957,7 @@ async def get_session_messages_from_store(
     if not entries:
         return []
     return _entries_to_session_messages(
-        _filter_transcript_entries(entries), limit, offset
+        _filter_transcript_entries(entries), limit, offset, include_system_messages
     )
 
 

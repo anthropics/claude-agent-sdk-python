@@ -224,9 +224,15 @@ class TestClaudeSDKClientStreaming:
             assert user_messages[0]["session_id"] == "default"
 
     @pytest.mark.anyio
-    async def test_forward_subagent_text_sent_in_initialize(self):
-        """ClaudeAgentOptions.forward_subagent_text is sent as the
-        forwardSubagentText initialize capability; omitted when False."""
+    @pytest.mark.parametrize(
+        ("option", "field"),
+        [
+            ("forward_subagent_text", "forwardSubagentText"),
+            ("include_hook_events", "includeHookEvents"),
+        ],
+    )
+    async def test_options_sent_in_initialize(self, option, field):
+        """Enabled capabilities reach initialize and are omitted when False."""
 
         async def initialize_request_for(options: ClaudeAgentOptions) -> dict:
             with patch(
@@ -244,13 +250,11 @@ class TestClaudeSDKClientStreaming:
             assert len(requests) == 1
             return requests[0]["request"]
 
-        enabled = await initialize_request_for(
-            ClaudeAgentOptions(forward_subagent_text=True)
-        )
-        assert enabled["forwardSubagentText"] is True
+        enabled = await initialize_request_for(ClaudeAgentOptions(**{option: True}))
+        assert enabled[field] is True
 
         default = await initialize_request_for(ClaudeAgentOptions())
-        assert "forwardSubagentText" not in default
+        assert field not in default
 
     @pytest.mark.anyio
     async def test_connect_with_async_iterable(self):

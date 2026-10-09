@@ -150,6 +150,7 @@ class InternalClient:
             exclude_dynamic_sections=exclude_dynamic_sections,
             system_prompt_snapshot=system_prompt_snapshot,
             skills=configured_options.skills,
+            include_hook_events=configured_options.include_hook_events,
             forward_subagent_text=configured_options.forward_subagent_text,
             verbatim_prompts=configured_options.verbatim_prompts,
             run_end_ceiling_ms=run_end_ceiling_ms(configured_options.env),

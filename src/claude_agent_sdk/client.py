@@ -218,6 +218,7 @@ class ClaudeSDKClient:
             exclude_dynamic_sections=exclude_dynamic_sections,
             system_prompt_snapshot=system_prompt_snapshot,
             skills=self.options.skills,
+            include_hook_events=self.options.include_hook_events,
             forward_subagent_text=self.options.forward_subagent_text,
             verbatim_prompts=self._verbatim_prompts,
             run_end_ceiling_ms=run_end_ceiling_ms(self.options.env),

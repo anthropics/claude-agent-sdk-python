@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _get_worktree_paths,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -160,6 +162,49 @@ class TestHelpers:
     def test_simple_hash_zero(self):
         # Empty string should produce "0"
         assert _simple_hash("") == "0"
+
+    def test_get_worktree_paths_pins_utf8_decoding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """git emits worktree paths as raw UTF-8, so the decode must be pinned.
+
+        Without an explicit encoding, subprocess decodes the child's output
+        with the locale default, which is cp1252 on a stock Windows install.
+        That misreads a non-ASCII worktree path in one of two ways:
+
+        * If the path's UTF-8 contains 0x81, 0x8D, 0x8F, 0x90 or 0x9D -- the
+          five bytes cp1252 leaves undefined, which covers all hiragana
+          (U+3040-307F encode as E3 81 xx), U+200D ZWJ in emoji sequences,
+          and Cyrillic such as U+0441 -- the decode raises UnicodeDecodeError
+          inside subprocess's reader thread. That never reaches the caller,
+          which instead sees returncode 0 with stdout None, and the
+          `not result.stdout` guard turns it into an empty list. A single
+          such worktree hides every worktree in the repo, ASCII ones included.
+        * Otherwise the bytes decode to mojibake, so the returned path is
+          well-formed but does not exist on disk.
+
+        Pinning UTF-8 fixes both. It is also the codec os.fsdecode uses here,
+        since sys.getfilesystemencoding() is utf-8 on Windows (PEP 529) and
+        on POSIX.
+        """
+        captured: dict[str, object] = {}
+        listing = "worktree /repo\nworktree /repo/сессия\n"
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=["git", "worktree", "list", "--porcelain"],
+                returncode=0,
+                stdout=listing,
+                stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        paths = _get_worktree_paths("/repo")
+
+        assert captured.get("encoding") == "utf-8"
+        assert paths == ["/repo", "/repo/сессия"]
 
     def test_extract_json_string_field_simple(self):
         text = '{"foo":"bar","baz":"qux"}'

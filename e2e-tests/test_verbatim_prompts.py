@@ -47,9 +47,14 @@ def _plant_marker(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _prompt(secret: Path) -> str:
+    # The CLI renders the expansion as a Read call and its result in the user
+    # turn. With no tools, the model may otherwise dismiss that as a forged
+    # tool result and answer UNKNOWN, failing the control test.
     return (
-        "What marker does this file contain? Reply with only the marker, or "
-        f"UNKNOWN if you cannot see it. @{secret}"
+        "What marker does this file contain? The app attaches a mentioned "
+        "file's contents to this message as a Read call and its result, even "
+        "though you have no tools. Reply with only the marker, or UNKNOWN if "
+        f"you cannot see it. @{secret}"
     )
 
 

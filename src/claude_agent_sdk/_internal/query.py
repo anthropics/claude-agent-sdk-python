@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -234,6 +239,11 @@ class Query:
         self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
+        # Set only once the transport itself is being closed, late in
+        # _close_impl. _closed is set earlier, while the final mirror flush
+        # still runs with child handlers live and the transport open, so
+        # _write_control_response gates on this flag instead.
+        self._transport_closed = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
@@ -685,7 +695,7 @@ class Query:
                     "response": response_data,
                 },
             }
-            await self.transport.write(json.dumps(success_response) + "\n")
+            await self._write_control_response(request_id, "success", success_response)
 
         except anyio.get_cancelled_exc_class():
             # Request was cancelled via control_cancel_request; the CLI has
@@ -701,7 +711,55 @@ class Query:
                     "error": str(e),
                 },
             }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            await self._write_control_response(
+                request_id, "error", error_response, handler_error=e
+            )
+
+    async def _write_control_response(
+        self,
+        request_id: str,
+        subtype: Literal["success", "error"],
+        response: SDKControlResponse,
+        handler_error: Exception | None = None,
+    ) -> None:
+        """Write a control_response, unless the transport is already gone.
+
+        A handler can outlive ``close()``: ``_close_impl`` cancels the child
+        tasks but does not wait for them, so a hook callback that swallows
+        cancellation finishes afterwards and answers on the closed transport
+        (#1340). That write fails with ``CLIConnectionError``; treating the
+        failure as a handler error would write a *second* response to the
+        same closed transport, whose own ``CLIConnectionError`` is never
+        retrieved and surfaces in the loop's exception handler (asyncio) or
+        as "Unhandled exception in detached trio task" (trio). Once the
+        transport is closed, or the write fails because the connection is,
+        the response is therefore dropped and logged instead — together with
+        the handler exception it was carrying, when there is one.
+
+        The gate is ``_transport_closed``, not ``_closed``: ``_close_impl``
+        sets ``_closed`` first, but the mirror flush it then awaits still
+        runs with child handlers live and the transport open, so a
+        hook/can_use_tool response finishing in that window must still be
+        delivered rather than dropped.
+        """
+        if self._transport_closed:
+            logger.warning(
+                "Dropping %s control response for request %s: transport is closed",
+                subtype,
+                request_id,
+                exc_info=handler_error,
+            )
+            return
+        try:
+            await self.transport.write(json.dumps(response) + "\n")
+        except CLIConnectionError as e:
+            logger.warning(
+                "Dropping %s control response for request %s: transport is closed (%s)",
+                subtype,
+                request_id,
+                e,
+                exc_info=handler_error,
+            )
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0
@@ -1204,6 +1262,11 @@ class Query:
         # EndOfStream after the buffer drains; the consumer calls
         # close_receive_stream() once it's done iterating (#859).
         self._message_send.close()
+        # Nothing can reach the CLI past this point: handlers still running
+        # drop their responses (_write_control_response). Until the flag is
+        # set they may still answer — notably during the mirror flush above,
+        # which runs with the transport open.
+        self._transport_closed = True
         await self.transport.close()
 
     def close_receive_stream(self) -> None:

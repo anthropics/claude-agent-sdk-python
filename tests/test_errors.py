@@ -5,6 +5,7 @@ from claude_agent_sdk import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    ControlRequestTimeoutError,
     ProcessError,
     ResultError,
 )
@@ -110,3 +111,41 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_control_request_timeout_error_is_selectable(self):
+        """A control request timeout is catchable by type, not by message text."""
+        error = ControlRequestTimeoutError(subtype="initialize", timeout=60.0)
+        assert isinstance(error, ClaudeSDKError)
+        assert error.subtype == "initialize"
+        assert error.timeout == 60.0
+        assert "Control request timeout: initialize" in str(error)
+        assert "60s" in str(error)
+
+    def test_control_request_timeout_error_omits_unknown_timeout(self):
+        """Without a timeout the message keeps the original wording."""
+        error = ControlRequestTimeoutError(subtype="interrupt")
+        assert error.timeout is None
+        assert str(error) == "Control request timeout: interrupt"
+
+    def test_control_request_timeout_error_formats_timeout_compactly(self):
+        """Whole-second timeouts read as `60s`, not `60.0s`."""
+        assert "in 60s)" in str(ControlRequestTimeoutError("initialize", 60.0))
+        assert "in 1.5s)" in str(ControlRequestTimeoutError("initialize", 1.5))
+
+    def test_control_request_timeout_error_survives_pickle_and_copy(self):
+        """Exceptions cross process boundaries via pickle (multiprocessing,
+        ProcessPoolExecutor). The composed message must not be re-prefixed by
+        the default `type(e)(*e.args)` reconstruction."""
+        import copy
+        import pickle
+
+        for error in (
+            ControlRequestTimeoutError(subtype="initialize", timeout=60.0),
+            ControlRequestTimeoutError(subtype="interrupt"),
+            ControlRequestTimeoutError(),
+        ):
+            for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+                assert type(clone) is ControlRequestTimeoutError
+                assert str(clone) == str(error)
+                assert clone.subtype == error.subtype
+                assert clone.timeout == error.timeout

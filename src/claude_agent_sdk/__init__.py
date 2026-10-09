@@ -18,7 +18,13 @@ from typing import (
 
 if sys.version_info >= (3, 11):
     from typing import get_type_hints as _get_type_hints
-    from typing import is_typeddict
+
+    try:
+        # typing_extensions ships its own TypedDict on every Python version, and the
+        # stdlib is_typeddict does not recognize classes built from it.
+        from typing_extensions import is_typeddict
+    except ImportError:
+        from typing import is_typeddict
 else:
     # On 3.10, stdlib is_typeddict doesn't recognize typing_extensions.TypedDict
     # subclasses, and stdlib get_type_hints doesn't strip NotRequired markers.

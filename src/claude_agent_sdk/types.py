@@ -2550,8 +2550,9 @@ class ClaudeAgentOptions:
     """Include hook lifecycle events in the message stream.
 
     When true, the CLI emits hook events (PreToolUse, PostToolUse, Stop,
-    etc.) as ``HookEventMessage`` objects in the message stream. Matches the
-    TypeScript SDK's ``includeHookEvents``.
+    etc.) as ``HookEventMessage`` objects in the message stream. The
+    ``SessionStart`` and ``Setup`` hook events are emitted regardless of this
+    setting. Matches the TypeScript SDK's ``includeHookEvents``.
     """
 
     forward_subagent_text: bool = False

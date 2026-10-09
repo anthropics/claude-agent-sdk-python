@@ -296,6 +296,14 @@ HookEvent = (
 
 
 # Hook input types - strongly typed for each hook event
+class HookEffort(TypedDict):
+    """Reasoning effort in effect when a hook fires."""
+
+    level: str
+    """Effort level for the current turn (e.g. ``"low"``, ``"high"``,
+    ``"max"``), after any downgrade for the selected model."""
+
+
 class BaseHookInput(TypedDict):
     """Base hook input fields present across many hook events."""
 
@@ -303,6 +311,13 @@ class BaseHookInput(TypedDict):
     transcript_path: str
     cwd: str
     permission_mode: NotRequired[str]
+    prompt_id: NotRequired[str]
+    """UUID of the user prompt being processed. Matches the ``prompt.id``
+    attribute on OpenTelemetry events. Absent until the first user input."""
+    effort: NotRequired[HookEffort]
+    """Effort in effect for the current turn. Present for hooks that fire
+    within a tool-use context (PreToolUse, PostToolUse, Stop, SubagentStop,
+    etc.) on models that support effort."""
 
 
 # agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
@@ -347,6 +362,9 @@ class PostToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     tool_input: dict[str, Any]
     tool_response: Any
     tool_use_id: str
+    duration_ms: NotRequired[int]
+    """Tool execution time in milliseconds. Excludes permission-prompt and
+    hook time."""
 
 
 class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
@@ -358,6 +376,9 @@ class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
     tool_use_id: str
     error: str
     is_interrupt: NotRequired[bool]
+    duration_ms: NotRequired[int]
+    """Tool execution time in milliseconds. Excludes permission-prompt and
+    hook time."""
 
 
 class UserPromptSubmitHookInput(BaseHookInput):
@@ -367,11 +388,58 @@ class UserPromptSubmitHookInput(BaseHookInput):
     prompt: str
 
 
+class BackgroundTaskSummary(TypedDict):
+    """In-flight background task, as listed on Stop and SubagentStop inputs.
+
+    ``description`` and ``command`` are capped at 1000 characters; a clipped
+    value ends with an in-string ``"… [+N chars]"`` marker, so it is not
+    always the original text.
+    """
+
+    id: str
+    type: str
+    """Task-type label (e.g. ``"shell"``, ``"subagent"``, ``"monitor"``,
+    ``"workflow"``). Falls back to the raw discriminant for unknown types."""
+    status: str
+    description: str
+    command: NotRequired[str]
+    """Shell command line. Only present for ``shell`` tasks."""
+    agent_type: NotRequired[str]
+    """Subagent type name. Only present for ``subagent`` tasks."""
+    server: NotRequired[str]
+    """MCP server name. Only present for ``monitor`` / MCP tasks."""
+    tool: NotRequired[str]
+    """MCP tool name. Only present for ``monitor`` / MCP tasks."""
+    name: NotRequired[str]
+    """Workflow name. Only present for ``workflow`` tasks."""
+
+
+class SessionCronSummary(TypedDict):
+    """Session-scoped scheduled wakeup, as listed on Stop and SubagentStop inputs."""
+
+    id: str
+    schedule: str
+    """Cron expression, e.g. ``"0 9 * * 1-5"``."""
+    recurring: bool
+    """False for one-shot wakeups; True for tasks that re-fire on every match."""
+    prompt: str
+    """Prompt submitted when the cron fires. Capped at 1000 characters; a
+    clipped value ends with an in-string ``"… [+N chars]"`` marker."""
+
+
 class StopHookInput(BaseHookInput):
     """Input data for Stop hook events."""
 
     hook_event_name: Literal["Stop"]
     stop_hook_active: bool
+    last_assistant_message: NotRequired[str]
+    """Text content of the last assistant message before stopping."""
+    background_tasks: NotRequired[list[BackgroundTaskSummary]]
+    """In-flight background work in this session. Empty when nothing is in
+    flight."""
+    session_crons: NotRequired[list[SessionCronSummary]]
+    """Session-scoped scheduled wakeups that will resume this session later.
+    Empty when none are scheduled."""
 
 
 class SubagentStopHookInput(BaseHookInput):
@@ -382,6 +450,12 @@ class SubagentStopHookInput(BaseHookInput):
     agent_id: str
     agent_transcript_path: str
     agent_type: str
+    last_assistant_message: NotRequired[str]
+    """Text content of the subagent's last assistant message before stopping."""
+    background_tasks: NotRequired[list[BackgroundTaskSummary]]
+    """In-flight background work, scoped to the parent session."""
+    session_crons: NotRequired[list[SessionCronSummary]]
+    """Scheduled wakeups, scoped to the parent session."""
 
 
 class PreCompactHookInput(BaseHookInput):
@@ -474,6 +548,21 @@ class UserPromptSubmitHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["UserPromptSubmit"]
     additionalContext: NotRequired[str]
+    sessionTitle: NotRequired[str]
+    """Sets the session title."""
+    suppressOriginalPrompt: NotRequired[bool]
+    """When ``decision`` is ``"block"``, omit the original prompt from the
+    block message."""
+
+
+class UserPromptExpansionHookSpecificOutput(TypedDict):
+    """Hook-specific output for UserPromptExpansion events."""
+
+    hookEventName: Literal["UserPromptExpansion"]
+    additionalContext: NotRequired[str]
+    suppressOriginalPrompt: NotRequired[bool]
+    """When ``decision`` is ``"block"``, omit the original prompt from the
+    block message."""
 
 
 class SessionStartHookSpecificOutput(TypedDict):
@@ -481,6 +570,17 @@ class SessionStartHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["SessionStart"]
     additionalContext: NotRequired[str]
+    initialUserMessage: NotRequired[str]
+    """Used as the first user message of the session."""
+    sessionTitle: NotRequired[str]
+    """Sets the session title. Ignored when the session starts from
+    ``clear`` or ``compact``."""
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events during this session."""
+    reloadSkills: NotRequired[bool]
+    """Re-scan skill and command directories after SessionStart hooks
+    complete, so skills the hook installed are available in the same
+    session."""
 
 
 class NotificationHookSpecificOutput(TypedDict):
@@ -504,6 +604,127 @@ class PermissionRequestHookSpecificOutput(TypedDict):
     decision: dict[str, Any]
 
 
+class PostToolBatchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostToolBatch events."""
+
+    hookEventName: Literal["PostToolBatch"]
+    additionalContext: NotRequired[str]
+
+
+class StopHookSpecificOutput(TypedDict):
+    """Hook-specific output for Stop events.
+
+    ``additionalContext`` is non-error feedback delivered to the model; the
+    conversation continues so the model can act on it.
+    """
+
+    hookEventName: Literal["Stop"]
+    additionalContext: NotRequired[str]
+
+
+class SubagentStopHookSpecificOutput(TypedDict):
+    """Hook-specific output for SubagentStop events.
+
+    ``additionalContext`` is non-error feedback delivered to the subagent; the
+    subagent continues so it can act on it.
+    """
+
+    hookEventName: Literal["SubagentStop"]
+    additionalContext: NotRequired[str]
+
+
+class PermissionDeniedHookSpecificOutput(TypedDict):
+    """Hook-specific output for PermissionDenied events."""
+
+    hookEventName: Literal["PermissionDenied"]
+    retry: NotRequired[bool]
+    """Tell the model it may retry the denied tool call. Ignored for denials
+    without a classifier verdict."""
+
+
+class PreModelSwitchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PreModelSwitch events."""
+
+    hookEventName: Literal["PreModelSwitch"]
+    permissionDecision: NotRequired[Literal["allow", "deny", "ask"]]
+    """``"allow"`` proceeds, ``"deny"`` cancels the switch. ``"ask"`` is
+    treated as a refusal outside an interactive session."""
+    permissionDecisionReason: NotRequired[str]
+
+
+class PostModelSwitchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostModelSwitch events."""
+
+    hookEventName: Literal["PostModelSwitch"]
+    additionalContext: NotRequired[str]
+    """Reaches the model with the next request the new model serves."""
+
+
+class ElicitationHookSpecificOutput(TypedDict):
+    """Hook-specific output for Elicitation events.
+
+    Return this to accept or decline an MCP elicitation request
+    programmatically.
+    """
+
+    hookEventName: Literal["Elicitation"]
+    action: NotRequired[Literal["accept", "decline", "cancel"]]
+    content: NotRequired[dict[str, Any]]
+    """Form field values to submit. Only used when ``action`` is
+    ``"accept"``."""
+
+
+class ElicitationResultHookSpecificOutput(TypedDict):
+    """Hook-specific output for ElicitationResult events.
+
+    Return this to override the action or content before the response is sent
+    to the MCP server.
+    """
+
+    hookEventName: Literal["ElicitationResult"]
+    action: NotRequired[Literal["accept", "decline", "cancel"]]
+    content: NotRequired[dict[str, Any]]
+
+
+class CwdChangedHookSpecificOutput(TypedDict):
+    """Hook-specific output for CwdChanged events."""
+
+    hookEventName: Literal["CwdChanged"]
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events. Replaces the current
+    dynamic watch list."""
+
+
+class FileChangedHookSpecificOutput(TypedDict):
+    """Hook-specific output for FileChanged events."""
+
+    hookEventName: Literal["FileChanged"]
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events. Replaces the current
+    dynamic watch list."""
+
+
+class WorktreeCreateHookSpecificOutput(TypedDict):
+    """Hook-specific output for WorktreeCreate events."""
+
+    hookEventName: Literal["WorktreeCreate"]
+    worktreePath: str
+    """Absolute path to the created worktree directory."""
+
+
+class MessageDisplayHookSpecificOutput(TypedDict):
+    """Hook-specific output for MessageDisplay events.
+
+    Display-only: replaces the text on screen without changing the stored
+    message or what the model sees.
+    """
+
+    hookEventName: Literal["MessageDisplay"]
+    displayContent: NotRequired[str]
+    """Text displayed in place of the delta. Omit it to display the
+    original."""
+
+
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
@@ -513,6 +734,19 @@ HookSpecificOutput = (
     | NotificationHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PermissionRequestHookSpecificOutput
+    | UserPromptExpansionHookSpecificOutput
+    | PostToolBatchHookSpecificOutput
+    | StopHookSpecificOutput
+    | SubagentStopHookSpecificOutput
+    | PermissionDeniedHookSpecificOutput
+    | PreModelSwitchHookSpecificOutput
+    | PostModelSwitchHookSpecificOutput
+    | ElicitationHookSpecificOutput
+    | ElicitationResultHookSpecificOutput
+    | CwdChangedHookSpecificOutput
+    | FileChangedHookSpecificOutput
+    | WorktreeCreateHookSpecificOutput
+    | MessageDisplayHookSpecificOutput
 )
 
 

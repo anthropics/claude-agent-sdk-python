@@ -1,29 +1,38 @@
 """Tests for Claude SDK type definitions."""
 
-from typing import get_args
+from typing import Any, get_args, get_type_hints
 
 from claude_agent_sdk import (
     AssistantMessage,
+    BaseHookInput,
     ClaudeAgentOptions,
     EffortLevel,
     NotificationHookInput,
     NotificationHookSpecificOutput,
     PermissionRequestHookInput,
     PermissionRequestHookSpecificOutput,
+    PostToolUseFailureHookInput,
+    PostToolUseHookInput,
+    PreToolUseHookInput,
     ResultMessage,
+    StopHookInput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
+    SubagentStopHookInput,
 )
 from claude_agent_sdk.types import (
+    HookSpecificOutput,
     PermissionRuleValue,
     PermissionUpdate,
     PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput,
+    SessionStartHookSpecificOutput,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    UserPromptSubmitHookSpecificOutput,
 )
 
 
@@ -463,6 +472,210 @@ class TestHookSpecificOutputTypes:
             "stderr": "",
             "interrupted": False,
         }
+
+    def test_user_prompt_submit_output_session_title_and_suppress(self):
+        output: UserPromptSubmitHookSpecificOutput = {
+            "hookEventName": "UserPromptSubmit",
+            "sessionTitle": "Refactor auth",
+            "suppressOriginalPrompt": True,
+        }
+        assert output["sessionTitle"] == "Refactor auth"
+        assert output["suppressOriginalPrompt"] is True
+
+    def test_session_start_output_fields(self):
+        output: SessionStartHookSpecificOutput = {
+            "hookEventName": "SessionStart",
+            "additionalContext": "ctx",
+            "initialUserMessage": "Run the test suite",
+            "sessionTitle": "auth-refactor",
+            "watchPaths": ["/repo/.envrc"],
+            "reloadSkills": True,
+        }
+        assert output["watchPaths"] == ["/repo/.envrc"]
+        assert output["reloadSkills"] is True
+
+    # (required keys, optional keys) for each hook-specific output, matching
+    # the TypeScript SDK's *HookSpecificOutput types. Checked against the
+    # TypedDict key sets because mypy does not run over tests/.
+    _OUTPUT_KEYS: dict[str, tuple[set[str], set[str]]] = {
+        "UserPromptSubmitHookSpecificOutput": (
+            {"hookEventName"},
+            {"additionalContext", "sessionTitle", "suppressOriginalPrompt"},
+        ),
+        "UserPromptExpansionHookSpecificOutput": (
+            {"hookEventName"},
+            {"additionalContext", "suppressOriginalPrompt"},
+        ),
+        "SessionStartHookSpecificOutput": (
+            {"hookEventName"},
+            {
+                "additionalContext",
+                "initialUserMessage",
+                "sessionTitle",
+                "watchPaths",
+                "reloadSkills",
+            },
+        ),
+        "PostToolBatchHookSpecificOutput": ({"hookEventName"}, {"additionalContext"}),
+        "StopHookSpecificOutput": ({"hookEventName"}, {"additionalContext"}),
+        "SubagentStopHookSpecificOutput": ({"hookEventName"}, {"additionalContext"}),
+        "PermissionDeniedHookSpecificOutput": ({"hookEventName"}, {"retry"}),
+        "PreModelSwitchHookSpecificOutput": (
+            {"hookEventName"},
+            {"permissionDecision", "permissionDecisionReason"},
+        ),
+        "PostModelSwitchHookSpecificOutput": (
+            {"hookEventName"},
+            {"additionalContext"},
+        ),
+        "ElicitationHookSpecificOutput": ({"hookEventName"}, {"action", "content"}),
+        "ElicitationResultHookSpecificOutput": (
+            {"hookEventName"},
+            {"action", "content"},
+        ),
+        "CwdChangedHookSpecificOutput": ({"hookEventName"}, {"watchPaths"}),
+        "FileChangedHookSpecificOutput": ({"hookEventName"}, {"watchPaths"}),
+        "WorktreeCreateHookSpecificOutput": ({"hookEventName", "worktreePath"}, set()),
+        "MessageDisplayHookSpecificOutput": ({"hookEventName"}, {"displayContent"}),
+    }
+
+    def test_output_key_sets_match_typescript(self):
+        import claude_agent_sdk
+
+        for name, (required, optional) in self._OUTPUT_KEYS.items():
+            typed_dict = getattr(claude_agent_sdk, name)
+            assert typed_dict.__required_keys__ == required, name
+            assert typed_dict.__optional_keys__ == optional, name
+            assert typed_dict in get_args(HookSpecificOutput), name
+
+    def test_output_literals(self):
+        import claude_agent_sdk
+
+        def literal_values(tp: Any) -> set[Any]:
+            # Unwrap NotRequired[...], which get_type_hints keeps on 3.10.
+            args = get_args(tp)
+            while len(args) == 1 and get_args(args[0]):
+                args = get_args(args[0])
+            return set(args)
+
+        pre_model_switch = get_type_hints(
+            claude_agent_sdk.PreModelSwitchHookSpecificOutput
+        )
+        assert literal_values(pre_model_switch["permissionDecision"]) == {
+            "allow",
+            "deny",
+            "ask",
+        }
+        for name in (
+            "ElicitationHookSpecificOutput",
+            "ElicitationResultHookSpecificOutput",
+        ):
+            hints = get_type_hints(getattr(claude_agent_sdk, name))
+            assert literal_values(hints["action"]) == {"accept", "decline", "cancel"}
+
+    def test_hook_specific_output_members_have_distinct_event_names(self):
+        """Each HookSpecificOutput member is discriminated by its own event."""
+        names = []
+        for member in get_args(HookSpecificOutput):
+            (event_name,) = get_args(get_type_hints(member)["hookEventName"])
+            names.append(event_name)
+        assert len(names) == len(set(names))
+
+    def test_every_hook_specific_output_is_exported(self):
+        import claude_agent_sdk
+
+        for member in get_args(HookSpecificOutput):
+            assert member.__name__ in claude_agent_sdk.__all__, member.__name__
+            assert getattr(claude_agent_sdk, member.__name__) is member
+
+
+class TestHookInputFieldParity:
+    """Optional fields the CLI sends on existing hook inputs."""
+
+    def test_base_hook_input_prompt_id_and_effort(self):
+        hook_input: PreToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+            "effort": {"level": "high"},
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_use_id": "toolu_1",
+        }
+        assert hook_input.get("prompt_id") == "550e8400-e29b-41d4-a716-446655440000"
+        assert hook_input["effort"]["level"] == "high"
+
+    def test_base_hook_input_new_fields_are_optional(self):
+        assert "prompt_id" in BaseHookInput.__optional_keys__
+        assert "effort" in BaseHookInput.__optional_keys__
+
+    def test_post_tool_use_duration_ms(self):
+        hook_input: PostToolUseHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_response": {"stdout": ""},
+            "tool_use_id": "toolu_1",
+            "duration_ms": 12,
+        }
+        assert hook_input["duration_ms"] == 12
+        assert "duration_ms" in PostToolUseFailureHookInput.__optional_keys__
+
+    def test_stop_hook_input_background_work(self):
+        hook_input: StopHookInput = {
+            "session_id": "sess-1",
+            "transcript_path": "/tmp/transcript",
+            "cwd": "/home/user",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Done.",
+            "background_tasks": [
+                {
+                    "id": "task-1",
+                    "type": "shell",
+                    "status": "running",
+                    "description": "npm test",
+                    "command": "npm test",
+                }
+            ],
+            "session_crons": [
+                {
+                    "id": "cron-1",
+                    "schedule": "0 9 * * 1-5",
+                    "recurring": True,
+                    "prompt": "check CI",
+                }
+            ],
+        }
+        assert hook_input["background_tasks"][0]["command"] == "npm test"
+        assert hook_input["session_crons"][0]["recurring"] is True
+
+    def test_subagent_stop_hook_input_fields_are_optional(self):
+        for key in ("last_assistant_message", "background_tasks", "session_crons"):
+            assert key in SubagentStopHookInput.__optional_keys__
+            assert key in StopHookInput.__optional_keys__
+
+    def test_background_work_summary_key_sets(self):
+        import claude_agent_sdk
+
+        tasks = claude_agent_sdk.BackgroundTaskSummary
+        assert tasks.__required_keys__ == {"id", "type", "status", "description"}
+        assert tasks.__optional_keys__ == {
+            "command",
+            "agent_type",
+            "server",
+            "tool",
+            "name",
+        }
+        crons = claude_agent_sdk.SessionCronSummary
+        assert crons.__required_keys__ == {"id", "schedule", "recurring", "prompt"}
+        assert crons.__optional_keys__ == set()
+        assert claude_agent_sdk.HookEffort.__required_keys__ == {"level"}
 
 
 class TestSystemInitData:

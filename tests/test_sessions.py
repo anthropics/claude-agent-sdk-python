@@ -23,6 +23,7 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _get_projects_dir,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -1993,3 +1994,146 @@ class TestGetSubagentMessages:
         (subagents_dir / "agent-empty.jsonl").write_text("")
 
         assert get_subagent_messages(sid, "empty", directory=project_path) == []
+
+
+# ---------------------------------------------------------------------------
+# env override — resolve a different CLAUDE_CONFIG_DIR than os.environ
+# ---------------------------------------------------------------------------
+
+
+class TestEnvOverride:
+    """``env=`` targets the config dir a subprocess was given via ``options.env``.
+
+    A host process that runs several agents, each with its own
+    ``CLAUDE_CONFIG_DIR`` passed through ``ClaudeAgentOptions.env``, has one
+    ``os.environ`` but many config dirs. Without ``env=`` every read-side
+    function silently resolves the host's own directory.
+    """
+
+    @pytest.fixture
+    def other_config_dir(self, tmp_path: Path) -> Path:
+        """A second config dir that os.environ does NOT point at."""
+        other = tmp_path / "other-claude"
+        (other / "projects").mkdir(parents=True)
+        return other
+
+    def _session_in(self, config_dir: Path, project_path: str, **kw) -> str:
+        project_dir = _make_project_dir(config_dir, os.path.realpath(project_path))
+        sid, _ = _make_session_file(project_dir, cwd=project_path, **kw)
+        return sid
+
+    def test_list_sessions_reads_the_env_config_dir(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        in_environ = self._session_in(
+            claude_config_dir, project, first_prompt="environ"
+        )
+        in_env = self._session_in(other_config_dir, project, first_prompt="override")
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        assert [s.session_id for s in list_sessions(env=env)] == [in_env]
+        assert [s.session_id for s in list_sessions(directory=project, env=env)] == [
+            in_env
+        ]
+        # os.environ is untouched: the default path still reads the host's dir
+        assert [s.session_id for s in list_sessions()] == [in_environ]
+
+    def test_get_session_info_and_messages_follow_env(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        sid = self._session_in(other_config_dir, project, first_prompt="only here")
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        assert get_session_info(sid) is None
+        info = get_session_info(sid, env=env)
+        assert info is not None and info.first_prompt == "only here"
+
+        # messages need a transcript with uuid/parentUuid chain
+        project_dir = _make_project_dir(other_config_dir, os.path.realpath(project))
+        u1, a1 = str(uuid.uuid4()), str(uuid.uuid4())
+        _write_transcript(
+            project_dir,
+            sid,
+            [
+                _make_transcript_entry("user", u1, None, sid, content="only here"),
+                _make_transcript_entry("assistant", a1, u1, sid, content="hi"),
+            ],
+        )
+        assert get_session_messages(sid) == []
+        messages = get_session_messages(sid, env=env)
+        assert [m.uuid for m in messages] == [u1, a1]
+
+    def test_subagent_helpers_follow_env(
+        self, claude_config_dir: Path, other_config_dir: Path, tmp_path: Path
+    ):
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        sid = self._session_in(other_config_dir, project)
+        project_dir = _make_project_dir(other_config_dir, os.path.realpath(project))
+        subagents = project_dir / sid / "subagents"
+        subagents.mkdir(parents=True)
+        (subagents / "agent-abc.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "parentUuid": None,
+                    "message": {"role": "user", "content": "sub"},
+                }
+            )
+            + "\n"
+        )
+        env = {"CLAUDE_CONFIG_DIR": str(other_config_dir)}
+
+        assert list_subagents(sid) == []
+        assert list_subagents(sid, env=env) == ["abc"]
+        assert get_subagent_messages(sid, "abc") == []
+        assert get_subagent_messages(sid, "abc", env=env)
+
+    def test_env_without_config_dir_falls_back_to_environ(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """``env`` that does not carry CLAUDE_CONFIG_DIR changes nothing."""
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        sid = self._session_in(claude_config_dir, project)
+        assert [s.session_id for s in list_sessions(env={"OTHER": "x"})] == [sid]
+
+    def test_env_home_moves_the_default_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A host that isolates agents by giving each one its own ``HOME``
+        (no CLAUDE_CONFIG_DIR) moves the CLI's config dir to ``$HOME/.claude``;
+        the lookup has to follow the same key, or it reads the host's home."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        agent_home = tmp_path / "agent-a-home"
+        assert _get_projects_dir({"HOME": str(agent_home)}) == (
+            agent_home / ".claude" / "projects"
+        )
+        assert _get_projects_dir({"USERPROFILE": str(agent_home)}) == (
+            agent_home / ".claude" / "projects"
+        )
+        # Same precedence the subprocess sees ({**os.environ, **options.env}):
+        # CLAUDE_CONFIG_DIR, from either side, beats an overridden HOME.
+        explicit = tmp_path / "explicit"
+        assert _get_projects_dir(
+            {"HOME": str(agent_home), "CLAUDE_CONFIG_DIR": str(explicit)}
+        ) == (explicit / "projects")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(explicit))
+        assert _get_projects_dir({"HOME": str(agent_home)}) == (explicit / "projects")
+
+    def test_list_sessions_follows_env_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        agent_home = tmp_path / "agent-a-home"
+        (agent_home / ".claude" / "projects").mkdir(parents=True)
+        project = str(tmp_path / "proj")
+        Path(project).mkdir()
+        sid = self._session_in(agent_home / ".claude", project)
+        found = list_sessions(env={"HOME": str(agent_home)})
+        assert [s.session_id for s in found] == [sid]

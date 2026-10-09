@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
@@ -65,9 +66,9 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    anything that is not a non-negative number of milliseconds falls back to
+    the CLI's default of 10 minutes. Scientific notation is read the way the
+    CLI reads it, so ``1e6`` is a million milliseconds and not a fallback.
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -78,7 +79,16 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_RUN_END_CEILING_MS
+        # Only reached when the plain-integer read fails, so an integer too
+        # large for a float keeps its exact value above and is clamped later
+        # by the sleeper rather than becoming an infinity here.
+        try:
+            as_number = float(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_RUN_END_CEILING_MS
+        if not math.isfinite(as_number):
+            return DEFAULT_RUN_END_CEILING_MS
+        value = int(as_number)
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 

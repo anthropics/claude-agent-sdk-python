@@ -705,7 +705,12 @@ def _try_append(path: Path, data: str) -> bool:
         stat = os.fstat(fd)
         if stat.st_size == 0:
             return False
-        os.write(fd, data.encode("utf-8"))
+        remaining = memoryview(data.encode("utf-8"))
+        while remaining:
+            written = os.write(fd, remaining)
+            if written == 0:
+                raise OSError(errno.EIO, "Session metadata write made no progress")
+            remaining = remaining[written:]
         return True
     finally:
         os.close(fd)

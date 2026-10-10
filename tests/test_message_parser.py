@@ -960,6 +960,32 @@ class TestMessageParser:
         assert message.new_conversation_id == "d2f4a573-ca99-42a2-bb7a-905b40c908e8"
         assert message.uuid == "msg-1"
         assert message.session_id == "66694129-ce74-4ee1-9b0f-994155ac97ba"
+        assert message.trigger is None
+        assert message.user_message_uuid is None
+        assert message.timestamp is None
+
+    @pytest.mark.parametrize(
+        "trigger", ["clear", "plan_mode_exit", "fresh_session", "onboarding"]
+    )
+    def test_parse_conversation_reset_with_metadata(self, trigger: str):
+        """conversation_reset parses with trigger, user_message_uuid, and timestamp."""
+        data = {
+            "type": "conversation_reset",
+            "new_conversation_id": "d2f4a573-ca99-42a2-bb7a-905b40c908e8",
+            "uuid": "msg-1",
+            "session_id": "66694129-ce74-4ee1-9b0f-994155ac97ba",
+            "trigger": trigger,
+            "user_message_uuid": "user-msg-uuid-1",
+            "timestamp": "2026-09-28T07:15:00.000Z",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ConversationResetMessage)
+        assert message.new_conversation_id == "d2f4a573-ca99-42a2-bb7a-905b40c908e8"
+        assert message.uuid == "msg-1"
+        assert message.session_id == "66694129-ce74-4ee1-9b0f-994155ac97ba"
+        assert message.trigger == trigger
+        assert message.user_message_uuid == "user-msg-uuid-1"
+        assert message.timestamp == "2026-09-28T07:15:00.000Z"
 
     def test_parse_conversation_reset_missing_field(self):
         """conversation_reset without new_conversation_id raises."""

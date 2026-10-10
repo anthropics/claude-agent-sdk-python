@@ -2397,6 +2397,15 @@ class ClaudeAgentOptions:
     ``resume`` unless ``fork_session`` is also set.
     """
 
+    persist_session: bool = True
+    """Save the session to disk so it can be resumed later.
+
+    When ``False``, the CLI writes no transcript under ``~/.claude/projects/``
+    and the session cannot be resumed. Useful for ephemeral or automated runs
+    that don't need history. Cannot be combined with ``session_store``, which
+    mirrors the transcript from those local writes.
+    """
+
     max_turns: int | None = None
     """Maximum number of conversation turns before the query stops.
 

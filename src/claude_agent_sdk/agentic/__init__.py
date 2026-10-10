@@ -1,0 +1,19 @@
+"""Agentic loop: THINK→ACT→OBSERVE→UPDATE with Frobenius verification.
+
+This module implements the structural promotion from O₀ (thin subprocess wrapper)
+to O₂ (self-verifying agent loop) as described in the Imscribing Grammar.
+"""
+
+from .contracts import DualToolResult, ToolContract
+from .trajectory import AgentCycle, AgentTrajectory
+from .loop import TrueAgenticLoop
+from .criticality import PhiCriticalityGate
+
+__all__ = [
+    "DualToolResult",
+    "ToolContract",
+    "AgentCycle",
+    "AgentTrajectory",
+    "TrueAgenticLoop",
+    "PhiCriticalityGate",
+]

@@ -81,7 +81,7 @@ The workflow uses `ANTHROPIC_API_KEY` from GitHub Secrets.
 
 ### "ANTHROPIC_API_KEY environment variable is required" error
 - Set your API key: `export ANTHROPIC_API_KEY=sk-ant-...`
-- The tests will not skip - they require the key to run
+- The tests will not skip they require the key to run
 
 ### Tests timing out
 - Check your API key is valid and has quota available

@@ -12,7 +12,7 @@ pip install claude-agent-sdk
 
 - Python 3.10+
 
-**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
+**Note:** The Claude Code CLI is automatically bundled with the package no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
 
 - Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
 - Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
@@ -147,11 +147,11 @@ async with ClaudeSDKClient(options=options) as client:
 
 #### Benefits Over External MCP Servers
 
-- **No subprocess management** - Runs in the same process as your application
-- **Better performance** - No IPC overhead for tool calls
-- **Simpler deployment** - Single Python process instead of multiple
-- **Easier debugging** - All code runs in the same process
-- **Type safety** - Direct Python function calls with type hints
+- **No subprocess management** Runs in the same process as your application
+- **Better performance** No IPC overhead for tool calls
+- **Simpler deployment** Single Python process instead of multiple
+- **Easier debugging** All code runs in the same process
+- **Type safety** Direct Python function calls with type hints
 
 #### Migration from External Servers
 
@@ -252,9 +252,9 @@ async with ClaudeSDKClient(options=options) as client:
 
 See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
 
-- `ClaudeAgentOptions` - Configuration options
-- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
-- `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
+- `ClaudeAgentOptions` Configuration options
+- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` Message types
+- `TextBlock`, `ToolUseBlock`, `ToolResultBlock` Content blocks
 
 ## Error Handling
 
@@ -353,20 +353,20 @@ See `python scripts/build_wheel.py --help` for all options.
 The package is published to PyPI via the GitHub Actions workflow in `.github/workflows/publish.yml`. To create a new release:
 
 1. **Trigger the workflow** manually from the Actions tab with two inputs:
-   - `version`: The package version to publish (e.g., `0.1.5`)
-   - `claude_code_version`: The Claude Code CLI version to bundle (e.g., `2.0.0` or `latest`)
+   `version`: The package version to publish (e.g., `0.1.5`)
+   `claude_code_version`: The Claude Code CLI version to bundle (e.g., `2.0.0` or `latest`)
 
 2. **The workflow will**:
-   - Build platform-specific wheels for macOS, Linux, and Windows
-   - Bundle the specified Claude Code CLI version in each wheel
-   - Build a source distribution
-   - Publish all artifacts to PyPI
-   - Create a release branch with version updates
-   - Open a PR to main with:
-     - Updated `pyproject.toml` version
-     - Updated `src/claude_agent_sdk/_version.py`
-     - Updated `src/claude_agent_sdk/_cli_version.py` with bundled CLI version
-     - Auto-generated `CHANGELOG.md` entry
+   Build platform-specific wheels for macOS, Linux, and Windows
+   Bundle the specified Claude Code CLI version in each wheel
+   Build a source distribution
+   Publish all artifacts to PyPI
+   Create a release branch with version updates
+   Open a PR to main with:
+     Updated `pyproject.toml` version
+     Updated `src/claude_agent_sdk/_version.py`
+     Updated `src/claude_agent_sdk/_cli_version.py` with bundled CLI version
+     Auto-generated `CHANGELOG.md` entry
 
 3. **Review and merge** the release PR to update main with the new version information
 

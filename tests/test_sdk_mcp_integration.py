@@ -1018,6 +1018,112 @@ async def test_json_schema_constraints_are_enforced():
 
 
 @pytest.mark.anyio
+async def test_json_schema_without_a_top_level_type_is_kept_as_a_schema():
+    """A JSON Schema need not carry a top-level `type` to be one.
+
+    `oneOf` composes the subschemas on its own, so reading the dict as a
+    parameter map turns it into one required `oneOf` argument of type string
+    and no call can ever validate. The keywords are what say "schema", and the
+    root `type: object` MCP requires goes in alongside them.
+    """
+    schema = {
+        "oneOf": [
+            {"type": "object", "properties": {"x": {"type": "string"}}},
+            {"type": "null"},
+        ]
+    }
+
+    @tool("either", "Takes x or nothing", schema)
+    async def either(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": json.dumps(args)}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[either])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        given = await client.call_tool("srv", "either", {"x": "hi"})
+        nothing = await client.call_tool("srv", "either", {})
+        wrong = await client.call_tool("srv", "either", {"x": 1})
+
+    assert listed["inputSchema"] == {"type": "object", **schema}
+    assert texts(given) == ['{"x": "hi"}']
+    assert texts(nothing) == ["{}"]
+    assert wrong["isError"] is True
+
+
+@pytest.mark.anyio
+async def test_a_parameter_named_after_a_schema_keyword_is_still_a_parameter():
+    """The keywords only mean "schema" when they hold a schema's values.
+
+    A parameter map maps a name to a Python type, so `{"items": list}` and
+    `{"required": str}` name parameters; `{"required": ["x"]}` is a schema.
+    """
+
+    @tool("sized", "Takes items and required", {"items": list, "required": str})
+    async def sized(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": str(len(args["items"]))}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[sized])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        result = await client.call_tool(
+            "srv", "sized", {"items": [1, 2], "required": "yes"}
+        )
+
+    assert listed["inputSchema"] == {
+        "type": "object",
+        "properties": {"items": {"type": "array"}, "required": {"type": "string"}},
+        "required": ["items", "required"],
+    }
+    assert texts(result) == ["2"]
+
+
+@pytest.mark.anyio
+async def test_constraint_keyword_schema_is_not_treated_as_parameters():
+    """Assertion/applicator keywords also name a schema.
+
+    `{minProperties: 1}` etc. hold JSON constants or nested objects, not Python
+    types, so they must route to the JSON Schema branch (and receive the
+    required root `type: "object"`), not to the {name: type} parameter map.
+    """
+    schema = {"minProperties": 1}
+
+    @tool("constrained", "Takes constrained args", schema)
+    async def constrained(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "OK" if args else "empty"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[constrained])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        result = await client.call_tool("srv", "constrained", {"x": 1})
+
+    assert listed["inputSchema"] == {"type": "object", "minProperties": 1}
+    assert texts(result) == ["OK"]
+
+
+@pytest.mark.anyio
+async def test_json_schema_without_properties_is_used_verbatim():
+    """A JSON Schema needs no `properties` key to be a JSON Schema.
+
+    `additionalProperties: false` says "no arguments", which is the whole
+    point of the tool, and reading the keywords as parameter names makes every
+    call fail on a required `type` property that the model was never told about.
+    """
+    schema = {"type": "object", "additionalProperties": False}
+
+    @tool("noop", "Takes nothing", schema)
+    async def noop(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "OK"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[noop])
+    async with connected(config) as client:
+        ok = await client.call_tool("srv", "noop", {})
+        extra = await client.call_tool("srv", "noop", {"name": "x"})
+
+    assert texts(ok) == ["OK"]
+    assert extra["isError"] is True
+
+
+@pytest.mark.anyio
 async def test_invalid_tool_schema_is_an_error_result():
     """A schema jsonschema cannot use fails the call the same way on every mcp
     version: as an error result, not a protocol error."""

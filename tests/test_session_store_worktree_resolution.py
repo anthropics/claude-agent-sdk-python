@@ -38,7 +38,7 @@ from claude_agent_sdk._internal.session_resume import (
     build_mirror_batcher,
     materialize_resume_session,
 )
-from claude_agent_sdk.types import SessionKey
+from claude_agent_sdk.types import SessionKey, SessionStore, SessionStoreEntry
 
 pytestmark = pytest.mark.anyio
 
@@ -551,6 +551,145 @@ async def test_direct_subagent_without_main_stream_remains_readable(
         store, SID, "local", directory=str(f.repo)
     )
     assert [m.message for m in messages] == [e["message"] for e in direct_entries]
+
+
+class LoadOnlyStore(SessionStore):
+    """Exercise subpath lookup without the optional enumeration capability."""
+
+    def __init__(self, store: InMemorySessionStore) -> None:
+        self.store = store
+
+    async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
+        return await self.store.load(key)
+
+    async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
+        await self.store.append(key, entries)
+
+
+@pytest.mark.parametrize("supports_listing", [True, False])
+async def test_worktree_subagent_only_fallback(
+    worktree_session: WorktreeSession, supports_listing: bool
+) -> None:
+    f = worktree_session
+    store = InMemorySessionStore()
+    await store.append(
+        {**f.key(f.worktree), "subpath": "subagents/agent-local"}, f.entries
+    )
+    adapter = store if supports_listing else LoadOnlyStore(store)
+    assert await store.load(f.key(f.worktree)) is None
+    assert await store.load(f.key(f.repo)) is None
+    if supports_listing:
+        assert await list_subagents_from_store(adapter, SID, directory=str(f.repo)) == [
+            "local"
+        ]
+    messages = await get_subagent_messages_from_store(
+        adapter, SID, "local", directory=str(f.repo)
+    )
+    assert [m.message for m in messages] == [e["message"] for e in f.entries]
+    assert await store.load(f.key(f.repo)) is None
+    assert (
+        await store.load({**f.key(f.worktree), "subpath": "subagents/agent-local"})
+        == f.entries
+    )
+
+
+@pytest.mark.parametrize("supports_listing", [True, False])
+@pytest.mark.parametrize("direct_entries", [[], [{"type": "custom-title"}]])
+async def test_subagent_fallback_preserves_requested_parent_precedence(
+    worktree_session: WorktreeSession,
+    supports_listing: bool,
+    direct_entries: list[SessionStoreEntry],
+) -> None:
+    f = worktree_session
+    store = InMemorySessionStore()
+    await store.append(f.key(f.repo), direct_entries)
+    await store.append(
+        {**f.key(f.worktree), "subpath": "subagents/agent-local"}, f.entries
+    )
+    adapter = store if supports_listing else LoadOnlyStore(store)
+    assert (
+        await get_subagent_messages_from_store(
+            adapter, SID, "local", directory=str(f.repo)
+        )
+        == []
+    )
+    if supports_listing:
+        assert (
+            await list_subagents_from_store(adapter, SID, directory=str(f.repo)) == []
+        )
+    assert await store.load(f.key(f.repo)) == direct_entries
+    assert (
+        await store.load({**f.key(f.worktree), "subpath": "subagents/agent-local"})
+        == f.entries
+    )
+
+
+@pytest.mark.parametrize("supports_listing", [True, False])
+@pytest.mark.parametrize("empty", [True, False])
+async def test_subagent_fallback_preserves_requested_subpath_precedence(
+    worktree_session: WorktreeSession, supports_listing: bool, empty: bool
+) -> None:
+    f = worktree_session
+    store = InMemorySessionStore()
+    direct = [] if empty else _entries(f.repo, "Requested subagent")
+    await store.append({**f.key(f.repo), "subpath": "subagents/agent-local"}, direct)
+    await store.append(
+        {**f.key(f.worktree), "subpath": "subagents/agent-local"}, f.entries
+    )
+    adapter = store if supports_listing else LoadOnlyStore(store)
+    messages = await get_subagent_messages_from_store(
+        adapter, SID, "local", directory=str(f.repo)
+    )
+    assert [m.message for m in messages] == [e["message"] for e in direct]
+    if supports_listing:
+        assert await list_subagents_from_store(adapter, SID, directory=str(f.repo)) == [
+            "local"
+        ]
+    assert (
+        await store.load({**f.key(f.repo), "subpath": "subagents/agent-local"})
+        == direct
+    )
+    assert (
+        await store.load({**f.key(f.worktree), "subpath": "subagents/agent-local"})
+        == f.entries
+    )
+
+
+@pytest.mark.parametrize("supports_listing", [True, False])
+@pytest.mark.parametrize("other_parent", [True, False])
+async def test_subagent_only_fallback_rejects_ambiguous_worktrees(
+    worktree_session: WorktreeSession, supports_listing: bool, other_parent: bool
+) -> None:
+    f = worktree_session
+    store = InMemorySessionStore()
+    other = f.repo.parent / "another-worktree"
+    subprocess.run(
+        ["git", "-C", str(f.repo), "worktree", "add", "-q", "--detach", str(other)],
+        check=True,
+    )
+    await store.append(
+        {**f.key(f.worktree), "subpath": "subagents/agent-local"}, f.entries
+    )
+    if other_parent:
+        await store.append(f.key(other), [])
+    else:
+        await store.append(
+            {**f.key(other), "subpath": "subagents/agent-local"},
+            _entries(other, "Other subagent"),
+        )
+    adapter = store if supports_listing else LoadOnlyStore(store)
+    with pytest.raises(ValueError, match="multiple worktrees"):
+        await get_subagent_messages_from_store(
+            adapter, SID, "local", directory=str(f.repo)
+        )
+    if supports_listing:
+        with pytest.raises(ValueError, match="multiple worktrees"):
+            await list_subagents_from_store(adapter, SID, directory=str(f.repo))
+    assert await store.load(f.key(f.repo)) is None
+    assert (
+        await store.load({**f.key(f.worktree), "subpath": "subagents/agent-local"})
+        == f.entries
+    )
 
 
 @pytest.mark.parametrize("operation", ["read", "rename", "fork"])

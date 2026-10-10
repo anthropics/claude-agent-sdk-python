@@ -1548,7 +1548,12 @@ def project_key_for_directory(directory: str | Path | None = None) -> str:
 
 
 async def _resolve_store_session(
-    store: SessionStore, session_id: str, directory: str | Path | None
+    store: SessionStore,
+    session_id: str,
+    directory: str | Path | None,
+    *,
+    subpath: str | None = None,
+    include_subkeys: bool = False,
 ) -> tuple[SessionKey, list[SessionStoreEntry] | None]:
     """Resolve a known ID without changing import/mirror project keys.
 
@@ -1560,28 +1565,40 @@ async def _resolve_store_session(
     returns the requested key so append-on-missing behavior stays unchanged.
 
     Enumeration deliberately does not use this fallback. Adapter errors are
-    propagated, not interpreted as a missing key.
+    propagated, not interpreted as a missing key. Subagent readers can probe
+    subkeys or a known subpath without requiring a main transcript. An existing
+    parent still owns its subagents, even if the requested subagent is absent.
     """
+
+    async def probe(key: SessionKey) -> tuple[list[SessionStoreEntry] | None, bool]:
+        lookup = {**key, "subpath": subpath} if subpath is not None else key
+        entries = await store.load(lookup)
+        if entries is not None:
+            return entries, True
+        if subpath is not None:
+            return None, await store.load(key) is not None
+        return None, include_subkeys and bool(await store.list_subkeys(key))
+
     requested: SessionKey = {
         "project_key": project_key_for_directory(directory),
         "session_id": session_id,
     }
-    entries = await store.load(requested)
-    if entries is not None:
+    entries, exists = await probe(requested)
+    if exists:
         return requested, entries
 
     cwd = _canonicalize_path(str(directory) if directory is not None else ".")
     paths = await _get_store_worktree_paths(cwd)
     seen = {requested["project_key"]}
-    match: tuple[SessionKey, list[SessionStoreEntry]] | None = None
+    match: tuple[SessionKey, list[SessionStoreEntry] | None] | None = None
     for path in paths:
         project_key = project_key_for_directory(path)
         if project_key in seen:
             continue
         seen.add(project_key)
         key: SessionKey = {"project_key": project_key, "session_id": session_id}
-        entries = await store.load(key)
-        if entries is None:
+        entries, exists = await probe(key)
+        if not exists:
             continue
         if match is not None:
             raise ValueError(
@@ -1595,18 +1612,11 @@ async def _resolve_store_session(
 async def _list_store_subkeys(
     store: SessionStore, session_id: str, directory: str | None
 ) -> tuple[SessionKey, list[str]]:
-    """Preserve direct subagent-only streams before resolving the parent."""
-    key: SessionKey = {
-        "project_key": project_key_for_directory(directory),
-        "session_id": session_id,
-    }
-    subkeys = await store.list_subkeys(key)
-    if subkeys:
-        return key, subkeys
-    resolved, _ = await _resolve_store_session(store, session_id, directory)
-    if resolved != key:
-        subkeys = await store.list_subkeys(resolved)
-    return resolved, subkeys
+    """Resolve the owning key even when only subagent streams exist."""
+    key, _ = await _resolve_store_session(
+        store, session_id, directory, include_subkeys=True
+    )
+    return key, await store.list_subkeys(key)
 
 
 def _entries_to_jsonl(entries: list[Any]) -> str:
@@ -2093,16 +2103,10 @@ async def get_subagent_messages_from_store(
         subpath = match
     else:
         # Minimal adapters need no enumeration support, including when only
-        # the subagent transcript is present at the requested key.
-        parent_key = {
-            "project_key": project_key_for_directory(directory),
-            "session_id": session_id,
-        }
-        entries = await session_store.load({**parent_key, "subpath": subpath})
-        if entries is None:
-            parent_key, _ = await _resolve_store_session(
-                session_store, session_id, directory
-            )
+        # the subagent transcript is present in a registered worktree.
+        parent_key, entries = await _resolve_store_session(
+            session_store, session_id, directory, subpath=subpath
+        )
     if entries is None:
         entries = await session_store.load({**parent_key, "subpath": subpath})
     if not entries:

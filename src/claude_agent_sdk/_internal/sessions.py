@@ -20,7 +20,13 @@ from typing import Any
 
 import anyio
 
-from ..types import SDKSessionInfo, SessionKey, SessionMessage, SessionStore
+from ..types import (
+    SDKSessionInfo,
+    SessionKey,
+    SessionMessage,
+    SessionStore,
+    SessionStoreEntry,
+)
 from .session_store_validation import _store_implements
 
 logger = logging.getLogger(__name__)
@@ -405,12 +411,30 @@ def _get_worktree_paths(cwd: str) -> list[str]:
     if result.returncode != 0 or not result.stdout:
         return []
 
+    return _parse_worktree_paths(result.stdout)
+
+
+def _parse_worktree_paths(output: str) -> list[str]:
     paths = []
-    for line in result.stdout.split("\n"):
+    for line in output.split("\n"):
         if line.startswith("worktree "):
             path = unicodedata.normalize("NFC", line[len("worktree ") :])
             paths.append(path)
     return paths
+
+
+async def _get_store_worktree_paths(cwd: str) -> list[str]:
+    """Cancellable worktree discovery for asynchronous store lookups."""
+    try:
+        with anyio.fail_after(5):
+            result = await anyio.run_process(
+                ["git", "worktree", "list", "--porcelain"], cwd=cwd, check=False
+            )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return []
+    if result.returncode != 0:
+        return []
+    return _parse_worktree_paths(result.stdout.decode("utf-8", errors="replace"))
 
 
 # ---------------------------------------------------------------------------
@@ -1523,6 +1547,78 @@ def project_key_for_directory(directory: str | Path | None = None) -> str:
     return _sanitize_path(abs_path)
 
 
+async def _resolve_store_session(
+    store: SessionStore,
+    session_id: str,
+    directory: str | Path | None,
+    *,
+    subpath: str | None = None,
+    include_subkeys: bool = False,
+) -> tuple[SessionKey, list[SessionStoreEntry] | None]:
+    """Resolve a known ID without changing import/mirror project keys.
+
+    An existing requested key (including an empty stream) wins. On a miss,
+    search only this repository's registered worktrees, without requiring a
+    local transcript: a store-created fork may never have existed on disk.
+    Multiple fallback matches are ambiguous; callers must supply the owning
+    worktree rather than risk mutating a different session. A complete miss
+    returns the requested key so append-on-missing behavior stays unchanged.
+
+    Enumeration deliberately does not use this fallback. Adapter errors are
+    propagated, not interpreted as a missing key. Subagent readers can probe
+    subkeys or a known subpath without requiring a main transcript. An existing
+    parent still owns its subagents, even if the requested subagent is absent.
+    """
+
+    async def probe(key: SessionKey) -> tuple[list[SessionStoreEntry] | None, bool]:
+        lookup = {**key, "subpath": subpath} if subpath is not None else key
+        entries = await store.load(lookup)
+        if entries is not None:
+            return entries, True
+        if subpath is not None:
+            return None, await store.load(key) is not None
+        return None, include_subkeys and bool(await store.list_subkeys(key))
+
+    requested: SessionKey = {
+        "project_key": project_key_for_directory(directory),
+        "session_id": session_id,
+    }
+    entries, exists = await probe(requested)
+    if exists:
+        return requested, entries
+
+    cwd = _canonicalize_path(str(directory) if directory is not None else ".")
+    paths = await _get_store_worktree_paths(cwd)
+    seen = {requested["project_key"]}
+    match: tuple[SessionKey, list[SessionStoreEntry] | None] | None = None
+    for path in paths:
+        project_key = project_key_for_directory(path)
+        if project_key in seen:
+            continue
+        seen.add(project_key)
+        key: SessionKey = {"project_key": project_key, "session_id": session_id}
+        entries, exists = await probe(key)
+        if not exists:
+            continue
+        if match is not None:
+            raise ValueError(
+                f"Session {session_id} exists in multiple worktrees; "
+                "specify the owning worktree directory"
+            )
+        match = key, entries
+    return match if match is not None else (requested, None)
+
+
+async def _list_store_subkeys(
+    store: SessionStore, session_id: str, directory: str | None
+) -> tuple[SessionKey, list[str]]:
+    """Resolve the owning key even when only subagent streams exist."""
+    key, _ = await _resolve_store_session(
+        store, session_id, directory, include_subkeys=True
+    )
+    return key, await store.list_subkeys(key)
+
+
 def _entries_to_jsonl(entries: list[Any]) -> str:
     """Serialize store entries to a JSONL string (one ``json.dumps`` per line).
 
@@ -1838,19 +1934,24 @@ async def get_session_info_from_store(
     Args:
         session_store: The store to read from.
         session_id: UUID of the session to look up.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
 
     Returns:
         ``SDKSessionInfo`` for the session, or ``None`` if the session is
         not found, the ``session_id`` is not a valid UUID, the session is
         a sidechain session, or it has no extractable summary.
+
+    Raises:
+        ValueError: If the ID exists in multiple fallback worktree keys.
     """
     if not _validate_uuid(session_id):
         return None
-    jsonl = await _load_store_entries_as_jsonl(session_store, session_id, directory)
-    if jsonl is None:
+    _, entries = await _resolve_store_session(session_store, session_id, directory)
+    if not entries:
         return None
+    jsonl = _entries_to_jsonl(entries)
     lite = _jsonl_to_lite(jsonl, _mtime_from_jsonl_tail(jsonl))
     project_path = _canonicalize_path(str(directory) if directory is not None else ".")
     return _parse_session_info_from_lite(session_id, lite, project_path)
@@ -1872,20 +1973,22 @@ async def get_session_messages_from_store(
     Args:
         session_store: The store to read from.
         session_id: UUID of the session to read.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Empty
         list if the session is not found or ``session_id`` is invalid.
+
+    Raises:
+        ValueError: If the ID exists in multiple fallback worktree keys.
     """
     if not _validate_uuid(session_id):
         return []
-    project_key = project_key_for_directory(directory)
-    key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    entries = await session_store.load(key)
+    _, entries = await _resolve_store_session(session_store, session_id, directory)
     if not entries:
         return []
     return _entries_to_session_messages(
@@ -1906,8 +2009,9 @@ async def list_subagents_from_store(
         session_store: The store to read from. Must implement
             :meth:`SessionStore.list_subkeys`.
         session_id: UUID of the parent session.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
 
     Returns:
         List of subagent ID strings. Empty list if ``session_id`` is
@@ -1915,7 +2019,8 @@ async def list_subagents_from_store(
 
     Raises:
         ValueError: If ``session_store`` does not implement
-            :meth:`SessionStore.list_subkeys`.
+            :meth:`SessionStore.list_subkeys`, or the parent ID exists in
+            multiple fallback worktree keys.
     """
     if not _validate_uuid(session_id):
         return []
@@ -1924,10 +2029,7 @@ async def list_subagents_from_store(
             "session_store does not implement list_subkeys() -- cannot list "
             "subagents. Provide a store with a list_subkeys() method."
         )
-    project_key = project_key_for_directory(directory)
-    subkeys = await session_store.list_subkeys(
-        {"project_key": project_key, "session_id": session_id}
-    )
+    _, subkeys = await _list_store_subkeys(session_store, session_id, directory)
     seen: set[str] = set()
     ids: list[str] = []
     for subpath in subkeys:
@@ -1964,25 +2066,28 @@ async def get_subagent_messages_from_store(
         session_store: The store to read from.
         session_id: UUID of the parent session.
         agent_id: ID of the subagent.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Empty
         list if the session/subagent is not found.
+
+    Raises:
+        ValueError: If the parent ID exists in multiple fallback worktree keys.
     """
     if not _validate_uuid(session_id):
         return []
     if not agent_id:
         return []
-    project_key = project_key_for_directory(directory)
-
     subpath = f"subagents/agent-{agent_id}"
+    entries: list[SessionStoreEntry] | None = None
     if _store_implements(session_store, "list_subkeys"):
-        subkeys = await session_store.list_subkeys(
-            {"project_key": project_key, "session_id": session_id}
+        parent_key, subkeys = await _list_store_subkeys(
+            session_store, session_id, directory
         )
         target = f"agent-{agent_id}"
         match = next(
@@ -1996,13 +2101,14 @@ async def get_subagent_messages_from_store(
         if match is None:
             return []
         subpath = match
-
-    key: SessionKey = {
-        "project_key": project_key,
-        "session_id": session_id,
-        "subpath": subpath,
-    }
-    entries = await session_store.load(key)
+    else:
+        # Minimal adapters need no enumeration support, including when only
+        # the subagent transcript is present in a registered worktree.
+        parent_key, entries = await _resolve_store_session(
+            session_store, session_id, directory, subpath=subpath
+        )
+    if entries is None:
+        entries = await session_store.load({**parent_key, "subpath": subpath})
     if not entries:
         return []
 

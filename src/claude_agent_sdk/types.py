@@ -2004,7 +2004,8 @@ class SessionStore(Protocol):
         """Load a full session for resume.
 
         During a store-backed resume, called in the SDK parent before subprocess
-        spawn: once for an explicit ``resume`` session id; for
+        spawn: for an explicit ``resume`` session id, first at the requested
+        project key, then at related git worktree keys on a miss; for
         ``continue_conversation``, once per candidate walked newest-first until
         a non-sidechain session loads; and once per subpath when
         :meth:`list_subkeys` is implemented. The result is materialized to a
@@ -2012,8 +2013,17 @@ class SessionStore(Protocol):
         existing resume code. The store-reading helpers
         (``get_session_messages_from_store()``,
         ``get_subagent_messages_from_store()``, ``fork_session_via_store()``,
-        and ``list_sessions_from_store()`` when :meth:`list_session_summaries`
-        is unimplemented) call it as well.
+        ``rename_session_via_store()``, ``tag_session_via_store()``,
+        ``delete_session_via_store()``, and ``list_sessions_from_store()`` when
+        :meth:`list_session_summaries` is unimplemented) call it as well.
+
+        Known-ID lookups prefer the requested project key, including an empty
+        stream. On a miss, they use locally registered git worktrees; a
+        matching transcript file is not required. Multiple fallback matches
+        raise ``ValueError`` (wrapped in ``RuntimeError`` during resume), so
+        callers must supply the owning worktree. Worktrees unavailable to
+        local git cannot be discovered. Listing and ``continue_conversation``
+        remain scoped to a single project key.
 
         Return ``None`` for a key that was never written; adapters that cannot
         distinguish "never written" from "emptied" (e.g. Redis ``LRANGE``) may

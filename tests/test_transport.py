@@ -319,6 +319,19 @@ class TestSubprocessCLITransport:
         assert "--permission-mode" in cmd
         assert "dontAsk" in cmd
 
+    def test_build_command_permission_prompts(self):
+        """Test that --permission-prompts carries the value and is omitted when unset."""
+        for value in ("none", "host"):
+            transport = SubprocessCLITransport(
+                prompt="test", options=make_options(permission_prompts=value)
+            )
+            cmd = transport._build_command()
+            i = cmd.index("--permission-prompts")
+            assert cmd[i + 1] == value
+
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        assert "--permission-prompts" not in transport._build_command()
+
     def test_build_command_with_fallback_model(self):
         """Test building CLI command with fallback_model option."""
         transport = SubprocessCLITransport(

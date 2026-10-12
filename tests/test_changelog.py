@@ -10,13 +10,13 @@ class TestChangelog:
         assert self.changelog_path.exists(), "CHANGELOG.md file should exist"
 
     def test_changelog_starts_with_header(self):
-        content = self.changelog_path.read_text()
+        content = self.changelog_path.read_text(encoding="utf-8")
         assert content.startswith("# Changelog"), (
             "Changelog should start with '# Changelog'"
         )
 
     def test_changelog_has_valid_version_format(self):
-        content = self.changelog_path.read_text()
+        content = self.changelog_path.read_text(encoding="utf-8")
         lines = content.split("\n")
 
         version_pattern = re.compile(r"^## \d+\.\d+\.\d+(?:\s+\(\d{4}-\d{2}-\d{2}\))?$")
@@ -32,7 +32,7 @@ class TestChangelog:
         assert len(versions) > 0, "Changelog should contain at least one version"
 
     def test_changelog_has_bullet_points(self):
-        content = self.changelog_path.read_text()
+        content = self.changelog_path.read_text(encoding="utf-8")
         lines = content.split("\n")
 
         in_version_section = False
@@ -61,7 +61,7 @@ class TestChangelog:
             )
 
     def test_changelog_versions_in_descending_order(self):
-        content = self.changelog_path.read_text()
+        content = self.changelog_path.read_text(encoding="utf-8")
         lines = content.split("\n")
 
         versions = []
@@ -77,7 +77,7 @@ class TestChangelog:
             )
 
     def test_changelog_no_empty_bullet_points(self):
-        content = self.changelog_path.read_text()
+        content = self.changelog_path.read_text(encoding="utf-8")
         lines = content.split("\n")
 
         for line in lines:

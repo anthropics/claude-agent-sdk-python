@@ -19,7 +19,7 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 Install the development dependencies:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e . --group dev
 ```
 
 ## Running the Tests

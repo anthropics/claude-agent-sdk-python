@@ -468,6 +468,68 @@ class TestListSessionsFromStoreFastPath:
         assert page[0].session_id == sids[3]
         assert page[1].session_id == sids[2]
 
+    async def test_fast_path_filters_invalid_ids_before_pagination(self) -> None:
+        """Invalid IDs returned by both optional listing methods must not
+        become SDKSessionInfo rows or consume a limited page position."""
+        store = InMemorySessionStore()
+        valid_sid = str(uuid_mod.uuid4())
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": valid_sid},
+            [_user("valid", ts="2024-01-01T00:00:00Z")],
+        )
+        # Appended last, so the malformed session is newest in both
+        # list_sessions() and list_session_summaries().
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": "not-a-uuid"},
+            [_user("invalid", ts="2024-01-02T00:00:00Z")],
+        )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=1)
+
+        assert [session.session_id for session in page] == [valid_sid]
+
+    async def test_summary_only_store_filters_invalid_ids_before_pagination(
+        self,
+    ) -> None:
+        """The summary fast path also validates IDs when list_sessions() is
+        unavailable to cross-check the sidecars."""
+        valid_sid = str(uuid_mod.uuid4())
+
+        class SummaryOnlyStore:
+            async def append(self, key, entries):  # noqa: ANN001, ANN201
+                raise AssertionError("not used")
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                raise AssertionError("not used")
+
+            async def list_session_summaries(self, project_key):  # noqa: ANN001, ANN201
+                return [
+                    {
+                        "session_id": "not-a-uuid",
+                        "mtime": 2,
+                        "data": {
+                            "first_prompt": "invalid",
+                            "first_prompt_locked": True,
+                        },
+                    },
+                    {
+                        "session_id": valid_sid,
+                        "mtime": 1,
+                        "data": {
+                            "first_prompt": "valid",
+                            "first_prompt_locked": True,
+                        },
+                    },
+                ]
+
+        page = await list_sessions_from_store(
+            SummaryOnlyStore(),  # type: ignore[arg-type]
+            directory=DIR,
+            limit=1,
+        )
+
+        assert [session.session_id for session in page] == [valid_sid]
+
     async def test_not_implemented_falls_back_to_load(self) -> None:
         """A store that overrides list_session_summaries but raises
         NotImplementedError must fall back to the per-session load() path."""

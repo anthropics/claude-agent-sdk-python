@@ -200,6 +200,7 @@ def delete_session(
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session file cannot be found.
+        OSError: If the subagent directory or session file cannot be removed.
 
     See Also:
         :func:`delete_session_via_store` for the :class:`SessionStore`-backed
@@ -219,14 +220,27 @@ def delete_session(
             f"Session {session_id} not found"
             + (f" in project directory for {directory}" if directory else "")
         )
+    # Remove sensitive subagent data first. If this fails, leave the primary
+    # transcript discoverable so the caller can retry the same delete_session()
+    # operation. A FileNotFoundError is ignorable only when the tree itself is
+    # gone; a missing nested entry while the tree remains is a real failure.
+    subagent_dir = path.parent / session_id
+    try:
+        shutil.rmtree(subagent_dir)
+    except FileNotFoundError:
+        try:
+            subagent_dir.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise
+
     try:
         path.unlink()
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise FileNotFoundError(f"Session {session_id} not found") from e
         raise
-    # Subagent transcripts live in a sibling {session_id}/ dir; often absent.
-    shutil.rmtree(path.parent / session_id, ignore_errors=True)
 
 
 @dataclass

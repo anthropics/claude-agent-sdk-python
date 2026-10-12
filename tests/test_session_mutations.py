@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -507,6 +508,88 @@ class TestDeleteSession:
         delete_session(sid, directory=project_path)
 
         assert not file_path.exists()
+        assert not subagent_dir.exists()
+
+    def test_subagent_delete_failure_is_reported_and_retryable(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A failed subagent cleanup leaves the primary file for retry."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+        subagent_dir = project_dir / sid
+        subagent_dir.mkdir()
+        (subagent_dir / "agent.jsonl").write_text("sensitive\n")
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.session_mutations.shutil.rmtree",
+                side_effect=PermissionError("read-only filesystem"),
+            ),
+            pytest.raises(PermissionError, match="read-only filesystem"),
+        ):
+            delete_session(sid, directory=project_path)
+
+        assert file_path.exists()
+        assert subagent_dir.exists()
+
+        # The retained primary transcript makes the same public operation
+        # retryable once the transient filesystem problem is resolved.
+        delete_session(sid, directory=project_path)
+        assert not file_path.exists()
+        assert not subagent_dir.exists()
+
+    def test_nested_enoent_is_not_mistaken_for_absent_tree(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """ENOENT during traversal propagates while the top-level tree exists."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+        subagent_dir = project_dir / sid
+        subagent_dir.mkdir()
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.session_mutations.shutil.rmtree",
+                side_effect=FileNotFoundError("nested entry disappeared"),
+            ),
+            pytest.raises(FileNotFoundError, match="nested entry disappeared"),
+        ):
+            delete_session(sid, directory=project_path)
+
+        assert file_path.exists()
+        assert subagent_dir.exists()
+
+    def test_primary_unlink_failure_occurs_after_subagent_cleanup(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """If the final unlink fails, no sensitive subagent tree remains."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+        subagent_dir = project_dir / sid
+        subagent_dir.mkdir()
+        (subagent_dir / "agent.jsonl").write_text("sensitive\n")
+
+        with (
+            patch.object(
+                Path, "unlink", side_effect=PermissionError("cannot unlink primary")
+            ),
+            pytest.raises(PermissionError, match="cannot unlink primary"),
+        ):
+            delete_session(sid, directory=project_path)
+
+        assert file_path.exists()
         assert not subagent_dir.exists()
 
     def test_deletes_without_directory(self, claude_config_dir: Path):

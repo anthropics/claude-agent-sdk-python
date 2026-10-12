@@ -633,6 +633,33 @@ class TestForkSession:
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
+    def test_fork_write_failure_leaves_no_partial_session(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A failed fork write does not publish a partial transcript."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, source_path, _ = _make_transcript_session(project_dir)
+        real_write = os.write
+
+        def fail_after_partial_write(fd: int, data: bytes) -> int:
+            real_write(fd, data[:5])
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(os, "write", fail_after_partial_write)
+
+        with pytest.raises(OSError, match="simulated write failure"):
+            fork_session(sid, directory=project_path)
+
+        assert sorted(project_dir.glob("*.jsonl")) == [source_path]
+        assert not [path for path in project_dir.iterdir() if path.suffix == ".tmp"]
+
     def test_fork_remaps_uuids(self, claude_config_dir: Path, tmp_path: Path):
         """uuid and parentUuid fields are remapped; originals only appear in forkedFrom."""
         project_path = str(tmp_path / "proj")

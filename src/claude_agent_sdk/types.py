@@ -2472,6 +2472,7 @@ class ClaudeAgentOptions:
     """
 
     env: dict[str, str] = field(default_factory=dict)
+    inherit_env: bool = True
     """Environment variables to pass to the Claude Code subprocess.
 
     Merged over the parent process's environment: entries here override

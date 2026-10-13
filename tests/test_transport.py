@@ -1951,6 +1951,34 @@ class TestSubprocessCLITransport:
         assert network["httpProxyPort"] == 8080
         assert network["socksProxyPort"] == 8081
 
+    def test_sandbox_ignore_violations_passed_through(self):
+        """Test ignoreViolations reaches --settings as a command-pattern map."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "ignoreViolations": {
+                "*": ["/etc/hosts"],
+                "npm test": ["registry.npmjs.org"],
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        parsed = json.loads(cmd[settings_idx + 1])
+
+        assert parsed["sandbox"]["ignoreViolations"] == {
+            "*": ["/etc/hosts"],
+            "npm test": ["registry.npmjs.org"],
+        }
+
     def test_build_command_with_tools_array(self):
         """Test building CLI command with tools as array of tool names."""
         transport = SubprocessCLITransport(

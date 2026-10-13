@@ -15,6 +15,8 @@ from claude_agent_sdk import (
     PostToolUseHookInput,
     PreToolUseHookInput,
     ResultMessage,
+    SandboxIgnoreViolations,
+    SandboxSettings,
     StopHookInput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
@@ -39,6 +41,13 @@ from claude_agent_sdk.types import (
 def test_effort_level_is_exported():
     """EffortLevel is part of the public package API for downstream wrappers."""
     assert set(get_args(EffortLevel)) == {"low", "medium", "high", "xhigh", "max"}
+
+
+def test_sandbox_ignore_violations_is_command_pattern_map():
+    """ignoreViolations matches the CLI schema: command pattern -> substrings."""
+    assert SandboxIgnoreViolations == dict[str, list[str]]
+    hints = get_type_hints(SandboxSettings)
+    assert hints["ignoreViolations"] == dict[str, list[str]]
 
 
 class TestPermissionUpdate:

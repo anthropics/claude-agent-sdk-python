@@ -1123,16 +1123,19 @@ class SandboxNetworkConfig(TypedDict, total=False):
     socksProxyPort: int
 
 
-class SandboxIgnoreViolations(TypedDict, total=False):
-    """Violations to ignore in sandbox.
+SandboxIgnoreViolations: TypeAlias = dict[str, list[str]]
+"""Sandbox violations to leave unreported.
 
-    Attributes:
-        file: File paths for which violations should be ignored.
-        network: Network hosts for which violations should be ignored.
-    """
+Maps a command pattern to a list of strings. A violation is left unreported
+when the command's text contains the pattern and the violation's text
+contains one of the strings. The pattern ``"*"`` matches every command.
+Both checks are plain substring matches, not globs.
 
-    file: list[str]
-    network: list[str]
+Example: ``{"*": ["/etc/hosts"]}`` leaves violations that mention
+``/etc/hosts`` unreported for every command.
+
+This only affects which violations are reported, not what the sandbox blocks.
+"""
 
 
 class SandboxSettings(TypedDict, total=False):
@@ -1157,7 +1160,9 @@ class SandboxSettings(TypedDict, total=False):
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
             When False, all commands must run sandboxed (or be in excludedCommands). Default: True
         network: Network configuration for sandbox.
-        ignoreViolations: Violations to ignore.
+        ignoreViolations: Violations to leave unreported, as a map of command
+            pattern (``"*"`` for every command) to substrings of the violation
+            text. See ``SandboxIgnoreViolations``.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
 

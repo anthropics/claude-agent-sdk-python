@@ -317,6 +317,10 @@ def _write_jsonl(path: Path, entries: list[Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for e in entries:
+            # Match _entries_to_jsonl: disk metadata scans require type first,
+            # while store adapters may return reordered object keys.
+            if isinstance(e, dict) and "type" in e:
+                e = {"type": e["type"], **e}
             f.write(json.dumps(e, separators=(",", ":")))
             f.write("\n")
     with suppress(OSError):

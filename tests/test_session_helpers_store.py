@@ -160,11 +160,9 @@ class TestListSessionsFromStore:
         must do the same — paginating before filtering would return short
         pages and let sidechains consume page slots.
 
-        Pinned to the slow path (``list_session_summaries`` suppressed)
-        because the fast path deliberately locks in paginate-THEN-drop for
-        sidechain-shaped summary slots (see
-        ``test_sidechain_summary_short_pages``); slow-path filter-THEN-
-        paginate is what this test covers.
+        Pinned to the slow path (``list_session_summaries`` suppressed) so the
+        fallback implementation's filter-then-paginate behavior is covered
+        independently from the summary fast path.
         """
 
         class SlowPathStore(InMemorySessionStore):

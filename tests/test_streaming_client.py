@@ -713,6 +713,7 @@ class TestClaudeSDKClientStreaming:
                             "url": "https://example.com/mcp",
                         },
                         "scope": "project",
+                        "source": "sdk",
                         "tools": [
                             {
                                 "name": "greet",
@@ -730,6 +731,7 @@ class TestClaudeSDKClientStreaming:
                     {
                         "name": "proxy-server",
                         "status": "needs-auth",
+                        "source": "future-config-source",
                         "config": {
                             "type": "claudeai-proxy",
                             "url": "https://claude.ai/proxy",
@@ -791,6 +793,7 @@ class TestClaudeSDKClientStreaming:
                 assert connected["config"]["type"] == "http"
                 assert connected["config"]["url"] == "https://example.com/mcp"
                 assert connected["scope"] == "project"
+                assert connected["source"] == "sdk"
                 assert len(connected["tools"]) == 2
                 assert connected["tools"][0]["name"] == "greet"
                 assert connected["tools"][0]["annotations"]["readOnly"] is True
@@ -808,6 +811,7 @@ class TestClaudeSDKClientStreaming:
                 proxy = servers[2]
                 assert proxy["name"] == "proxy-server"
                 assert proxy["status"] == "needs-auth"
+                assert proxy["source"] == "future-config-source"
                 assert proxy["config"]["type"] == "claudeai-proxy"
                 assert proxy["config"]["id"] == "proxy-123"
 

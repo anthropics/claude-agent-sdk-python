@@ -2166,6 +2166,84 @@ class TestControlCancelRequest:
         assert "fast_1" not in q._inflight_requests
 
 
+class TestReaderNotBlockedByIdleConsumer:
+    """The read loop routes control frames *and* buffers messages for the
+    consumer. If it blocks on a full buffer, a consumer that has stopped
+    reading (e.g. ``receive_response()`` returned at the first result while
+    background subagents keep streaming) also stops the SDK from answering the
+    CLI's hook, permission and SDK-MCP requests, which the CLI waits on.
+    """
+
+    # More than any bounded buffer the SDK is likely to have used.
+    _BACKLOG = 250
+
+    @classmethod
+    def _stream_events(cls):
+        return [
+            {
+                "type": "stream_event",
+                "uuid": f"u{i}",
+                "session_id": "s",
+                "event": {"i": i},
+            }
+            for i in range(cls._BACKLOG)
+        ]
+
+    @pytest.mark.anyio
+    async def test_control_request_answered_while_consumer_is_idle(self):
+        hook_request = {
+            "type": "control_request",
+            "request_id": "hook_req",
+            "request": {"subtype": "hook_callback", "callback_id": "hook_0"},
+        }
+        transport = _make_mock_transport(
+            messages=[*self._stream_events(), hook_request]
+        )
+        answered = anyio.Event()
+
+        async def write(data):
+            msg = json.loads(data)
+            if (
+                msg.get("type") == "control_response"
+                and msg["response"]["request_id"] == "hook_req"
+            ):
+                answered.set()
+
+        transport.write = AsyncMock(side_effect=write)
+
+        async def hook(input_data, tool_use_id, context):
+            return {}
+
+        q = Query(transport=transport, is_streaming_mode=True)
+        q.hook_callbacks["hook_0"] = hook
+        try:
+            await q.start()
+            # Nobody is calling receive_messages(): the backlog sits unread.
+            with anyio.fail_after(5):
+                await answered.wait()
+        finally:
+            await q.close()
+            q.close_receive_stream()
+
+    @pytest.mark.anyio
+    async def test_backlog_is_delivered_in_order_once_consumer_resumes(self):
+        transport = _make_mock_transport(messages=self._stream_events())
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            await q.start()
+            await anyio.sleep(0.05)  # reader runs ahead of the idle consumer
+
+            received = []
+            with anyio.fail_after(5):
+                async for msg in q.receive_messages():
+                    received.append(msg["event"]["i"])
+        finally:
+            await q.close()
+            q.close_receive_stream()
+
+        assert received == list(range(self._BACKLOG))
+
+
 class TestProcessExitAfterErrorResult:
     """Regression tests for #913: when the CLI emits a result message with
     is_error=True (e.g. subtype=error_max_turns) and then exits non-zero,

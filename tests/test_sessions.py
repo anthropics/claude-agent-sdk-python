@@ -995,6 +995,41 @@ class TestGetSessionMessages:
         messages = get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
 
+    def test_truncated_multibyte_tail_skipped(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A last line cut off inside a multi-byte character (a writer killed
+        mid-write) is skipped like any other corrupt line, not raised."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        good = [
+            json.dumps(_make_transcript_entry("user", u1, None, sid, content="hi")),
+            json.dumps(
+                _make_transcript_entry("assistant", a1, u1, sid, content="hello")
+            ),
+        ]
+        cut = json.dumps(
+            _make_transcript_entry(
+                "user", str(uuid.uuid4()), a1, sid, content="next \U0001f600"
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        # Keep only the first two bytes of the four-byte emoji.
+        cut = cut[: cut.index("\U0001f600".encode()) + 2]
+        (project_dir / f"{sid}.jsonl").write_bytes(
+            ("\n".join(good) + "\n").encode("utf-8") + cut
+        )
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert [m.uuid for m in messages] == [u1, a1]
+
     def test_search_all_projects_when_no_dir(self, claude_config_dir: Path):
         """When no directory given, searches all project directories."""
         proj1 = _make_project_dir(claude_config_dir, "/path/one")
@@ -1942,6 +1977,36 @@ class TestGetSubagentMessages:
             json.dumps(_make_transcript_entry("assistant", a1, u1, sid, content="ok")),
         ]
         (subagents_dir / "agent-x.jsonl").write_text("\n".join(lines) + "\n")
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert [m.uuid for m in messages] == [u1, a1]
+
+    def test_truncated_multibyte_tail_skipped(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A last line cut off inside a multi-byte character is skipped, not raised."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        good = [
+            json.dumps(_make_transcript_entry("user", u1, None, sid, content="hi")),
+            json.dumps(_make_transcript_entry("assistant", a1, u1, sid, content="ok")),
+        ]
+        cut = json.dumps(
+            _make_transcript_entry(
+                "user", str(uuid.uuid4()), a1, sid, content="next \U0001f600"
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        cut = cut[: cut.index("\U0001f600".encode()) + 2]
+        (subagents_dir / "agent-x.jsonl").write_bytes(
+            ("\n".join(good) + "\n").encode("utf-8") + cut
+        )
 
         messages = get_subagent_messages(sid, "x", directory=project_path)
         assert [m.uuid for m in messages] == [u1, a1]

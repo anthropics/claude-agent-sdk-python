@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.166
+
+### New Features
+
+- **Hook-specific output types**: Added typed output classes and missing input fields for hooks, giving hook implementations precise type information instead of untyped dicts (#1331)
+- **`SystemInitData` TypedDict**: The init system message payload is now fully typed via `SystemInitData`, along with nested types `SystemInitMcpServer`, `SystemInitPlugin`, `SystemInitPluginError`, and `FastModeState`/`FastModeDisabledReason` literals. Use `cast(SystemInitData, msg.data)` to access typed fields like `capabilities`, `model`, `mcp_servers`, and more (#1332)
+
+### Bug Fixes
+
+- **Fixed `SandboxSettings.ignoreViolations` type**: Changed from a `TypedDict` with `file`/`network` keys to `dict[str, list[str]]` to match the CLI's actual schema — a map from command-pattern substring to violation-text substrings. The old type caused `"file"` and `"network"` to be interpreted as command patterns, and strict type checkers rejected the correct `{"*": [...]}` shape (#1380)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.299
+
 ## 0.2.165
 
 ### Internal/Other Changes

@@ -60,7 +60,7 @@ class TestPermissionUpdate:
             "behavior": "allow",
             "rules": [
                 {"toolName": "Bash", "ruleContent": "npm *"},
-                {"toolName": "Read", "ruleContent": None},
+                {"toolName": "Read"},
             ],
         }
         update = PermissionUpdate.from_dict(wire)
@@ -72,6 +72,41 @@ class TestPermissionUpdate:
             PermissionRuleValue(tool_name="Read", rule_content=None),
         ]
         assert update.to_dict() == wire
+
+    def test_from_dict_accepts_explicit_null_rule_content(self):
+        # from_dict stays lenient: wire data with an explicit null still
+        # parses, but to_dict never emits it (see test below).
+        wire = {
+            "type": "addRules",
+            "behavior": "allow",
+            "rules": [{"toolName": "Read", "ruleContent": None}],
+        }
+        update = PermissionUpdate.from_dict(wire)
+        assert update.rules == [PermissionRuleValue(tool_name="Read")]
+        assert update.to_dict()["rules"] == [{"toolName": "Read"}]
+
+    def test_to_dict_omits_null_rule_content(self):
+        # Regression test for https://github.com/anthropics/claude-agent-sdk-python/issues/1308
+        # The CLI silently drops rules serialized with "ruleContent": null,
+        # so the key must be omitted when the rule has no content.
+        update = PermissionUpdate(
+            type="addRules",
+            behavior="allow",
+            destination="session",
+            rules=[
+                PermissionRuleValue(tool_name="WebSearch", rule_content=None),
+                PermissionRuleValue(tool_name="Bash", rule_content="npm *"),
+            ],
+        )
+        assert update.to_dict() == {
+            "type": "addRules",
+            "destination": "session",
+            "behavior": "allow",
+            "rules": [
+                {"toolName": "WebSearch"},
+                {"toolName": "Bash", "ruleContent": "npm *"},
+            ],
+        }
 
     def test_from_dict_set_mode(self):
         wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}

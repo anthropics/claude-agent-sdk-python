@@ -382,6 +382,34 @@ class TestGetSessionMessagesFromStore:
         )
         assert msgs == []
 
+    async def test_include_system_messages(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        u1, s1, a1 = (str(uuid_mod.uuid4()) for _ in range(3))
+        system = {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": s1,
+            "parentUuid": u1,
+            "sessionId": sid,
+            "timestamp": "2024-01-01T00:00:00.500Z",
+            "content": "Conversation compacted",
+        }
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            [_user("hi", u1, None, sid), system, _assistant("hello", a1, s1, sid)],
+        )
+
+        default = await get_session_messages_from_store(store, sid, directory=DIR)
+        assert [m.uuid for m in default] == [u1, a1]
+
+        msgs = await get_session_messages_from_store(
+            store, sid, directory=DIR, include_system_messages=True
+        )
+        assert [m.uuid for m in msgs] == [u1, s1, a1]
+        assert msgs[1].type == "system"
+        assert msgs[1].message is None
+
 
 # ---------------------------------------------------------------------------
 # Subagent helpers — list_subagents / get_subagent_messages

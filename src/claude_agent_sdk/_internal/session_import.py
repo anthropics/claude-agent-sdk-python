@@ -17,6 +17,7 @@ from typing import cast
 
 from ..types import SessionKey, SessionStore, SessionStoreEntry
 from .sessions import (
+    _agent_metadata_sidecar_path,
     _read_agent_metadata_sidecar,
     _resolve_session_file_path,
     _validate_uuid,
@@ -65,6 +66,10 @@ async def import_session_to_store(
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
         FileNotFoundError: If the session JSONL cannot be found on disk.
+        OSError: If a transcript, sidecar, or subagent directory exists but
+            cannot be read. Import is not transactional: entries already
+            appended remain in the store, and can be safely deduplicated by
+            ``entry["uuid"]`` when the import is retried.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
@@ -110,7 +115,12 @@ async def import_session_to_store(
         # recreate it and resumed subagents keep their agentType/worktreePath.
         # A missing, corrupt, or non-object sidecar is treated as absent (the
         # transcript is still imported); other read errors propagate.
-        meta = _read_agent_metadata_sidecar(file_path)
+        sidecar_path = _agent_metadata_sidecar_path(file_path)
+        meta = (
+            None
+            if sidecar_path.is_symlink()
+            else _read_agent_metadata_sidecar(file_path)
+        )
         if meta is not None:
             # Synthetic discriminator last so a stray "type" key in the
             # CLI-owned sidecar can never shadow it.
@@ -148,14 +158,20 @@ async def _append_jsonl_file_in_batches(
 def _collect_jsonl_files(base_dir: Path) -> Iterator[Path]:
     """Recursively yield all ``*.jsonl`` file paths under ``base_dir``.
 
-    Yields nothing if ``base_dir`` does not exist. Sorted per directory so
-    import order is deterministic across platforms.
+    Yields nothing if ``base_dir`` does not exist. Symlinks below ``base_dir``
+    are skipped so they cannot re-enter the tree or import transcripts from
+    outside it; ``base_dir`` itself may still be a symlink. Other ``OSError``s
+    (for example, permission denied) propagate so callers cannot mistake a
+    partial import for a complete one. Sorted per directory so import order is
+    deterministic across platforms.
     """
     try:
         dirents = sorted(base_dir.iterdir(), key=lambda p: p.name)
-    except OSError:
+    except FileNotFoundError:
         return
     for entry in dirents:
+        if entry.is_symlink():
+            continue
         if entry.is_dir():
             yield from _collect_jsonl_files(entry)
         elif entry.is_file() and entry.name.endswith(".jsonl"):

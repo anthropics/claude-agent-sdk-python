@@ -477,10 +477,14 @@ class Query:
                         # While the SDK is still answering a request the
                         # ceiling waits for the "running" that follows.
                         self._arm_run_end_ceiling()
-                    if message.get("is_error"):
-                        self._last_error_result = message
-                    else:
-                        self._last_error_result = None
+                    # Always keep the most recent result so that when the CLI
+                    # subsequently exits non-zero (which it does after a
+                    # budget-exceeded result even though is_error is False),
+                    # the trailing ProcessError can be wrapped in a ResultError
+                    # carrying the result details.  A newer result overwrites
+                    # the older one; assistant/stream_event messages below
+                    # clear it when the conversation moves to a new turn.
+                    self._last_error_result = message
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -510,10 +514,10 @@ class Query:
             logger.debug("Read task cancelled")
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            # When the CLI emits a result with is_error=True (e.g.
-            # error_max_turns, error_during_execution, or an API failure) it
-            # then exits non-zero on purpose, for shell-script consumers. The
-            # trailing ProcessError carries no information beyond "exit code
+            # When the CLI emits a result (error or not — e.g. error_max_turns,
+            # error_during_execution, an API failure, or error_max_budget_usd)
+            # it then exits non-zero on purpose, for shell-script consumers.
+            # The trailing ProcessError carries no information beyond "exit code
             # 1" — replace it with a ResultError carrying what the CLI already
             # reported so the exception is actionable and typed. Mirrors the
             # TypeScript SDK (Query.ts readMessages).

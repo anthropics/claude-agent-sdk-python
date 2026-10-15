@@ -2497,7 +2497,15 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_after_success_result_keeps_original_message(self):
+    def test_process_error_after_success_result_wraps_in_result_error(self):
+        """A success result followed by ProcessError is wrapped in ResultError.
+
+        The CLI should not exit non-zero after a success result, but if it
+        does, the consumer should still see the result details rather than a
+        raw ProcessError.  This is the same wrapping logic that handles
+        error_max_budget_usd and other non-error results.
+        """
+
         async def _test():
             transport = self._make_transport_then_raise(
                 messages=[
@@ -2520,7 +2528,7 @@ class TestProcessExitAfterErrorResult:
             await q.start()
 
             received = []
-            with pytest.raises(Exception, match="Command failed"):
+            with pytest.raises(ResultError, match="Claude Code returned an error"):
                 async for msg in q.receive_messages():
                     received.append(msg)
             await q.close()
@@ -2530,7 +2538,7 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
-    def test_process_error_after_error_then_success_result_keeps_original(self):
+    def test_process_error_after_error_then_success_result_uses_latest(self):
         """Tracks the *most recent* result, not a sticky latch."""
 
         async def _test():
@@ -2556,7 +2564,9 @@ class TestProcessExitAfterErrorResult:
             await q.start()
 
             received = []
-            with pytest.raises(Exception, match="Command failed"):
+            # The most recent result (success) overwrites the earlier error
+            # result; its error text falls back to "unknown error".
+            with pytest.raises(ResultError, match="Claude Code returned an error"):
                 async for msg in q.receive_messages():
                     received.append(msg)
             await q.close()
@@ -2658,5 +2668,56 @@ class TestProcessExitAfterErrorResult:
 
             assert event.is_set()
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
+
+        anyio.run(_test)
+
+    def test_budget_exceeded_result_wraps_in_result_error(self):
+        """When a subagent exceeds its budget, the result (is_error=False)
+        is followed by a non-zero CLI exit.  The consumer must see the
+        result message and then a ResultError — not a raw ProcessError
+        that swallows the budget-exceeded signal.
+
+        Regression test for: exceeding --max-budget-usd during subagent
+        execution caused the parent query to hang indefinitely without
+        emitting a ResultMessage.
+        """
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "result",
+                        "subtype": "error_max_budget_usd",
+                        "is_error": False,
+                        "num_turns": 1,
+                        "session_id": "s",
+                        "duration_ms": 1,
+                        "duration_api_ms": 1,
+                        "total_cost_usd": 0.0,
+                    }
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            received = []
+            with pytest.raises(
+                ResultError, match="Claude Code returned an error result"
+            ) as exc_info:
+                async for msg in q.receive_messages():
+                    received.append(msg)
+            await q.close()
+
+            # The result message arrives before the exception.
+            assert len(received) == 1
+            assert received[0]["subtype"] == "error_max_budget_usd"
+            assert received[0]["is_error"] is False
+
+            # The exception carries the result details and exit code.
+            assert exc_info.value.exit_code == 1
+            assert "error_max_budget_usd" in str(exc_info.value)
 
         anyio.run(_test)

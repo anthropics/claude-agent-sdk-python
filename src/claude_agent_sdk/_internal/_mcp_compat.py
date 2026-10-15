@@ -110,13 +110,20 @@ def can_cancel_requests(server: Server) -> bool:
 
 
 def build_tool_server(
-    name: str, version: str, tools: list[Tool], run_tool: ToolRunner
+    name: str,
+    version: str,
+    tools: list[Tool],
+    run_tool: ToolRunner,
+    instructions: str | None = None,
 ) -> Server:
     """Build a lowlevel ``Server`` that lists ``tools`` and delegates calls to ``run_tool``.
 
     ``run_tool`` owns argument validation, error mapping and content shaping,
     so tool behavior does not depend on either major's defaults. On 1.x that
     means turning off the decorator's own jsonschema validation.
+
+    ``instructions`` goes into the ``initialize`` result. Both majors take it
+    as a constructor keyword, so it needs no branching of its own.
     """
     if MCP_MAJOR >= 2:
 
@@ -129,6 +136,7 @@ def build_tool_server(
         server: Server = _Server(
             name,
             version=version,
+            instructions=instructions,
             on_list_tools=on_list_tools,
             on_call_tool=on_call_tool,
         )
@@ -146,7 +154,7 @@ def build_tool_server(
         await anyio.lowlevel.checkpoint_if_cancelled()
         return result
 
-    legacy_server = _Server(name, version=version)
+    legacy_server = _Server(name, version=version, instructions=instructions)
     legacy_server.list_tools()(list_tools)
     legacy_server.call_tool(validate_input=False)(call_tool)
     built: Server = legacy_server

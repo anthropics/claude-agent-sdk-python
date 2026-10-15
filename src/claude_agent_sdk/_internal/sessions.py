@@ -1631,23 +1631,41 @@ async def _derive_infos_via_load(
     and no-summary sessions are dropped.
     """
     limiter = anyio.CapacityLimiter(_STORE_LIST_LOAD_CONCURRENCY)
-    settled: list[str | None | Exception] = [None] * len(listing)
+    settled: list[SDKSessionInfo | None | Exception] = [None] * len(listing)
+    parse_errors: list[Exception | None] = [None] * len(listing)
 
     async def _bounded_load(i: int, sid: str) -> None:
         async with limiter:
             try:
-                settled[i] = await _load_store_entries_as_jsonl(
+                jsonl = await _load_store_entries_as_jsonl(
                     session_store, sid, directory
                 )
             except Exception as e:  # noqa: BLE001 - adapter is user code
                 settled[i] = e
+                return
+            # Retain only the summary after each load, not every full transcript.
+            try:
+                if jsonl is not None:
+                    parsed = _parse_session_info_from_lite(
+                        sid, _jsonl_to_lite(jsonl, listing[i]["mtime"]), project_path
+                    )
+                    if parsed is not None:
+                        parsed.last_modified = listing[i]["mtime"]
+                    settled[i] = parsed
+            except Exception as e:
+                # Finish all loads and raise the first input-order parse error,
+                # as when parsing happened after the task group completed.
+                parse_errors[i] = e
 
     async with anyio.create_task_group() as tg:
         for i, e in enumerate(listing):
             tg.start_soon(_bounded_load, i, e["session_id"])
 
     results: list[SDKSessionInfo] = []
-    for entry, outcome in zip(listing, settled, strict=True):
+    for i, (entry, outcome) in enumerate(zip(listing, settled, strict=True)):
+        parse_error = parse_errors[i]
+        if parse_error is not None:
+            raise parse_error
         sid = entry["session_id"]
         mtime = entry["mtime"]
         if isinstance(outcome, BaseException):
@@ -1657,15 +1675,7 @@ async def _derive_infos_via_load(
             continue
         if outcome is None:
             continue
-        parsed = _parse_session_info_from_lite(
-            sid, _jsonl_to_lite(outcome, mtime), project_path
-        )
-        if parsed is None:
-            # Sidechain or no extractable summary — drop, matching the
-            # filesystem path.
-            continue
-        parsed.last_modified = mtime
-        results.append(parsed)
+        results.append(outcome)
     return results
 
 

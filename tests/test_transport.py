@@ -3123,7 +3123,8 @@ class TestWindowsCmdMetacharacterRejection:
             cmd = transport._build_command()
         assert "--resume=title & % | notes" in cmd
         assert "--session-id=a>b" in cmd
-=======
+
+
 class TestReaderUnblockOnProcessExit:
     """Regression tests for #1110: process death must end read_messages even
     when stdout never reaches EOF.

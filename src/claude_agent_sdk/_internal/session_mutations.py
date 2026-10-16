@@ -408,7 +408,11 @@ def _build_fork_lines(
         # Resolve parentUuid, skipping progress ancestors.
         new_parent_uuid: str | None = None
         parent_id: str | None = original.get("parentUuid")
-        while parent_id:
+        # A corrupt progress cycle has no writable ancestor. Treat it like
+        # a missing parent instead of looping forever.
+        seen_parents: set[str] = set()
+        while parent_id and parent_id not in seen_parents:
+            seen_parents.add(parent_id)
             parent = by_uuid.get(parent_id)
             if not parent:
                 break

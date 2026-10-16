@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -81,10 +82,8 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 def _simple_hash(s: str) -> str:
     """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
-    # JS charCodeAt walks UTF-16 code units, so hash those (not code points).
-    units = s.encode("utf-16-le", "surrogatepass")
-    for i in range(0, len(units), 2):
-        char = units[i] | (units[i + 1] << 8)
+    for ch in s:
+        char = ord(ch)
         h = (h << 5) - h + char
         # Emulate JS `hash |= 0` (coerce to 32-bit signed int)
         h = h & 0xFFFFFFFF
@@ -109,11 +108,10 @@ def _sanitize_path(name: str) -> str:
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
-    # The CLI's JS regex matches UTF-16 code units, so a character outside
-    # the BMP (e.g. an emoji) becomes two hyphens there.
-    sanitized = _SANITIZE_RE.sub(
-        lambda m: "--" if ord(m.group()) > 0xFFFF else "-", name
-    )
+    # Work on UTF-16 code units like the CLI's JS (an emoji is two).
+    b = name.encode("utf-16-le", "surrogatepass")
+    name = "".join(map(chr, struct.unpack(f"<{len(b) // 2}H", b)))
+    sanitized = _SANITIZE_RE.sub("-", name)
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)

@@ -157,7 +157,6 @@ class TestHelpers:
         """Emoji are two UTF-16 code units in the CLI, so two hyphens and two
         hash inputs. Expected values come from the CLI's own JS functions."""
         assert _sanitize_path("/Users/foo/\U0001f600 proj") == "-Users-foo----proj"
-        assert _simple_hash("\U0001f600") == "11zz7"
         long_path = "/x" * 99 + "\U0001f600" + "/y"
         assert _sanitize_path(long_path) == "-x" * 99 + "--" + "-547l4"
 

@@ -153,6 +153,14 @@ class TestHelpers:
         # The hash suffix is appended after the 200-char prefix
         assert "-" in result[200:]
 
+    def test_sanitize_path_matches_cli_for_non_bmp_chars(self):
+        """Emoji are two UTF-16 code units in the CLI, so two hyphens and two
+        hash inputs. Expected values come from the CLI's own JS functions."""
+        assert _sanitize_path("/Users/foo/\U0001f600 proj") == "-Users-foo----proj"
+        assert _simple_hash("\U0001f600") == "11zz7"
+        long_path = "/x" * 99 + "\U0001f600" + "/y"
+        assert _sanitize_path(long_path) == "-x" * 99 + "--" + "-547l4"
+
     def test_simple_hash_deterministic(self):
         assert _simple_hash("hello") == _simple_hash("hello")
         assert _simple_hash("hello") != _simple_hash("world")

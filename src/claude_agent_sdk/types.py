@@ -2657,8 +2657,9 @@ class ClaudeAgentOptions:
     - ``"project"`` — Project settings (``.claude/settings.json``).
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
-    When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    When ``None``, all sources are loaded (matches CLI defaults), unless
+    :attr:`skills` is set: then only ``["user", "project"]`` are loaded. Pass
+    ``[]`` to disable filesystem settings (SDK isolation mode). Must include
     ``"project"`` to load CLAUDE.md files.
     """
 
@@ -2667,7 +2668,9 @@ class ClaudeAgentOptions:
 
     This is the single place to turn skills on; you do not need to add
     ``"Skill"`` to ``allowed_tools`` or set ``setting_sources`` yourself — the
-    SDK does both when this is set.
+    SDK does both when this is set. If ``setting_sources`` is ``None``, the SDK
+    sets it to ``["user", "project"]``, so ``.claude/settings.local.json`` is
+    not loaded. Pass ``setting_sources`` explicitly to keep it.
 
     - ``None`` (default): no SDK auto-configuration. The CLI's own defaults
       still apply, so this is **not** "skills off" — to suppress every skill

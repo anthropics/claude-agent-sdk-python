@@ -1363,6 +1363,12 @@ class TestRunEndCeilingFromEnv:
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "inf"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "nan"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "9" * 400}, None, int("9" * 400)),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e-3"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "2.5e0"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e400"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1.5"}, None, 1),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1,000"}, None, 1000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "12ms"}, None, 12),
         ],
         ids=[
             "default",
@@ -1379,6 +1385,12 @@ class TestRunEndCeilingFromEnv:
             "infinity",
             "not_a_number_float",
             "beyond_float_range",
+            "scientific_fraction",
+            "scientific_not_whole",
+            "scientific_overflow",
+            "decimal_truncated",
+            "digit_groups",
+            "leading_integer",
         ],
     )
     def test_parse(self, monkeypatch, options_env, ambient, expected):

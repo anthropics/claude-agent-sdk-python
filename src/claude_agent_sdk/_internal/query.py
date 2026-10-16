@@ -2,8 +2,8 @@
 
 import json
 import logging
-import math
 import os
+import re
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -61,6 +61,26 @@ DEFAULT_RUN_END_CEILING_MS = 600_000
 _MAX_RUN_END_CEILING_MS = 2**31 - 1
 
 
+# The CLI's env integer parser, for strings that are not a plain integer:
+# scientific notation counts only when the value is whole, digit groups of
+# three may be separated, and anything else is read like parseInt(s, 10).
+_CLI_SCIENTIFIC = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d+", re.ASCII)
+_CLI_GROUPED = re.compile(r"[+-]?\d{1,3}([_, \u00a0\u202f])\d{3}(?:\1\d{3})*", re.ASCII)
+_CLI_GROUP_SEPARATOR = re.compile(r"[_, \u00a0\u202f]")
+_CLI_LEADING_INTEGER = re.compile(r"[+-]?\d+", re.ASCII)
+
+
+def _parse_like_cli(text: str) -> int | None:
+    if len(text) <= 32:
+        if _CLI_SCIENTIFIC.fullmatch(text):
+            number = float(text)
+            return int(number) if number.is_integer() else None
+        if _CLI_GROUPED.fullmatch(text):
+            return int(_CLI_GROUP_SEPARATOR.sub("", text))
+    match = _CLI_LEADING_INTEGER.match(text)
+    return int(match.group()) if match else None
+
+
 def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
 
@@ -79,16 +99,10 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        # Only reached when the plain-integer read fails, so an integer too
-        # large for a float keeps its exact value above and is clamped later
-        # by the sleeper rather than becoming an infinity here.
-        try:
-            as_number = float(raw)
-        except (TypeError, ValueError):
+        parsed = _parse_like_cli(str(raw).strip())
+        if parsed is None:
             return DEFAULT_RUN_END_CEILING_MS
-        if not math.isfinite(as_number):
-            return DEFAULT_RUN_END_CEILING_MS
-        value = int(as_number)
+        value = parsed
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 

@@ -9,6 +9,7 @@ closing stdin until the CLI's run is over.
 """
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -2242,6 +2243,92 @@ class TestReaderNotBlockedByIdleConsumer:
             q.close_receive_stream()
 
         assert received == list(range(self._BACKLOG))
+
+    @staticmethod
+    def _backlog_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "claude_agent_sdk._internal.query"
+            and r.levelno == logging.WARNING
+            and "unread" in r.getMessage()
+        ]
+
+    @pytest.mark.anyio
+    async def test_warns_once_when_backlog_passes_threshold(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """With the buffer unbounded, a consumer that stopped reading would
+        grow memory silently; the one sign of it is a single warning."""
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.query.MESSAGE_BACKLOG_WARNING_THRESHOLD", 5
+        )
+        transport = _make_mock_transport(messages=self._stream_events())
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await q.start()
+                assert q._read_task is not None
+                with anyio.fail_after(5):
+                    await q._read_task.wait()  # reads everything; nobody consumes
+            warnings = self._backlog_warnings(caplog)
+        finally:
+            await q.close()
+            q.close_receive_stream()
+
+        # Many more messages than the threshold arrived, but it warns once,
+        # as soon as the backlog reaches the threshold.
+        assert len(warnings) == 1
+        assert warnings[0].startswith("5 unread messages")
+
+    @pytest.mark.anyio
+    async def test_warns_exactly_when_backlog_reaches_threshold(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """The threshold is inclusive: 4 unread messages do not warn, the 5th
+        does (with a threshold of 5)."""
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.query.MESSAGE_BACKLOG_WARNING_THRESHOLD", 5
+        )
+        counts: dict[int, int] = {}
+        for n in (4, 5):
+            caplog.clear()
+            transport = _make_mock_transport(messages=self._stream_events()[:n])
+            q = Query(transport=transport, is_streaming_mode=True)
+            try:
+                with caplog.at_level(logging.WARNING):
+                    await q.start()
+                    assert q._read_task is not None
+                    with anyio.fail_after(5):
+                        await q._read_task.wait()
+                counts[n] = len(self._backlog_warnings(caplog))
+            finally:
+                await q.close()
+                q.close_receive_stream()
+
+        assert counts == {4: 0, 5: 1}
+
+    @pytest.mark.anyio
+    async def test_no_warning_below_threshold(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.query.MESSAGE_BACKLOG_WARNING_THRESHOLD", 5
+        )
+        transport = _make_mock_transport(messages=self._stream_events()[:4])
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await q.start()
+                assert q._read_task is not None
+                with anyio.fail_after(5):
+                    await q._read_task.wait()
+            warnings = self._backlog_warnings(caplog)
+        finally:
+            await q.close()
+            q.close_receive_stream()
+
+        assert warnings == []
 
 
 class TestProcessExitAfterErrorResult:

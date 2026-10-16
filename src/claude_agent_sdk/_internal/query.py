@@ -60,6 +60,11 @@ DEFAULT_RUN_END_CEILING_MS = 600_000
 # timers cannot run longer; it also keeps a huge value convertible to float.
 _MAX_RUN_END_CEILING_MS = 2**31 - 1
 
+# Unread messages buffered for the consumer at which Query warns, once. The
+# buffer is unbounded (see Query.__init__), so this warning is the only sign
+# that a consumer has stopped reading and memory is growing.
+MESSAGE_BACKLOG_WARNING_THRESHOLD = 10_000
+
 
 def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
@@ -233,10 +238,12 @@ class Query:
         # returned at the first result while background subagents keep
         # streaming) fills it, the loop blocks on send(), and those requests
         # go unanswered. The cost is that a consumer which never reads lets the
-        # backlog grow in memory instead of pushing back on the CLI's stdout.
+        # backlog grow in memory instead of pushing back on the CLI's stdout;
+        # _warn_if_backlogged() logs once when that starts to happen.
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=math.inf)
+        self._backlog_warned = False
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
@@ -512,6 +519,7 @@ class Query:
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
+                self._warn_if_backlogged()
 
         except anyio.get_cancelled_exc_class():
             # Task was cancelled - this is expected behavior
@@ -581,6 +589,26 @@ class Query:
             with suppress(anyio.WouldBlock):
                 self._message_send.send_nowait({"type": "end"})
             self._message_send.close()
+
+    def _warn_if_backlogged(self) -> None:
+        """Warn, once, when unread messages pile up in the unbounded buffer.
+
+        Nothing else tells a caller that its consumer stopped reading (the read
+        loop no longer blocks), so the growth would otherwise be silent. Cheap
+        enough for every message; once it has fired it returns immediately.
+        """
+        if self._backlog_warned:
+            return
+        backlog = self._message_send.statistics().current_buffer_used
+        if backlog >= MESSAGE_BACKLOG_WARNING_THRESHOLD:
+            self._backlog_warned = True
+            logger.warning(
+                "%d unread messages are buffered: the consumer is not keeping "
+                "up with the message stream (or has stopped reading it). The "
+                "buffer is unbounded, so memory grows until the messages are "
+                "read or the client is closed.",
+                backlog,
+            )
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""

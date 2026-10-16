@@ -33,6 +33,9 @@ from claude_agent_sdk import (
     tool,
 )
 from claude_agent_sdk import (
+    _build_input_schema as build_input_schema,
+)
+from claude_agent_sdk import (
     _python_type_to_json_schema as python_type_to_json_schema,
 )
 from claude_agent_sdk import (
@@ -1958,6 +1961,28 @@ class TestPythonTypeToJsonSchema:
 
         server = create_sdk_mcp_server("test", tools=[search])
         assert server["type"] == "sdk"
+
+
+class TestTypingExtensionsTypedDictDetection:
+    """A typing_extensions.TypedDict input_schema must publish its fields."""
+
+    def test_typing_extensions_typeddict_publishes_its_fields(self) -> None:
+        typing_extensions = pytest.importorskip("typing_extensions")
+
+        class SearchParams(typing_extensions.TypedDict):
+            query: str
+            max_results: int
+
+        @tool("search", "Search", SearchParams)
+        async def search(args: Any) -> dict[str, Any]:
+            return {"content": []}
+
+        schema = build_input_schema(search)
+        assert schema["properties"] == {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }
+        assert sorted(schema["required"]) == ["max_results", "query"]
 
 
 class TestTypedDictToJsonSchema:

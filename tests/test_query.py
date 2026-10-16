@@ -1925,6 +1925,117 @@ class TestQueryTrioBackend:
         mock_transport.is_ready = Mock(return_value=True)
         return mock_transport
 
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_pending_control_requests_unblock_on_close(self, backend):
+        """All in-flight control requests must fail promptly when Query closes."""
+
+        async def _test():
+            with anyio.fail_after(2.0):
+                mock_transport = self._make_blocking_transport()
+                q = Query(transport=mock_transport, is_streaming_mode=True)
+                await q.start()
+                errors: list[Exception] = []
+
+                async def interrupt():
+                    try:
+                        await q.interrupt()
+                    except Exception as exc:
+                        errors.append(exc)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(interrupt)
+                    tg.start_soon(interrupt)
+                    while len(q.pending_control_responses) < 2:
+                        await anyio.sleep(0)
+                    await q.close()
+
+                assert len(errors) == 2
+                assert all(isinstance(exc, CLIConnectionError) for exc in errors)
+                assert {str(exc) for exc in errors} == {
+                    "Query closed while waiting for control response"
+                }
+                assert q.pending_control_responses == {}
+                assert q.pending_control_results == {}
+
+                with pytest.raises(CLIConnectionError, match="Query is closed"):
+                    await q.interrupt()
+
+        anyio.run(_test, backend=backend)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_pending_control_request_unblocks_on_reader_eof(self, backend):
+        """A clean reader EOF must wake a request whose response cannot arrive."""
+
+        async def _test():
+            wrote = anyio.Event()
+            mock_transport = AsyncMock()
+
+            async def read_messages():
+                await wrote.wait()
+                return
+                yield {}  # pragma: no cover - keeps this an async generator
+
+            async def write(_data):
+                wrote.set()
+
+            mock_transport.read_messages = read_messages
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = write
+            mock_transport.is_ready = Mock(return_value=True)
+
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            await q.start()
+
+            with anyio.fail_after(2.0):
+                with pytest.raises(
+                    CLIConnectionError,
+                    match="message reader closed while waiting for control response",
+                ):
+                    await q.interrupt()
+
+            await q.close()
+
+        anyio.run(_test, backend=backend)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_reader_exit_preserves_resolved_control_result(self, backend):
+        """Reader shutdown must not overwrite an already resolved response."""
+
+        async def _test():
+            release = anyio.Event()
+            mock_transport = AsyncMock()
+
+            async def read_messages():
+                await release.wait()
+                return
+                yield {}  # pragma: no cover - keeps this an async generator
+
+            mock_transport.read_messages = read_messages
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.write = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            q = Query(transport=mock_transport, is_streaming_mode=True)
+            event = anyio.Event()
+            event.set()
+            resolved = {"response": {"ok": True}}
+            q.pending_control_responses["req_1"] = event
+            q.pending_control_results["req_1"] = resolved
+
+            await q.start()
+            release.set()
+            assert q._read_task is not None
+            await q._read_task.wait()
+
+            assert q.pending_control_results["req_1"] == resolved
+            await q.close()
+
+        anyio.run(_test, backend=backend)
+
     def test_receive_messages_unblocks_on_close_under_trio(self):
         """Consumer blocked in receive_messages() must unblock on close().
 

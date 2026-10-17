@@ -1,5 +1,7 @@
 """Tests for message parser error handling."""
 
+from typing import Any
+
 import pytest
 
 from claude_agent_sdk._errors import MessageParseError
@@ -370,6 +372,81 @@ class TestMessageParser:
             "type": "advisor_result",
             "text": "Consider edge cases around empty input.",
         }
+
+    @pytest.mark.parametrize(
+        ("block_type", "content"),
+        [
+            (
+                "web_search_tool_result",
+                [
+                    {
+                        "type": "web_search_result",
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "encrypted_content": "abc",
+                    }
+                ],
+            ),
+            (
+                "web_fetch_tool_result",
+                {"type": "web_fetch_result", "url": "https://example.com"},
+            ),
+            (
+                "code_execution_tool_result",
+                {"type": "code_execution_result", "stdout": "4\n", "return_code": 0},
+            ),
+            (
+                "bash_code_execution_tool_result",
+                {
+                    "type": "bash_code_execution_result",
+                    "stdout": "ok",
+                    "return_code": 0,
+                },
+            ),
+            (
+                "text_editor_code_execution_tool_result",
+                {"type": "text_editor_code_execution_view_result", "content": "x"},
+            ),
+            (
+                "tool_search_tool_result",
+                {"type": "tool_search_tool_search_result", "tool_references": []},
+            ),
+        ],
+    )
+    def test_parse_assistant_message_keeps_other_server_tool_results(
+        self, block_type: str, content: Any
+    ):
+        """Results of the other server tools are kept, not just advisor's.
+
+        Their server_tool_use blocks were parsed while the matching result
+        blocks were dropped, so the call showed up and its result never did.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_01XYZ",
+                        "name": block_type.removesuffix("_tool_result"),
+                        "input": {},
+                    },
+                    {
+                        "type": block_type,
+                        "tool_use_id": "srvtoolu_01XYZ",
+                        "content": content,
+                    },
+                ],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 2
+        result_block = message.content[1]
+        assert isinstance(result_block, ServerToolResultBlock)
+        assert result_block.tool_use_id == "srvtoolu_01XYZ"
+        assert result_block.content == content
 
     def test_parse_assistant_message_with_redacted_advisor_result(self):
         """External API users get advisor output as an encrypted blob in the content dict."""

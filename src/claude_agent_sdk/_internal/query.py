@@ -6,6 +6,7 @@ import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
@@ -65,9 +66,9 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    anything that is not a non-negative integer falls back to the CLI's
+    default of 10 minutes. Integral scientific notation such as ``1e6`` is
+    accepted because the CLI accepts that spelling too.
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -76,10 +77,18 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     if raw is None:
         return DEFAULT_RUN_END_CEILING_MS
     try:
-        value = int(raw)
-    except (TypeError, ValueError):
+        parsed = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
         return DEFAULT_RUN_END_CEILING_MS
-    return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
+    if not parsed.is_finite() or parsed < 0:
+        return DEFAULT_RUN_END_CEILING_MS
+    if parsed != parsed.to_integral_value():
+        return DEFAULT_RUN_END_CEILING_MS
+    # Clamp before converting to int: a compact exponent such as 1e1000000
+    # must not expand into a multi-megabit Python integer.
+    if parsed > _MAX_RUN_END_CEILING_MS:
+        return _MAX_RUN_END_CEILING_MS
+    return int(parsed)
 
 
 def _error_result_text(message: dict[str, Any]) -> str:

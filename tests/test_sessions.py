@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     list_subagents,
 )
 from claude_agent_sdk._internal.sessions import (
+    LITE_READ_BUF_SIZE,
     _build_conversation_chain,
     _extract_first_prompt_from_head,
     _extract_json_string_field,
@@ -505,7 +506,8 @@ class TestListSessions:
                             "type": "tool_result",
                             "tool_use_id": "t1",
                             "content": [{"type": "image"}],
-                        }
+                        },
+                        {"type": "image"},
                     ],
                 },
             },
@@ -526,6 +528,121 @@ class TestListSessions:
         (project_dir / f"{sid}.jsonl").write_text(json.dumps(entry, **_COMPACT) + "\n")
 
         assert list_sessions(directory=project_path, include_worktrees=False) == []
+
+    @pytest.mark.parametrize(
+        ("entry", "label"),
+        [
+            (
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "text",
+                                    "media_type": "text/plain",
+                                    "data": "tool_result",
+                                },
+                            }
+                        ]
+                    },
+                },
+                "Document",
+            ),
+            (
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "Write",
+                                "input": {
+                                    "record": {
+                                        "type": "user",
+                                        "content": [{"type": "image"}],
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                },
+                None,
+            ),
+            (
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "A" * (2 * LITE_READ_BUF_SIZE),
+                                },
+                            }
+                        ],
+                    },
+                },
+                "Image",
+            ),
+            (
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "Write",
+                                "input": {
+                                    "record": {
+                                        "type": "user",
+                                        "content": [{"type": "image"}],
+                                    },
+                                    "body": "A" * (2 * LITE_READ_BUF_SIZE),
+                                },
+                            }
+                        ]
+                    },
+                },
+                None,
+            ),
+        ],
+        ids=[
+            "document_data_says_tool_result",
+            "assistant_tool_input",
+            "image_cut_off_by_head",
+            "assistant_tool_input_cut_off_by_head",
+        ],
+    )
+    def test_attachment_label_reads_message_structure(
+        self, claude_config_dir: Path, tmp_path: Path, entry: dict, label: str | None
+    ):
+        """The label comes from the top-level entry and its content blocks, not
+        from strings anywhere in the line, including a first line cut off by the
+        head buffer."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        (project_dir / f"{sid}.jsonl").write_text(json.dumps(entry, **_COMPACT) + "\n")
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        info = get_session_info(sid, directory=project_path)
+        if label is None:
+            assert sessions == []
+            assert info is None
+        else:
+            assert [s.summary for s in sessions] == [label]
+            assert info is not None
+            assert info.summary == label
 
     def test_filters_non_uuid_filenames(self, claude_config_dir: Path, tmp_path: Path):
         """Non-UUID .jsonl files are ignored."""

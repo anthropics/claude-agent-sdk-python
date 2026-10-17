@@ -333,25 +333,80 @@ def _extract_first_prompt_from_head(head: str) -> str:
     return ""
 
 
+def _close_truncated_json(line: str) -> str:
+    """Closes a JSON object cut off by the head buffer so it can be parsed.
+
+    A pasted image is usually larger than ``LITE_READ_BUF_SIZE``, so the head
+    ends inside its base64 string. Closing the open string and brackets keeps
+    everything before the cut. If the cut falls somewhere else (inside a key or
+    a literal), the result is still invalid and the caller skips the line.
+    """
+    closers: list[str] = []
+    in_string = escaped = False
+    for ch in line:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            closers.append("}")
+        elif ch == "[":
+            closers.append("]")
+        elif ch in "}]" and closers:
+            closers.pop()
+    if in_string:
+        if escaped:
+            line = line[:-1]
+        line += '"'
+    line = line.rstrip()
+    if line.endswith(","):
+        line = line[:-1]
+    elif line.endswith(":"):
+        line += "null"
+    return line + "".join(reversed(closers))
+
+
 def _extract_attachment_label_from_head(head: str) -> str:
     """Labels a session whose user messages in the head carry no text.
 
-    Returns ``"Image"`` or ``"Document"`` for the first non-meta, non-tool-result
-    user line holding that block type, else ``""``. Used only as the last
-    summary fallback, so an image-only session is listed instead of dropped.
-    Mirrors the TS SDK and the CLI's own session list.
+    Returns ``"Image"`` or ``"Document"`` for the first top-level user entry
+    that is not ``isMeta``, carries no ``tool_result`` block, and has an image
+    or document content block, else ``""``. Used only as the last summary
+    fallback, so an image-only session is listed instead of dropped, as in the
+    TS SDK. The last line may be cut off by the head buffer.
     """
-    for line in head.split("\n"):
-        if '"type":"user"' not in line and '"type": "user"' not in line:
+    lines = head.split("\n")
+    for i, line in enumerate(lines):
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            if i != len(lines) - 1:
+                continue
+            try:
+                entry = json.loads(_close_truncated_json(line))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if not isinstance(entry, dict) or entry.get("type") != "user":
             continue
-        if '"tool_result"' in line:
+        if entry.get("isMeta") is True:
             continue
-        if '"isMeta":true' in line or '"isMeta": true' in line:
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
             continue
-        if '"type":"image"' in line or '"type": "image"' in line:
-            return "Image"
-        if '"type":"document"' in line or '"type": "document"' in line:
-            return "Document"
+        types = [b.get("type") for b in content if isinstance(b, dict)]
+        if "tool_result" in types:
+            continue
+        for block_type in types:
+            if block_type == "image":
+                return "Image"
+            if block_type == "document":
+                return "Document"
     return ""
 
 

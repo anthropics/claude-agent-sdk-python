@@ -1372,6 +1372,7 @@ class UserMessage:
     the CLI did not attribute it. Populated on injected turns (task
     notifications, channel/peer messages, ...) and on user messages the CLI
     replays; tool-result messages never carry it."""
+    session_id: str | None = None
 
 
 @dataclass

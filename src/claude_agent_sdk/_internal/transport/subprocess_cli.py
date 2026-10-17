@@ -654,6 +654,9 @@ class SubprocessCLITransport(Transport):
             )
             cmd.append(f"--session-id={self._options.session_id}")
 
+        if not self._options.persist_session:
+            cmd.append("--no-session-persistence")
+
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
         if settings_value:

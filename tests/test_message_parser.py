@@ -85,6 +85,30 @@ class TestMessageParser:
             assert isinstance(message, UserMessage)
             assert message.origin is None, extra
 
+    def test_parse_user_message_session_id(self):
+        """session_id is surfaced on user messages, for both content shapes,
+        matching AssistantMessage and ResultMessage."""
+        for content in (
+            "hi",
+            [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}],
+        ):
+            message = parse_message(
+                {
+                    "type": "user",
+                    "message": {"content": content},
+                    "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+                }
+            )
+            assert isinstance(message, UserMessage)
+            assert message.session_id == "fdf2d90a-fd9e-4736-ae35-806edd13643f"
+
+    def test_parse_user_message_session_id_absent(self):
+        """A user message without session_id parses with session_id=None."""
+        for content in ("hi", [{"type": "text", "text": "hi"}]):
+            message = parse_message({"type": "user", "message": {"content": content}})
+            assert isinstance(message, UserMessage)
+            assert message.session_id is None
+
     def test_parse_user_message_with_tool_use(self):
         """Test parsing a user message with tool_use block."""
         data = {

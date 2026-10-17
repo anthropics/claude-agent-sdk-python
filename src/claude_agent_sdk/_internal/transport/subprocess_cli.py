@@ -530,10 +530,9 @@ class SubprocessCLITransport(Transport):
         """Compute effective allowed_tools and setting_sources for skills.
 
         When ``options.skills`` is ``"all"``, injects the bare ``Skill`` tool;
-        when it is a list, injects ``Skill(name)`` for each entry. In either
-        case ``setting_sources`` defaults to ``["user", "project"]`` when
-        unset so the CLI discovers installed skills without the caller having
-        to wire up both options manually. ``None`` is a no-op.
+        when it is a list, injects ``Skill(name)`` for each entry. If
+        ``setting_sources`` is unset it stays unset so the CLI loads every
+        source (including ``local``). ``None`` is a no-op.
 
         Each listed skill name is validated before being formatted into a
         rule; see :func:`_validate_skill_name`.
@@ -561,9 +560,6 @@ class SubprocessCLITransport(Transport):
                 pattern = f"Skill({name})"
                 if pattern not in allowed_tools:
                     allowed_tools.append(pattern)
-
-        if setting_sources is None:
-            setting_sources = ["user", "project"]
 
         return allowed_tools, setting_sources
 

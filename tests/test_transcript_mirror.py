@@ -318,6 +318,81 @@ class TestTranscriptMirrorBatcher:
         sleep_mock.assert_not_awaited()  # no backoff sleep
 
     @pytest.mark.anyio
+    async def test_append_timeout_error_message_says_what_happened(self) -> None:
+        """A timeout has no message of its own (``str(TimeoutError())`` is
+        empty), so on_error must be handed text that names the timeout."""
+
+        class HangingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                await anyio.Event().wait()  # never resolves
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=HangingStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+            send_timeout=0.05,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        await batcher.flush()
+
+        assert errors == ["SessionStore.append() timed out after 0.05s"]
+
+    @pytest.mark.anyio
+    async def test_adapter_timeout_error_keeps_its_own_message(self) -> None:
+        """A TimeoutError the adapter raises itself (say, a client library's
+        read timeout) is not the batcher's deadline firing: its message must
+        not be replaced with the batcher's."""
+
+        class AdapterTimeoutStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                raise TimeoutError("s3 PutObject read timeout after 5s")
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=AdapterTimeoutStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+            send_timeout=60.0,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        await batcher.flush()
+
+        assert errors == ["s3 PutObject read timeout after 5s"]
+
+    @pytest.mark.anyio
+    async def test_append_error_without_message_is_not_reported_empty(self) -> None:
+        """An adapter exception with no message still yields non-empty text."""
+
+        class SilentFailingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                raise RuntimeError()
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=SilentFailingStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+            await batcher.flush()
+
+        assert errors == ["RuntimeError"]
+
+    @pytest.mark.anyio
     async def test_append_timeout_no_concurrent_retry(self) -> None:
         """A slow append that outlives send_timeout is attempted exactly once
         — a retry would launch a concurrent duplicate because cancellation is

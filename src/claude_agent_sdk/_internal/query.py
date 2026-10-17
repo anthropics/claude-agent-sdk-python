@@ -143,6 +143,23 @@ def stamp_user_message(
     return {**message, "client_composed": True}
 
 
+def _current_task_cancelling() -> bool:
+    """Whether the current asyncio task has a cancellation request pending.
+
+    Uses Task.cancelling() (Python 3.11+). Returns False on trio and older
+    Pythons, where a cancellation that really is pending is re-delivered at
+    the next await anyway.
+    """
+    try:
+        import asyncio
+
+        task = asyncio.current_task()
+    except RuntimeError:
+        return False
+    cancelling = getattr(task, "cancelling", None)
+    return bool(cancelling and cancelling())
+
+
 class Query:
     """Handles bidirectional control protocol on top of Transport.
 
@@ -232,6 +249,10 @@ class Query:
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
+        # Requests the CLI cancelled with control_cancel_request, so the
+        # handler can tell that cancellation from a CancelledError its
+        # callback raised on its own.
+        self._cancelled_requests: set[str] = set()
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -382,6 +403,7 @@ class Query:
 
         def _done(_t: TaskHandle) -> None:
             self._inflight_requests.pop(req_id, None)
+            self._cancelled_requests.discard(req_id)
 
         task.add_done_callback(_done)
 
@@ -422,6 +444,7 @@ class Query:
                     if cancel_id:
                         inflight = self._inflight_requests.pop(cancel_id, None)
                         if inflight:
+                            self._cancelled_requests.add(cancel_id)
                             inflight.cancel()
                     continue
 
@@ -688,20 +711,35 @@ class Query:
             await self.transport.write(json.dumps(success_response) + "\n")
 
         except anyio.get_cancelled_exc_class():
-            # Request was cancelled via control_cancel_request; the CLI has
-            # already abandoned this request, so don't write a response.
-            raise
+            if (
+                self._closed
+                or request_id in self._cancelled_requests
+                or _current_task_cancelling()
+            ):
+                # Cancelled via control_cancel_request, close(), or from
+                # outside: the CLI has abandoned this request (or we are
+                # shutting down), so don't write a response.
+                raise
+            # The callback raised CancelledError itself (e.g. it awaited an
+            # approval future the app cancelled). Nobody cancelled this
+            # request and the CLI is still waiting for an answer, so report
+            # it as a failure instead of leaving the CLI hanging.
+            await self._write_error_response(
+                request_id, f"{subtype} handler was cancelled"
+            )
         except Exception as e:
-            # Send error response
-            error_response: SDKControlResponse = {
-                "type": "control_response",
-                "response": {
-                    "subtype": "error",
-                    "request_id": request_id,
-                    "error": str(e),
-                },
-            }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            await self._write_error_response(request_id, str(e))
+
+    async def _write_error_response(self, request_id: str, error: str) -> None:
+        error_response: SDKControlResponse = {
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request_id,
+                "error": error,
+            },
+        }
+        await self.transport.write(json.dumps(error_response) + "\n")
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

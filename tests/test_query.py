@@ -2111,6 +2111,69 @@ class TestControlCancelRequest:
         )
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+    @pytest.mark.parametrize("subtype", ["can_use_tool", "hook_callback"])
+    async def test_callback_raising_cancelled_error_still_answers(self, subtype):
+        """A callback that raises CancelledError on its own (e.g. it awaited an
+        approval future the app cancelled) gets an error response. Nobody
+        cancelled the request, so the CLI must not be left waiting for one.
+
+        asyncio only: trio's Cancelled can't be raised by user code.
+        """
+        import asyncio
+
+        async def cancelled_await():
+            fut = asyncio.get_running_loop().create_future()
+            fut.cancel()
+            await fut
+
+        async def can_use_tool(tool_name, tool_input, context):
+            await cancelled_await()
+
+        async def hook(input_data, tool_use_id, context):
+            await cancelled_await()
+
+        request = {"subtype": subtype}
+        if subtype == "can_use_tool":
+            request.update({"tool_name": "Bash", "input": {"command": "ls"}})
+        else:
+            request["callback_id"] = "hook_0"
+
+        mock_transport = AsyncMock()
+        emitted: list[dict] = []
+        answered = anyio.Event()
+
+        async def mock_receive():
+            yield {"type": "control_request", "request_id": "req_1", "request": request}
+            await answered.wait()
+
+        async def mock_write(data):
+            emitted.append(json.loads(data))
+            answered.set()
+
+        mock_transport.read_messages = mock_receive
+        mock_transport.write = mock_write
+        mock_transport.close = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        q = Query(
+            transport=mock_transport,
+            is_streaming_mode=True,
+            can_use_tool=can_use_tool,
+        )
+        q.hook_callbacks["hook_0"] = hook
+
+        await q.start()
+        with anyio.fail_after(5):
+            await answered.wait()
+        await q.close()
+
+        responses = [m for m in emitted if m.get("type") == "control_response"]
+        assert len(responses) == 1
+        assert responses[0]["response"]["subtype"] == "error"
+        assert responses[0]["response"]["request_id"] == "req_1"
+
+    @pytest.mark.anyio
     async def test_cancel_request_for_unknown_id_is_noop(self):
         """A control_cancel_request for an unknown request_id should not raise."""
         mock_transport = _make_mock_transport(

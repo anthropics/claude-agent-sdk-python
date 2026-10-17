@@ -834,9 +834,14 @@ _TranscriptEntry = dict[str, Any]
 
 
 def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
-    """Tries to read a session JSONL file from a project directory."""
+    """Tries to read a session JSONL file from a project directory.
+
+    Invalid UTF-8 (e.g. a last line cut off inside a multi-byte character by a
+    writer that died mid-write) is replaced rather than raised, so the damaged
+    line fails to parse and is skipped like any other corrupt line.
+    """
     try:
-        return (project_dir / file_name).read_text(encoding="utf-8")
+        return (project_dir / file_name).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
 
@@ -1389,7 +1394,7 @@ def get_subagent_messages(
         return []
 
     try:
-        content = match.read_text(encoding="utf-8")
+        content = match.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     if not content:

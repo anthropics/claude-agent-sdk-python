@@ -664,6 +664,57 @@ def _make_transcript_entry(
     return entry
 
 
+_COMPACTION_IDS = ("u1", "a1", "u2", "a2", "B", "S", "u3", "a3")
+
+
+def _compacted_transcript(
+    session_id: str, ids: dict[str, str], meta: object, follow_up: bool
+) -> list[dict]:
+    """A transcript as the CLI leaves it after a compaction that kept u2/a2.
+
+    The kept messages are not rewritten, so they still hang off a1. The
+    boundary has no parent, the summary hangs off the boundary, and the first
+    message after the compaction hangs off the summary (the anchor).
+    """
+    entries = [
+        _make_transcript_entry("user", ids["u1"], None, session_id, content="one"),
+        _make_transcript_entry(
+            "assistant", ids["a1"], ids["u1"], session_id, content="r1"
+        ),
+        _make_transcript_entry("user", ids["u2"], ids["a1"], session_id, content="two"),
+        _make_transcript_entry(
+            "assistant", ids["a2"], ids["u2"], session_id, content="r2"
+        ),
+        _make_transcript_entry(
+            "system",
+            ids["B"],
+            None,
+            session_id,
+            subtype="compact_boundary",
+            logicalParentUuid=ids["a2"],
+            compactMetadata=meta,
+        ),
+        _make_transcript_entry(
+            "user",
+            ids["S"],
+            ids["B"],
+            session_id,
+            content="summary",
+            isCompactSummary=True,
+        ),
+    ]
+    if follow_up:
+        entries += [
+            _make_transcript_entry(
+                "user", ids["u3"], ids["S"], session_id, content="three"
+            ),
+            _make_transcript_entry(
+                "assistant", ids["a3"], ids["u3"], session_id, content="r3"
+            ),
+        ]
+    return entries
+
+
 def _write_transcript(project_dir: Path, session_id: str, entries: list[dict]) -> Path:
     """Writes a JSONL transcript file."""
     file_path = project_dir / f"{session_id}.jsonl"
@@ -826,6 +877,200 @@ class TestGetSessionMessages:
         messages = get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
         assert messages[0].uuid == u1  # compact summary kept
+
+    @pytest.mark.parametrize(
+        "follow_up", [True, False], ids=["follow-up", "no-follow-up"]
+    )
+    @pytest.mark.parametrize("meta_kind", ["list", "segment", "both"])
+    def test_compaction_keeps_preserved_messages(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        meta_kind: str,
+        follow_up: bool,
+    ):
+        """A compaction that keeps recent messages verbatim leaves them on disk
+        with their old parents and links the next message to the summary. The
+        CLI relinks them after the summary on load; so must we."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = {k: str(uuid.uuid4()) for k in _COMPACTION_IDS}
+        meta: dict = {"trigger": "auto"}
+        if meta_kind in ("list", "both"):
+            meta["preservedMessages"] = {
+                "anchorUuid": ids["S"],
+                "uuids": [ids["u2"], ids["a2"]],
+            }
+        if meta_kind in ("segment", "both"):
+            meta["preservedSegment"] = {
+                "headUuid": ids["u2"],
+                "anchorUuid": ids["S"],
+                "tailUuid": ids["a2"],
+            }
+        entries = _compacted_transcript(sid, ids, meta, follow_up)
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+
+        expected = [ids["S"], ids["u2"], ids["a2"]]
+        if follow_up:
+            expected += [ids["u3"], ids["a3"]]
+        assert [m.uuid for m in messages] == expected
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            pytest.param("not a dict", id="metadata-not-dict"),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": "S", "uuids": ["u2", "gone"]}},
+                id="list-names-missing-uuid",
+            ),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": "S", "uuids": []}},
+                id="list-empty",
+            ),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": "S", "uuids": "u2"}},
+                id="list-not-a-list",
+            ),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": "S", "uuids": [["u2"]]}},
+                id="list-entry-unhashable",
+            ),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": None, "uuids": ["u2", "a2"]}},
+                id="list-no-anchor",
+            ),
+            pytest.param(
+                {
+                    "preservedSegment": {
+                        "headUuid": "u2",
+                        "anchorUuid": "S",
+                        "tailUuid": "gone",
+                    }
+                },
+                id="segment-tail-missing",
+            ),
+            pytest.param(
+                {
+                    "preservedSegment": {
+                        "headUuid": "u3",
+                        "anchorUuid": "S",
+                        "tailUuid": "a2",
+                    }
+                },
+                id="segment-head-unreachable",
+            ),
+            pytest.param(
+                {
+                    "preservedSegment": {
+                        "headUuid": "u2",
+                        "anchorUuid": "S",
+                        "tailUuid": ["a2"],
+                    }
+                },
+                id="segment-tail-unhashable",
+            ),
+        ],
+    )
+    def test_compaction_relink_skipped_when_metadata_unusable(
+        self, claude_config_dir: Path, tmp_path: Path, meta: object
+    ):
+        """Metadata that does not describe a complete preserved run is ignored,
+        as the CLI ignores it: the chain stays summary -> follow-up."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = {k: k for k in _COMPACTION_IDS}
+        _write_transcript(
+            project_dir, sid, _compacted_transcript(sid, ids, meta, follow_up=True)
+        )
+
+        messages = get_session_messages(sid, directory=project_path)
+
+        assert [m.uuid for m in messages] == ["S", "u3", "a3"]
+
+    def test_compaction_segment_walk_cycle_terminates(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A parent cycle inside the preserved segment cannot hang the walk."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = {k: k for k in _COMPACTION_IDS}
+        meta = {
+            "preservedSegment": {"headUuid": "u1", "anchorUuid": "S", "tailUuid": "a2"}
+        }
+        entries = _compacted_transcript(sid, ids, meta, follow_up=True)
+        for e in entries:
+            if e["uuid"] == "u2":
+                e["parentUuid"] = "a2"  # u2 <-> a2, never reaches head u1
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+
+        assert [m.uuid for m in messages] == ["S", "u3", "a3"]
+
+    @pytest.mark.parametrize(
+        ("later_meta", "expected"),
+        [
+            pytest.param({"trigger": "manual"}, ["S2", "u4", "a4"], id="later-full"),
+            pytest.param(
+                {"preservedMessages": {"anchorUuid": "S2", "uuids": ["u3", "a3"]}},
+                ["S2", "u3", "a3", "u4", "a4"],
+                id="later-preserving",
+            ),
+        ],
+    )
+    def test_compaction_only_last_boundary_relinks(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        later_meta: dict,
+        expected: list[str],
+    ):
+        """Only the last compaction's preserved run is relinked, onto its own
+        summary; an earlier compaction's run is superseded."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = {k: k for k in _COMPACTION_IDS}
+        meta = {"preservedMessages": {"anchorUuid": "S", "uuids": ["u2", "a2"]}}
+        entries = _compacted_transcript(sid, ids, meta, follow_up=True)
+        entries += [
+            _make_transcript_entry(
+                "system",
+                "B2",
+                None,
+                sid,
+                subtype="compact_boundary",
+                logicalParentUuid="a3",
+                compactMetadata=later_meta,
+            ),
+            _make_transcript_entry(
+                "user", "S2", "B2", sid, content="summary 2", isCompactSummary=True
+            ),
+            _make_transcript_entry("user", "u4", "S2", sid, content="next"),
+            _make_transcript_entry("assistant", "a4", "u4", sid, content="ok"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+
+        assert [m.uuid for m in messages] == expected
 
     def test_limit_and_offset(self, claude_config_dir: Path, tmp_path: Path):
         """Limit and offset pagination."""

@@ -1254,13 +1254,15 @@ class ServerToolUseBlock:
 class ServerToolResultBlock:
     """Result block returned for a server-side tool call.
 
-    Mirrors `ToolResultBlock`'s shape. `content` is the raw dict from the
-    API, opaque to this layer — callers that care about a specific server
-    tool's result schema can inspect `content["type"]`.
+    Mirrors `ToolResultBlock`'s shape. `content` is the raw value from the
+    API, opaque to this layer. It is usually a dict whose `content["type"]`
+    names the result schema; `web_search` returns a list of results on
+    success. Match `tool_use_id` to the `ServerToolUseBlock` to know which
+    server tool produced it.
     """
 
     tool_use_id: str
-    content: dict[str, Any]
+    content: dict[str, Any] | list[Any]
 
 
 ContentBlock = (

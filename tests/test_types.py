@@ -90,6 +90,25 @@ class TestPermissionUpdate:
         assert update.directories == ["/tmp/a", "/tmp/b"]
         assert update.to_dict() == wire
 
+    def test_rule_types_are_exported_with_permission_update(self):
+        """Building a rule update needs only the package's public names."""
+        import claude_agent_sdk
+
+        for name in (
+            "PermissionRuleValue",
+            "PermissionBehavior",
+            "PermissionUpdateDestination",
+        ):
+            assert name in claude_agent_sdk.__all__, name
+
+        update = claude_agent_sdk.PermissionUpdate(
+            type="addRules",
+            rules=[claude_agent_sdk.PermissionRuleValue(tool_name="Bash")],
+            behavior="deny",
+            destination="session",
+        )
+        assert update.to_dict()["rules"] == [{"toolName": "Bash", "ruleContent": None}]
+
 
 class TestMessageTypes:
     """Test message type creation and validation."""

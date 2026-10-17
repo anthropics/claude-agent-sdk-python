@@ -20,6 +20,8 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     CLIConnectionError,
     InMemorySessionStore,
+    get_session_info,
+    list_sessions,
     query,
 )
 from claude_agent_sdk._internal.session_resume import (
@@ -151,6 +153,50 @@ class TestHappyPath:
 
         await m.cleanup()
         assert not m.config_dir.exists()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("tag", ["release", ""])
+    async def test_resume_preserves_tags_with_reordered_entry_keys(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tag: str,
+    ) -> None:
+        store = InMemorySessionStore()
+        entries: list[SessionStoreEntry] = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "message": {"role": "user", "content": "prepare a release"},
+            },
+            {"type": "tag", "tag": "old", "sessionId": SESSION_ID},
+            # Adapters such as Postgres JSONB may reorder object keys.
+            {"sessionId": SESSION_ID, "tag": tag, "type": "tag"},
+        ]
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID}, entries
+        )
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        try:
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(m.config_dir))
+            info = get_session_info(SESSION_ID, directory=str(cwd))
+            assert info is not None
+            assert info.tag == (tag or None)
+            sessions = list_sessions(directory=str(cwd), include_worktrees=False)
+            assert len(sessions) == 1
+            assert sessions[0].tag == (tag or None)
+
+            jsonl = m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+            assert [
+                json.loads(line) for line in jsonl.read_text().splitlines()
+            ] == entries
+            assert list(entries[-1]) == ["sessionId", "tag", "type"]
+        finally:
+            await m.cleanup()
 
     @pytest.mark.anyio
     async def test_credentials_redacted(

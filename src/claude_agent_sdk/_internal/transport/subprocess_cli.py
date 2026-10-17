@@ -990,6 +990,10 @@ class SubprocessCLITransport(Transport):
         if not self._process:
             self._ready = False
             return
+        # A concurrent close() (e.g. two tasks calling disconnect()) can set
+        # self._process to None while this one is awaiting below, so only use
+        # this local reference from here on.
+        process = self._process
 
         with anyio.CancelScope(shield=True):
             # Cancel stderr reader if active
@@ -1027,23 +1031,23 @@ class SubprocessCLITransport(Transport):
             # interrupt the write and cause the last assistant message to be
             # lost (see #625).
             try:
-                if self._process.returncode is None:
+                if process.returncode is None:
                     try:
                         with anyio.fail_after(5):
-                            await self._process.wait()
+                            await process.wait()
                     except TimeoutError:
                         # Graceful shutdown timed out — force terminate
                         with suppress(ProcessLookupError):
-                            self._process.terminate()
+                            process.terminate()
                         try:
                             with anyio.fail_after(5):
-                                await self._process.wait()
+                                await process.wait()
                         except TimeoutError:
                             # SIGTERM handler blocked — force kill (SIGKILL)
                             with suppress(ProcessLookupError):
-                                self._process.kill()
+                                process.kill()
                             with suppress(Exception), anyio.fail_after(5):
-                                await self._process.wait()
+                                await process.wait()
             finally:
                 # Only stop tracking a child we actually reaped. A still-running
                 # process (kill raced, or wait timed out) stays in the set so the
@@ -1051,8 +1055,8 @@ class SubprocessCLITransport(Transport):
                 # turned a cancelled close() into a leaked child. The reaper only
                 # sends SIGTERM, so this rescues a child that is on its way out,
                 # not one that survived SIGKILL.
-                if self._process.returncode is not None:
-                    _ACTIVE_CHILDREN.discard(self._process)
+                if process.returncode is not None:
+                    _ACTIVE_CHILDREN.discard(process)
 
             self._process = None
             self._stdout_stream = None

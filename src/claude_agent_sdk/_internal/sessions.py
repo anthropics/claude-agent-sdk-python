@@ -333,6 +333,28 @@ def _extract_first_prompt_from_head(head: str) -> str:
     return ""
 
 
+def _extract_attachment_label_from_head(head: str) -> str:
+    """Labels a session whose user messages in the head carry no text.
+
+    Returns ``"Image"`` or ``"Document"`` for the first non-meta, non-tool-result
+    user line holding that block type, else ``""``. Used only as the last
+    summary fallback, so an image-only session is listed instead of dropped.
+    Mirrors the TS SDK and the CLI's own session list.
+    """
+    for line in head.split("\n"):
+        if '"type":"user"' not in line and '"type": "user"' not in line:
+            continue
+        if '"tool_result"' in line:
+            continue
+        if '"isMeta":true' in line or '"isMeta": true' in line:
+            continue
+        if '"type":"image"' in line or '"type": "image"' in line:
+            return "Image"
+        if '"type":"document"' in line or '"type": "document"' in line:
+            return "Document"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # File I/O — read head and tail of a file
 # ---------------------------------------------------------------------------
@@ -454,6 +476,7 @@ def _parse_session_info_from_lite(
         or _extract_last_json_string_field(tail, "lastPrompt")
         or _extract_last_json_string_field(tail, "summary")
         or first_prompt
+        or _extract_attachment_label_from_head(head)
     )
 
     # Skip metadata-only sessions (no title, no summary, no prompt)

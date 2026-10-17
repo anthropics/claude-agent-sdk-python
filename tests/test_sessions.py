@@ -436,6 +436,97 @@ class TestListSessions:
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "real content"
 
+    @pytest.mark.parametrize(
+        ("block", "label"),
+        [
+            (
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "x",
+                    },
+                },
+                "Image",
+            ),
+            (
+                {
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": "x"},
+                },
+                "Document",
+            ),
+        ],
+    )
+    def test_attachment_only_first_prompt_is_listed(
+        self, claude_config_dir: Path, tmp_path: Path, block: dict, label: str
+    ):
+        """A session started with only an image or document (no text) is listed
+        with an "Image"/"Document" summary, as the TS SDK and the CLI's own
+        session list do, instead of being dropped as metadata-only."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": [block]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": "ok"}},
+        ]
+        (project_dir / f"{sid}.jsonl").write_text(
+            "".join(json.dumps(e, **_COMPACT) + "\n" for e in lines)
+        )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+        assert sessions[0].summary == label
+        assert sessions[0].first_prompt is None
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.summary == label
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {
+                "type": "user",
+                "isMeta": True,
+                "message": {"role": "user", "content": [{"type": "image"}]},
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [{"type": "image"}],
+                        }
+                    ],
+                },
+            },
+        ],
+        ids=["isMeta", "tool_result"],
+    )
+    def test_non_prompt_image_session_still_filtered(
+        self, claude_config_dir: Path, tmp_path: Path, entry: dict
+    ):
+        """An image in an isMeta entry or a tool result is not a user prompt, so
+        it does not make a session listable."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        (project_dir / f"{sid}.jsonl").write_text(json.dumps(entry, **_COMPACT) + "\n")
+
+        assert list_sessions(directory=project_path, include_worktrees=False) == []
+
     def test_filters_non_uuid_filenames(self, claude_config_dir: Path, tmp_path: Path):
         """Non-UUID .jsonl files are ignored."""
         project_path = str(tmp_path / "proj")

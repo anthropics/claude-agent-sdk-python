@@ -174,13 +174,20 @@ class PermissionUpdate:
         if self.type in ["addRules", "replaceRules", "removeRules"]:
             # Rules-based variants require rules and behavior
             if self.rules is not None:
-                result["rules"] = [
-                    {
+                serialized_rules: list[dict[str, Any]] = []
+                for rule in self.rules:
+                    serialized_rule: dict[str, Any] = {
                         "toolName": rule.tool_name,
-                        "ruleContent": rule.rule_content,
                     }
-                    for rule in self.rules
-                ]
+                    # Omit ruleContent when the rule has no content. The CLI
+                    # silently drops rules serialized with an explicit null,
+                    # while omitting the key applies the rule. This matches
+                    # the TypeScript SDK, where JSON.stringify drops
+                    # undefined values.
+                    if rule.rule_content is not None:
+                        serialized_rule["ruleContent"] = rule.rule_content
+                    serialized_rules.append(serialized_rule)
+                result["rules"] = serialized_rules
             if self.behavior is not None:
                 result["behavior"] = self.behavior
 

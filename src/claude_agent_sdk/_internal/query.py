@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
@@ -80,6 +81,10 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
         # accepts those and still parses plain integers / whitespace.
         as_float = float(str(raw).strip())
     except (TypeError, ValueError):
+        return DEFAULT_RUN_END_CEILING_MS
+    # "inf", "1e400" and "nan" parse as floats but cannot become ints; the
+    # CLI falls back to its default for them, so do the same.
+    if not math.isfinite(as_float):
         return DEFAULT_RUN_END_CEILING_MS
     value = int(as_float)
     if value != as_float:

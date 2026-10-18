@@ -1387,6 +1387,15 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    amazon_bedrock_guardrail_action: str | None = None
+    """Guardrail action reported by the Bedrock Guardrail when it
+    intervenes (e.g. ``"BLOCKED"``).  Only set when the CLI emitted a
+    ``amazon-bedrock-guardrailAction`` key alongside the assistant
+    message."""
+    amazon_bedrock_trace: str | None = None
+    """Opaque trace string from the Bedrock Guardrail.  Only set when
+    the CLI emitted an ``amazon-bedrock-trace`` key alongside the
+    assistant message."""
 
 
 @dataclass
@@ -1716,6 +1725,15 @@ class ResultMessage:
     api_error_status: int | None = None
     uuid: str | None = None
     terminal_reason: str | None = None
+    amazon_bedrock_guardrail_action: str | None = None
+    """Guardrail action reported by the Bedrock Guardrail when it
+    intervenes (e.g. ``"BLOCKED"``).  Only set when the CLI emitted a
+    ``amazon-bedrock-guardrailAction`` key alongside the result
+    message."""
+    amazon_bedrock_trace: str | None = None
+    """Opaque trace string from the Bedrock Guardrail.  Only set when
+    the CLI emitted an ``amazon-bedrock-trace`` key alongside the
+    result message."""
     """Why the query loop terminated (e.g. ``"completed"``, ``"max_turns"``,
     ``"aborted_streaming"``). A value of ``"aborted_streaming"`` or
     ``"aborted_tools"`` indicates the turn was cancelled (via

@@ -1356,3 +1356,81 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+    # --- Bedrock Guardrail trace fields (issue #1252) ---
+
+    def test_parse_assistant_message_with_bedrock_guardrail_trace(self):
+        """Bedrock Guardrail trace keys are copied into AssistantMessage.
+
+        When a Bedrock Guardrail intervenes the CLI emits a message_stop
+        event carrying ``amazon-bedrock-guardrailAction`` and
+        ``amazon-bedrock-trace``.  These must be surfaced on the
+        AssistantMessage so SDK consumers can inspect guardrail actions
+        without parsing raw stream events.
+        """
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "I can't answer that."}],
+                "model": "claude-sonnet-4-5",
+            },
+            "amazon-bedrock-guardrailAction": "BLOCKED",
+            "amazon-bedrock-trace": '{"version": "1.0.0"}',
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.amazon_bedrock_guardrail_action == "BLOCKED"
+        assert message.amazon_bedrock_trace == '{"version": "1.0.0"}'
+
+    def test_parse_assistant_message_without_bedrock_guardrail_trace(self):
+        """Absent Bedrock Guardrail keys default to None."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-sonnet-4-5",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert message.amazon_bedrock_guardrail_action is None
+        assert message.amazon_bedrock_trace is None
+
+    def test_parse_result_message_with_bedrock_guardrail_trace(self):
+        """Bedrock Guardrail trace keys are copied into ResultMessage.
+
+        The same guardrail keys that appear on the message_stop event must
+        also be copied into the ResultMessage so the final result frame
+        carries complete trace information.
+        """
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "amazon-bedrock-guardrailAction": "BLOCKED",
+            "amazon-bedrock-trace": '{"version": "1.0.0"}',
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.amazon_bedrock_guardrail_action == "BLOCKED"
+        assert message.amazon_bedrock_trace == '{"version": "1.0.0"}'
+
+    def test_parse_result_message_without_bedrock_guardrail_trace(self):
+        """Absent Bedrock Guardrail keys on ResultMessage default to None."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1000,
+            "duration_api_ms": 500,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+        }
+        message = parse_message(data)
+        assert isinstance(message, ResultMessage)
+        assert message.amazon_bedrock_guardrail_action is None
+        assert message.amazon_bedrock_trace is None

@@ -217,6 +217,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     stop_reason=data["message"].get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
+                    amazon_bedrock_guardrail_action=data.get(
+                        "amazon-bedrock-guardrailAction"
+                    ),
+                    amazon_bedrock_trace=data.get("amazon-bedrock-trace"),
                 )
             except KeyError as e:
                 raise MessageParseError(
@@ -334,6 +338,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     uuid=data.get("uuid"),
                     terminal_reason=data.get("terminal_reason"),
                     origin=_parse_origin(data),
+                    amazon_bedrock_guardrail_action=data.get(
+                        "amazon-bedrock-guardrailAction"
+                    ),
+                    amazon_bedrock_trace=data.get("amazon-bedrock-trace"),
                 )
             except KeyError as e:
                 raise MessageParseError(

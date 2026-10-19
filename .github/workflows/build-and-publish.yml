@@ -88,7 +88,8 @@ jobs:
           echo "All ${#expected[@]} expected wheels present ✓"
 
       - name: Install build dependencies
-        run: pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
+        run: |
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
 
       - name: Build sdist
         run: |

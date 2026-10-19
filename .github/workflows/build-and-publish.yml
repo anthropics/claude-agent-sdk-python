@@ -28,12 +28,12 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
           pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli --no-isolation
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -88,11 +88,12 @@ jobs:
           echo "All ${#expected[@]} expected wheels present ✓"
 
       - name: Install build dependencies
-        run: pip install build twine
+        run: |
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
 
       - name: Build sdist
         run: |
-          python -m build --sdist --outdir sdist/
+          python -m build --sdist --no-isolation --outdir sdist/
           ls -la sdist/
 
       - name: Pre-flight PyPI quota check

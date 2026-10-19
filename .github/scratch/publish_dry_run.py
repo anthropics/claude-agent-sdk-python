@@ -166,10 +166,10 @@ def main() -> int:
 
     summary = "\n".join(results)
     print("\n=== RESULTS ===\n" + summary)
-    if ON_RUNNER:
+    if True:
         for i in range(0, len(results), 2):
             print("::notice title=dry run::" + "%0A".join(results[i:i + 2]))
-    return 0 if ok else 1
+    return 0 if ok and "FAILED" not in summary else 1
 
 
 if __name__ == "__main__":

@@ -204,10 +204,10 @@ class TranscriptMirrorBatcher:
                         else e
                     )
                     logger.debug(
-                        "[TranscriptMirrorBatcher] append timed out after "
-                        "%.1fs for %s — not retrying",
-                        self.send_timeout,
+                        "[TranscriptMirrorBatcher] append failed for %s: %s"
+                        " — not retrying",
                         file_path,
+                        last_err,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 - adapter is user code

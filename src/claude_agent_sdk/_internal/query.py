@@ -6,9 +6,10 @@ import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import anyio
+import sniffio
 
 from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
@@ -143,21 +144,29 @@ def stamp_user_message(
     return {**message, "client_composed": True}
 
 
-def _current_task_cancelling() -> bool:
-    """Whether the current asyncio task has a cancellation request pending.
+_CallbackResult = TypeVar("_CallbackResult")
 
-    Uses Task.cancelling() (Python 3.11+). Returns False on trio and older
-    Pythons, where a cancellation that really is pending is re-delivered at
-    the next await anyway.
-    """
+
+async def _await_control_callback(
+    callback: Awaitable[_CallbackResult], subtype: str
+) -> _CallbackResult:
+    """Distinguish callback cancellation from cancellation of its handler."""
+    if sniffio.current_async_library() != "asyncio":
+        return await callback
+
+    import asyncio
+
+    callback_task = asyncio.ensure_future(callback)
     try:
-        import asyncio
-
-        task = asyncio.current_task()
-    except RuntimeError:
-        return False
-    cancelling = getattr(task, "cancelling", None)
-    return bool(cancelling and cancelling())
+        await asyncio.wait({callback_task})
+    except asyncio.CancelledError:
+        callback_task.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.gather(callback_task, return_exceptions=True)
+        raise
+    if callback_task.cancelled():
+        raise RuntimeError(f"{subtype} handler was cancelled")
+    return callback_task.result()
 
 
 class Query:
@@ -249,10 +258,6 @@ class Query:
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
-        # Requests the CLI cancelled with control_cancel_request, so the
-        # handler can tell that cancellation from a CancelledError its
-        # callback raised on its own.
-        self._cancelled_requests: set[str] = set()
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
@@ -403,7 +408,6 @@ class Query:
 
         def _done(_t: TaskHandle) -> None:
             self._inflight_requests.pop(req_id, None)
-            self._cancelled_requests.discard(req_id)
 
         task.add_done_callback(_done)
 
@@ -444,7 +448,6 @@ class Query:
                     if cancel_id:
                         inflight = self._inflight_requests.pop(cancel_id, None)
                         if inflight:
-                            self._cancelled_requests.add(cancel_id)
                             inflight.cancel()
                     continue
 
@@ -630,10 +633,13 @@ class Query:
                     description=permission_request.get("description"),
                 )
 
-                response = await self.can_use_tool(
-                    permission_request["tool_name"],
-                    permission_request["input"],
-                    context,
+                response = await _await_control_callback(
+                    self.can_use_tool(
+                        permission_request["tool_name"],
+                        permission_request["input"],
+                        context,
+                    ),
+                    subtype,
                 )
 
                 # Convert PermissionResult to expected dict format
@@ -668,10 +674,13 @@ class Query:
                 if not callback:
                     raise Exception(f"No hook callback found for ID: {callback_id}")
 
-                hook_output = await callback(
-                    request_data.get("input"),
-                    request_data.get("tool_use_id"),
-                    {"signal": None},  # TODO: Add abort signal support
+                hook_output = await _await_control_callback(
+                    callback(
+                        request_data.get("input"),
+                        request_data.get("tool_use_id"),
+                        {"signal": None},
+                    ),
+                    subtype,
                 )
                 # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
                 response_data = _convert_hook_output_for_cli(hook_output)
@@ -711,22 +720,7 @@ class Query:
             await self.transport.write(json.dumps(success_response) + "\n")
 
         except anyio.get_cancelled_exc_class():
-            if (
-                self._closed
-                or request_id in self._cancelled_requests
-                or _current_task_cancelling()
-            ):
-                # Cancelled via control_cancel_request, close(), or from
-                # outside: the CLI has abandoned this request (or we are
-                # shutting down), so don't write a response.
-                raise
-            # The callback raised CancelledError itself (e.g. it awaited an
-            # approval future the app cancelled). Nobody cancelled this
-            # request and the CLI is still waiting for an answer, so report
-            # it as a failure instead of leaving the CLI hanging.
-            await self._write_error_response(
-                request_id, f"{subtype} handler was cancelled"
-            )
+            raise
         except Exception as e:
             await self._write_error_response(request_id, str(e))
 

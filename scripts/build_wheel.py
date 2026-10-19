@@ -463,10 +463,15 @@ def recompress_wheel(wheel_path: Path, encoder: str) -> None:
     )
 
 
-def build_wheel(recompress: str | None = None) -> None:
+def _isolation_args(no_isolation: bool) -> list[str]:
+    """The flag that makes `python -m build` use the packages already installed."""
+    return ["--no-isolation"] if no_isolation else []
+
+
+def build_wheel(recompress: str | None = None, no_isolation: bool = False) -> None:
     """Build the wheel."""
     run_command(
-        [sys.executable, "-m", "build", "--wheel"],
+        [sys.executable, "-m", "build", "--wheel", *_isolation_args(no_isolation)],
         "Building wheel",
     )
 
@@ -497,10 +502,10 @@ def build_wheel(recompress: str | None = None) -> None:
             recompress_wheel(wheel, recompress)
 
 
-def build_sdist() -> None:
+def build_sdist(no_isolation: bool = False) -> None:
     """Build the source distribution."""
     run_command(
-        [sys.executable, "-m", "build", "--sdist"],
+        [sys.executable, "-m", "build", "--sdist", *_isolation_args(no_isolation)],
         "Building source distribution",
     )
 
@@ -620,6 +625,13 @@ def main() -> None:
         "the files themselves do not change. zlib: quick. zopfli: smaller, takes "
         "minutes, needs the zopfli package (see scripts/requirements-recompress.txt)",
     )
+    parser.add_argument(
+        "--no-isolation",
+        action="store_true",
+        help="Build with the packages already installed, instead of letting "
+        "`python -m build` download the build backend. The release workflows use "
+        "this, with the packages in scripts/requirements-build.txt",
+    )
 
     args = parser.parse_args()
     if args.recompress:
@@ -644,11 +656,11 @@ def main() -> None:
         print("\nSkipping CLI download (using existing)")
 
     # Build wheel
-    build_wheel(args.recompress)
+    build_wheel(args.recompress, args.no_isolation)
 
     # Build sdist unless skipped
     if not args.skip_sdist:
-        build_sdist()
+        build_sdist(args.no_isolation)
 
     # Check package
     check_package()

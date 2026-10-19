@@ -1,6 +1,7 @@
 """Tests for scripts/build_wheel.py: platform tags, the CLI pin, recompression."""
 
 import importlib.util
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -151,6 +152,68 @@ class TestSdistShipsTheScriptsItsTestsImport:
 
         assert "/tests" in include
         assert "/scripts" in include
+
+
+@pytest.mark.skipif(
+    not (REPO_ROOT / ".github").is_dir(), reason="the sdist does not ship .github"
+)
+class TestReleaseBuildToolsArePinned:
+    """The release workflows must run only the build tools in the hash-pinned files.
+
+    `python -m build` counts too: left isolated, it downloads the build backend
+    itself, and no hash covers that download.
+    """
+
+    WORKFLOWS = ["build-and-publish.yml", "build-wheel-check.yml"]
+    STEP = r"^\s*(?:- )?(?:run: )?"
+
+    @staticmethod
+    def _lines(workflow: str, pattern: str) -> list[str]:
+        path = REPO_ROOT / ".github" / "workflows" / workflow
+        text = path.read_text(encoding="utf-8")
+        return re.findall(pattern, text, flags=re.MULTILINE)
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_tools_are_installed_with_hashes(self, workflow: str) -> None:
+        # The check workflow's `pip install dist/*.whl` installs the wheel it built.
+        installs = self._lines(
+            workflow, self.STEP + r"(?:python3? -m )?pip3? install (?!dist/).*$"
+        )
+
+        assert any("scripts/requirements-build.txt" in line for line in installs)
+        for line in installs:
+            assert "--require-hashes --only-binary :all:" in line
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_builds_do_not_download_the_backend(self, workflow: str) -> None:
+        builds = self._lines(
+            workflow, self.STEP + r"python3? (?:-m build|scripts/build_wheel\.py).*$"
+        )
+
+        assert builds
+        assert all("--no-isolation" in line for line in builds)
+
+
+class TestNoIsolation:
+    """--no-isolation reaches `python -m build`, and only when it is asked for."""
+
+    @pytest.mark.parametrize("no_isolation", [True, False])
+    def test_main_passes_it_to_both_builds(
+        self, no_isolation: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        flags = ["--no-isolation"] if no_isolation else []
+        monkeypatch.setattr(sys, "argv", ["build_wheel.py", "--skip-download", *flags])
+
+        with (
+            patch.object(build_wheel, "run_command") as run,
+            patch.object(build_wheel, "check_package"),
+        ):
+            build_wheel.main()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        assert [cmd[3] for cmd in commands] == ["--wheel", "--sdist"]
+        assert all(("--no-isolation" in cmd) is no_isolation for cmd in commands)
 
 
 def _make_wheel(path: Path) -> None:

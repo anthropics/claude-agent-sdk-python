@@ -12,6 +12,40 @@ test suite to prove the `SessionStore` protocol generalizes beyond the
 in-memory default. Each adapter here passes the full 13-contract conformance
 suite.
 
+## What a stored resume restores
+
+`SessionStore` persists transcript entries, not a backup of the entire runtime
+configuration directory. When resuming from a store, the SDK writes the main
+transcript into a temporary configuration directory. Stores implementing
+`list_subkeys()` can also restore subagent transcripts and their metadata.
+Authentication and user settings are seeded from the resuming host.
+
+At each transcript-mirror flush, the SDK also captures UTF-8 plan files under
+the effective configuration directory's `plans/` directory when their names
+match validated session slugs in that batch. Session imports capture the same
+files. Snapshots are stored as `sdk_plan_snapshot` entries alongside the
+transcript, using the existing adapter methods. Adapters must preserve these
+entries, including entries without a `uuid`.
+
+Resume materialization recreates the latest captured plans before starting
+the subprocess and removes the snapshot entries from the CLI-facing JSONL.
+Deleted plans are recorded as tombstones so an older snapshot is not revived.
+Unreadable files, files larger than 2,000,000 bytes, invalid UTF-8 files, and symlinked plan files
+or plan directories are not captured. Files in custom `plansDirectory`
+locations are not captured. For older stores, the materializer can also recover
+plan content embedded in plan-reference attachments, user messages,
+`ExitPlanMode` inputs, and plan file snapshots when a valid session slug is
+available. A transcript containing only an `EnterPlanMode` call and no saved
+plan content cannot reconstruct the missing file.
+
+For a resume on a different host or pod, preserve workspace files, custom plan
+locations, and other auxiliary state separately. Plan capture is tied to
+transcript batches, not a continuous filesystem mirror; changes after the last
+mirrored entry are not checkpointed. Do not use a snapshot
+of the whole configuration directory as a substitute: it can include
+credentials and unrelated sessions. Configure the desired permission mode
+explicitly when resuming; materializing a transcript does not set it.
+
 ## Validating your own adapter
 
 When you copy an adapter into your project (or write a new one), assert it

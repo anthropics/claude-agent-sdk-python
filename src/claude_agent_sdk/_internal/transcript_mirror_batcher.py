@@ -15,11 +15,13 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import anyio
 
 from ..types import SessionKey, SessionStore, SessionStoreEntry
 from ._task_compat import TaskHandle, spawn_detached
+from .session_plans import snapshot_plan_files
 from .session_store import file_path_to_session_key
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,7 @@ class TranscriptMirrorBatcher:
                     self.projects_dir,
                 )
                 continue
+            entries = snapshot_plan_files(entries, Path(self.projects_dir).parent)
             last_err: Exception | None = None
             succeeded = False
             for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):

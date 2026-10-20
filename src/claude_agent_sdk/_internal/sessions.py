@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -493,7 +493,10 @@ def _parse_session_info_from_lite(
                 if first_timestamp.endswith("Z")
                 else first_timestamp
             )
-            created_at = int(datetime.fromisoformat(ts).timestamp() * 1000)
+            parsed = datetime.fromisoformat(ts)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            created_at = int(parsed.timestamp() * 1000)
         except ValueError:
             pass
 
@@ -1577,7 +1580,10 @@ def _mtime_from_jsonl_tail(jsonl: str) -> int:
         if isinstance(ts, str):
             try:
                 norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
-                return int(datetime.fromisoformat(norm).timestamp() * 1000)
+                parsed = datetime.fromisoformat(norm)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000)
             except ValueError:
                 pass
     return int(time.time() * 1000)

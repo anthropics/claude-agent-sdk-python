@@ -604,6 +604,124 @@ def _make_transcript_session(
 class TestForkSession:
     """Tests for fork_session()."""
 
+    @pytest.mark.parametrize("form", ["segment", "list", "both"])
+    @pytest.mark.parametrize("partial", [False, True])
+    def test_fork_remaps_compaction_references(
+        self, claude_config_dir: Path, tmp_path: Path, form: str, partial: bool
+    ):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir()
+        project_dir = _make_project_dir(claude_config_dir, project_path)
+        sid, path, ids = _make_transcript_session(project_dir)
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        boundary_id = str(uuid.uuid4())
+        metadata = {"trigger": "auto", "preTokens": 10000, "extra": ids[0]}
+        if form in ("segment", "both"):
+            metadata["preservedSegment"] = {
+                "headUuid": ids[0],
+                "tailUuid": ids[1],
+                "anchorUuid": ids[2],
+            }
+        if form in ("list", "both"):
+            metadata["preservedMessages"] = {"anchorUuid": ids[2], "uuids": ids[:2]}
+        entries[0]["message"]["content"] = ids[0]
+        entries[2].update(parentUuid=boundary_id, isCompactSummary=True)
+        entries.insert(
+            2,
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": boundary_id,
+                "parentUuid": None,
+                "logicalParentUuid": ids[1],
+                "sessionId": sid,
+                "compactMetadata": metadata,
+            },
+        )
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        original = path.read_bytes()
+
+        result = fork_session(
+            sid,
+            directory=project_path,
+            up_to_message_id=ids[2] if partial else None,
+        )
+
+        copied = [
+            json.loads(line)
+            for line in (project_dir / f"{result.session_id}.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        messages = [entry for entry in copied if "forkedFrom" in entry]
+        mapping = {
+            entry["forkedFrom"]["messageUuid"]: entry["uuid"] for entry in messages
+        }
+        assert set(mapping) == {*(ids[:3] if partial else ids), boundary_id}
+        boundary = next(entry for entry in messages if entry["type"] == "system")
+        actual = boundary["compactMetadata"]
+        if form in ("segment", "both"):
+            assert actual["preservedSegment"] == {
+                "headUuid": mapping[ids[0]],
+                "tailUuid": mapping[ids[1]],
+                "anchorUuid": mapping[ids[2]],
+            }
+        if form in ("list", "both"):
+            assert actual["preservedMessages"] == {
+                "anchorUuid": mapping[ids[2]],
+                "uuids": [mapping[uid] for uid in ids[:2]],
+            }
+        assert boundary["logicalParentUuid"] == mapping[ids[1]]
+        assert actual["extra"] == ids[0]
+        assert messages[0]["message"]["content"] == ids[0]
+        assert path.read_bytes() == original
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            None,
+            "unchanged",
+            {"preservedSegment": []},
+            {
+                "preservedMessages": {
+                    "anchorUuid": [],
+                    "uuids": "unchanged",
+                    "allUuids": None,
+                }
+            },
+            {
+                "preservedSegment": {
+                    "headUuid": [],
+                    "tailUuid": "missing",
+                    "anchorUuid": None,
+                }
+            },
+        ],
+    )
+    def test_fork_preserves_unusable_compaction_metadata(
+        self, claude_config_dir: Path, tmp_path: Path, metadata
+    ):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir()
+        project_dir = _make_project_dir(claude_config_dir, project_path)
+        sid = str(uuid.uuid4())
+        entry = {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": str(uuid.uuid4()),
+            "parentUuid": None,
+            "sessionId": sid,
+            "compactMetadata": metadata,
+        }
+        (project_dir / f"{sid}.jsonl").write_text(json.dumps(entry) + "\n")
+
+        result = fork_session(sid, directory=project_path)
+
+        copied = json.loads(
+            (project_dir / f"{result.session_id}.jsonl").read_text().splitlines()[0]
+        )
+        assert copied["compactMetadata"] == metadata
+
     def test_invalid_session_id_raises(self, claude_config_dir: Path):
         with pytest.raises(ValueError, match="Invalid session_id"):
             fork_session("not-a-uuid")

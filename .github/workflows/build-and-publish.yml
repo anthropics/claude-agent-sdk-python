@@ -222,9 +222,9 @@ jobs:
         # even if wheel uploads fail partway. --skip-existing makes re-runs
         # safe after a partial upload (PyPI rejects re-uploads of identical
         # filenames, which would otherwise abort the whole job).
-        # No token is set, so twine uses trusted publishing. PyPI's trusted
-        # publishers for publish.yml and auto-release.yml accept only jobs in
-        # the `production` environment.
+        # No token is set, so twine uses trusted publishing. PyPI matches the
+        # workflow that runs this job, build-and-publish.yml (not its callers),
+        # and accepts only jobs in the `production` environment.
         run: |
           twine upload --skip-existing sdist/*.tar.gz
           twine upload --skip-existing dist/*.whl

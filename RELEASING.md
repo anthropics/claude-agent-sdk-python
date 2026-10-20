@@ -72,6 +72,11 @@ All release-related scripts live in `scripts/`:
 
 | Secret | Used For |
 |---|---|
-| `PYPI_API_TOKEN` | Publishing to PyPI |
 | `ANTHROPIC_API_KEY` | Changelog generation and e2e tests |
 | `DEPLOY_KEY` | SSH key for direct pushes to `main` |
+
+Publishing to PyPI needs no secret: it uses PyPI trusted publishing. The
+`claude-agent-sdk` project on PyPI has a trusted publisher for each workflow
+that starts a release, `publish.yml` and `auto-release.yml`, both limited to
+the `production` environment. Renaming either workflow, or moving the upload
+out of the `production` environment, needs the matching change on PyPI.

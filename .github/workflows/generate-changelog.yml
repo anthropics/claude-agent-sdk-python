@@ -1,8 +1,9 @@
 name: Generate Changelog
 
 # Called by build-and-publish.yml. Claude writes the new CHANGELOG.md here, in a
-# job that holds no publishing credentials (no PyPI token, no deploy key, and a
-# read-only GITHUB_TOKEN). The release job takes only CHANGELOG.md from this
+# job that holds no publishing credentials (it runs outside the `production`
+# environment that PyPI's trusted publishing requires, has no deploy key, and
+# has a read-only GITHUB_TOKEN). The release job takes only CHANGELOG.md from this
 # job's artifact and commits it itself. A failed changelog does not fail this
 # job, so it does not hold up the release, and a re-run of failed jobs does not
 # start the release again.

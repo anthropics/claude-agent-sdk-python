@@ -3271,3 +3271,73 @@ class TestReaderUnblockOnProcessExit:
             assert len(received) == 5
 
         anyio.run(_test)
+
+    class _HeldOpenByteStream:
+        """Byte-level stdout pipe whose EOF never arrives.
+
+        Same contract as _PipeHeldOpenStream, one layer down: connect() wraps
+        the process's byte stream in a TextReceiveStream itself.
+        """
+
+        def __init__(self, chunks: list[bytes]) -> None:
+            self._chunks = list(chunks)
+            self._closed = anyio.Event()
+
+        async def receive(self, max_bytes: int = 65536) -> bytes:
+            if self._closed.is_set():
+                raise anyio.ClosedResourceError
+            if self._chunks:
+                return self._chunks.pop(0)
+            await self._closed.wait()
+            raise anyio.ClosedResourceError
+
+        async def aclose(self) -> None:
+            self._closed.set()
+
+    def test_public_path_crash_with_orphan_held_pipe_raises(self, monkeypatch):
+        """End to end through connect() and read_messages() only.
+
+        The tests above start _unblock_reader_on_exit() by hand. This one
+        relies on connect() to start it, so it exercises the path a caller
+        takes. Without the exit watcher it hangs until fail_after() fires,
+        which is the #1110 symptom.
+        """
+        from claude_agent_sdk._errors import ProcessError
+        from claude_agent_sdk._internal.transport import subprocess_cli
+
+        # raising=False: on a transport without the watcher the constant does
+        # not exist, and the test should fail by hanging, not on this line.
+        monkeypatch.setattr(
+            subprocess_cli, "_EXIT_STREAM_GRACE_SECONDS", 0.05, raising=False
+        )
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+
+        process = self._ExitedProcessWithHeldPipes(returncode=1)
+        process.stdout = self._HeldOpenByteStream(
+            [b'{"type": "assistant", "message": {"content": []}}\n']
+        )
+        process.stdin = MagicMock()
+        process.stdin.aclose = AsyncMock()
+        process.stderr = None
+
+        async def _test():
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            received = []
+            try:
+                with patch(
+                    "anyio.open_process", new_callable=AsyncMock, return_value=process
+                ):
+                    await transport.connect()
+                with anyio.fail_after(5):
+                    with pytest.raises(ProcessError, match="exit code 1"):
+                        async for message in transport.read_messages():
+                            received.append(message)
+            finally:
+                watcher = getattr(transport, "_exit_watcher_task", None)
+                if watcher is not None and not watcher.done():
+                    watcher.cancel()
+                subprocess_cli._ACTIVE_CHILDREN.discard(process)
+            assert len(received) == 1
+            assert received[0]["type"] == "assistant"
+
+        anyio.run(_test)

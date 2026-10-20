@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.169
+
+### Documentation
+
+- Clarified that `include_hook_events` does not suppress `SessionStart` and `Setup` hook events, which the CLI emits regardless of the setting (#1336)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.305
+- CI: hash-pinned the release build tools (`build`, `twine`, `wheel`, `hatchling`) so a tampered or unexpected download stops the job (#1415)
+
 ## 0.2.168
 
 ### Internal/Other Changes

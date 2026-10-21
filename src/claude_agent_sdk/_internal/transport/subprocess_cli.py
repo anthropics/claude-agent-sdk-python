@@ -499,30 +499,42 @@ class SubprocessCLITransport(Transport):
                 # Parse JSON string
                 try:
                     settings_obj = json.loads(settings_str)
-                except json.JSONDecodeError:
-                    # If parsing fails, treat as file path
-                    logger.warning(
-                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
-                    )
-                    # Read the file
-                    settings_path = Path(settings_str)
-                    if settings_path.exists():
-                        with settings_path.open(encoding="utf-8") as f:
-                            settings_obj = json.load(f)
+                except json.JSONDecodeError as e:
+                    # Not echoing the value: inline settings can hold secrets
+                    raise CLIConnectionError(
+                        f"Inline settings are not valid JSON: {e.msg}"
+                    ) from e
             else:
                 # It's a file path - read and parse
-                settings_path = Path(settings_str)
-                if settings_path.exists():
-                    with settings_path.open(encoding="utf-8") as f:
-                        settings_obj = json.load(f)
-                else:
-                    logger.warning(f"Settings file not found: {settings_path}")
+                settings_obj = self._read_settings_file(settings_str)
 
         # Merge sandbox settings
         if has_sandbox:
             settings_obj["sandbox"] = self._options.sandbox
 
         return json.dumps(settings_obj)
+
+    def _read_settings_file(self, settings_str: str) -> dict[str, Any]:
+        """Read a settings file for merging with sandbox settings.
+
+        A relative path resolves against ``options.cwd``, as it does when the
+        CLI reads the file itself. A file that cannot be loaded raises rather
+        than dropping the caller's settings, which can hold permission rules
+        and hooks.
+        """
+        settings_path = Path(self._cwd or "") / settings_str
+        try:
+            with settings_path.open(encoding="utf-8") as f:
+                settings_obj = json.load(f)
+        except (OSError, ValueError) as e:
+            raise CLIConnectionError(
+                f"Failed to read settings file {settings_path}: {e}"
+            ) from e
+        if not isinstance(settings_obj, dict):
+            raise CLIConnectionError(
+                f"Settings file {settings_path} must contain a JSON object"
+            )
+        return settings_obj
 
     def _apply_skills_defaults(
         self,

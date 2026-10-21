@@ -463,6 +463,60 @@ class TestSubagentsFromStore:
         assert msgs[0].type == "user"
         assert msgs[1].type == "assistant"
 
+    async def test_parallel_tool_calls_keep_every_call_and_result(self) -> None:
+        """Parallel tool calls fork a subagent transcript the same way they
+        fork a session's. All calls and results are still returned."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid)
+        sub_key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": sid,
+            "subpath": "subagents/agent-abc123",
+        }
+        entries: list[dict[str, Any]] = [_user("read them", "prompt", None, sid)]
+        for i in range(3):
+            call = _assistant("", f"call-{i}", entries[-1]["uuid"], sid)
+            call["message"] = {
+                "id": "msg_parallel",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": f"toolu_{i}",
+                        "name": "Read",
+                        "input": {},
+                    }
+                ],
+            }
+            entries.append(call)
+        for i in range(3):
+            result = _user("", f"result-{i}", f"call-{i}", sid)
+            result["message"]["content"] = [
+                {"type": "tool_result", "tool_use_id": f"toolu_{i}", "content": "ok"}
+            ]
+            entries.append(result)
+        # The next response continues from the first result, so the walk
+        # back from it reaches only call-0.
+        entries.append(_assistant("done", "answer", "result-0", sid))
+        for entry in entries:
+            entry.update(isSidechain=True, agentId="abc123")
+        await store.append(sub_key, entries)  # type: ignore[arg-type]
+
+        msgs = await get_subagent_messages_from_store(
+            store, sid, "abc123", directory=DIR
+        )
+        assert [m.uuid for m in msgs] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "call-2",
+            "result-1",
+            "result-2",
+            "result-0",
+            "answer",
+        ]
+
     async def test_nested_workflow_subpath(self) -> None:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())

@@ -672,6 +672,60 @@ def _write_transcript(project_dir: Path, session_id: str, entries: list[dict]) -
     return file_path
 
 
+def _parallel_tool_turn(
+    sid: str, parent_uuid: str, tools: int, result_order: list[int]
+) -> tuple[list[dict], list[dict]]:
+    """Builds one assistant turn that makes ``tools`` parallel tool calls.
+
+    Matches what the CLI writes: one assistant entry per content block, all
+    sharing the response's ``message.id`` and chained one after another, and
+    one tool_result entry per call whose ``parentUuid`` is that call's own
+    assistant entry. ``result_order`` is the order the results are written in.
+
+    Returns ``(calls, results)``, both in file order.
+    """
+    calls: list[dict] = []
+    for i in range(tools):
+        call = _make_transcript_entry(
+            "assistant",
+            f"call-{i}",
+            calls[-1]["uuid"] if calls else parent_uuid,
+            sid,
+            content=[
+                {"type": "tool_use", "id": f"toolu_{i}", "name": "Read", "input": {}}
+            ],
+            timestamp=f"2026-01-01T00:00:01.{i:03d}Z",
+        )
+        call["message"]["id"] = "msg_parallel"
+        calls.append(call)
+    results = [
+        _make_transcript_entry(
+            "user",
+            f"result-{i}",
+            f"call-{i}",
+            sid,
+            content=[
+                {"type": "tool_result", "tool_use_id": f"toolu_{i}", "content": "ok"}
+            ],
+            sourceToolAssistantUUID=f"call-{i}",
+            timestamp=f"2026-01-01T00:00:02.{position:03d}Z",
+        )
+        for position, i in enumerate(result_order)
+    ]
+    return calls, results
+
+
+def _block_ids(messages: list[SessionMessage], block_type: str, field: str) -> list:
+    """Collects ``field`` from every ``block_type`` content block, in order."""
+    return [
+        block[field]
+        for m in messages
+        if isinstance(m.message["content"], list)
+        for block in m.message["content"]
+        if block["type"] == block_type
+    ]
+
+
 # ---------------------------------------------------------------------------
 # get_session_messages() tests
 # ---------------------------------------------------------------------------
@@ -1081,6 +1135,102 @@ class TestGetSessionMessages:
         messages = get_session_messages(sid, directory=project_path)
         assert len(messages) == 2
 
+    @pytest.mark.parametrize(
+        "result_order",
+        [[0, 1, 2], [2, 1, 0], [1, 2, 0], [0, 2, 1]],
+    )
+    def test_parallel_tool_calls_keep_every_call_and_result(
+        self, claude_config_dir: Path, tmp_path: Path, result_order: list[int]
+    ):
+        """A turn with parallel tool calls returns all calls and all results.
+
+        Each result hangs off its own call's assistant entry, so the
+        transcript forks and the parentUuid walk follows only the branch the
+        next turn continued from. Whichever result was written last, the
+        calls and results off that branch must still be returned.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 3, result_order)
+        entries = [
+            _make_transcript_entry("user", "prompt", None, sid, content="read them"),
+            *calls,
+            *results,
+            # The next response continues from the last result written.
+            _make_transcript_entry(
+                "assistant", "answer", results[-1]["uuid"], sid, content="done"
+            ),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+
+        call_ids = _block_ids(messages, "tool_use", "id")
+        result_ids = _block_ids(messages, "tool_result", "tool_use_id")
+        assert call_ids == ["toolu_0", "toolu_1", "toolu_2"]
+        assert sorted(result_ids) == ["toolu_0", "toolu_1", "toolu_2"]
+        assert len({m.uuid for m in messages}) == len(messages) == 8
+        # The turn stays in one piece: prompt, calls, results, answer.
+        assert messages[0].uuid == "prompt"
+        assert [m.type for m in messages[1:7]] == ["assistant"] * 3 + ["user"] * 3
+        assert messages[-1].uuid == "answer"
+
+    def test_parallel_tool_calls_as_last_turn(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Results are recovered when the parallel turn ends the transcript."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 2, [1, 0])
+        entries = [
+            _make_transcript_entry("user", "prompt", None, sid, content="read them"),
+            *calls,
+            *results,
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert [m.uuid for m in messages] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-1",
+            "result-0",
+        ]
+
+    def test_parallel_tool_calls_limit_offset(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Paging counts the recovered calls and results."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 3, [0, 1, 2])
+        entries = [
+            _make_transcript_entry("user", "prompt", None, sid, content="read them"),
+            *calls,
+            *results,
+            _make_transcript_entry("assistant", "answer", "result-2", sid, content="k"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        page = get_session_messages(sid, directory=project_path, limit=3, offset=4)
+        assert [m.uuid for m in page] == ["result-0", "result-1", "result-2"]
+
 
 class TestBuildConversationChain:
     """Unit tests for the _build_conversation_chain helper."""
@@ -1110,6 +1260,254 @@ class TestBuildConversationChain:
         ]
         result = _build_conversation_chain(entries)
         assert result == []
+
+    def test_recovers_sibling_calls_dropped_by_the_walk(self):
+        """Walking back from the first call's result skips the later calls."""
+        calls, results = _parallel_tool_turn("s", "prompt", 3, [1, 2, 0])
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-0"},
+        ]
+        result = _build_conversation_chain(entries)
+        # The off-branch calls and their results go right after the last
+        # call on the branch, ahead of that branch's own result.
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "call-2",
+            "result-1",
+            "result-2",
+            "result-0",
+            "answer",
+        ]
+
+    def test_recovered_results_are_in_completion_order(self):
+        """Recovered results are ordered by timestamp, not by call order."""
+        # The second call finished first.
+        calls, results = _parallel_tool_turn("s", "prompt", 3, [1, 0, 2])
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-2"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "call-2",
+            "result-1",
+            "result-0",
+            "result-2",
+            "answer",
+        ]
+
+    def test_recovered_calls_are_in_timestamp_order(self):
+        """Recovered sibling calls are ordered by timestamp, not file order."""
+        calls, results = _parallel_tool_turn("s", "prompt", 3, [1, 2, 0])
+        # call-2 reached the file before call-1.
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            calls[0],
+            calls[2],
+            calls[1],
+            *results,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-0"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result][1:4] == ["call-0", "call-1", "call-2"]
+
+    def test_sequential_tool_calls_are_unchanged(self):
+        """A response whose calls ran one at a time has nothing to recover."""
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            {
+                "type": "assistant",
+                "uuid": "call-0",
+                "parentUuid": "prompt",
+                "message": {
+                    "id": "msg_1",
+                    "content": [{"type": "tool_use", "id": "toolu_0"}],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "result-0",
+                "parentUuid": "call-0",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_0"}]
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "call-1",
+                "parentUuid": "result-0",
+                "message": {
+                    "id": "msg_1",
+                    "content": [{"type": "tool_use", "id": "toolu_1"}],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "result-1",
+                "parentUuid": "call-1",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]
+                },
+            },
+        ]
+        result = _build_conversation_chain(entries)
+        assert result == entries
+
+    def test_abandoned_branch_is_not_recovered(self):
+        """A retried turn's old response stays off the chain.
+
+        Only entries that share a response id with the chain are recovered;
+        an earlier attempt at the same turn is a different response.
+        """
+        calls, results = _parallel_tool_turn("s", "prompt", 2, [0, 1])
+        old = {
+            "type": "assistant",
+            "uuid": "old-call",
+            "parentUuid": "prompt",
+            "message": {
+                "id": "msg_abandoned",
+                "content": [{"type": "tool_use", "id": "toolu_old"}],
+            },
+        }
+        old_result = {
+            "type": "user",
+            "uuid": "old-result",
+            "parentUuid": "old-call",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_old"}]
+            },
+        }
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            old,
+            old_result,
+            *calls,
+            *results,
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-0",
+            "result-1",
+        ]
+
+    def test_recovers_result_whose_parent_is_outside_the_turn(self):
+        """A result is matched to its call by tool_use_id when its
+        parentUuid does not point at one of the response's entries."""
+        calls, results = _parallel_tool_turn("s", "prompt", 2, [0, 1])
+        results[0]["parentUuid"] = "missing"
+        del results[0]["sourceToolAssistantUUID"]
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-1"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-0",
+            "result-1",
+            "answer",
+        ]
+
+    def test_does_not_duplicate_an_answered_call(self):
+        """A stray second result for a call the chain already answers is
+        left out."""
+        calls, results = _parallel_tool_turn("s", "prompt", 2, [0, 1])
+        duplicate = {
+            **results[1],
+            "uuid": "result-1-copy",
+            "parentUuid": "elsewhere",
+        }
+        del duplicate["sourceToolAssistantUUID"]
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            duplicate,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-1"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-0",
+            "result-1",
+            "answer",
+        ]
+
+    def test_does_not_pull_in_another_agents_result(self):
+        """A sidechain result that reuses a main-chain tool_use_id is not
+        matched to the main chain's call."""
+        calls, results = _parallel_tool_turn("s", "prompt", 2, [0, 1])
+        results[0]["parentUuid"] = "sidechain-call"
+        results[0]["isSidechain"] = True
+        results[0]["agentId"] = "agent-1"
+        del results[0]["sourceToolAssistantUUID"]
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            {"type": "assistant", "uuid": "answer", "parentUuid": "result-1"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-1",
+            "answer",
+        ]
+
+    def test_recovery_tolerates_malformed_entries(self):
+        """Odd shapes in unrelated fields do not break chain building."""
+        calls, results = _parallel_tool_turn("s", "prompt", 2, [0, 1])
+        results[0]["timestamp"] = 12345
+        entries = [
+            {"type": "user", "uuid": "prompt", "parentUuid": None},
+            *calls,
+            *results,
+            {"type": "assistant", "uuid": "no-message", "parentUuid": "result-1"},
+            {
+                "type": "assistant",
+                "uuid": "odd",
+                "parentUuid": "no-message",
+                "message": {"id": 7, "content": ["text", None, {"type": "tool_use"}]},
+            },
+            {
+                "type": "user",
+                "uuid": "odd-result",
+                "parentUuid": "odd",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": 3}]},
+            },
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-0",
+            "result-1",
+            "no-message",
+            "odd",
+            "odd-result",
+        ]
 
 
 class TestSessionMessageType:

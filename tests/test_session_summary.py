@@ -883,3 +883,37 @@ class TestParityWithLiteParse:
         assert incremental is not None and batch is not None
         batch.file_size = None
         assert incremental == batch
+
+    @pytest.mark.parametrize(
+        ("block_type", "expected_summary"),
+        [("image", "Image"), ("document", "Document")],
+    )
+    def test_parity_media_only_first_prompt(
+        self, block_type: str, expected_summary: str
+    ) -> None:
+        sid = "44444444-4444-4444-8444-444444444444"
+        k: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {
+                "type": "user",
+                "timestamp": "2024-02-01T00:00:00.000Z",
+                "cwd": "/w",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": block_type, "source": {"type": "base64"}}],
+                },
+            }
+        ]
+        folded = fold_session_summary(None, k, entries)
+        incremental = summary_entry_to_sdk_info(folded, "/w")
+        jsonl = _entries_to_jsonl(entries)
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(jsonl, folded["mtime"]), "/w"
+        )
+        assert incremental is not None and batch is not None
+        assert incremental.summary == expected_summary
+        assert batch.summary == expected_summary
+        assert incremental.first_prompt is None
+        assert batch.first_prompt is None
+        batch.file_size = None
+        assert incremental == batch

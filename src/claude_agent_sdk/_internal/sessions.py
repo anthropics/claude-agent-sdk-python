@@ -251,6 +251,22 @@ def _extract_last_json_string_field(text: str, key: str) -> str | None:
     return last_value
 
 
+def _extract_last_top_level_json_string_field(text: str, key: str) -> str | None:
+    """Extract the last top-level string field from JSONL text."""
+    for line in reversed(text.split("\n")):
+        if f'"{key}"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            value = entry.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # First prompt extraction from head chunk
 # ---------------------------------------------------------------------------
@@ -441,10 +457,10 @@ def _parse_session_info_from_lite(
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
     # Head fallback covers short sessions where the title entry may not be in tail.
     custom_title = (
-        _extract_last_json_string_field(tail, "customTitle")
-        or _extract_last_json_string_field(head, "customTitle")
-        or _extract_last_json_string_field(tail, "aiTitle")
-        or _extract_last_json_string_field(head, "aiTitle")
+        _extract_last_top_level_json_string_field(tail, "customTitle")
+        or _extract_last_top_level_json_string_field(head, "customTitle")
+        or _extract_last_top_level_json_string_field(tail, "aiTitle")
+        or _extract_last_top_level_json_string_field(head, "aiTitle")
         or None
     )
     first_prompt = _extract_first_prompt_from_head(head) or None

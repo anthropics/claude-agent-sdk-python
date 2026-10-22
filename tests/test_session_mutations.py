@@ -742,6 +742,46 @@ class TestForkSession:
         assert fork_info.custom_title is not None
         assert fork_info.custom_title.endswith("(fork)")
 
+    def test_fork_title_ignores_nested_tool_input(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A tool input field named customTitle is not the session title."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path, message_uuids = _make_transcript_session(project_dir)
+        rename_session(sid, "Original title", directory=project_path)
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": str(uuid.uuid4()),
+                        "parentUuid": message_uuids[-1],
+                        "sessionId": sid,
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "mcp__fixture__create_item",
+                                    "input": {"customTitle": "Nested tool value"},
+                                }
+                            ]
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+        result = fork_session(sid, directory=project_path)
+
+        sessions = list_sessions(directory=project_path)
+        fork_info = next(s for s in sessions if s.session_id == result.session_id)
+        assert fork_info.custom_title == "Original title (fork)"
+
     def test_fork_session_id_in_entries(self, claude_config_dir: Path, tmp_path: Path):
         """Every entry in the fork has the new session ID."""
         project_path = str(tmp_path / "proj")

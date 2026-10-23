@@ -117,6 +117,42 @@ class ResultError(ProcessError):
         super().__init__(message, exit_code=exit_code)
 
 
+class ControlRequestError(ClaudeSDKError):
+    """Raised when a control request to the CLI fails.
+
+    The CLI answers a control request either with a success response or with a
+    ``subtype: error`` response carrying the failure text. This exception
+    replaces the bare ``Exception`` that used to be raised for the error case,
+    so callers can catch control-protocol failures as part of the
+    :class:`ClaudeSDKError` family::
+
+        try:
+            await client.toggle_mcp_server("srv", True)
+        except ControlRequestError as e:
+            if e.subtype == "mcp_toggle":
+                ...
+
+    Attributes:
+        subtype: The control request subtype that failed (e.g. ``"mcp_toggle"``,
+            ``"interrupt"``), if known.
+        error: The error text reported by the CLI.
+    """
+
+    def __init__(
+        self, message: str, subtype: str | None = None, error: str | None = None
+    ):
+        self.subtype = subtype
+        self.error = error
+        super().__init__(message)
+
+
+class ControlRequestTimeoutError(ControlRequestError):
+    """Raised when a control request times out waiting for the CLI's response."""
+
+    def __init__(self, message: str, subtype: str | None = None):
+        super().__init__(message, subtype=subtype)
+
+
 class CLIJSONDecodeError(ClaudeSDKError):
     """Raised when unable to decode JSON from CLI output."""
 

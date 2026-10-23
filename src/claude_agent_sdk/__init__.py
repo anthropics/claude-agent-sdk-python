@@ -34,6 +34,8 @@ from ._errors import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    ControlRequestError,
+    ControlRequestTimeoutError,
     ProcessError,
     ResultError,
 )
@@ -821,4 +823,6 @@ __all__ = [
     "ProcessError",
     "ResultError",
     "CLIJSONDecodeError",
+    "ControlRequestError",
+    "ControlRequestTimeoutError",
 ]

@@ -25,7 +25,12 @@ from claude_agent_sdk import (
     query,
     tool,
 )
-from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
+from claude_agent_sdk._errors import (
+    CLIConnectionError,
+    ClaudeSDKError,
+    ProcessError,
+    ResultError,
+)
 from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
 from claude_agent_sdk.types import HookMatcher
 
@@ -2658,5 +2663,111 @@ class TestProcessExitAfterErrorResult:
 
             assert event.is_set()
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
+
+        anyio.run(_test)
+
+
+class TestControlRequestFailures:
+    """Regression tests for #1304: a control request the CLI answers with
+    ``subtype: error``, or that times out, must raise a ClaudeSDKError subclass
+    so `except ClaudeSDKError` catches protocol failures."""
+
+    def _control_channel_transport(self, respond):
+        """Mock transport whose read loop answers each control_request via
+        ``respond(subtype)`` -> control_response dict, or None to stay silent."""
+        mock_transport = AsyncMock()
+        mock_transport.connect = AsyncMock()
+        mock_transport.close = AsyncMock()
+        mock_transport.end_input = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        writes: list[str] = []
+
+        async def mock_write(data):
+            writes.append(data)
+
+        async def mock_receive():
+            for _ in range(1000):
+                await anyio.sleep(0)
+                while writes:
+                    frame = json.loads(writes.pop(0).strip())
+                    if frame.get("type") != "control_request":
+                        continue
+                    response = respond(frame["request"].get("subtype"))
+                    if response is not None:
+                        response["request_id"] = frame["request_id"]
+                        yield {"type": "control_response", "response": response}
+
+        mock_transport.write = mock_write
+        mock_transport.read_messages = mock_receive
+        return mock_transport
+
+    def test_error_response_raises_control_request_error(self):
+        async def _test():
+            transport = self._control_channel_transport(
+                lambda subtype: {
+                    "subtype": "error",
+                    "error": "server not found",
+                }
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ClaudeSDKError) as exc_info:
+                await q._send_control_request({"subtype": "mcp_toggle"})
+
+            err = exc_info.value
+            assert type(err).__module__.startswith("claude_agent_sdk")
+            assert getattr(err, "subtype", None) == "mcp_toggle"
+            assert getattr(err, "error", None) == "server not found"
+            assert "server not found" in str(err)
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_error_response_without_text_still_raises_typed_error(self):
+        async def _test():
+            transport = self._control_channel_transport(
+                lambda subtype: {"subtype": "error"}
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ClaudeSDKError) as exc_info:
+                await q._send_control_request({"subtype": "interrupt"})
+
+            assert getattr(exc_info.value, "subtype", None) == "interrupt"
+            assert "Unknown error" in str(exc_info.value)
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_timeout_raises_control_request_timeout_error(self):
+        async def _test():
+            transport = self._control_channel_transport(lambda subtype: None)
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ClaudeSDKError) as exc_info:
+                await q._send_control_request({"subtype": "mcp_status"}, timeout=0.05)
+
+            err = exc_info.value
+            assert type(err).__module__.startswith("claude_agent_sdk")
+            assert getattr(err, "subtype", None) == "mcp_status"
+            assert "timeout" in str(err)
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_success_response_still_returns_payload(self):
+        async def _test():
+            transport = self._control_channel_transport(
+                lambda subtype: {"subtype": "success", "response": {"ok": True}}
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            result = await q._send_control_request({"subtype": "mcp_status"})
+            assert result == {"ok": True}
+            await q.close()
 
         anyio.run(_test)

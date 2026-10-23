@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -385,6 +390,13 @@ class Query:
 
         task.add_done_callback(_done)
 
+    def _fail_pending_control_requests(self, error: Exception) -> None:
+        """Wake all unresolved outgoing control requests with the given error."""
+        for request_id, event in list(self.pending_control_responses.items()):
+            if request_id not in self.pending_control_results:
+                self.pending_control_results[request_id] = error
+                event.set()
+
     async def _read_messages(self) -> None:
         """Read messages from transport and route them."""
         try:
@@ -540,10 +552,7 @@ class Query:
             # timing out. This includes an `initialize` still in flight when the
             # CLI reports an error result during startup (e.g. a refused
             # resume), so that path sees the same actionable text.
-            for request_id, event in list(self.pending_control_responses.items()):
-                if request_id not in self.pending_control_results:
-                    self.pending_control_results[request_id] = pending_error
-                    event.set()
+            self._fail_pending_control_requests(pending_error)
             # Put the error in the stream so iterators can raise it. The typed
             # exception rides along so receive_messages() re-raises it as-is
             # (ResultError / ProcessError with its exit code,
@@ -564,6 +573,14 @@ class Query:
             # of the run) so they don't stall on early exit.
             self._run_final = True
             self._end_run()
+            # A clean stdout EOF is not an exception, but no control response can
+            # arrive after the reader exits. Preserve any response or richer
+            # error already recorded by checking the shared helper first.
+            self._fail_pending_control_requests(
+                CLIConnectionError(
+                    "Query message reader closed while waiting for control response"
+                )
+            )
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
@@ -714,6 +731,8 @@ class Query:
         """
         if not self.is_streaming_mode:
             raise Exception("Control requests require streaming mode")
+        if self._closed:
+            raise CLIConnectionError("Query is closed")
 
         # Generate unique request ID
         self._request_counter += 1
@@ -1183,6 +1202,9 @@ class Query:
 
     async def _close_impl(self) -> None:
         self._closed = True
+        self._fail_pending_control_requests(
+            CLIConnectionError("Query closed while waiting for control response")
+        )
         # Final-flush mirror entries before tearing down so .return()/break
         # don't drop the current turn when the process exits immediately.
         if self._transcript_mirror_batcher is not None:

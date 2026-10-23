@@ -917,3 +917,39 @@ class TestParityWithLiteParse:
         assert batch.first_prompt is None
         batch.file_size = None
         assert incremental == batch
+
+    def test_parity_media_only_with_filter_substrings_in_payload(self) -> None:
+        sid = "55555555-5555-4555-8555-555555555555"
+        k: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {
+                "type": "user",
+                "timestamp": "2024-02-01T00:00:00.000Z",
+                "cwd": "/w",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "title": "tool_result",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "JVBERi0=",
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        folded = fold_session_summary(None, k, entries)
+        incremental = summary_entry_to_sdk_info(folded, "/w")
+        jsonl = _entries_to_jsonl(entries)
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(jsonl, folded["mtime"]), "/w"
+        )
+        assert incremental is not None and batch is not None
+        assert incremental.summary == "Document"
+        assert batch.summary == "Document"
+        batch.file_size = None
+        assert incremental == batch

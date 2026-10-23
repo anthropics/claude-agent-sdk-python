@@ -351,13 +351,7 @@ def _extract_first_media_label_from_head(head: str) -> str | None:
             line = head[start:]
             start = head_len
 
-        if '"type":"user"' not in line and '"type": "user"' not in line:
-            continue
-        if '"tool_result"' in line:
-            continue
-        if '"isMeta":true' in line or '"isMeta": true' in line:
-            continue
-        if '"isCompactSummary":true' in line or '"isCompactSummary": true' in line:
+        if '"user"' not in line:
             continue
 
         try:
@@ -367,6 +361,8 @@ def _extract_first_media_label_from_head(head: str) -> str | None:
 
         if not isinstance(entry, dict) or entry.get("type") != "user":
             continue
+        if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:
+            continue
 
         message = entry.get("message")
         if not isinstance(message, dict):
@@ -374,6 +370,8 @@ def _extract_first_media_label_from_head(head: str) -> str | None:
 
         content = message.get("content")
         if not isinstance(content, list):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             continue
 
         for block in content:

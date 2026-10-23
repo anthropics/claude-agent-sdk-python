@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    ControlRequestError,
+    ControlRequestTimeoutError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -221,6 +227,9 @@ class Query:
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
         self.pending_control_results: dict[str, dict[str, Any] | Exception] = {}
+        # Request subtype per in-flight request id, so a failed response or
+        # timeout can name the control request in the raised error.
+        self.pending_control_subtypes: dict[str, str] = {}
         self.hook_callbacks: dict[str, Callable[..., Any]] = {}
         self.next_callback_id = 0
         self._request_counter = 0
@@ -401,8 +410,14 @@ class Query:
                     if request_id in self.pending_control_responses:
                         event = self.pending_control_responses[request_id]
                         if response.get("subtype") == "error":
-                            self.pending_control_results[request_id] = Exception(
-                                response.get("error", "Unknown error")
+                            error_text = response.get("error", "Unknown error")
+                            subtype = self.pending_control_subtypes.get(request_id)
+                            self.pending_control_results[request_id] = (
+                                ControlRequestError(
+                                    str(error_text),
+                                    subtype=subtype,
+                                    error=str(error_text),
+                                )
                             )
                         else:
                             self.pending_control_results[request_id] = response
@@ -721,7 +736,11 @@ class Query:
 
         # Create event for response
         event = anyio.Event()
+        subtype = request.get("subtype")
         self.pending_control_responses[request_id] = event
+        self.pending_control_subtypes[request_id] = (
+            subtype if isinstance(subtype, str) else ""
+        )
 
         # Build and send request
         control_request = {
@@ -739,6 +758,7 @@ class Query:
 
             result = self.pending_control_results.pop(request_id)
             self.pending_control_responses.pop(request_id, None)
+            self.pending_control_subtypes.pop(request_id, None)
 
             if isinstance(result, Exception):
                 raise result
@@ -748,7 +768,11 @@ class Query:
         except TimeoutError as e:
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+            self.pending_control_subtypes.pop(request_id, None)
+            raise ControlRequestTimeoutError(
+                f"Control request timeout: {request.get('subtype')}",
+                subtype=subtype if isinstance(subtype, str) else None,
+            ) from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

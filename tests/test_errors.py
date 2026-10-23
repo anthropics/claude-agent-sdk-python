@@ -99,6 +99,65 @@ class TestErrorTypes:
             assert clone.session_id == "s"
             assert clone.data == data
 
+    def test_control_request_error_carries_subtype_and_text(self):
+        """A control request the CLI answers with subtype=error raises a
+        ClaudeSDKError subclass carrying the subtype and the CLI's error text."""
+        import claude_agent_sdk
+
+        assert hasattr(claude_agent_sdk, "ControlRequestError")
+        ControlRequestError = claude_agent_sdk.ControlRequestError
+        assert issubclass(ControlRequestError, ClaudeSDKError)
+
+        error = ControlRequestError(
+            "server not found", subtype="mcp_toggle", error="server not found"
+        )
+        assert isinstance(error, ClaudeSDKError)
+        assert error.subtype == "mcp_toggle"
+        assert error.error == "server not found"
+        assert "server not found" in str(error)
+
+    def test_control_request_error_defaults_to_none(self):
+        import claude_agent_sdk
+
+        assert hasattr(claude_agent_sdk, "ControlRequestError")
+        error = claude_agent_sdk.ControlRequestError("boom")
+        assert error.subtype is None
+        assert error.error is None
+
+    def test_control_request_timeout_error_is_control_request_error(self):
+        import claude_agent_sdk
+
+        assert hasattr(claude_agent_sdk, "ControlRequestTimeoutError")
+        assert hasattr(claude_agent_sdk, "ControlRequestError")
+        ControlRequestError = claude_agent_sdk.ControlRequestError
+        ControlRequestTimeoutError = claude_agent_sdk.ControlRequestTimeoutError
+        assert issubclass(ControlRequestTimeoutError, ControlRequestError)
+
+        error = ControlRequestTimeoutError(
+            "Control request timeout: interrupt", subtype="interrupt"
+        )
+        assert isinstance(error, ClaudeSDKError)
+        assert error.subtype == "interrupt"
+        assert "timeout" in str(error)
+
+    def test_control_request_error_survives_pickle_and_copy(self):
+        import copy
+        import pickle
+
+        import claude_agent_sdk
+
+        assert hasattr(claude_agent_sdk, "ControlRequestError")
+        ControlRequestError = claude_agent_sdk.ControlRequestError
+
+        error = ControlRequestError(
+            "server not found", subtype="mcp_toggle", error="server not found"
+        )
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+            assert type(clone) is ControlRequestError
+            assert str(clone) == str(error)
+            assert clone.subtype == "mcp_toggle"
+            assert clone.error == "server not found"
+
     def test_json_decode_error(self):
         """Test CLIJSONDecodeError."""
         import json

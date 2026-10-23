@@ -12,10 +12,12 @@ conftest.py): the leak reproduces on both.
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,7 +43,7 @@ posix_only = pytest.mark.skipif(
 FAKE_CLI = textwrap.dedent(
     """
     #!/usr/bin/env python3
-    import json, sys
+    import json, os, subprocess, sys
 
     if "-v" in sys.argv or "--version" in sys.argv:
         print("2.0.0 (Claude Code)")
@@ -50,6 +52,14 @@ FAKE_CLI = textwrap.dedent(
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "s",
                       "model": "m", "cwd": ".", "tools": [], "mcp_servers": [],
                       "permissionMode": "default", "apiKeySource": "none"}), flush=True)
+
+    # Stand-in for a stdio MCP server: a grandchild that outlives the CLI
+    # unless something signals it.
+    pid_file = os.environ.get("FAKE_CLI_GRANDCHILD_PID_FILE")
+    if pid_file:
+        grandchild = subprocess.Popen(["sleep", "300"])
+        with open(pid_file, "w") as f:
+            f.write(str(grandchild.pid))
 
     for line in sys.stdin:
         line = line.strip()
@@ -192,6 +202,39 @@ async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
     await transport.close()
     assert process.returncode is not None
     assert process not in _ACTIVE_CHILDREN
+
+
+@posix_only
+async def test_close_terminates_grandchildren_of_the_cli(tmp_path: Path) -> None:
+    """MCP servers are children of the CLI, not of the SDK. close() must take
+    them down with the CLI instead of leaving them running (#291)."""
+    pid_file = tmp_path / "grandchild.pid"
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(
+            cli_path=str(_write_fake_cli(tmp_path)),
+            env={"FAKE_CLI_GRANDCHILD_PID_FILE": str(pid_file)},
+        ),
+    )
+    await transport.connect()
+    grandchild_pid = -1
+    try:
+        with anyio.fail_after(10):
+            while not pid_file.exists() or not pid_file.read_text():
+                await anyio.sleep(0.05)
+        grandchild_pid = int(pid_file.read_text())
+        assert _process_state(grandchild_pid) == "alive"
+
+        await transport.close()
+
+        # Only init can reap the orphaned grandchild; a zombie has stopped.
+        with anyio.fail_after(10):
+            while _process_state(grandchild_pid) == "alive":
+                await anyio.sleep(0.05)
+    finally:
+        if grandchild_pid > 0:
+            with suppress(ProcessLookupError):
+                os.kill(grandchild_pid, signal.SIGKILL)
 
 
 @posix_only

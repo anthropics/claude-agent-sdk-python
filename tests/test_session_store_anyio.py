@@ -202,3 +202,19 @@ async def test_list_sessions_from_store_one_load_fails(tmp_path: Path) -> None:
     by_sid = {r.session_id: r for r in result}
     assert by_sid[_SID_A].summary == "hello"
     assert by_sid[_SID_B].summary == ""
+
+
+async def test_list_sessions_from_store_oversized_first_record(
+    tmp_path: Path,
+) -> None:
+    """The load() fallback keeps first_prompt when the first record is larger
+    than the lite read window, matching what the disk path now returns."""
+    big_paste = "review this crash log\n" + "ERROR connection reset\n" * 4000
+    store = _ListStore({_SID_A: [_user_entry(big_paste)]})
+
+    result = await list_sessions_from_store(
+        cast(SessionStore, store), directory=str(tmp_path)
+    )
+    assert len(result) == 1
+    assert result[0].first_prompt is not None
+    assert result[0].first_prompt.startswith("review this crash log")

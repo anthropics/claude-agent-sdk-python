@@ -126,7 +126,14 @@ async def query(
 
     client = InternalClient()
 
-    async for message in client.process_query(
-        prompt=prompt, options=options, transport=transport
-    ):
-        yield message
+    gen = client.process_query(prompt=prompt, options=options, transport=transport)
+    try:
+        async for message in gen:
+            yield message
+    finally:
+        # ``async for`` does NOT close its iterator when the loop body
+        # raises or breaks early (PEP 533 was deferred). Explicitly aclose
+        # the inner generator so its ``finally`` runs — i.e. the CLI
+        # subprocess is terminated — instead of lingering until the
+        # interpreter exits.
+        await gen.aclose()

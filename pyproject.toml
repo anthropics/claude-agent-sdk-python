@@ -25,9 +25,9 @@ classifiers = [
 ]
 keywords = ["claude", "ai", "sdk", "anthropic"]
 dependencies = [
-    "anyio>=4.0.0",
+    "anyio>=4.5.0",
     "sniffio>=1.0.0",
-    "typing_extensions>=4.0.0; python_version<'3.11'",
+    "typing_extensions>=4.1.0; python_version<'3.11'",
     "mcp>=1.23.0,<3.0.0",
     "jsonschema>=4.20.0",
 ]
@@ -35,7 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
-    "anyio[trio]>=4.0.0",
+    "anyio[trio]>=4.5.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",

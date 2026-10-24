@@ -13,11 +13,14 @@ if TYPE_CHECKING:
     from ._internal.session_resume import MaterializedResume
 from .types import (
     ClaudeAgentOptions,
+    ContextUsageDetail,
     ContextUsageResponse,
+    InterruptResponse,
     McpStatusResponse,
     Message,
     PermissionMode,
     ResultMessage,
+    RewindFilesResult,
     _configure_can_use_tool,
     _hooks_to_internal_format,
 )
@@ -305,11 +308,26 @@ class ClaudeSDKClient:
                     json.dumps(stamp_user_message(msg, self._verbatim_prompts)) + "\n"
                 )
 
-    async def interrupt(self) -> None:
-        """Send interrupt signal (only works with streaming mode)."""
+    async def interrupt(self, *, cancel_queued: bool = False) -> InterruptResponse:
+        """Send interrupt signal (only works with streaming mode).
+
+        Args:
+            cancel_queued: When True, async user messages still waiting in the
+                CLI's queue are cancelled along with the running turn instead
+                of running after it. Older CLIs ignore the flag.
+
+        Returns:
+            The CLI's interrupt receipt. On recent CLIs ``still_queued`` lists
+            the queued message UUIDs that will still run, and ``cancelled``
+            (with ``cancel_queued=True``) the ones that were dropped. Older
+            CLIs return an empty dict.
+        """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        await self._query.interrupt()
+        result: InterruptResponse = await self._query.interrupt(
+            cancel_queued=cancel_queued
+        )
+        return result
 
     async def set_permission_mode(self, mode: PermissionMode) -> None:
         """Change permission mode during conversation (only works with streaming mode).
@@ -361,7 +379,9 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.set_model(model)
 
-    async def rewind_files(self, user_message_id: str) -> None:
+    async def rewind_files(
+        self, user_message_id: str, *, dry_run: bool = False
+    ) -> RewindFilesResult:
         """Rewind tracked files to their state at a specific user message.
 
         Requires `enable_file_checkpointing=True` to track file changes, and
@@ -371,6 +391,12 @@ class ClaudeSDKClient:
         Args:
             user_message_id: UUID of the user message to rewind to. This should be
                 the `uuid` field from a `UserMessage` received during the conversation.
+            dry_run: When True, report which files would change without
+                modifying anything.
+
+        Returns:
+            RewindFilesResult with ``canRewind`` and, when available, the
+            ``filesChanged`` list plus ``insertions``/``deletions`` counts.
 
         Example:
             ```python
@@ -384,13 +410,18 @@ class ClaudeSDKClient:
                     if isinstance(msg, UserMessage) and msg.uuid:
                         checkpoint_id = msg.uuid  # Save this for later
 
-                # Later, rewind to that point
-                await client.rewind_files(checkpoint_id)
+                # Preview, then rewind to that point
+                preview = await client.rewind_files(checkpoint_id, dry_run=True)
+                if preview["canRewind"]:
+                    await client.rewind_files(checkpoint_id)
             ```
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        await self._query.rewind_files(user_message_id)
+        result: RewindFilesResult = await self._query.rewind_files(
+            user_message_id, dry_run=dry_run
+        )
+        return result
 
     async def reconnect_mcp_server(self, server_name: str) -> None:
         """Reconnect a disconnected or failed MCP server (only works with streaming mode).
@@ -501,12 +532,19 @@ class ClaudeSDKClient:
         result: McpStatusResponse = await self._query.get_mcp_status()
         return result
 
-    async def get_context_usage(self) -> ContextUsageResponse:
+    async def get_context_usage(
+        self, *, detail: ContextUsageDetail | None = None
+    ) -> ContextUsageResponse:
         """Get a breakdown of current context window usage by category.
 
         Returns the same data shown by the `/context` command in the CLI,
         including token counts per category, total usage, and detailed
         breakdowns of MCP tools, memory files, and agents.
+
+        Args:
+            detail: ``"full"`` (the CLI default) counts each category with the
+                token-count API; ``"summary"`` answers from the last response's
+                usage and local estimates, which is cheaper but approximate.
 
         Returns:
             ContextUsageResponse dictionary with keys including:
@@ -534,7 +572,9 @@ class ClaudeSDKClient:
         """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
-        result: ContextUsageResponse = await self._query.get_context_usage()
+        result: ContextUsageResponse = await self._query.get_context_usage(
+            detail=detail
+        )
         return result
 
     async def get_server_info(self) -> dict[str, Any] | None:

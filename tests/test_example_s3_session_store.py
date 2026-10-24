@@ -8,6 +8,7 @@ in-memory double exported alongside the adapter).
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import sys
@@ -333,6 +334,58 @@ async def test_load_skips_malformed_lines() -> None:
     store = _make_store(client)
     result = await store.load({"project_key": "proj", "session_id": "sess"})
     assert result == [{"ok": 1}, {"ok": 2}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", [None, "read", "length", "decode"])
+async def test_load_closes_streaming_body(failure: str | None) -> None:
+    from botocore.response import StreamingBody
+
+    class RawBody(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            if failure == "read":
+                raise OSError("interrupted response")
+            return super().read(size)
+
+    data = b"\xff" if failure == "decode" else b'{"type":"user"}\n'
+    raw_body = RawBody(data)
+    content_length = len(data) + (1 if failure == "length" else 0)
+    response_body = StreamingBody(raw_body, content_length)
+
+    class StreamingClient(_RecordingClient):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(("get_object", kwargs))
+            return {"Body": response_body}
+
+    client = StreamingClient()
+    client.objects["p/proj/sess/part-1700000000000-abcdef.jsonl"] = data
+    store = _make_store(client)
+    key: SessionKey = {"project_key": "proj", "session_id": "sess"}
+    try:
+        if failure is None:
+            assert await store.load(key) == [{"type": "user"}]
+        else:
+            # AnyIO's parallel read task group wraps the read/decode failure.
+            with pytest.raises(Exception) as raised:
+                await store.load(key)
+            causes: list[BaseException] = [raised.value]
+            leaves: list[BaseException] = []
+            while causes:
+                error = causes.pop()
+                nested = getattr(error, "exceptions", None)
+                if nested is None:
+                    leaves.append(error)
+                else:
+                    causes.extend(nested)
+            expected = {
+                "read": "OSError",
+                "length": "IncompleteReadError",
+                "decode": "UnicodeDecodeError",
+            }
+            assert any(type(error).__name__ == expected[failure] for error in leaves)
+        assert raw_body.closed
+    finally:
+        response_body.close()
 
 
 # ---------------------------------------------------------------------------

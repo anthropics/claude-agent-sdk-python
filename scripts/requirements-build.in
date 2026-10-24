@@ -1,0 +1,11 @@
+# The tools the release workflows build and upload with. They run in the jobs that
+# make and publish the release, so requirements-build.txt pins them and everything
+# they depend on to one version and to the hashes PyPI lists, for all five build
+# platforms. After changing this file, run the command at the top of that file. Add
+# --upgrade to it to move every pin to the newest version.
+build
+# certifi holds the CA certificates twine trusts for the upload: keep it recent.
+certifi>=2026.10.18
+hatchling
+twine
+wheel

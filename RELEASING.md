@@ -16,7 +16,7 @@ Both flows call the same reusable `build-and-publish.yml` workflow, which builds
 
 PRs that touch the build scripts, `pyproject.toml`, or the publish workflow trigger `build-wheel-check.yml`, which dry-runs the full build matrix and verifies each wheel contains the bundled CLI before merge.
 
-PyPI rejects any file over 100 MiB. A wheel over that limit does not block the release: the publish job leaves it out, shows a warning on the run, and publishes the sdist and the other wheels. `pip install` on the platform that was left out gets the sdist, which has no bundled CLI, so the SDK there uses a separately installed Claude Code. The wheel stays in the run's build artifacts. The release still fails if the sdist or every wheel is over the limit.
+PyPI rejects any file over this project's per-file limit of 250 MiB (raised from the default 100 MiB in [pypi/support#12263](https://github.com/pypi/support/issues/12263)). A wheel over that limit does not block the release: the publish job leaves it out, shows a warning on the run, and publishes the sdist and the other wheels. `pip install` on the platform that was left out gets the sdist, which has no bundled CLI, so the SDK there uses a separately installed Claude Code. The wheel stays in the run's build artifacts. The release still fails if the sdist or every wheel is over the limit.
 
 ## Versioning
 
@@ -72,6 +72,13 @@ All release-related scripts live in `scripts/`:
 
 | Secret | Used For |
 |---|---|
-| `PYPI_API_TOKEN` | Publishing to PyPI |
 | `ANTHROPIC_API_KEY` | Changelog generation and e2e tests |
 | `DEPLOY_KEY` | SSH key for direct pushes to `main` |
+
+Publishing to PyPI needs no secret: it uses PyPI trusted publishing. The
+`claude-agent-sdk` project on PyPI trusts `build-and-publish.yml`, the reusable
+workflow whose `publish` job does the upload, in the `production` environment.
+PyPI checks the workflow that runs the upload job, not the one that called it,
+so `publish.yml` and `auto-release.yml` need no entry of their own. Renaming
+`build-and-publish.yml`, or moving the upload to another workflow or out of the
+`production` environment, needs the matching change on PyPI.

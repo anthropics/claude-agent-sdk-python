@@ -58,6 +58,15 @@ async for message in query(prompt="Tell me a joke", options=options):
 
 By default, Claude has access to the full [Claude Code toolset](https://code.claude.com/docs/en/settings#tools-available-to-claude) (Read, Write, Edit, Bash, and others). `allowed_tools` is a permission allowlist: listed tools are auto-approved, and unlisted tools fall through to `permission_mode` and `can_use_tool` for a decision. It does not remove tools from Claude's toolset. To block specific tools, use `disallowed_tools`. See the [permissions guide](https://platform.claude.com/docs/en/agent-sdk/permissions) for the full evaluation order.
 
+Each `tools` list entry must be one bare tool name. Each `allowed_tools` or
+`disallowed_tools` entry must be one permission rule, such as `"Read"` or
+`"Bash(git status:*)"`, with balanced parentheses. Spaces and commas are allowed
+inside a rule's parentheses, not between rules in the same entry. Empty entries,
+control characters, and byte-order marks are rejected when connecting.
+Use `allowed_tools=["Read", "Write"]`, not `allowed_tools=["Read,Write"]` or
+`allowed_tools=["Read Write"]`; invalid entries raise `ValueError` (or `TypeError`
+for non-string entries). Tool names are not checked against a fixed registry.
+
 ```python
 options = ClaudeAgentOptions(
     allowed_tools=["Read", "Write", "Bash"],  # auto-approve these tools

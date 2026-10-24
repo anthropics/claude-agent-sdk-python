@@ -2335,6 +2335,10 @@ class ClaudeAgentOptions:
 
     To restrict which tools the model may call without being prompted, use
     ``allowed_tools`` instead.
+
+    Each list entry must be a non-empty bare name: no commas, whitespace,
+    parentheses, control characters, or byte-order marks. Invalid entries
+    raise ``ValueError`` when connecting; non-string entries raise ``TypeError``.
     """
 
     allowed_tools: list[str] = field(default_factory=list)
@@ -2342,6 +2346,12 @@ class ClaudeAgentOptions:
 
     These tools execute automatically without asking the user for approval.
     To restrict which tools are available at all, use ``tools``.
+
+    Each entry must be one non-empty permission rule, such as ``"Read"`` or
+    ``"Bash(git status:*)"``. Parentheses must be balanced; commas and whitespace
+    are allowed only inside them. Control characters and byte-order marks are
+    rejected. Invalid entries raise ``ValueError`` when connecting; non-string
+    entries raise ``TypeError``. Use ``["Read", "Write"]``, not ``["Read,Write"]``.
 
     Passing ``"Skill"`` here is deprecated. Use the :attr:`skills` option
     instead, which configures everything needed (including allowing the
@@ -2420,6 +2430,9 @@ class ClaudeAgentOptions:
 
     These tools are removed from the model's context and cannot be used, even
     if they would otherwise be allowed.
+
+    Entries follow the same single-rule syntax and connection-time validation
+    as ``allowed_tools``.
     """
 
     model: str | None = None

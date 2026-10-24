@@ -5,6 +5,7 @@ from claude_agent_sdk import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    MessageParseError,
     ProcessError,
     ResultError,
 )
@@ -110,3 +111,13 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_message_parse_error_is_public(self):
+        """MessageParseError escapes query() and receive_messages(), so callers
+        must be able to catch it without importing a private module."""
+        import claude_agent_sdk
+
+        assert "MessageParseError" in claude_agent_sdk.__all__
+        error = MessageParseError("Unknown message type", {"type": "bogus"})
+        assert isinstance(error, ClaudeSDKError)
+        assert error.data == {"type": "bogus"}

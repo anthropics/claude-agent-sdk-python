@@ -1508,7 +1508,11 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
         current = by_uuid.get(parent) if parent else None
 
     chain.reverse()
-    return chain
+    # The same CLI writes subagent transcripts, so a turn that ran tools in
+    # parallel forks them exactly like a main-session turn: the walk keeps
+    # one branch and drops the sibling results. Recover them the same way
+    # the main-session chain builder does.
+    return _recover_orphaned_parallel_tool_results(by_uuid, chain, seen)
 
 
 def list_subagents(

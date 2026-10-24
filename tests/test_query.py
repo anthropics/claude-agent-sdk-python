@@ -2660,3 +2660,170 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestControlChannelWriteFailures:
+    """A failed transport write must not corrupt Query's control state.
+
+    Both directions are covered. An outgoing request that is never written
+    must not leave a pending slot behind, and an incoming request whose
+    response cannot be delivered must not raise out of its detached task.
+    """
+
+    @staticmethod
+    def _dead_transport():
+        """A transport whose write() fails the way a dead CLI subprocess does."""
+        transport = AsyncMock()
+        transport.is_ready = Mock(return_value=True)
+        transport.write = AsyncMock(
+            side_effect=CLIConnectionError(
+                "Cannot write to terminated process (exit code: 1)"
+            )
+        )
+        return transport
+
+    def test_failed_request_write_leaves_no_pending_entry(self):
+        """A control request that could not be written registers no waiter."""
+
+        async def _test():
+            q = Query(transport=self._dead_transport(), is_streaming_mode=True)
+
+            with pytest.raises(CLIConnectionError):
+                await q.interrupt()
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+
+        anyio.run(_test)
+
+    def test_response_racing_a_failed_write_leaves_no_pending_result(self):
+        """The CLI answers before the write error reaches the cleanup.
+
+        The request bytes reached the CLI, its response came back and the
+        real read loop stored the result and set the event, and only then did
+        the write raise. The cleanup must drop the stored result as well as
+        the waiter slot, or it stays in pending_control_results for the life
+        of the Query.
+        """
+
+        async def _test():
+            responses: list[dict[str, Any]] = []
+
+            async def read_messages():
+                for message in responses:
+                    yield message
+
+            transport = AsyncMock()
+            transport.is_ready = Mock(return_value=True)
+            transport.read_messages = read_messages
+            q = Query(transport=transport, is_streaming_mode=True)
+
+            async def write_then_fail(data: str) -> None:
+                request_id = json.loads(data)["request_id"]
+                responses.append(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": request_id,
+                            "response": {},
+                        },
+                    }
+                )
+                # Let the read loop route the response before the write fails.
+                await q._read_messages()
+                assert request_id in q.pending_control_results
+                assert q.pending_control_responses[request_id].is_set()
+                raise CLIConnectionError("stdin closed after the write")
+
+            transport.write = AsyncMock(side_effect=write_then_fail)
+
+            with pytest.raises(CLIConnectionError):
+                await q.interrupt()
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+
+        anyio.run(_test)
+
+    def test_success_response_write_failure_does_not_raise(self):
+        """The callback ran; only its reply could not be delivered."""
+
+        async def _test():
+            seen = []
+
+            async def hook(input_data, tool_use_id, context):
+                seen.append(input_data)
+                return {}
+
+            q = Query(transport=self._dead_transport(), is_streaming_mode=True)
+            q.hook_callbacks["hook_0"] = hook
+
+            await q._handle_control_request(
+                {
+                    "type": "control_request",
+                    "request_id": "req_1",
+                    "request": {
+                        "subtype": "hook_callback",
+                        "callback_id": "hook_0",
+                        "input": {"hook_event_name": "PreToolUse"},
+                        "tool_use_id": None,
+                    },
+                }
+            )
+
+            assert seen == [{"hook_event_name": "PreToolUse"}]
+
+        anyio.run(_test)
+
+    def test_error_response_write_failure_does_not_raise(self):
+        """The handler failed and the error reply could not be delivered."""
+
+        async def _test():
+            q = Query(transport=self._dead_transport(), is_streaming_mode=True)
+
+            await q._handle_control_request(
+                {
+                    "type": "control_request",
+                    "request_id": "req_1",
+                    "request": {
+                        "subtype": "hook_callback",
+                        "callback_id": "no-such-callback",
+                        "input": {},
+                        "tool_use_id": None,
+                    },
+                }
+            )
+
+        anyio.run(_test)
+
+    def test_cancelled_request_still_skips_the_response(self):
+        """Cancellation keeps propagating; it is not swallowed as a write error."""
+
+        async def _test():
+            transport = AsyncMock()
+            transport.is_ready = Mock(return_value=True)
+
+            async def hook(input_data, tool_use_id, context):
+                raise anyio.get_cancelled_exc_class()()
+
+            q = Query(transport=transport, is_streaming_mode=True)
+            q.hook_callbacks["hook_0"] = hook
+
+            with pytest.raises(anyio.get_cancelled_exc_class()):
+                await q._handle_control_request(
+                    {
+                        "type": "control_request",
+                        "request_id": "req_1",
+                        "request": {
+                            "subtype": "hook_callback",
+                            "callback_id": "hook_0",
+                            "input": {},
+                            "tool_use_id": None,
+                        },
+                    }
+                )
+
+            transport.write.assert_not_awaited()
+
+        anyio.run(_test)

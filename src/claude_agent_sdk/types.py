@@ -1897,6 +1897,11 @@ class SessionStoreEntry(TypedDict, total=False):
     structural supertype — adapters should treat entries as pass-through
     blobs; round-tripping ``json.dumps``/``json.loads`` is the only
     required invariant.
+
+    The SDK also appends ``sdk_plan_snapshot`` metadata to preserve referenced
+    plan files for store-backed resume. These entries have no ``uuid`` and
+    must be retained in append order. They are removed from the materialized
+    transcript before it is passed to the subprocess.
     """
 
     type: Required[str]

@@ -34,6 +34,7 @@ from typing import Any
 import anyio
 
 from ..types import ClaudeAgentOptions, SessionKey, SessionStore, SessionStoreFlushMode
+from .session_plans import restore_plan_files
 from .session_store_validation import _store_implements
 from .sessions import (
     _agent_metadata_sidecar_path,
@@ -168,7 +169,9 @@ async def materialize_resume_session(
     try:
         project_dir = tmp_base / "projects" / project_key
         project_dir.mkdir(parents=True, exist_ok=True)
-        _write_jsonl(project_dir / f"{session_id}.jsonl", entries)
+        _write_jsonl(
+            project_dir / f"{session_id}.jsonl", restore_plan_files(entries, tmp_base)
+        )
 
         # The subprocess will run with CLAUDE_CONFIG_DIR=tmp_base. Copy auth
         # config from the caller's effective config locations so it can
@@ -570,7 +573,9 @@ async def _materialize_subkeys(
 
         # agent_metadata entries describe the .meta.json sidecar (last one
         # wins); everything else is a transcript line.
-        metadata, transcript = _split_agent_metadata(sub_entries)
+        metadata, transcript = _split_agent_metadata(
+            restore_plan_files(sub_entries, tmp_base)
+        )
 
         sub_file = (session_dir / subpath).with_name(
             (session_dir / subpath).name + ".jsonl"

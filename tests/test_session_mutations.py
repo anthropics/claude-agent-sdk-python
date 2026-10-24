@@ -815,3 +815,104 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    def test_fork_remaps_compact_metadata_references(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """compactMetadata preserved message and segment UUIDs are remapped in fork."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        kept_uuid = str(uuid.uuid4())
+        boundary_uuid = str(uuid.uuid4())
+        anchor_uuid = str(uuid.uuid4())
+
+        rows = [
+            {
+                "type": "user",
+                "uuid": kept_uuid,
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "Keep this"},
+            },
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": boundary_uuid,
+                "parentUuid": None,
+                "logicalParentUuid": kept_uuid,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:01:00Z",
+                "compactMetadata": {
+                    "trigger": "auto",
+                    "preTokens": 10000,
+                    "preservedSegment": {
+                        "headUuid": kept_uuid,
+                        "tailUuid": kept_uuid,
+                        "anchorUuid": anchor_uuid,
+                    },
+                    "preservedMessages": {
+                        "anchorUuid": anchor_uuid,
+                        "uuids": [kept_uuid],
+                        "allUuids": [kept_uuid],
+                    },
+                },
+            },
+            {
+                "type": "user",
+                "uuid": anchor_uuid,
+                "parentUuid": boundary_uuid,
+                "sessionId": sid,
+                "isCompactSummary": True,
+                "timestamp": "2026-03-01T00:02:00Z",
+                "message": {"role": "user", "content": "Conversation summary"},
+            },
+        ]
+
+        source_path = project_dir / f"{sid}.jsonl"
+        source_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        original_content = source_path.read_text()
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+
+        # Assert source transcript remained completely unchanged
+        assert source_path.read_text() == original_content
+
+        forked_entries = [
+            json.loads(line) for line in fork_path.read_text().strip().split("\n")
+        ]
+        transcript_entries = [
+            e
+            for e in forked_entries
+            if e.get("type") in ("user", "system", "assistant")
+        ]
+        assert len(transcript_entries) == 3
+        forked_ids = {e["uuid"] for e in transcript_entries if "uuid" in e}
+        assert len(forked_ids) == 3
+        assert kept_uuid not in forked_ids
+        assert boundary_uuid not in forked_ids
+        assert anchor_uuid not in forked_ids
+
+        boundary_entry = next(
+            e for e in forked_entries if e.get("subtype") == "compact_boundary"
+        )
+        meta = boundary_entry["compactMetadata"]
+        pres_msgs = meta["preservedMessages"]
+        pres_seg = meta["preservedSegment"]
+
+        # All compaction references must point to remapped IDs in the forked session
+        assert pres_msgs["anchorUuid"] in forked_ids
+        assert pres_msgs["anchorUuid"] != anchor_uuid
+        assert all(uid in forked_ids for uid in pres_msgs["uuids"])
+        assert all(uid != kept_uuid for uid in pres_msgs["uuids"])
+        assert all(uid in forked_ids for uid in pres_msgs["allUuids"])
+
+        assert pres_seg["headUuid"] in forked_ids
+        assert pres_seg["headUuid"] != kept_uuid
+        assert pres_seg["tailUuid"] in forked_ids
+        assert pres_seg["anchorUuid"] == pres_msgs["anchorUuid"]

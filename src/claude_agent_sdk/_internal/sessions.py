@@ -964,7 +964,13 @@ def _build_conversation_chain(
 
     terminals = [e for e in entries if e["uuid"] not in parent_uuids]
 
-    # From each terminal, walk back to find the nearest user/assistant leaf
+    # From each terminal, walk back to find the nearest user/assistant leaf.
+    # A meta entry found on the way (e.g. trailing bookkeeping chained onto
+    # the real tail) is not the conversation: keep walking so the nearest
+    # non-meta message can still become the leaf. Without this, a parallel
+    # fork whose tail is only reachable through a trailing meta entry would
+    # lose that tail — the meta entry gets excluded from main_leaves below
+    # and an off-branch tool result wins instead.
     leaves: list[_TranscriptEntry] = []
     for terminal in terminals:
         walk_cur: _TranscriptEntry | None = terminal
@@ -975,8 +981,9 @@ def _build_conversation_chain(
                 break
             walk_seen.add(uid)
             if walk_cur.get("type") in ("user", "assistant"):
-                leaves.append(walk_cur)
-                break
+                if not walk_cur.get("isMeta"):
+                    leaves.append(walk_cur)
+                    break
             parent = walk_cur.get("parentUuid")
             walk_cur = by_uuid.get(parent) if parent else None
 

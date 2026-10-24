@@ -440,6 +440,15 @@ def _build_fork_lines(
                 "messageUuid": original["uuid"],
             },
         }
+        metadata = original.get("compactMetadata")
+        if (
+            original.get("type") == "system"
+            and original.get("subtype") == "compact_boundary"
+            and isinstance(metadata, dict)
+        ):
+            forked["compactMetadata"] = _remap_compaction_metadata(
+                metadata, uuid_mapping
+            )
         # Remove fields that would leak state from the source session
         for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
             forked.pop(key, None)
@@ -482,6 +491,41 @@ def _build_fork_lines(
     )
 
     return forked_session_id, lines
+
+
+def _remap_compaction_metadata(
+    metadata: dict[str, Any], uuid_mapping: dict[str, str]
+) -> dict[str, Any]:
+    """Remap references to copied messages without mutating the source metadata.
+
+    References outside the selected transcript are left unchanged, including
+    anchors excluded by ``up_to_message_id``.
+    """
+    remapped = dict(metadata)
+    for name, fields in (
+        ("preservedSegment", ("headUuid", "tailUuid", "anchorUuid")),
+        ("preservedMessages", ("anchorUuid",)),
+    ):
+        preserved = metadata.get(name)
+        if not isinstance(preserved, dict):
+            continue
+        preserved = dict(preserved)
+        for field in fields:
+            value = preserved.get(field)
+            if isinstance(value, str):
+                preserved[field] = uuid_mapping.get(value, value)
+        if name == "preservedMessages":
+            for field in ("uuids", "allUuids"):
+                values = preserved.get(field)
+                if isinstance(values, list):
+                    preserved[field] = [
+                        uuid_mapping.get(value, value)
+                        if isinstance(value, str)
+                        else value
+                        for value in values
+                    ]
+        remapped[name] = preserved
+    return remapped
 
 
 # ---------------------------------------------------------------------------

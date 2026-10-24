@@ -1348,6 +1348,7 @@ def _entries_to_session_messages(
     Shared by the filesystem and SessionStore-backed paths.
     """
     chain = _build_conversation_chain(entries)
+    chain = _surface_queued_commands(entries, chain)
     visible = [e for e in chain if _is_visible_message(e)]
     messages = [_to_session_message(e) for e in visible]
 
@@ -1357,6 +1358,82 @@ def _entries_to_session_messages(
     if offset > 0:
         return messages[offset:]
     return messages
+
+
+def _queued_command_to_user(
+    entry: _TranscriptEntry, user_uuids: set[str]
+) -> _TranscriptEntry | None:
+    """Converts a ``queued_command`` attachment into a synthetic user entry.
+
+    The CLI records a message the user queued while the agent was working as
+    an ``attachment`` entry (``attachment.type == "queued_command"``) with the
+    prompt in ``attachment.prompt`` and the command's own id in
+    ``attachment.source_uuid``. The TypeScript SDK's ``getSessionMessages``
+    surfaces it as a user message; without this conversion the reader keeps
+    only the attachment, which is not a visible type, and the user's message
+    silently disappears from the history.
+
+    Returns ``None`` when the entry is not a convertible queued command:
+    meta/sidechain/team attachments, commands forwarded with an intent, and
+    prompts that are not text content are skipped. A command already rotated
+    into the conversation as a real user entry (its ``source_uuid`` reused)
+    is skipped as well so it is not returned twice.
+    """
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict):
+        return None
+    if attachment.get("type") != "queued_command":
+        return None
+    if entry.get("isMeta") or entry.get("isSidechain") or entry.get("teamName"):
+        return None
+    if attachment.get("forwardedIntent") is not None:
+        return None
+    prompt = attachment.get("prompt")
+    if not isinstance(prompt, (str, list)):
+        return None
+    source_uuid = attachment.get("source_uuid")
+    synthetic_uuid = (
+        source_uuid if isinstance(source_uuid, str) and source_uuid else entry["uuid"]
+    )
+    if synthetic_uuid in user_uuids:
+        return None
+    synthetic = dict(entry)
+    synthetic["type"] = "user"
+    synthetic["uuid"] = synthetic_uuid
+    synthetic["message"] = {"role": "user", "content": prompt}
+    return synthetic
+
+
+def _surface_queued_commands(
+    entries: list[_TranscriptEntry], chain: list[_TranscriptEntry]
+) -> list[_TranscriptEntry]:
+    """Returns the chain with queued user commands surfaced as user entries.
+
+    Queued commands that the conversation continued past sit on the chain
+    (the absorbing reply points at the attachment via ``parentUuid``); those
+    are converted in place. Queued commands that were never absorbed hang
+    off a chain entry with nothing after them; those are appended at the end
+    in timestamp order, mirroring the TypeScript SDK's trailing treatment.
+    """
+    user_uuids = {e["uuid"] for e in entries if e.get("type") == "user"}
+    chain_uuids = {e["uuid"] for e in chain}
+    surfaced: list[_TranscriptEntry] = []
+    trailing: list[_TranscriptEntry] = []
+    for entry in chain:
+        synthetic = _queued_command_to_user(entry, user_uuids)
+        surfaced.append(synthetic if synthetic is not None else entry)
+    for entry in entries:
+        if entry["uuid"] in chain_uuids:
+            continue
+        if entry.get("parentUuid") not in chain_uuids:
+            continue
+        synthetic = _queued_command_to_user(entry, user_uuids)
+        if synthetic is not None:
+            trailing.append(synthetic)
+    if trailing:
+        trailing.sort(key=_timestamp_sort_key)
+        surfaced.extend(trailing)
+    return surfaced
 
 
 # ---------------------------------------------------------------------------

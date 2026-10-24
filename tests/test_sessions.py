@@ -239,6 +239,28 @@ class TestHelpers:
         )
         assert _extract_first_prompt_from_head(head) == "/help"
 
+    @pytest.mark.parametrize(
+        ("text", "skipped"),
+        [
+            # Injected context: skipped, as by the TypeScript SDK's rule.
+            ("<system-reminder>app.py is open</system-reminder>", True),
+            ("<task-notification>done</task-notification>", True),
+            ("<ide_opened_file>a.py</ide_opened_file> fix this", True),
+            ("[Request interrupted by user for tool use]", True),
+            ("<pasted_content_x>y", True),
+            # Not a tag, or the user's own pasted text: kept.
+            ('<pasted_content id="ab12">\nnotes', False),
+            ("<= 5?", False),
+            ("<Div>x", False),
+            ("<goal", False),
+        ],
+    )
+    def test_extract_first_prompt_skips_injected_tags(self, text, skipped):
+        blocks = [{"type": "text", "text": text}, {"type": "text", "text": "2+2?"}]
+        head = json.dumps({"type": "user", "message": {"content": blocks}}) + "\n"
+        expected = "2+2?" if skipped else text.replace("\n", " ")
+        assert _extract_first_prompt_from_head(head) == expected
+
     def test_extract_first_prompt_empty(self):
         assert _extract_first_prompt_from_head("") == ""
         assert _extract_first_prompt_from_head('{"type":"assistant"}\n') == ""

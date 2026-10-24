@@ -815,3 +815,99 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    def test_fork_remaps_attachment_uuid_references(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """nameOnlyAnnouncements and queued_command.source_uuid follow the
+        uuid remapping instead of pointing at source-session uuids."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        u1, a1, delta, record, queued = (str(uuid.uuid4()) for _ in range(5))
+        entries = [
+            {
+                "type": "user",
+                "uuid": u1,
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "Hello"},
+            },
+            {
+                "type": "assistant",
+                "uuid": a1,
+                "parentUuid": u1,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hi"}],
+                },
+            },
+            {
+                "type": "attachment",
+                "uuid": delta,
+                "parentUuid": a1,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:02Z",
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "surfacedNames": ["mcp__x__y"],
+                },
+            },
+            {
+                "type": "attachment",
+                "uuid": record,
+                "parentUuid": delta,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:03Z",
+                "attachment": {
+                    "type": "deferred_tools_record",
+                    "entries": [],
+                    "nameOnlyAnnouncements": [delta, str(uuid.uuid4())],
+                },
+            },
+            {
+                "type": "attachment",
+                "uuid": queued,
+                "parentUuid": record,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:04Z",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": "next",
+                    "source_uuid": u1,
+                },
+            },
+        ]
+        source_path = project_dir / f"{sid}.jsonl"
+        source_text = "".join(json.dumps(e) + "\n" for e in entries)
+        source_path.write_text(source_text)
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+        forked = [
+            json.loads(line)
+            for line in fork_path.read_text().strip().split("\n")
+            if line
+        ]
+        by_source = {
+            e["forkedFrom"]["messageUuid"]: e for e in forked if "forkedFrom" in e
+        }
+        fork_ids = {e["uuid"] for e in forked}
+
+        rec = by_source[record]["attachment"]
+        # The delta's new uuid is kept; the id that is not in the fork is dropped.
+        assert rec["nameOnlyAnnouncements"] == [by_source[delta]["uuid"]]
+        assert set(rec["nameOnlyAnnouncements"]) <= fork_ids
+
+        q = by_source[queued]["attachment"]
+        assert q["source_uuid"] == by_source[u1]["uuid"]
+        assert q["prompt"] == "next"
+
+        # The source transcript is untouched.
+        assert source_path.read_text() == source_text

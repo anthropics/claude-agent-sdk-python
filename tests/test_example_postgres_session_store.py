@@ -179,6 +179,57 @@ class TestJsonbOrdering:
         loaded = await store.load({"project_key": "p", "session_id": "s"})
         assert loaded == [entry]
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("subpath", [None, "subagents/agent-1"])
+    async def test_custom_jsonb_codec_writes_are_readable_without_codec(
+        self,
+        pool: asyncpg.Pool,
+        live_table: str,
+        store: SessionStore,
+        subpath: str | None,
+    ) -> None:
+        async def init_connection(conn: asyncpg.Connection) -> None:
+            await conn.set_type_codec(
+                "jsonb",
+                schema="pg_catalog",
+                encoder=json.dumps,
+                decoder=json.loads,
+            )
+
+        codec_pool = await asyncpg.create_pool(
+            POSTGRES_URL, min_size=1, max_size=1, init=init_connection
+        )
+        try:
+            writer = PostgresSessionStore(pool=codec_pool, table=live_table)
+            key = {"project_key": "p", "session_id": "s"}
+            if subpath is not None:
+                key["subpath"] = subpath
+            entries = [
+                {
+                    "type": "user",
+                    "message": {"content": "你好 🌍", "extra": [None, True, 2]},
+                },
+                {"type": "assistant", "message": {"content": "response"}},
+            ]
+            await writer.append(key, entries[:1])
+            await writer.append(key, entries[1:])
+
+            # A new process may use the default JSONB codec. Its reader must
+            # receive objects, not strings requiring a second JSON decode.
+            assert await store.load(key) == entries
+            assert await writer.load(key) == entries
+            rows = await pool.fetch(
+                f"SELECT jsonb_typeof(entry) AS kind FROM {live_table} ORDER BY seq"
+            )
+            assert [row["kind"] for row in rows] == ["object", "object"]
+
+            # Default-codec writes remain readable through the custom decoder.
+            tail = {"type": "custom-title", "customTitle": "标题"}
+            await store.append(key, [tail])
+            assert await writer.load(key) == [*entries, tail]
+        finally:
+            await codec_pool.close()
+
 
 # ---------------------------------------------------------------------------
 # Full round-trip: TranscriptMirrorBatcher → Postgres → materialize_resume_session

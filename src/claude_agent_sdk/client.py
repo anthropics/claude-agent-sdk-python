@@ -484,6 +484,7 @@ class ClaudeSDKClient:
             - 'error': Error message (when status is 'failed')
             - 'config': Server configuration (stdio/sse/http/sdk/claudeai-proxy)
             - 'scope': Configuration scope (e.g., project, user, local)
+            - 'source': Server source (e.g., 'sdk' for SDK-registered servers)
             - 'tools': List of tools provided by the server (when connected)
 
         Example:

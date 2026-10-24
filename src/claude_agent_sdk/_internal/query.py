@@ -6,9 +6,10 @@ import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import anyio
+import sniffio
 
 from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
@@ -141,6 +142,31 @@ def stamp_user_message(
     if not verbatim_prompts:
         return message
     return {**message, "client_composed": True}
+
+
+_CallbackResult = TypeVar("_CallbackResult")
+
+
+async def _await_control_callback(
+    callback: Awaitable[_CallbackResult], subtype: str
+) -> _CallbackResult:
+    """Distinguish callback cancellation from cancellation of its handler."""
+    if sniffio.current_async_library() != "asyncio":
+        return await callback
+
+    import asyncio
+
+    callback_task = asyncio.ensure_future(callback)
+    try:
+        await asyncio.wait({callback_task})
+    except asyncio.CancelledError:
+        callback_task.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.gather(callback_task, return_exceptions=True)
+        raise
+    if callback_task.cancelled():
+        raise RuntimeError(f"{subtype} handler was cancelled")
+    return callback_task.result()
 
 
 class Query:
@@ -607,10 +633,13 @@ class Query:
                     description=permission_request.get("description"),
                 )
 
-                response = await self.can_use_tool(
-                    permission_request["tool_name"],
-                    permission_request["input"],
-                    context,
+                response = await _await_control_callback(
+                    self.can_use_tool(
+                        permission_request["tool_name"],
+                        permission_request["input"],
+                        context,
+                    ),
+                    subtype,
                 )
 
                 # Convert PermissionResult to expected dict format
@@ -645,10 +674,13 @@ class Query:
                 if not callback:
                     raise Exception(f"No hook callback found for ID: {callback_id}")
 
-                hook_output = await callback(
-                    request_data.get("input"),
-                    request_data.get("tool_use_id"),
-                    {"signal": None},  # TODO: Add abort signal support
+                hook_output = await _await_control_callback(
+                    callback(
+                        request_data.get("input"),
+                        request_data.get("tool_use_id"),
+                        {"signal": None},
+                    ),
+                    subtype,
                 )
                 # Convert Python-safe field names (async_, continue_) to CLI-expected names (async, continue)
                 response_data = _convert_hook_output_for_cli(hook_output)
@@ -688,20 +720,20 @@ class Query:
             await self.transport.write(json.dumps(success_response) + "\n")
 
         except anyio.get_cancelled_exc_class():
-            # Request was cancelled via control_cancel_request; the CLI has
-            # already abandoned this request, so don't write a response.
             raise
         except Exception as e:
-            # Send error response
-            error_response: SDKControlResponse = {
-                "type": "control_response",
-                "response": {
-                    "subtype": "error",
-                    "request_id": request_id,
-                    "error": str(e),
-                },
-            }
-            await self.transport.write(json.dumps(error_response) + "\n")
+            await self._write_error_response(request_id, str(e))
+
+    async def _write_error_response(self, request_id: str, error: str) -> None:
+        error_response: SDKControlResponse = {
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request_id,
+                "error": error,
+            },
+        }
+        await self.transport.write(json.dumps(error_response) + "\n")
 
     async def _send_control_request(
         self, request: dict[str, Any], timeout: float = 60.0

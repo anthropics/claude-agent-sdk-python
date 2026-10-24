@@ -1094,6 +1094,10 @@ class SdkPluginConfig(TypedDict):
 
     type: Literal["local"]
     path: str
+    skipMcpDiscovery: NotRequired[bool]
+    """Load the plugin without discovering the MCP servers it declares
+    (passed as ``--plugin-dir-no-mcp``). Set it when the host already provides
+    those MCP connections and would otherwise see them twice."""
 
 
 # Sandbox configuration types

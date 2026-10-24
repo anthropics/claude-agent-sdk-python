@@ -18,9 +18,11 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ElicitationResult,
     PermissionResultAllow,
     ResultMessage,
     SystemMessage,
+    UserDialogResult,
     create_sdk_mcp_server,
     query,
     tool,
@@ -28,6 +30,14 @@ from claude_agent_sdk import (
 from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
 from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
 from claude_agent_sdk.types import HookMatcher
+
+
+async def _accept_elicitation(request, context):
+    return ElicitationResult(action="accept")
+
+
+async def _cancel_dialog(request, context):
+    return UserDialogResult(behavior="cancelled")
 
 
 def _capture_initialize_request(**query_kwargs):
@@ -135,6 +145,76 @@ def test_forward_subagent_text_option_reaches_initialize(enabled):
 
         assert captured["subtype"] == "initialize"
         assert captured.get("forwardSubagentText") == (True if enabled else None)
+
+    anyio.run(_test)
+
+
+def test_initialize_sends_dialog_declarations():
+    """supportedDialogKinds and perTaskStopAffordance are initialize capabilities."""
+    sent = _capture_initialize_request(
+        supported_dialog_kinds=["refusal_fallback_prompt"],
+        per_task_stop_affordance=True,
+    )
+    assert sent["supportedDialogKinds"] == ["refusal_fallback_prompt"]
+    assert sent["perTaskStopAffordance"] is True
+
+    # An empty list is sent as-is and declares no kinds.
+    sent_empty = _capture_initialize_request(supported_dialog_kinds=[])
+    assert sent_empty["supportedDialogKinds"] == []
+
+
+def test_initialize_omits_dialog_declarations_by_default():
+    sent = _capture_initialize_request()
+    assert "supportedDialogKinds" not in sent
+    assert "perTaskStopAffordance" not in sent
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_kinds", "expected_stop"),
+    [
+        pytest.param(
+            ClaudeAgentOptions(
+                on_user_dialog=_cancel_dialog,
+                supported_dialog_kinds=["refusal_fallback_prompt"],
+                per_task_stop_affordance=True,
+            ),
+            ["refusal_fallback_prompt"],
+            True,
+            id="declared",
+        ),
+        # An empty list needs no handler.
+        pytest.param(
+            ClaudeAgentOptions(supported_dialog_kinds=[]), [], None, id="empty"
+        ),
+    ],
+)
+def test_dialog_declarations_reach_initialize_via_query(
+    options, expected_kinds, expected_stop
+):
+    """supported_dialog_kinds and per_task_stop_affordance are plumbed
+    through query()."""
+
+    async def _test():
+        mock_transport = _make_mock_transport(messages=_ASSISTANT_AND_RESULT)
+        captured: dict = {}
+
+        async def fake_send(self, request, timeout=60.0):
+            if request.get("subtype") == "initialize":
+                captured.update(request)
+            return {}
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as mock_cls,
+            patch.object(Query, "_send_control_request", fake_send),
+        ):
+            mock_cls.return_value = mock_transport
+            async for _ in query(prompt="Hello", options=options):
+                pass
+
+        assert captured["supportedDialogKinds"] == expected_kinds
+        assert captured.get("perTaskStopAffordance") == expected_stop
 
     anyio.run(_test)
 
@@ -1578,20 +1658,23 @@ class TestNoTimeoutForHooksAndMcpServers:
         anyio.run(_test)
 
 
-def _make_permission_gated_transport():
-    """Mock transport that enforces the real CLI contract for can_use_tool.
+def _make_control_request_gated_transport(
+    control_request: dict[str, Any] | None = None,
+):
+    """Mock transport that enforces the real CLI contract for a blocking
+    control request (``can_use_tool`` unless ``control_request`` is given).
 
-    - The ``can_use_tool`` control_request is only emitted after the SDK has
-      written the user message.
+    - The control_request is only emitted after the SDK has written the user
+      message.
     - The assistant/result frames are only emitted after the SDK has written
-      the permission control_response.
+      the control_response.
     - Any write after ``end_input()`` raises, like a closed pipe would.
 
     Returns ``(transport, state)`` where ``state`` records what happened.
     """
     state: dict = {"writes": [], "ended": False, "callback_calls": []}
     user_message_written = anyio.Event()
-    permission_response_written = anyio.Event()
+    control_response_written = anyio.Event()
 
     transport = AsyncMock()
     transport.connect = AsyncMock()
@@ -1606,7 +1689,7 @@ def _make_permission_gated_transport():
         if payload.get("type") == "user":
             user_message_written.set()
         elif payload.get("type") == "control_response":
-            permission_response_written.set()
+            control_response_written.set()
 
     async def end_input():
         state["ended"] = True
@@ -1616,7 +1699,7 @@ def _make_permission_gated_transport():
             await user_message_written.wait()
         if not user_message_written.is_set():
             return
-        yield {
+        yield control_request or {
             "type": "control_request",
             "request_id": "perm_1",
             "request": {
@@ -1626,10 +1709,10 @@ def _make_permission_gated_transport():
                 "tool_use_id": "toolu_1",
             },
         }
-        # The CLI cannot make progress until the permission verdict arrives.
+        # The CLI cannot make progress until the SDK's answer arrives.
         with anyio.move_on_after(5):
-            await permission_response_written.wait()
-        if not permission_response_written.is_set():
+            await control_response_written.wait()
+        if not control_response_written.is_set():
             return
         for msg in _ASSISTANT_AND_RESULT:
             yield msg
@@ -1658,7 +1741,7 @@ class TestCanUseToolKeepsStdinOpen:
 
     def _run_query(self, prompt_factory):
         async def _test():
-            transport, state = _make_permission_gated_transport()
+            transport, state = _make_control_request_gated_transport()
             callback = await self._allow_all(state)
 
             with (
@@ -1772,6 +1855,76 @@ class TestCanUseToolKeepsStdinOpen:
             assert ended.is_set()
 
         anyio.run(_test)
+
+
+class TestElicitationAndDialogCallbacksKeepStdinOpen:
+    """``on_elicitation`` and ``on_user_dialog`` are answered over the control
+    protocol, so like ``can_use_tool`` each must keep stdin open until the run
+    ends."""
+
+    @pytest.mark.parametrize(
+        ("request_body", "option", "expected"),
+        [
+            pytest.param(
+                {
+                    "subtype": "elicitation",
+                    "mcp_server_name": "auth-server",
+                    "message": "Sign in",
+                    "mode": "url",
+                    "url": "https://example.com/login",
+                },
+                {"on_elicitation": _accept_elicitation},
+                {"action": "accept"},
+                id="elicitation",
+            ),
+            pytest.param(
+                {
+                    "subtype": "request_user_dialog",
+                    "dialog_kind": "refusal_fallback_prompt",
+                    "payload": {},
+                },
+                {"on_user_dialog": _cancel_dialog},
+                {"behavior": "cancelled"},
+                id="user_dialog",
+            ),
+        ],
+    )
+    def test_string_prompt_with_only_the_callback_waits_for_result(
+        self, request_body, option, expected
+    ):
+        async def _test():
+            transport, state = _make_control_request_gated_transport(
+                {
+                    "type": "control_request",
+                    "request_id": "req_1",
+                    "request": request_body,
+                }
+            )
+            options = ClaudeAgentOptions(**option)
+
+            with (
+                patch(
+                    "claude_agent_sdk._internal.client.SubprocessCLITransport"
+                ) as mock_cls,
+                patch(
+                    "claude_agent_sdk._internal.query.Query.initialize",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                mock_cls.return_value = transport
+                messages = [msg async for msg in query(prompt="go", options=options)]
+            return messages, state
+
+        messages, state = anyio.run(_test)
+
+        responses = [
+            json.loads(w) for w in state["writes"] if '"control_response"' in w
+        ]
+        assert len(responses) == 1
+        assert responses[0]["response"]["subtype"] == "success"
+        assert responses[0]["response"]["response"] == expected
+        assert [type(m) for m in messages] == [AssistantMessage, ResultMessage]
+        assert state["ended"] is True
 
 
 class TestQueryCrossTaskCleanup:

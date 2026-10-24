@@ -15,8 +15,10 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     CLIConnectionError,
+    ElicitationResult,
     ResultMessage,
     TextBlock,
+    UserDialogResult,
     UserMessage,
     query,
 )
@@ -251,6 +253,90 @@ class TestClaudeSDKClientStreaming:
 
         default = await initialize_request_for(ClaudeAgentOptions())
         assert "forwardSubagentText" not in default
+
+    @pytest.mark.anyio
+    async def test_elicitation_and_dialog_callbacks_passed_to_query(self):
+        """on_elicitation and on_user_dialog reach the client's Query."""
+
+        async def on_elicitation(request, context):
+            return ElicitationResult(action="decline")
+
+        async def on_user_dialog(request, context):
+            return UserDialogResult(behavior="cancelled")
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport_class.return_value = create_mock_transport()
+            async with ClaudeSDKClient(
+                options=ClaudeAgentOptions(
+                    on_elicitation=on_elicitation, on_user_dialog=on_user_dialog
+                )
+            ) as client:
+                assert client._query is not None
+                assert client._query.on_elicitation is on_elicitation
+                assert client._query.on_user_dialog is on_user_dialog
+
+    @pytest.mark.anyio
+    async def test_dialog_declarations_sent_in_initialize(self):
+        """supported_dialog_kinds and per_task_stop_affordance are sent as
+        initialize capabilities; omitted by default."""
+
+        async def on_user_dialog(request, context):
+            return UserDialogResult(behavior="cancelled")
+
+        async def initialize_request_for(options: ClaudeAgentOptions) -> dict:
+            with patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as mock_transport_class:
+                mock_transport = create_mock_transport()
+                mock_transport_class.return_value = mock_transport
+                async with ClaudeSDKClient(options=options):
+                    pass
+            requests = [
+                json.loads(call.args[0].strip())
+                for call in mock_transport.write.call_args_list
+                if '"subtype": "initialize"' in call.args[0]
+            ]
+            assert len(requests) == 1
+            return requests[0]["request"]
+
+        enabled = await initialize_request_for(
+            ClaudeAgentOptions(
+                on_user_dialog=on_user_dialog,
+                supported_dialog_kinds=["refusal_fallback_prompt"],
+                per_task_stop_affordance=True,
+            )
+        )
+        assert enabled["supportedDialogKinds"] == ["refusal_fallback_prompt"]
+        assert enabled["perTaskStopAffordance"] is True
+
+        default = await initialize_request_for(ClaudeAgentOptions())
+        assert "supportedDialogKinds" not in default
+        assert "perTaskStopAffordance" not in default
+
+    @pytest.mark.anyio
+    async def test_dialog_kinds_without_handler_rejected(self):
+        """supported_dialog_kinds without on_user_dialog raises before the
+        CLI is started, for both ClaudeSDKClient and query()."""
+        options = ClaudeAgentOptions(supported_dialog_kinds=["refusal_fallback_prompt"])
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+            ) as client_transport,
+            patch(
+                "claude_agent_sdk._internal.client.SubprocessCLITransport"
+            ) as query_transport,
+        ):
+            with pytest.raises(ValueError, match="requires an on_user_dialog"):
+                async with ClaudeSDKClient(options=options):
+                    pass
+            with pytest.raises(ValueError, match="requires an on_user_dialog"):
+                async for _ in query(prompt="hi", options=options):
+                    pass
+            client_transport.assert_not_called()
+            query_transport.assert_not_called()
 
     @pytest.mark.anyio
     async def test_connect_with_async_iterable(self):

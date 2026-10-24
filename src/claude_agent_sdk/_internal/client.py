@@ -11,6 +11,7 @@ from ..types import (
     Message,
     _configure_can_use_tool,
     _hooks_to_internal_format,
+    _validate_user_dialog_options,
 )
 from .message_parser import parse_message
 from .query import Query, run_end_ceiling_ms, stamp_user_message
@@ -79,6 +80,7 @@ class InternalClient:
     ) -> AsyncGenerator[Message, None]:
         # Validate and configure permission settings (matching TypeScript SDK logic)
         configured_options = _configure_can_use_tool(options)
+        _validate_user_dialog_options(configured_options)
 
         if materialized is not None:
             configured_options = apply_materialized_options(
@@ -153,6 +155,10 @@ class InternalClient:
             forward_subagent_text=configured_options.forward_subagent_text,
             verbatim_prompts=configured_options.verbatim_prompts,
             run_end_ceiling_ms=run_end_ceiling_ms(configured_options.env),
+            on_elicitation=configured_options.on_elicitation,
+            on_user_dialog=configured_options.on_user_dialog,
+            supported_dialog_kinds=configured_options.supported_dialog_kinds,
+            per_task_stop_affordance=configured_options.per_task_stop_affordance,
         )
 
         if configured_options.session_store is not None:

@@ -66,6 +66,14 @@ FAKE_CLI = textwrap.dedent(
                           "time.sleep(300)",
                           pid_file, os.environ.get("FAKE_CLI_GRANDCHILD_IGNORES_TERM", "")])
 
+    # Stand-in for a SessionStart hook that leaves a daemon running in the
+    # CLI's process group.
+    daemon_pid_file = os.environ.get("FAKE_CLI_DAEMON_PID_FILE")
+    if daemon_pid_file:
+        subprocess.run(["sh", "-c",
+                        "nohup sh -c 'echo $$ > $FAKE_CLI_DAEMON_PID_FILE; "
+                        "exec sleep 300' >/dev/null 2>&1 &"])
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -244,9 +252,9 @@ async def _assert_close_stops_grandchild(tmp_path: Path, env: dict[str, str]) ->
 
 @posix_only
 async def test_close_terminates_grandchildren_of_the_cli(tmp_path: Path) -> None:
-    """MCP servers are children of the CLI, not of the SDK. close() must take
-    them down with the CLI instead of leaving them running (#291)."""
-    await _assert_close_stops_grandchild(tmp_path, {})
+    """MCP servers are children of the CLI, not of the SDK. When the CLI has to
+    be signalled, close() must take them down with it (#291)."""
+    await _assert_close_stops_grandchild(tmp_path, {"FAKE_CLI_IGNORE_EOF": "1"})
 
 
 @posix_only
@@ -257,6 +265,36 @@ async def test_close_kills_grandchildren_that_ignore_sigterm(tmp_path: Path) -> 
     await _assert_close_stops_grandchild(
         tmp_path, {"FAKE_CLI_IGNORE_EOF": "1", "FAKE_CLI_GRANDCHILD_IGNORES_TERM": "1"}
     )
+
+
+@posix_only
+async def test_close_leaves_hook_daemons_after_clean_exit(tmp_path: Path) -> None:
+    """A hook's `nohup ... &` daemon shares the CLI's group. When the CLI exits
+    cleanly on stdin EOF, close() must not signal that group."""
+    pid_file = tmp_path / "daemon.pid"
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(
+            cli_path=str(_write_fake_cli(tmp_path)),
+            env={"FAKE_CLI_DAEMON_PID_FILE": str(pid_file)},
+        ),
+    )
+    await transport.connect()
+    daemon_pid = -1
+    try:
+        with anyio.fail_after(10):
+            while not pid_file.exists() or not pid_file.read_text():
+                await anyio.sleep(0.05)
+        daemon_pid = int(pid_file.read_text())
+
+        await transport.close()
+
+        await anyio.sleep(0.5)
+        assert _process_state(daemon_pid) == "alive"
+    finally:
+        if daemon_pid > 0:
+            with suppress(ProcessLookupError):
+                os.kill(daemon_pid, signal.SIGKILL)
 
 
 @posix_only

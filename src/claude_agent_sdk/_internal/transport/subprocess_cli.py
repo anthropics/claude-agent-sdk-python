@@ -85,9 +85,11 @@ def _stop_cli(p: Process, *, kill: bool = False) -> None:
 
 
 async def _stop_cli_group_after_exit(p: Process) -> None:
-    """Stop what is left of the CLI's group once the CLI has exited.
+    """Stop what is left of the CLI's group once close() had to signal the CLI.
 
-    The CLI can exit while an MCP server it spawned keeps running, e.g. one
+    Not called after a clean exit on stdin EOF, so background processes that a
+    user's hooks start (e.g. `nohup npm run dev &`) outlive close(). The CLI can
+    exit on our signal while an MCP server it spawned keeps running, e.g. one
     that ignores SIGTERM (#291). Send SIGTERM, give the group up to 5 s (the
     bound each step of close() uses) to empty, then SIGKILL what is left.
     """
@@ -1076,6 +1078,7 @@ class SubprocessCLITransport(Transport):
             # receiving EOF on stdin. Without this grace period, SIGTERM can
             # interrupt the write and cause the last assistant message to be
             # lost (see #625).
+            signalled = False
             try:
                 if self._process.returncode is None:
                     try:
@@ -1083,6 +1086,7 @@ class SubprocessCLITransport(Transport):
                             await self._process.wait()
                     except TimeoutError:
                         # Graceful shutdown timed out — force terminate
+                        signalled = True
                         _stop_cli(self._process)
                         try:
                             with anyio.fail_after(5):
@@ -1093,9 +1097,11 @@ class SubprocessCLITransport(Transport):
                             with suppress(Exception), anyio.fail_after(5):
                                 await self._process.wait()
             finally:
-                # The CLI may exit without stopping its MCP servers; stop the
-                # rest of the group so none outlive the transport.
-                if self._process.returncode is not None:
+                # The CLI ignored EOF and exited on our signal, possibly
+                # without stopping its MCP servers; stop the rest of the group.
+                # After a clean exit on EOF the group is left alone: processes
+                # a hook started in the background (`nohup ... &`) share it.
+                if signalled and self._process.returncode is not None:
                     await _stop_cli_group_after_exit(self._process)
                 # Only stop tracking a child we actually reaped. A still-running
                 # process (kill raced, or wait timed out) stays in the set so the

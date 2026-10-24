@@ -2,7 +2,7 @@
 
 There are two ways to release the SDK: **automatic** (triggered by a CLI version bump) and **manual** (triggered via GitHub Actions UI).
 
-Both flows call the same reusable `build-and-publish.yml` workflow, which builds platform-specific wheels on 5 OS targets, publishes to PyPI, updates version files, generates a changelog entry using Claude, pushes to `main`, and creates a git tag + GitHub Release.
+Both flows call the same reusable `build-and-publish.yml` workflow, which builds platform-specific wheels on 6 OS targets, publishes to PyPI, updates version files, generates a changelog entry using Claude, pushes to `main`, and creates a git tag + GitHub Release.
 
 **Wheel targets:**
 
@@ -13,6 +13,7 @@ Both flows call the same reusable `build-and-publish.yml` workflow, which builds
 | `macos-latest` | `macosx_11_0_arm64` |
 | `macos-15-intel` | `macosx_11_0_x86_64` |
 | `windows-latest` | `win_amd64` |
+| `windows-11-arm` | `win_arm64` |
 
 PRs that touch the build scripts, `pyproject.toml`, or the publish workflow trigger `build-wheel-check.yml`, which dry-runs the full build matrix and verifies each wheel contains the bundled CLI before merge.
 

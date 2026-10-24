@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -58,10 +59,54 @@ _CMD_EXE_METACHARACTERS = '&|<>^%!"'
 _ACTIVE_CHILDREN: set[Process] = set()
 
 
+def _signal_cli_group(p: Process, *, kill: bool = False) -> bool:
+    """Signal the CLI's process group; return False if nothing was signalled.
+
+    On POSIX the CLI leads its own process group (see connect()), so one group
+    signal also reaches the MCP servers it spawned (#291). Fails on Windows,
+    once the group is empty (ESRCH), or under `user=` (EPERM). A pid of 0 or 1
+    would address our own group or init's, so it is never used.
+    """
+    pid = p.pid
+    if sys.platform == "win32" or not isinstance(pid, int) or pid <= 1:
+        return False
+    try:
+        os.killpg(pid, signal.SIGKILL if kill else signal.SIGTERM)
+    except OSError:
+        return False
+    return True
+
+
+def _stop_cli(p: Process, *, kill: bool = False) -> None:
+    """Signal the CLI's group, falling back to the CLI process alone."""
+    if not _signal_cli_group(p, kill=kill):
+        with suppress(ProcessLookupError):
+            p.kill() if kill else p.terminate()
+
+
+async def _stop_cli_group_after_exit(p: Process) -> None:
+    """Stop what is left of the CLI's group once the CLI has exited.
+
+    The CLI can exit while an MCP server it spawned keeps running, e.g. one
+    that ignores SIGTERM (#291). Send SIGTERM, give the group up to 5 s (the
+    bound each step of close() uses) to empty, then SIGKILL what is left.
+    """
+    if not _signal_cli_group(p):
+        return
+    with anyio.move_on_after(5):
+        while True:
+            try:
+                os.killpg(p.pid, 0)  # probe: fails once the group is empty
+            except OSError:
+                return
+            await anyio.sleep(0.05)
+    _signal_cli_group(p, kill=True)
+
+
 def _kill_active_children() -> None:
     for p in list(_ACTIVE_CHILDREN):
         with suppress(Exception):
-            p.send_signal(signal.SIGTERM)  # On Windows anyio maps this to terminate()
+            _stop_cli(p)
     _ACTIVE_CHILDREN.clear()
 
 
@@ -878,6 +923,11 @@ class SubprocessCLITransport(Transport):
                 cwd=self._cwd,
                 env=process_env,
                 user=self._options.user,
+                # Own session and process group, so shutdown can signal the
+                # MCP servers the CLI spawns along with the CLI (#291). The CLI
+                # no longer receives a terminal Ctrl-C; the atexit reaper stops
+                # it when the parent exits.
+                start_new_session=sys.platform != "win32",
             )
             _ACTIVE_CHILDREN.add(self._process)
 
@@ -1033,18 +1083,20 @@ class SubprocessCLITransport(Transport):
                             await self._process.wait()
                     except TimeoutError:
                         # Graceful shutdown timed out — force terminate
-                        with suppress(ProcessLookupError):
-                            self._process.terminate()
+                        _stop_cli(self._process)
                         try:
                             with anyio.fail_after(5):
                                 await self._process.wait()
                         except TimeoutError:
                             # SIGTERM handler blocked — force kill (SIGKILL)
-                            with suppress(ProcessLookupError):
-                                self._process.kill()
+                            _stop_cli(self._process, kill=True)
                             with suppress(Exception), anyio.fail_after(5):
                                 await self._process.wait()
             finally:
+                # The CLI may exit without stopping its MCP servers; stop the
+                # rest of the group so none outlive the transport.
+                if self._process.returncode is not None:
+                    await _stop_cli_group_after_exit(self._process)
                 # Only stop tracking a child we actually reaped. A still-running
                 # process (kill raced, or wait timed out) stays in the set so the
                 # atexit reaper gets a chance at it — dropping it here is what

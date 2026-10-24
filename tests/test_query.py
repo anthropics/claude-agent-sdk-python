@@ -2660,3 +2660,146 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestControlRequestBookkeeping:
+    """``_send_control_request`` must not leave state behind however it ends.
+
+    ``pending_control_responses`` / ``pending_control_results`` are keyed by a
+    request id nobody will look at again once the caller has gone, so an entry
+    left behind (and any late response stored for it) is never collected.
+    """
+
+    @staticmethod
+    def _control_transport(*, respond: bool):
+        """A transport whose read side is fed by a stream the test controls.
+
+        With ``respond=True`` every control_request written is answered with a
+        success control_response.
+        """
+        send, recv = anyio.create_memory_object_stream[dict[str, Any]](10)
+        transport = _make_mock_transport(messages=[])
+
+        async def write(data):
+            msg = json.loads(data)
+            if transport.respond and msg["type"] == "control_request":
+                send.send_nowait(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": msg["request_id"],
+                            "response": {"ok": True},
+                        },
+                    }
+                )
+
+        async def read_messages():
+            async for msg in recv:
+                yield msg
+
+        transport.respond = respond  # a test may flip this mid-way
+        transport.write = AsyncMock(side_effect=write)
+        transport.read_messages = read_messages
+        return transport, send, recv
+
+    @staticmethod
+    def _assert_no_state(q: Query) -> None:
+        assert q.pending_control_responses == {}
+        assert q.pending_control_results == {}
+
+    @pytest.mark.anyio
+    async def test_success_leaves_no_state(self):
+        transport, send, recv = self._control_transport(respond=True)
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            await q.start()
+            with anyio.fail_after(5):
+                result = await q._send_control_request({"subtype": "interrupt"})
+            assert result == {"ok": True}
+            self._assert_no_state(q)
+        finally:
+            await q.close()
+            send.close()
+            recv.close()
+
+    @pytest.mark.anyio
+    async def test_timeout_leaves_no_state(self):
+        transport, send, recv = self._control_transport(respond=False)
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            await q.start()
+            with pytest.raises(Exception, match=r"Control request timeout: interrupt"):
+                await q._send_control_request({"subtype": "interrupt"}, timeout=0.05)
+            self._assert_no_state(q)
+        finally:
+            await q.close()
+            send.close()
+            recv.close()
+
+    @pytest.mark.anyio
+    async def test_cancelled_caller_leaves_no_state(self):
+        """A caller cancelled while waiting (its own timeout, a cancelled task)
+        must not leave its pending entry behind."""
+        transport, send, recv = self._control_transport(respond=False)
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            await q.start()
+            with anyio.move_on_after(0.05):
+                await q._send_control_request({"subtype": "interrupt"})
+            self._assert_no_state(q)
+        finally:
+            await q.close()
+            send.close()
+            recv.close()
+
+    @pytest.mark.anyio
+    async def test_late_response_after_cancel_is_dropped(self):
+        """The response to a request whose caller already left must not be
+        stored: nothing will ever pop it."""
+        transport, send, recv = self._control_transport(respond=False)
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            await q.start()
+            with anyio.move_on_after(0.05):
+                await q._send_control_request({"subtype": "interrupt"})
+
+            written = json.loads(transport.write.call_args.args[0])
+            send.send_nowait(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": written["request_id"],
+                        "response": {},
+                    },
+                }
+            )
+
+            # The read loop handles frames in order, so once a later request
+            # has been answered the late response above has been routed too.
+            transport.respond = True
+            with anyio.fail_after(5):
+                assert await q._send_control_request({"subtype": "interrupt"}) == {
+                    "ok": True
+                }
+
+            self._assert_no_state(q)
+        finally:
+            await q.close()
+            send.close()
+            recv.close()
+
+    @pytest.mark.anyio
+    async def test_failed_write_leaves_no_state(self):
+        transport, send, recv = self._control_transport(respond=False)
+        transport.write = AsyncMock(side_effect=CLIConnectionError("stdin closed"))
+        q = Query(transport=transport, is_streaming_mode=True)
+        try:
+            with pytest.raises(CLIConnectionError, match="stdin closed"):
+                await q._send_control_request({"subtype": "interrupt"})
+            self._assert_no_state(q)
+        finally:
+            await q.close()
+            send.close()
+            recv.close()

@@ -28,6 +28,11 @@ from ...types import (
     SystemPromptFile,
     SystemPromptPreset,
 )
+from .._client_app import (
+    DERIVED_CLIENT_APP_ENV,
+    EXPLICIT_CLIENT_APP_ENV,
+    derive_client_app,
+)
 from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
 
@@ -823,6 +828,16 @@ class SubprocessCLITransport(Transport):
                 **self._options.env,
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
+
+            # A label from an outer SDK session names that session's app. Set
+            # counts even when empty: that is how a developer opts out.
+            process_env.pop(DERIVED_CLIENT_APP_ENV, None)
+            if self._options.client_app is not None:
+                process_env[EXPLICIT_CLIENT_APP_ENV] = self._options.client_app
+            if EXPLICIT_CLIENT_APP_ENV not in process_env:
+                derived_client_app = await anyio.to_thread.run_sync(derive_client_app)
+                if derived_client_app is not None:
+                    process_env[DERIVED_CLIENT_APP_ENV] = derived_client_app
 
             # Propagate active OTEL trace context to the CLI so its spans
             # parent under the caller's distributed trace. No-op if

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -60,14 +61,34 @@ DEFAULT_RUN_END_CEILING_MS = 600_000
 _MAX_RUN_END_CEILING_MS = 2**31 - 1
 
 
+# The CLI's env integer parser, for strings that are not a plain integer:
+# scientific notation counts only when the value is whole, digit groups of
+# three may be separated, and anything else is read like parseInt(s, 10).
+_CLI_SCIENTIFIC = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d+", re.ASCII)
+_CLI_GROUPED = re.compile(r"[+-]?\d{1,3}([_, \u00a0\u202f])\d{3}(?:\1\d{3})*", re.ASCII)
+_CLI_GROUP_SEPARATOR = re.compile(r"[_, \u00a0\u202f]")
+_CLI_LEADING_INTEGER = re.compile(r"[+-]?\d+", re.ASCII)
+
+
+def _parse_like_cli(text: str) -> int | None:
+    if len(text) <= 32:
+        if _CLI_SCIENTIFIC.fullmatch(text):
+            number = float(text)
+            return int(number) if number.is_integer() else None
+        if _CLI_GROUPED.fullmatch(text):
+            return int(_CLI_GROUP_SEPARATOR.sub("", text))
+    match = _CLI_LEADING_INTEGER.match(text)
+    return int(match.group()) if match else None
+
+
 def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     """Read ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`` as the CLI will see it.
 
     ``options_env`` (``ClaudeAgentOptions.env``) overrides the inherited
     environment, as it does for the CLI subprocess. ``0`` means no limit;
-    anything that is not a plain non-negative integer falls back to the CLI's
-    default of 10 minutes (the CLI itself also reads spellings such as
-    ``1e6``).
+    anything that is not a non-negative number of milliseconds falls back to
+    the CLI's default of 10 minutes. Scientific notation is read the way the
+    CLI reads it, so ``1e6`` is a million milliseconds and not a fallback.
     """
     if _RUN_END_CEILING_ENV in options_env:
         raw: Any = options_env[_RUN_END_CEILING_ENV]
@@ -78,7 +99,10 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_RUN_END_CEILING_MS
+        parsed = _parse_like_cli(str(raw).strip())
+        if parsed is None:
+            return DEFAULT_RUN_END_CEILING_MS
+        value = parsed
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 

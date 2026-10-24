@@ -39,11 +39,12 @@ posix_only = pytest.mark.skipif(
 )
 
 # A stand-in `claude` CLI: answers `-v`, replies to control requests so
-# connect() completes, and exits on stdin EOF.
+# connect() completes, and exits on stdin EOF (or, with FAKE_CLI_IGNORE_EOF,
+# only on a signal).
 FAKE_CLI = textwrap.dedent(
     """
     #!/usr/bin/env python3
-    import json, os, subprocess, sys
+    import json, os, subprocess, sys, time
 
     if "-v" in sys.argv or "--version" in sys.argv:
         print("2.0.0 (Claude Code)")
@@ -54,12 +55,16 @@ FAKE_CLI = textwrap.dedent(
                       "permissionMode": "default", "apiKeySource": "none"}), flush=True)
 
     # Stand-in for a stdio MCP server: a grandchild that outlives the CLI
-    # unless something signals it.
+    # unless something signals it. It records its own PID only after setting
+    # its SIGTERM disposition.
     pid_file = os.environ.get("FAKE_CLI_GRANDCHILD_PID_FILE")
     if pid_file:
-        grandchild = subprocess.Popen(["sleep", "300"])
-        with open(pid_file, "w") as f:
-            f.write(str(grandchild.pid))
+        subprocess.Popen([sys.executable, "-c",
+                          "import os, signal, sys, time; "
+                          "sys.argv[2] and signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                          "time.sleep(300)",
+                          pid_file, os.environ.get("FAKE_CLI_GRANDCHILD_IGNORES_TERM", "")])
 
     for line in sys.stdin:
         line = line.strip()
@@ -74,6 +79,9 @@ FAKE_CLI = textwrap.dedent(
                               "response": {"subtype": "success",
                                            "request_id": msg["request_id"],
                                            "response": {}}}), flush=True)
+
+    if os.environ.get("FAKE_CLI_IGNORE_EOF"):
+        time.sleep(300)
     """
 ).lstrip()
 
@@ -204,16 +212,13 @@ async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
     assert process not in _ACTIVE_CHILDREN
 
 
-@posix_only
-async def test_close_terminates_grandchildren_of_the_cli(tmp_path: Path) -> None:
-    """MCP servers are children of the CLI, not of the SDK. close() must take
-    them down with the CLI instead of leaving them running (#291)."""
+async def _assert_close_stops_grandchild(tmp_path: Path, env: dict[str, str]) -> None:
     pid_file = tmp_path / "grandchild.pid"
     transport = SubprocessCLITransport(
         prompt="hi",
         options=ClaudeAgentOptions(
             cli_path=str(_write_fake_cli(tmp_path)),
-            env={"FAKE_CLI_GRANDCHILD_PID_FILE": str(pid_file)},
+            env={"FAKE_CLI_GRANDCHILD_PID_FILE": str(pid_file), **env},
         ),
     )
     await transport.connect()
@@ -235,6 +240,23 @@ async def test_close_terminates_grandchildren_of_the_cli(tmp_path: Path) -> None
         if grandchild_pid > 0:
             with suppress(ProcessLookupError):
                 os.kill(grandchild_pid, signal.SIGKILL)
+
+
+@posix_only
+async def test_close_terminates_grandchildren_of_the_cli(tmp_path: Path) -> None:
+    """MCP servers are children of the CLI, not of the SDK. close() must take
+    them down with the CLI instead of leaving them running (#291)."""
+    await _assert_close_stops_grandchild(tmp_path, {})
+
+
+@posix_only
+async def test_close_kills_grandchildren_that_ignore_sigterm(tmp_path: Path) -> None:
+    """The CLI ignores stdin EOF and exits on SIGTERM; its child ignores
+    SIGTERM. close() must still SIGKILL the child, even though the CLI's own
+    wait() succeeded."""
+    await _assert_close_stops_grandchild(
+        tmp_path, {"FAKE_CLI_IGNORE_EOF": "1", "FAKE_CLI_GRANDCHILD_IGNORES_TERM": "1"}
+    )
 
 
 @posix_only

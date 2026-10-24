@@ -84,6 +84,25 @@ def _stop_cli(p: Process, *, kill: bool = False) -> None:
             p.kill() if kill else p.terminate()
 
 
+async def _stop_cli_group_after_exit(p: Process) -> None:
+    """Stop what is left of the CLI's group once the CLI has exited.
+
+    The CLI can exit while an MCP server it spawned keeps running, e.g. one
+    that ignores SIGTERM (#291). Send SIGTERM, give the group up to 5 s (the
+    bound each step of close() uses) to empty, then SIGKILL what is left.
+    """
+    if not _signal_cli_group(p):
+        return
+    with anyio.move_on_after(5):
+        while True:
+            try:
+                os.killpg(p.pid, 0)  # probe: fails once the group is empty
+            except OSError:
+                return
+            await anyio.sleep(0.05)
+    _signal_cli_group(p, kill=True)
+
+
 def _kill_active_children() -> None:
     for p in list(_ACTIVE_CHILDREN):
         with suppress(Exception):
@@ -1074,10 +1093,10 @@ class SubprocessCLITransport(Transport):
                             with suppress(Exception), anyio.fail_after(5):
                                 await self._process.wait()
             finally:
-                # The CLI may exit without stopping its MCP servers; sweep the
-                # group so none outlive the transport.
+                # The CLI may exit without stopping its MCP servers; stop the
+                # rest of the group so none outlive the transport.
                 if self._process.returncode is not None:
-                    _signal_cli_group(self._process)
+                    await _stop_cli_group_after_exit(self._process)
                 # Only stop tracking a child we actually reaped. A still-running
                 # process (kill raced, or wait timed out) stays in the set so the
                 # atexit reaper gets a chance at it — dropping it here is what

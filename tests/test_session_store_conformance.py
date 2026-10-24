@@ -178,6 +178,56 @@ class TestSessionStoreOptionsValidation:
             )
         )
 
+    def test_continue_conversation_ok_when_list_sessions_set_on_instance(
+        self,
+    ) -> None:
+        """SessionStore is a structural Protocol, so an implementation assigned
+        on the instance (delegation, functools.partial, a test double) satisfies
+        it just as a class-level def does.
+        """
+
+        class DelegatingStore(SessionStore):
+            def __init__(self, inner: SessionStore) -> None:
+                self.list_sessions = inner.list_sessions
+
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                session_store=DelegatingStore(InMemorySessionStore()),
+                continue_conversation=True,
+            )
+        )
+
+    def test_non_callable_instance_attribute_is_not_an_implementation(
+        self,
+    ) -> None:
+        """Resolving against the instance must still require a callable — a
+        non-callable attribute would otherwise pass validation here and fail
+        mid-session at the call site.
+        """
+
+        class DisabledStore(SessionStore):
+            def __init__(self) -> None:
+                self.list_sessions = "disabled"
+
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        with pytest.raises(ValueError, match="list_sessions"):
+            validate_session_store_options(
+                ClaudeAgentOptions(
+                    session_store=DisabledStore(), continue_conversation=True
+                )
+            )
+
     def test_continue_with_resume_and_store_lacking_list_sessions(self) -> None:
         """Parity with TS: when resume is explicitly set, continue=True
         should not require list_sessions() — list_sessions is provably

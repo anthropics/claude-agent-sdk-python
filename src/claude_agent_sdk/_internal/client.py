@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import asdict
 from typing import Any
 
@@ -36,7 +36,7 @@ class InternalClient:
         prompt: str | AsyncIterable[dict[str, Any]],
         options: ClaudeAgentOptions,
         transport: Transport | None = None,
-    ) -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
         """Process a query through transport and Query."""
 
         # Fail fast on invalid session_store option combinations before

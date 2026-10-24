@@ -308,6 +308,91 @@ class TestListSessions:
         assert sessions[0].custom_title == "My Custom Title"
         assert sessions[0].first_prompt == "original question"
 
+    def test_custom_title_ignores_nested_tool_input(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A tool input field named customTitle is not session metadata."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(
+            project_dir,
+            first_prompt="hello",
+        )
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "custom-title",
+                        "customTitle": "My Custom Title",
+                        "sessionId": sid,
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "mcp__fixture__create_item",
+                                    "input": {"customTitle": "Nested tool value"},
+                                }
+                            ]
+                        },
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "My Custom Title"
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.custom_title == "My Custom Title"
+
+    def test_ai_title_ignores_nested_tool_input(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A tool input field named aiTitle is not session metadata."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        _, file_path = _make_session_file(project_dir, first_prompt="hello")
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"aiTitle": "Generated title"}, **_COMPACT) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "mcp__fixture__create_item",
+                                    "input": {"aiTitle": "Nested tool value"},
+                                }
+                            ]
+                        },
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "Generated title"
+
     def test_summary_wins_first_prompt(self, claude_config_dir: Path, tmp_path: Path):
         """Explicit summary takes precedence over first_prompt when no custom_title."""
         project_path = str(tmp_path / "proj")

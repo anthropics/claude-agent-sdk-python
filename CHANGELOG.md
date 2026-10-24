@@ -1,5 +1,113 @@
 # Changelog
 
+## 0.2.174
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.310
+
+## 0.2.173
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.309
+
+## 0.2.172
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.308
+
+## 0.2.171
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.307
+
+## 0.2.170
+
+### Bug Fixes
+
+- **Fixed parallel tool calls missing from session messages**: `get_session_messages` and `get_session_messages_from_store` now return every tool call and result from turns that ran tools in parallel. Previously only one branch of the forked transcript was followed, dropping some calls and results (#1422)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.306
+- CI: release uploads to PyPI now use trusted publishing (GitHub OIDC) instead of a long-lived API token (#1418)
+
+## 0.2.169
+
+### Documentation
+
+- Clarified that `include_hook_events` does not suppress `SessionStart` and `Setup` hook events, which the CLI emits regardless of the setting (#1336)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.305
+- CI: hash-pinned the release build tools (`build`, `twine`, `wheel`, `hatchling`) so a tampered or unexpected download stops the job (#1415)
+
+## 0.2.168
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.301
+
+## 0.2.167
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.300
+
+## 0.2.166
+
+### New Features
+
+- **Hook-specific output types**: Added typed output classes and missing input fields for hooks, giving hook implementations precise type information instead of untyped dicts (#1331)
+- **`SystemInitData` TypedDict**: The init system message payload is now fully typed via `SystemInitData`, along with nested types `SystemInitMcpServer`, `SystemInitPlugin`, `SystemInitPluginError`, and `FastModeState`/`FastModeDisabledReason` literals. Use `cast(SystemInitData, msg.data)` to access typed fields like `capabilities`, `model`, `mcp_servers`, and more (#1332)
+
+### Bug Fixes
+
+- **Fixed `SandboxSettings.ignoreViolations` type**: Changed from a `TypedDict` with `file`/`network` keys to `dict[str, list[str]]` to match the CLI's actual schema — a map from command-pattern substring to violation-text substrings. The old type caused `"file"` and `"network"` to be interpreted as command patterns, and strict type checkers rejected the correct `{"*": [...]}` shape (#1380)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.299
+
+## 0.2.165
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.294
+- CI: alert Slack when a release is blocked or fails (#1368)
+
+## 0.2.164
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.292
+- CI: security hardening for GitHub Actions workflows that call Claude — egress-firewall runner, network allow list, auto permission mode, and a check workflow to enforce them (#1329)
+- CI: raised PyPI per-file limit guard to 250 MiB to match the updated project limit (#1366)
+- Tests: fixed thinking-deltas e2e test for CLI 2.1.287+ by using explicit thinking display options (#1367)
+
+## 0.2.163
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.286
+- CI: pinned the model for issue triage to fix failures caused by the CLI's new default model (#1328)
+
+## 0.2.162
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.285
+
+## 0.2.161
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.284
+
 ## 0.2.160
 
 ### Bug Fixes

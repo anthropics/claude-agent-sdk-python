@@ -433,15 +433,116 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     return schema
 
 
+# Keywords a JSON Schema carries and a parameter map does not. A schema need
+# not declare a top-level `type`: oneOf/anyOf/allOf compose subschemas, $ref
+# points at one and $defs holds them, none of which leave a `type` behind.
+# Annotation keywords (title, description, examples, ...) stay out -- they
+# decorate a schema without defining one, so they read as parameter names.
+_JSON_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$comment",
+        "$defs",
+        "$id",
+        "$ref",
+        "$schema",
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "contains",
+        "definitions",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "if",
+        "items",
+        "not",
+        "oneOf",
+        "patternProperties",
+        "prefixItems",
+        "properties",
+        "required",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        # 2020-12 assertion keywords
+        "minProperties",
+        "maxProperties",
+        "propertyNames",
+        "minContains",
+        "maxContains",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "enum",
+        "const",
+        "format",
+        "contentEncoding",
+        "contentMediaType",
+        # non-combinator metadata that still names a schema
+        "readOnly",
+        "writeOnly",
+        "deprecated",
+    }
+)
+
+# The JSON values a schema keyword holds. A parameter map holds a Python type
+# in every slot, so a keyword carrying one of these is describing the schema
+# rather than naming a parameter. Numeric and null keywords ({minProperties: 1},
+# {minimum: 0.5}) count too, so int/float/None are included.
+_SCHEMA_SHAPED_VALUES: tuple[type, ...] = (dict, list, str, bool, int, float, type(None))
+
+
+def _is_json_schema(schema: dict[str, Any]) -> bool:
+    """Whether a declared input_schema is a JSON Schema rather than a
+    `{name: type}` parameter map.
+
+    Both forms are plain dicts, so the keys decide, and a `type` spelled as a
+    string is the one keyword that decides on its own. The rest need their
+    value checked too, because a map may name a parameter after a keyword:
+    `{"items": list}` declares a parameter named "items" where
+    `{"items": {"type": "string"}}` is a schema.
+    """
+    if isinstance(schema.get("type"), str):
+        return True
+    return any(
+        keyword in _JSON_SCHEMA_KEYWORDS and isinstance(value, _SCHEMA_SHAPED_VALUES)
+        for keyword, value in schema.items()
+    )
+
+
+# MCP requires `type: "object"` at the root of every tool's inputSchema, and a
+# schema that composes subschemas with oneOf or reaches them through $ref need
+# not declare one. Tool arguments are always JSON objects, so naming that type
+# cannot reject an argument the schema would otherwise have accepted; it is
+# what makes such a schema legal on the wire.
+_OBJECT_TYPE = "object"
+
+
+def _with_object_type(schema: dict[str, Any]) -> dict[str, Any]:
+    """A declared schema carrying the root type MCP requires, unchanged if it
+    already declares one."""
+    if "type" in schema:
+        return schema
+    return {"type": _OBJECT_TYPE, **schema}
+
+
 def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
     """Turn a tool's declared input_schema into the JSON Schema sent on the wire."""
     if isinstance(tool_def.input_schema, dict):
-        if (
-            "type" in tool_def.input_schema
-            and "properties" in tool_def.input_schema
-            and isinstance(tool_def.input_schema["type"], str)
-        ):
-            return tool_def.input_schema
+        if _is_json_schema(tool_def.input_schema):
+            return _with_object_type(tool_def.input_schema)
         properties = {
             param_name: _python_type_to_json_schema(param_type)
             for param_name, param_type in tool_def.input_schema.items()

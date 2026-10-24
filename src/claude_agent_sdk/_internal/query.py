@@ -24,7 +24,6 @@ from ..types import (
     ToolPermissionContext,
 )
 from ._task_compat import TaskHandle, spawn_detached
-from .sdk_mcp_bridge import SdkMcpBridge
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -206,10 +205,15 @@ class Query:
         self.can_use_tool = can_use_tool
         self.hooks = hooks or {}
         self.sdk_mcp_servers = sdk_mcp_servers or {}
-        self._sdk_mcp_bridges = {
-            name: SdkMcpBridge(name, server)
-            for name, server in self.sdk_mcp_servers.items()
-        }
+        if self.sdk_mcp_servers:
+            from .sdk_mcp_bridge import SdkMcpBridge
+
+            self._sdk_mcp_bridges = {
+                name: SdkMcpBridge(name, server)
+                for name, server in self.sdk_mcp_servers.items()
+            }
+        else:
+            self._sdk_mcp_bridges = {}
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
         self._system_prompt_snapshot = system_prompt_snapshot

@@ -1,5 +1,7 @@
 """Claude SDK for Python."""
 
+from __future__ import annotations
+
 import logging
 import sys
 import types as builtin_types
@@ -25,9 +27,9 @@ else:
     from typing_extensions import get_type_hints as _get_type_hints
     from typing_extensions import is_typeddict
 
-import jsonschema
-from mcp.types import CallToolResult, Tool
-from mcp.types import ToolAnnotations as _McpToolAnnotations
+if TYPE_CHECKING:
+    from mcp.types import CallToolResult
+    from mcp.types import ToolAnnotations as _McpToolAnnotations
 
 from ._errors import (
     ClaudeSDKError,
@@ -37,7 +39,6 @@ from ._errors import (
     ProcessError,
     ResultError,
 )
-from ._internal._mcp_compat import build_tool_server
 from ._internal.session_import import import_session_to_store
 from ._internal.session_mutations import (
     ForkSessionResult,
@@ -210,28 +211,28 @@ _HINT_WIRE_NAMES = {
 }
 
 
-class ToolAnnotations(_McpToolAnnotations, extra="allow"):
-    """Hints about a tool's behavior, plus ``maxResultSizeChars``.
+if TYPE_CHECKING:
 
-    A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling
-    on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``
-    and ``ToolAnnotations(read_only_hint=True)`` are the same thing, and both
-    type-check. (mcp's own class differs between majors here: 1.x only knows
-    the camelCase names and 2.x prefers snake_case.) Attribute access follows
-    the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.
+    class ToolAnnotations(_McpToolAnnotations, extra="allow"):
+        """Hints about a tool's behavior, plus ``maxResultSizeChars``.
 
-    ``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but
-    a Claude Code one: the size, in characters, up to which Claude Code keeps
-    this tool's result inline instead of persisting it to a file and showing
-    a preview. It travels to the CLI in the tool's ``_meta``.
+        A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling
+        on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``
+        and ``ToolAnnotations(read_only_hint=True)`` are the same thing, and both
+        type-check. (mcp's own class differs between majors here: 1.x only knows
+        the camelCase names and 2.x prefers snake_case.) Attribute access follows
+        the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.
 
-    Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted
-    wherever the SDK takes annotations.
-    """
+        ``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but
+        a Claude Code one: the size, in characters, up to which Claude Code keeps
+        this tool's result inline instead of persisting it to a file and showing
+        a preview. It travels to the CLI in the tool's ``_meta``.
 
-    maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
+        Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted
+        wherever the SDK takes annotations.
+        """
 
-    if TYPE_CHECKING:
+        maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
 
         def __init__(  # both spellings, deliberately
             self,
@@ -250,7 +251,12 @@ class ToolAnnotations(_McpToolAnnotations, extra="allow"):
             **extra: Any,
         ) -> None: ...
 
-    else:
+
+def _make_tool_annotations_class() -> type:
+    from mcp.types import ToolAnnotations as _McpToolAnnotations
+
+    class ToolAnnotations(_McpToolAnnotations, extra="allow"):
+        maxResultSizeChars: int | None = None  # noqa: N815 - the wire spelling
 
         def __init__(self, **data: Any) -> None:
             # Fold the snake_case spellings into the wire names, which every
@@ -261,6 +267,24 @@ class ToolAnnotations(_McpToolAnnotations, extra="allow"):
                     value = data.pop(snake)
                     data.setdefault(wire, value)
             super().__init__(**data)
+
+    ToolAnnotations.__module__ = __name__
+    ToolAnnotations.__doc__ = (
+        "Hints about a tool's behavior, plus ``maxResultSizeChars``.\n\n"
+        "A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling\n"
+        "on every supported mcp version: ``ToolAnnotations(readOnlyHint=True)``\n"
+        "and ``ToolAnnotations(read_only_hint=True)`` are the same thing, and both\n"
+        "type-check. (mcp's own class differs between majors here: 1.x only knows\n"
+        "the camelCase names and 2.x prefers snake_case.) Attribute access follows\n"
+        "the installed mcp: ``.readOnlyHint`` on 1.x, ``.read_only_hint`` on 2.x.\n\n"
+        "``maxResultSizeChars`` (``max_result_size_chars``) is not an MCP hint but\n"
+        "a Claude Code one: the size, in characters, up to which Claude Code keeps\n"
+        "this tool's result inline instead of persisting it to a file and showing\n"
+        "a preview. It travels to the CLI in the tool's ``_meta``.\n\n"
+        "Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted\n"
+        "wherever the SDK takes annotations."
+    )
+    return ToolAnnotations
 
 
 @dataclass
@@ -469,6 +493,8 @@ def _build_meta(tool_def: SdkMcpTool[Any]) -> dict[str, Any] | None:
 
 
 def _tool_error_result(message: str) -> CallToolResult:
+    from mcp.types import CallToolResult
+
     return CallToolResult.model_validate(
         {"content": [{"type": "text", "text": message}], "isError": True}
     )
@@ -601,6 +627,11 @@ def create_sdk_mcp_server(
         - tool(): Decorator for creating tool functions
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
+    import jsonschema
+    from mcp.types import CallToolResult, Tool
+
+    from ._internal._mcp_compat import build_tool_server
+
     tools = tools or []
     tools_by_name = {tool_def.name: tool_def for tool_def in tools}
     schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
@@ -643,6 +674,31 @@ def create_sdk_mcp_server(
     server = build_tool_server(name, version, wire_tools, run_tool)
 
     return McpSdkServerConfig(type="sdk", name=name, instance=server)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ToolAnnotations":
+        cls = _make_tool_annotations_class()
+        globals()["ToolAnnotations"] = cls
+        return cls
+    if name == "_McpToolAnnotations":
+        from mcp.types import ToolAnnotations as _McpToolAnnotations
+
+        globals()["_McpToolAnnotations"] = _McpToolAnnotations
+        return _McpToolAnnotations
+    if name in ("CallToolResult", "Tool"):
+        import mcp.types
+
+        val = getattr(mcp.types, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(
+        list(globals().keys()) + [name for name in __all__ if name not in globals()]
+    )
 
 
 __all__ = [

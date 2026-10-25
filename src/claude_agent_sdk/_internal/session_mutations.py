@@ -598,7 +598,7 @@ def _parse_fork_transcript(
     transcript: list[dict[str, Any]] = []
     content_replacements: list[Any] = []
 
-    for line in content.decode("utf-8", errors="replace").splitlines():
+    for line in content.decode("utf-8", errors="replace").split("\n"):
         line = line.strip()
         if not line:
             continue

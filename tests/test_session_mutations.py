@@ -670,6 +670,77 @@ class TestForkSession:
         # Fork has same visible messages + 1 custom-title entry (not visible)
         assert len(fork_msgs) == len(original_msgs)
 
+    def test_fork_preserves_entries_with_json_line_separator_characters(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """JSONL records may contain raw Unicode line separator characters."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        uuids = [str(uuid.uuid4()) for _ in range(3)]
+        records = [
+            {
+                "type": "user",
+                "uuid": uuids[0],
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "first"},
+            },
+            {
+                "type": "assistant",
+                "uuid": uuids[1],
+                "parentUuid": uuids[0],
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "a\u2028b\u2029c\u0085d",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": uuids[2],
+                "parentUuid": uuids[1],
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "third"},
+            },
+        ]
+        (project_dir / f"{sid}.jsonl").write_text(
+            "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = fork_session(sid, directory=project_path, title="Fork")
+        fork_entries = [
+            json.loads(line)
+            for line in (project_dir / f"{result.session_id}.jsonl")
+            .read_text(encoding="utf-8")
+            .split("\n")
+            if line
+        ]
+        messages = [
+            entry
+            for entry in fork_entries
+            if entry.get("type") in ("user", "assistant")
+        ]
+
+        assert len(messages) == 3
+        assert messages[1]["message"]["content"][0]["text"] == "a\u2028b\u2029c\u0085d"
+        assert messages[0]["parentUuid"] is None
+        assert messages[1]["parentUuid"] == messages[0]["uuid"]
+        assert messages[2]["parentUuid"] == messages[1]["uuid"]
+
     def test_fork_up_to_message_id(self, claude_config_dir: Path, tmp_path: Path):
         """Fork slices at up_to_message_id (inclusive)."""
         project_path = str(tmp_path / "proj")

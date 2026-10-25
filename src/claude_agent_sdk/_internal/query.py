@@ -1090,7 +1090,9 @@ class Query:
         self._clear_run_end_ceiling()
         await self.transport.end_input()
 
-    async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
+    async def stream_input(
+        self, stream: AsyncIterable[dict[str, Any]], end_input: bool = True
+    ) -> None:
         """Stream input messages to transport.
 
         If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
@@ -1098,6 +1100,9 @@ class Query:
         bidirectional control protocol communication. Each prompt written
         owes a run of its own, so the wait is for the last prompt's run, not
         an earlier one's.
+
+        With ``end_input=False`` stdin is left open once the stream is
+        exhausted, so ``ClaudeSDKClient.query()`` can send follow-ups.
         """
         written = 0
         try:
@@ -1120,6 +1125,9 @@ class Query:
             # consumer's `async for` would never finish — fall through and
             # close it like a normal end of input.
             logger.error("Prompt stream failed; closing stdin: %s", e)
+            end_input = True
+        if not end_input:
+            return
         try:
             if written:
                 await self.wait_for_result_and_end_input()

@@ -279,6 +279,39 @@ class TestClaudeSDKClientStreaming:
             assert call_kwargs["prompt"] is stream
 
     @pytest.mark.anyio
+    async def test_connect_with_async_iterable_keeps_input_open(self):
+        """An exhausted connect() stream must not end input for later queries."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            async def message_stream():
+                yield {"type": "user", "message": {"role": "user", "content": "Hi"}}
+
+            client = ClaudeSDKClient()
+            await client.connect(message_stream())
+            # Let the background task drain the stream.
+            await anyio.sleep(0.05)
+
+            # connect("Hi") leaves stdin open for client.query(); the stream
+            # form must too, or the CLI exits and the next query() fails with
+            # "ProcessTransport is not ready for writing".
+            mock_transport.end_input.assert_not_awaited()
+
+            await client.query("Follow-up")
+            user_contents = [
+                json.loads(call[0][0])["message"]["content"]
+                for call in mock_transport.write.call_args_list
+                if json.loads(call[0][0]).get("type") == "user"
+            ]
+            assert user_contents == ["Hi", "Follow-up"]
+
+            await client.disconnect()
+
+    @pytest.mark.anyio
     async def test_query(self):
         """Test sending a query."""
 

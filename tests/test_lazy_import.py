@@ -144,3 +144,53 @@ assert "mcp" not in sys.modules
     assert result.returncode == 0, (
         f"Subprocess failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
+
+
+def test_get_type_hints_resolves_after_mcp_loaded() -> None:
+    """get_type_hints resolves SdkMcpTool and tool annotations once mcp is loaded."""
+    code = """
+import sys
+import typing
+from claude_agent_sdk import SdkMcpTool, tool, create_sdk_mcp_server
+
+# After MCP server initialization, _McpToolAnnotations is populated in module globals
+create_sdk_mcp_server("test_hints", tools=[])
+
+tool_hints = typing.get_type_hints(tool)
+assert "annotations" in tool_hints
+assert tool_hints["annotations"] is not None
+
+sdk_tool_hints = typing.get_type_hints(SdkMcpTool)
+assert "annotations" in sdk_tool_hints
+assert sdk_tool_hints["annotations"] is not None
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"Subprocess failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
+
+
+def test_tool_annotations_pickle_roundtrip() -> None:
+    """ToolAnnotations instances can be pickled and unpickled."""
+    code = """
+import pickle
+from claude_agent_sdk import ToolAnnotations
+
+anno = ToolAnnotations(readOnlyHint=True, maxResultSizeChars=256)
+data = pickle.dumps(anno)
+loaded = pickle.loads(data)
+
+assert isinstance(loaded, ToolAnnotations)
+assert loaded.maxResultSizeChars == 256
+dumped = loaded.model_dump(by_alias=True, exclude_none=True)
+assert dumped.get("readOnlyHint") is True
+assert dumped.get("maxResultSizeChars") == 256
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"Subprocess failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )

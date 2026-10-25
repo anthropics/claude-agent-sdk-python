@@ -269,6 +269,7 @@ def _make_tool_annotations_class() -> type:
             super().__init__(**data)
 
     ToolAnnotations.__module__ = __name__
+    ToolAnnotations.__qualname__ = "ToolAnnotations"
     ToolAnnotations.__doc__ = (
         "Hints about a tool's behavior, plus ``maxResultSizeChars``.\n\n"
         "A ``mcp.types.ToolAnnotations`` that takes every hint in either spelling\n"
@@ -284,6 +285,8 @@ def _make_tool_annotations_class() -> type:
         "Either this class or a plain ``mcp.types.ToolAnnotations`` is accepted\n"
         "wherever the SDK takes annotations."
     )
+    globals()["_McpToolAnnotations"] = _McpToolAnnotations
+    globals()["ToolAnnotations"] = ToolAnnotations
     return ToolAnnotations
 
 
@@ -632,6 +635,9 @@ def create_sdk_mcp_server(
 
     from ._internal._mcp_compat import build_tool_server
 
+    if "ToolAnnotations" not in globals():
+        _make_tool_annotations_class()
+
     tools = tools or []
     tools_by_name = {tool_def.name: tool_def for tool_def in tools}
     schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
@@ -677,15 +683,9 @@ def create_sdk_mcp_server(
 
 
 def __getattr__(name: str) -> Any:
-    if name == "ToolAnnotations":
-        cls = _make_tool_annotations_class()
-        globals()["ToolAnnotations"] = cls
-        return cls
-    if name == "_McpToolAnnotations":
-        from mcp.types import ToolAnnotations as _McpToolAnnotations
-
-        globals()["_McpToolAnnotations"] = _McpToolAnnotations
-        return _McpToolAnnotations
+    if name in ("ToolAnnotations", "_McpToolAnnotations"):
+        _make_tool_annotations_class()
+        return globals()[name]
     if name in ("CallToolResult", "Tool"):
         import mcp.types
 

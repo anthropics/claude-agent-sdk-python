@@ -92,13 +92,13 @@ class TestSubprocessCLITransport:
         assert "--include-hook-events" not in cmd_off
 
     def test_build_command_strict_mcp_config(self):
-        """Test that --strict-mcp-config is emitted only when enabled."""
-        transport = SubprocessCLITransport(
-            prompt="test", options=make_options(strict_mcp_config=True)
-        )
+        """Test strict MCP isolation is the default and can be disabled."""
+        transport = SubprocessCLITransport(prompt="test", options=make_options())
         assert "--strict-mcp-config" in transport._build_command()
 
-        transport = SubprocessCLITransport(prompt="test", options=make_options())
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(strict_mcp_config=False)
+        )
         assert "--strict-mcp-config" not in transport._build_command()
 
     def test_build_command_resume_and_session_id(self):

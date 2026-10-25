@@ -1994,6 +1994,25 @@ class TestSubprocessCLITransport:
             transport._build_command()
         assert "secret-value" not in str(exc_info.value)
 
+    def test_build_command_sandbox_reads_settings_file_with_bom(self, tmp_path):
+        """A settings file with a BOM loads, as it does for the CLI."""
+        import json
+
+        (tmp_path / "settings.json").write_text(
+            '{"permissions": {"deny": ["Bash"]}}', encoding="utf-8-sig"
+        )
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="settings.json", sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        merged = json.loads(cmd[cmd.index("--settings") + 1])
+        assert merged["permissions"] == {"deny": ["Bash"]}
+
     def test_build_command_sandbox_minimal(self):
         """Test sandbox with minimal configuration."""
         import json

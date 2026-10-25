@@ -524,7 +524,8 @@ class SubprocessCLITransport(Transport):
         """
         settings_path = Path(self._cwd or "") / settings_str
         try:
-            with settings_path.open(encoding="utf-8") as f:
+            # utf-8-sig: the CLI accepts a file with a BOM, which Windows editors add
+            with settings_path.open(encoding="utf-8-sig") as f:
                 settings_obj = json.load(f)
         except (OSError, ValueError) as e:
             raise CLIConnectionError(

@@ -562,9 +562,10 @@ _TRANSCRIPT_TYPES = frozenset({"user", "assistant", "attachment", "system", "pro
 def _derive_title_from_entries(raw: list[Any]) -> str | None:
     """Mirror the disk path's head/tail title scan over parsed entry objects.
 
-    Precedence matches ``_extract_last_json_string_field`` semantics: last
-    occurrence wins for both ``customTitle`` and ``aiTitle``; ``customTitle``
-    beats ``aiTitle``; first user prompt is the final fallback.
+    Precedence matches ``_extract_last_top_level_json_string_field``: the
+    last entry carrying a top-level ``customTitle``/``aiTitle`` wins;
+    ``customTitle`` beats ``aiTitle``; first user prompt is the final
+    fallback.
     """
     custom: str | None = None
     ai: str | None = None

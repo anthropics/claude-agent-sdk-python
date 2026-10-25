@@ -194,3 +194,31 @@ assert dumped.get("maxResultSizeChars") == 256
     assert result.returncode == 0, (
         f"Subprocess failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
+
+
+def test_get_type_hints_resolves_before_mcp_loaded() -> None:
+    """get_type_hints resolves SdkMcpTool and tool annotations before mcp is loaded."""
+    code = """
+import sys
+import typing
+import claude_agent_sdk
+from claude_agent_sdk import SdkMcpTool, tool
+
+assert "mcp" not in sys.modules, "mcp should not be loaded on import"
+
+tool_hints = typing.get_type_hints(tool)
+assert "annotations" in tool_hints
+assert tool_hints["annotations"] is not None
+assert "mcp" not in sys.modules, "get_type_hints should not trigger mcp load"
+
+sdk_tool_hints = typing.get_type_hints(SdkMcpTool)
+assert "annotations" in sdk_tool_hints
+assert sdk_tool_hints["annotations"] is not None
+assert "mcp" not in sys.modules, "get_type_hints should not trigger mcp load"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"Subprocess failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )

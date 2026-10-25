@@ -30,6 +30,16 @@ else:
 if TYPE_CHECKING:
     from mcp.types import CallToolResult
     from mcp.types import ToolAnnotations as _McpToolAnnotations
+else:
+    # Placeholder so typing.get_type_hints() resolves SdkMcpTool and tool
+    # before mcp is loaded. Replaced with the real mcp.types.ToolAnnotations
+    # once mcp is imported.
+    class _McpToolAnnotations:
+        pass
+
+    _McpToolAnnotations.__module__ = "mcp.types"
+    _McpToolAnnotations.__name__ = "ToolAnnotations"
+    _McpToolAnnotations.__qualname__ = "ToolAnnotations"
 
 from ._errors import (
     ClaudeSDKError,

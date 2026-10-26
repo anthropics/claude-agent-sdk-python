@@ -462,3 +462,71 @@ class TestClaudeSDKClientResourceCleanup:
                 receive_stream.receive_nowait()
 
         anyio.run(_test)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_disconnect_lets_busy_reader_drain_buffer(self, backend):
+        """A reader in user code when another task disconnects keeps its messages.
+
+        Closing the receive side in disconnect() made the reader's next
+        receive_nowait() raise ClosedResourceError with messages still
+        buffered. The stream must close once that reader finishes instead.
+        """
+        from claude_agent_sdk import ClaudeSDKClient
+        from claude_agent_sdk._internal.query import Query
+
+        async def _test():
+            with anyio.fail_after(5.0):
+                mock_transport = AsyncMock()
+                mock_transport.is_ready = Mock(return_value=True)
+
+                async def blocking_read():
+                    await anyio.Event().wait()  # never set
+                    yield {}  # pragma: no cover - unreachable
+
+                mock_transport.read_messages = blocking_read
+
+                client = ClaudeSDKClient(transport=mock_transport)
+                client._transport = mock_transport
+                query = Query(transport=mock_transport, is_streaming_mode=True)
+                client._query = query
+                await query.start()
+                for i in range(3):
+                    query._message_send.send_nowait(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "role": "assistant",
+                                "model": "m",
+                                "content": [{"type": "text", "text": str(i)}],
+                            },
+                            "parent_tool_use_id": None,
+                        }
+                    )
+
+                received = []
+                reader_errors: list[BaseException] = []
+                got_first = anyio.Event()
+                in_user_code = anyio.Event()
+
+                async def reader():
+                    try:
+                        async for msg in client.receive_messages():
+                            received.append(msg)
+                            if len(received) == 1:
+                                got_first.set()
+                                await in_user_code.wait()
+                    except BaseException as e:  # noqa: BLE001
+                        reader_errors.append(e)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(reader)
+                    await got_first.wait()
+                    await client.disconnect()
+                    in_user_code.set()
+
+                assert reader_errors == []
+                assert [m.content[0].text for m in received] == ["0", "1", "2"]
+                with pytest.raises(anyio.ClosedResourceError):
+                    query._message_receive.receive_nowait()
+
+        anyio.run(_test, backend=backend)

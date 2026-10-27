@@ -815,3 +815,47 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    def test_fork_preserves_unicode_line_separators(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """U+2028/U+2029/U+0085 inside strings must not split records (GH-1441)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        ids = [str(uuid.uuid4()) for _ in range(3)]
+        texts = ["first", "a\u2028b\u2029c\x85d", "third"]
+        records = [
+            {
+                "type": "user" if i % 2 == 0 else "assistant",
+                "uuid": ids[i],
+                "parentUuid": ids[i - 1] if i else None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": [{"type": "text", "text": t}],
+                },
+            }
+            for i, t in enumerate(texts)
+        ]
+        # Claude Code writes JSONL via JS JSON.stringify, which leaves these
+        # characters unescaped inside strings; ensure_ascii=False matches that.
+        (project_dir / f"{sid}.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+            encoding="utf-8",
+        )
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+        forked = [
+            json.loads(line)
+            for line in fork_path.read_text(encoding="utf-8").split("\n")
+            if line.strip()
+        ]
+        messages = [e for e in forked if e.get("type") in ("user", "assistant")]
+        assert [m["message"]["content"][0]["text"] for m in messages] == texts
+        assert messages[-1]["parentUuid"] is not None

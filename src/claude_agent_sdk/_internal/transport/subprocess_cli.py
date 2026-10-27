@@ -633,6 +633,9 @@ class SubprocessCLITransport(Transport):
                 ["--permission-prompt-tool", self._options.permission_prompt_tool_name]
             )
 
+        if self._options.permission_prompts is not None:
+            cmd.extend(["--permission-prompts", self._options.permission_prompts])
+
         if self._options.permission_mode:
             cmd.extend(["--permission-mode", self._options.permission_mode])
 

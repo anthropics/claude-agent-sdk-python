@@ -815,3 +815,160 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    def test_fork_preserves_entries_with_unicode_line_separators(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Regression test for #1441: fork_session must not drop transcript entries
+        containing U+2028 (Line Separator), U+2029 (Paragraph Separator), or U+0085
+        (Next Line), which would break the parentUuid chain."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+
+        u1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        u3 = str(uuid.uuid4())
+        u4 = str(uuid.uuid4())
+
+        # Messages containing raw Unicode separators (as emitted by Node.js/Claude Code)
+        msg1_text = "Prompt with line sep \u2028 here"
+        msg2_text = "Response with paragraph sep \u2029 here"
+        msg3_text = "Prompt with next line \u0085 here and form feed \x0c"
+        msg4_text = "Final response with clean text"
+
+        entries = [
+            {
+                "type": "user",
+                "uuid": u1,
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": msg1_text},
+            },
+            {
+                "type": "assistant",
+                "uuid": u2,
+                "parentUuid": u1,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:01Z",
+                "message": {"role": "assistant", "content": msg2_text},
+            },
+            {
+                "type": "user",
+                "uuid": u3,
+                "parentUuid": u2,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:02Z",
+                "message": {"role": "user", "content": msg3_text},
+            },
+            {
+                "type": "assistant",
+                "uuid": u4,
+                "parentUuid": u3,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:03Z",
+                "message": {"role": "assistant", "content": msg4_text},
+            },
+        ]
+
+        # Write lines using ensure_ascii=False to replicate unescaped Unicode in JSONL
+        raw_lines = [
+            json.dumps(e, ensure_ascii=False, separators=(",", ":")) for e in entries
+        ]
+        file_path.write_bytes(("\n".join(raw_lines) + "\n").encode("utf-8"))
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+        assert fork_path.exists()
+
+        forked_entries = []
+        for line in fork_path.read_text(encoding="utf-8").split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            forked_entries.append(json.loads(line))
+
+        # Filter transcript messages
+        forked_msgs = [
+            e for e in forked_entries if e.get("type") in ("user", "assistant")
+        ]
+
+        # All 4 messages must be preserved (none dropped)
+        assert len(forked_msgs) == 4
+
+        # Verify parentUuid chain is unbroken
+        assert forked_msgs[0]["parentUuid"] is None
+        assert forked_msgs[1]["parentUuid"] == forked_msgs[0]["uuid"]
+        assert forked_msgs[2]["parentUuid"] == forked_msgs[1]["uuid"]
+        assert forked_msgs[3]["parentUuid"] == forked_msgs[2]["uuid"]
+
+        # Verify contents are preserved intact
+        assert forked_msgs[0]["message"]["content"] == msg1_text
+        assert forked_msgs[1]["message"]["content"] == msg2_text
+        assert forked_msgs[2]["message"]["content"] == msg3_text
+        assert forked_msgs[3]["message"]["content"] == msg4_text
+
+        # Verify sessionId and forkedFrom references
+        for orig, forked in zip(entries, forked_msgs, strict=True):
+            assert forked["sessionId"] == result.session_id
+            assert forked["uuid"] != orig["uuid"]
+            assert forked["forkedFrom"]["sessionId"] == sid
+            assert forked["forkedFrom"]["messageUuid"] == orig["uuid"]
+
+    def test_fork_preserves_crlf_and_unicode_separators(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Fork handles Windows CRLF line endings combined with Unicode separators."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+
+        u1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        entries = [
+            {
+                "type": "user",
+                "uuid": u1,
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "Line\u2028One"},
+            },
+            {
+                "type": "assistant",
+                "uuid": u2,
+                "parentUuid": u1,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:01Z",
+                "message": {"role": "assistant", "content": "Line\u2029Two"},
+            },
+        ]
+        raw_lines = [
+            json.dumps(e, ensure_ascii=False, separators=(",", ":")) for e in entries
+        ]
+        # Join with CRLF (\r\n)
+        file_path.write_bytes(("\r\n".join(raw_lines) + "\r\n").encode("utf-8"))
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+
+        forked_entries = [
+            json.loads(ln)
+            for ln in fork_path.read_text(encoding="utf-8").split("\n")
+            if ln.strip()
+        ]
+        forked_msgs = [
+            e for e in forked_entries if e.get("type") in ("user", "assistant")
+        ]
+        assert len(forked_msgs) == 2
+        assert forked_msgs[0]["parentUuid"] is None
+        assert forked_msgs[1]["parentUuid"] == forked_msgs[0]["uuid"]

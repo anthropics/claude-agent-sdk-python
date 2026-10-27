@@ -463,6 +463,52 @@ class TestClaudeSDKClientResourceCleanup:
 
         anyio.run(_test)
 
+    @staticmethod
+    async def _client_with_buffered(*texts, result=False):
+        """Connected client whose message stream already holds these messages."""
+        from claude_agent_sdk import ClaudeSDKClient
+        from claude_agent_sdk._internal.query import Query
+
+        mock_transport = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        async def blocking_read():
+            await anyio.Event().wait()  # never set
+            yield {}  # pragma: no cover - unreachable
+
+        mock_transport.read_messages = blocking_read
+
+        client = ClaudeSDKClient(transport=mock_transport)
+        client._transport = mock_transport
+        query = Query(transport=mock_transport, is_streaming_mode=True)
+        client._query = query
+        await query.start()
+        for text in texts:
+            query._message_send.send_nowait(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "model": "m",
+                        "content": [{"type": "text", "text": text}],
+                    },
+                    "parent_tool_use_id": None,
+                }
+            )
+        if result:
+            query._message_send.send_nowait(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1,
+                    "duration_api_ms": 1,
+                    "is_error": False,
+                    "num_turns": 1,
+                    "session_id": "s",
+                }
+            )
+        return client, query
+
     @pytest.mark.parametrize("backend", ["asyncio", "trio"])
     def test_disconnect_lets_busy_reader_drain_buffer(self, backend):
         """A reader in user code when another task disconnects keeps its messages.
@@ -471,38 +517,10 @@ class TestClaudeSDKClientResourceCleanup:
         receive_nowait() raise ClosedResourceError with messages still
         buffered. The stream must close once that reader finishes instead.
         """
-        from claude_agent_sdk import ClaudeSDKClient
-        from claude_agent_sdk._internal.query import Query
 
         async def _test():
             with anyio.fail_after(5.0):
-                mock_transport = AsyncMock()
-                mock_transport.is_ready = Mock(return_value=True)
-
-                async def blocking_read():
-                    await anyio.Event().wait()  # never set
-                    yield {}  # pragma: no cover - unreachable
-
-                mock_transport.read_messages = blocking_read
-
-                client = ClaudeSDKClient(transport=mock_transport)
-                client._transport = mock_transport
-                query = Query(transport=mock_transport, is_streaming_mode=True)
-                client._query = query
-                await query.start()
-                for i in range(3):
-                    query._message_send.send_nowait(
-                        {
-                            "type": "assistant",
-                            "message": {
-                                "role": "assistant",
-                                "model": "m",
-                                "content": [{"type": "text", "text": str(i)}],
-                            },
-                            "parent_tool_use_id": None,
-                        }
-                    )
-
+                client, query = await self._client_with_buffered("0", "1", "2")
                 received = []
                 reader_errors: list[BaseException] = []
                 got_first = anyio.Event()
@@ -528,5 +546,82 @@ class TestClaudeSDKClientResourceCleanup:
                 assert [m.content[0].text for m in received] == ["0", "1", "2"]
                 with pytest.raises(anyio.ClosedResourceError):
                     query._message_receive.receive_nowait()
+
+        anyio.run(_test, backend=backend)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_disconnect_closes_stream_after_receive_response(self, backend):
+        """receive_response() ends its iteration itself, so nothing waits on GC."""
+
+        async def _test():
+            client, query = await self._client_with_buffered("0", result=True)
+            received = [msg async for msg in client.receive_response()]
+            assert len(received) == 2
+            await client.disconnect()
+            with pytest.raises(anyio.ClosedResourceError):
+                query._message_receive.receive_nowait()
+
+        anyio.run(_test, backend=backend)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_disconnect_waits_for_every_active_reader(self, backend):
+        """With two readers, the stream stays open until the second one ends."""
+        from contextlib import aclosing
+
+        async def _test():
+            with anyio.fail_after(5.0):
+                client, query = await self._client_with_buffered("0", "1", "2")
+                both_reading = [anyio.Event(), anyio.Event()]
+                release = [anyio.Event(), anyio.Event()]
+                second_got: list[str] = []
+
+                async def first():
+                    async with aclosing(client.receive_messages()) as messages:
+                        async for _ in messages:
+                            both_reading[0].set()
+                            await release[0].wait()
+                            break
+
+                async def second():
+                    async for msg in client.receive_messages():
+                        if not both_reading[1].is_set():
+                            both_reading[1].set()
+                            await release[1].wait()
+                        else:
+                            second_got.append(msg.content[0].text)
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(first)
+                    await both_reading[0].wait()
+                    tg.start_soon(second)
+                    await both_reading[1].wait()
+                    await client.disconnect()
+                    release[0].set()
+                    await anyio.sleep(0.05)
+                    # First reader is done; the second is still iterating.
+                    assert query._receive_close_pending
+                    assert query._active_receivers == 1
+                    release[1].set()
+
+                assert second_got == ["2"]
+                with pytest.raises(anyio.ClosedResourceError):
+                    query._message_receive.receive_nowait()
+
+        anyio.run(_test, backend=backend)
+
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_disconnect_with_abandoned_reader_closes_on_aclose(self, backend):
+        """An iteration left suspended by break keeps the close pending until closed."""
+
+        async def _test():
+            client, query = await self._client_with_buffered("0", "1")
+            messages = client.receive_messages()
+            async for _ in messages:
+                break
+            await client.disconnect()
+            assert query._receive_close_pending
+            await messages.aclose()
+            with pytest.raises(anyio.ClosedResourceError):
+                query._message_receive.receive_nowait()
 
         anyio.run(_test, backend=backend)

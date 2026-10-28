@@ -2111,6 +2111,195 @@ class TestControlCancelRequest:
         )
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+    @pytest.mark.parametrize("subtype", ["can_use_tool", "hook_callback"])
+    @pytest.mark.parametrize("origin", ["future", "raise", "self_cancel"])
+    async def test_callback_raising_cancelled_error_still_answers(
+        self, subtype, origin
+    ):
+        """A callback that raises CancelledError on its own (e.g. it awaited an
+        approval future the app cancelled) gets an error response. Nobody
+        cancelled the request, so the CLI must not be left waiting for one.
+
+        asyncio only: trio's Cancelled can't be raised by user code.
+        """
+        import asyncio
+
+        async def cancelled_await():
+            if origin == "raise":
+                raise asyncio.CancelledError
+            if origin == "self_cancel":
+                asyncio.current_task().cancel()
+                await asyncio.sleep(0)
+            fut = asyncio.get_running_loop().create_future()
+            fut.cancel()
+            await fut
+
+        async def can_use_tool(tool_name, tool_input, context):
+            await cancelled_await()
+
+        async def hook(input_data, tool_use_id, context):
+            await cancelled_await()
+
+        request = {"subtype": subtype}
+        if subtype == "can_use_tool":
+            request.update({"tool_name": "Bash", "input": {"command": "ls"}})
+        else:
+            request["callback_id"] = "hook_0"
+
+        mock_transport = AsyncMock()
+        emitted: list[dict] = []
+        answered = anyio.Event()
+
+        async def mock_receive():
+            yield {"type": "control_request", "request_id": "req_1", "request": request}
+            await answered.wait()
+
+        async def mock_write(data):
+            emitted.append(json.loads(data))
+            answered.set()
+
+        mock_transport.read_messages = mock_receive
+        mock_transport.write = mock_write
+        mock_transport.close = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        q = Query(
+            transport=mock_transport,
+            is_streaming_mode=True,
+            can_use_tool=can_use_tool,
+        )
+        q.hook_callbacks["hook_0"] = hook
+
+        await q.start()
+        with anyio.fail_after(5):
+            await answered.wait()
+        await q.close()
+
+        responses = [m for m in emitted if m.get("type") == "control_response"]
+        assert len(responses) == 1
+        assert responses[0]["response"]["subtype"] == "error"
+        assert responses[0]["response"]["request_id"] == "req_1"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+    @pytest.mark.parametrize("subtype", ["can_use_tool", "hook_callback"])
+    @pytest.mark.parametrize("origin", ["task", "scope", "timeout", "race", "close"])
+    @pytest.mark.parametrize("suppress_cancellation", [False, True])
+    async def test_external_cancellation_preserved(
+        self, subtype, origin, suppress_cancellation
+    ):
+        import asyncio
+
+        started = asyncio.Event()
+        finished = asyncio.Event()
+        release = asyncio.Event()
+
+        async def callback(*args):
+            started.set()
+            try:
+                await release.wait()
+                raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                if not suppress_cancellation:
+                    raise
+                return PermissionResultAllow() if subtype == "can_use_tool" else {}
+            finally:
+                finished.set()
+
+        transport = AsyncMock()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=callback
+        )
+        query.hook_callbacks["hook_0"] = callback
+        request = {
+            "type": "control_request",
+            "request_id": "req_1",
+            "request": {
+                "subtype": subtype,
+                "tool_name": "Bash",
+                "input": {},
+                "callback_id": "hook_0",
+            },
+        }
+
+        async def handle():
+            if origin == "scope":
+                with anyio.CancelScope() as scope:
+                    scopes.append(scope)
+                    await query._handle_control_request(request)
+                return
+            await query._handle_control_request(request)
+
+        scopes = []
+        task = asyncio.create_task(handle())
+        with anyio.fail_after(5):
+            await started.wait()
+            if origin == "scope":
+                scopes[0].cancel()
+                await task
+            elif origin == "timeout":
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(task, timeout=0.01)
+            else:
+                if origin == "race":
+                    release.set()
+                if origin == "close":
+                    query._child_tasks.add(task_handle := Mock())
+                    task_handle.cancel.side_effect = task.cancel
+                    await query.close()
+                else:
+                    task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert task.cancelled()
+            await finished.wait()
+        transport.write.assert_not_awaited()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+    @pytest.mark.parametrize("callback_fails", [False, True])
+    async def test_cancellation_during_response_write_propagates(self, callback_fails):
+        import asyncio
+
+        writing = asyncio.Event()
+
+        async def callback(*args):
+            if callback_fails:
+                raise asyncio.CancelledError
+            return PermissionResultAllow()
+
+        async def write(data):
+            writing.set()
+            await asyncio.Event().wait()
+
+        transport = AsyncMock()
+        transport.write.side_effect = write
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=callback
+        )
+        task = asyncio.create_task(
+            query._handle_control_request(
+                {
+                    "type": "control_request",
+                    "request_id": "req_1",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Bash",
+                        "input": {},
+                    },
+                }
+            )
+        )
+        with anyio.fail_after(5):
+            await writing.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert task.cancelled()
+        transport.write.assert_awaited_once()
+
+    @pytest.mark.anyio
     async def test_cancel_request_for_unknown_id_is_noop(self):
         """A control_cancel_request for an unknown request_id should not raise."""
         mock_transport = _make_mock_transport(
@@ -2160,6 +2349,9 @@ class TestControlCancelRequest:
         async for msg in q.receive_messages():
             if msg.get("type") == "result":
                 break
+        with anyio.fail_after(5):
+            if handler := q._inflight_requests.get("fast_1"):
+                await handler.wait()
         await anyio.sleep(0)
         await q.close()
 

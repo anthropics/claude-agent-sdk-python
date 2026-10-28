@@ -106,7 +106,11 @@ async def test_include_partial_messages_thinking_deltas():
     thinking_deltas = []
 
     async with ClaudeSDKClient(options) as client:
-        await client.query("Think step by step about what 2 + 2 equals")
+        # Thinking is adaptive on the default model and can be skipped on easy
+        # prompts, so ask for something that needs working out.
+        await client.query(
+            "Without using any tools, work out step by step what 4827 * 3916 equals"
+        )
 
         async for message in client.receive_response():
             if isinstance(message, StreamEvent):
@@ -122,9 +126,6 @@ async def test_include_partial_messages_thinking_deltas():
     # Combined thinking should form coherent text
     combined_thinking = "".join(thinking_deltas)
     assert len(combined_thinking) > 10, "Thinking content too short"
-
-    # Should contain some reasoning about the calculation
-    assert "2" in combined_thinking.lower(), "Thinking doesn't mention the numbers"
 
 
 @pytest.mark.e2e

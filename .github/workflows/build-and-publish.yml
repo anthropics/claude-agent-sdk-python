@@ -28,12 +28,12 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          pip install build twine wheel
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
           pip install --require-hashes --only-binary :all: -r scripts/requirements-recompress.txt
         shell: bash
 
       - name: Build wheel with bundled CLI
-        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli
+        run: python scripts/build_wheel.py --version "${{ inputs.version }}" --skip-sdist --clean --recompress zopfli --no-isolation
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -48,6 +48,8 @@ jobs:
     environment: production
     permissions:
       contents: read
+      # Required to mint the OIDC token that twine exchanges for a PyPI upload token (trusted publishing)
+      id-token: write
     env:
       VERSION: ${{ inputs.version }}
     steps:
@@ -88,11 +90,12 @@ jobs:
           echo "All ${#expected[@]} expected wheels present ✓"
 
       - name: Install build dependencies
-        run: pip install build twine
+        run: |
+          pip install --require-hashes --only-binary :all: -r scripts/requirements-build.txt
 
       - name: Build sdist
         run: |
-          python -m build --sdist --outdir sdist/
+          python -m build --sdist --no-isolation --outdir sdist/
           ls -la sdist/
 
       - name: Pre-flight PyPI quota check
@@ -219,12 +222,12 @@ jobs:
         # even if wheel uploads fail partway. --skip-existing makes re-runs
         # safe after a partial upload (PyPI rejects re-uploads of identical
         # filenames, which would otherwise abort the whole job).
+        # No token is set, so twine uses trusted publishing. PyPI matches the
+        # workflow that runs this job, build-and-publish.yml (not its callers),
+        # and accepts only jobs in the `production` environment.
         run: |
           twine upload --skip-existing sdist/*.tar.gz
           twine upload --skip-existing dist/*.whl
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
   # Claude writes the changelog in a job of its own, which holds none of the
   # publishing credentials. It runs once the upload to PyPI is done, so nothing

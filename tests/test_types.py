@@ -15,6 +15,8 @@ from claude_agent_sdk import (
     PostToolUseHookInput,
     PreToolUseHookInput,
     ResultMessage,
+    SandboxIgnoreViolations,
+    SandboxSettings,
     StopHookInput,
     SubagentStartHookInput,
     SubagentStartHookSpecificOutput,
@@ -82,6 +84,13 @@ def test_literal_unions_cover_what_the_cli_sends():
         "projects-relay",
         "session-inbox",
     }
+
+
+def test_sandbox_ignore_violations_is_command_pattern_map():
+    """ignoreViolations matches the CLI schema: command pattern -> substrings."""
+    assert SandboxIgnoreViolations == dict[str, list[str]]
+    hints = get_type_hints(SandboxSettings)
+    assert hints["ignoreViolations"] == dict[str, list[str]]
 
 
 class TestPermissionUpdate:

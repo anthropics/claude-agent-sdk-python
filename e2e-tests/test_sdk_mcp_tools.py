@@ -74,7 +74,6 @@ async def test_sdk_mcp_permission_enforcement():
     )
 
     options = ClaudeAgentOptions(
-        model="claude-opus-4-5",
         mcp_servers={"test": server},
         disallowed_tools=["mcp__test__echo"],  # Block echo tool
         allowed_tools=["mcp__test__greet"],  # But allow greet

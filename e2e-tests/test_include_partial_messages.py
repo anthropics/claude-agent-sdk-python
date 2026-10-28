@@ -28,7 +28,6 @@ async def test_include_partial_messages_stream_events():
 
     options = ClaudeAgentOptions(
         include_partial_messages=True,
-        model="claude-sonnet-4-5",
         max_turns=2,
         env={
             "MAX_THINKING_TOKENS": "8000",
@@ -100,7 +99,6 @@ async def test_include_partial_messages_thinking_deltas():
     # empty text.
     options = ClaudeAgentOptions(
         include_partial_messages=True,
-        model="claude-sonnet-4-5",
         max_turns=2,
         thinking={"type": "enabled", "budget_tokens": 8000, "display": "summarized"},
     )
@@ -136,7 +134,6 @@ async def test_partial_messages_disabled_by_default():
 
     options = ClaudeAgentOptions(
         # include_partial_messages not set (defaults to False)
-        model="claude-sonnet-4-5",
         max_turns=2,
     )
 

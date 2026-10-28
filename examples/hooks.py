@@ -246,7 +246,7 @@ async def example_decision_fields() -> None:
 
     options = ClaudeAgentOptions(
         allowed_tools=["Write", "Bash"],
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-6",
         hooks={
             "PreToolUse": [
                 HookMatcher(matcher="Write", hooks=[strict_approval_hook]),

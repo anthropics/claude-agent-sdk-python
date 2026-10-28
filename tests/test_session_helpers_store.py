@@ -800,23 +800,28 @@ class TestForkSessionViaStore:
             {kept, boundary_id} if partial else {kept, boundary_id, anchor}
         )
         # A cutoff before the anchor must not pull the excluded source record in.
-        expected_anchor = anchor if partial else mapping[anchor]
         boundary = next(entry for entry in messages if entry["type"] == "system")
-        assert boundary["compactMetadata"] == {
+        expected = {
             "trigger": "auto",
             "preTokens": 10000,
-            "preservedSegment": {
-                "headUuid": mapping[kept],
-                "tailUuid": mapping[kept],
-                "anchorUuid": expected_anchor,
-            },
-            "preservedMessages": {
-                "anchorUuid": expected_anchor,
-                "uuids": [mapping[kept]],
-                "allUuids": [mapping[kept], missing],
-                "extra": kept,
-            },
         }
+        if not partial:
+            expected.update(
+                {
+                    "preservedSegment": {
+                        "headUuid": mapping[kept],
+                        "tailUuid": mapping[kept],
+                        "anchorUuid": mapping[anchor],
+                    },
+                    "preservedMessages": {
+                        "anchorUuid": mapping[anchor],
+                        "uuids": [mapping[kept]],
+                        "allUuids": [mapping[kept], missing],
+                        "extra": kept,
+                    },
+                }
+            )
+        assert boundary["compactMetadata"] == expected
         assert messages[0]["message"]["content"] == kept
         assert store.get_entries(key) == original
 

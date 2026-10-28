@@ -682,6 +682,14 @@ class TestForkSession:
             None,
             "unchanged",
             {"preservedSegment": []},
+            {"runningTurnSends": []},
+            {
+                "runningTurnSends": {
+                    "openerUuid": [],
+                    "uuids": "unchanged",
+                    "summarisedOnly": [None, {}, []],
+                }
+            },
             {
                 "preservedMessages": {
                     "anchorUuid": [],

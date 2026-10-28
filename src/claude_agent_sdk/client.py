@@ -255,7 +255,9 @@ class ClaudeSDKClient:
                 json.dumps(stamp_user_message(message, self._verbatim_prompts)) + "\n"
             )
         elif prompt is not None and isinstance(prompt, AsyncIterable):
-            self._query.spawn_task(self._query.stream_input(prompt))
+            # Like a string prompt, the stream only opens the session: stdin
+            # stays open for later query() calls until disconnect().
+            self._query.spawn_task(self._query.stream_input(prompt, end_input=False))
 
     async def receive_messages(self) -> AsyncIterator[Message]:
         """Receive all messages from Claude."""

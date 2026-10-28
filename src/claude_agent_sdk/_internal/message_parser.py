@@ -15,6 +15,7 @@ from ..types import (
     MirrorErrorMessage,
     RateLimitEvent,
     RateLimitInfo,
+    RedactedThinkingBlock,
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
@@ -174,6 +175,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     thinking=block["thinking"],
                                     signature=block["signature"],
                                 )
+                            )
+                        case "redacted_thinking":
+                            content_blocks.append(
+                                RedactedThinkingBlock(data=block["data"])
                             )
                         case "tool_use":
                             content_blocks.append(

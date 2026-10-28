@@ -108,6 +108,20 @@ def _fold_first_prompt(data: dict[str, Any], entry: dict[str, Any]) -> None:
         data["first_prompt_locked"] = True
         return
 
+    if not data.get("media_fallback") and isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "image":
+                    data["media_fallback"] = "Image"
+                    break
+                if btype == "document":
+                    data["media_fallback"] = "Document"
+                    break
+
 
 def fold_session_summary(
     prev: SessionSummaryEntry | None,
@@ -212,6 +226,7 @@ def summary_entry_to_sdk_info(
         or data.get("last_prompt")
         or data.get("summary_hint")
         or first_prompt
+        or data.get("media_fallback")
     )
     if not summary:
         return None

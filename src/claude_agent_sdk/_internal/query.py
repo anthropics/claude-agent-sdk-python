@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -317,6 +322,7 @@ class Query:
 
         # Build hooks configuration for initialization
         hooks_config: dict[str, Any] = {}
+        blocks_on_failure = False
         if self.hooks:
             for event, matchers in self.hooks.items():
                 if matchers:
@@ -336,6 +342,7 @@ class Query:
                             hook_matcher_config["timeout"] = matcher.get("timeout")
                         if matcher.get("on_failure") is not None:
                             hook_matcher_config["onFailure"] = matcher.get("on_failure")
+                            blocks_on_failure |= matcher.get("on_failure") == "block"
                         hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request
@@ -360,6 +367,13 @@ class Query:
         response = await self._send_control_request(
             request, timeout=self._initialize_timeout
         )
+        # A CLI that predates onFailure drops the field and answers normally, so
+        # a guard set to fail closed would fail open with no signal.
+        if blocks_on_failure and not response.get("hook_on_failure_supported"):
+            raise CLIConnectionError(
+                'A hook matcher sets on_failure="block", but this Claude Code '
+                "CLI doesn't support it. Update the CLI, or remove on_failure."
+            )
         self._initialized = True
         self._initialization_result = response  # Store for later access
         return response

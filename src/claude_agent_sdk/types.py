@@ -859,7 +859,8 @@ class HookMatcher:
     # are not a failure. Stop, SubagentStop, TaskCompleted and TeammateIdle
     # ignore this option. A PermissionRequest block counts only if it lands
     # before can_use_tool answers. Unset or "continue" counts a failure as no
-    # decision. An older CLI ignores this field.
+    # decision. With "block", connecting to a CLI too old to honor it raises
+    # CLIConnectionError.
     on_failure: Literal["continue", "block"] | None = None
 
 

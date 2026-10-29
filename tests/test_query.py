@@ -30,7 +30,7 @@ from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
 from claude_agent_sdk.types import HookMatcher, _hooks_to_internal_format
 
 
-def _capture_initialize_request(**query_kwargs):
+def _capture_initialize_request(reply=None, **query_kwargs):
     """Run Query.initialize() with a stubbed control channel and return the request dict."""
     captured: dict = {}
 
@@ -41,7 +41,7 @@ def _capture_initialize_request(**query_kwargs):
 
         async def fake_send(request, timeout):
             captured.update(request)
-            return {"commands": []}
+            return {"commands": []} if reply is None else reply
 
         with patch.object(q, "_send_control_request", side_effect=fake_send):
             await q.initialize()
@@ -102,8 +102,25 @@ async def _noop_hook(input_data, tool_use_id, context):
 def test_initialize_sends_hook_on_failure(on_failure):
     """HookMatcher.on_failure reaches the CLI as onFailure on the matcher."""
     hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure=on_failure)]}
-    sent = _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
+    sent = _capture_initialize_request(
+        reply={"hook_on_failure_supported": True},
+        hooks=_hooks_to_internal_format(hooks),
+    )
     assert sent["hooks"]["PreToolUse"][0]["onFailure"] == on_failure
+
+
+def test_initialize_refuses_block_when_cli_lacks_on_failure():
+    """A CLI that doesn't report support can't honor on_failure="block"."""
+    hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure="block")]}
+    with pytest.raises(CLIConnectionError, match="on_failure"):
+        _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
+
+
+def test_initialize_allows_continue_when_cli_lacks_on_failure():
+    """Only "block" needs CLI support; "continue" matches an older CLI's behavior."""
+    hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure="continue")]}
+    sent = _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
+    assert sent["hooks"]["PreToolUse"][0]["onFailure"] == "continue"
 
 
 def test_initialize_omits_hook_on_failure_when_unset():

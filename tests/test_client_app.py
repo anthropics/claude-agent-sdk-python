@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -112,6 +113,10 @@ class TestNormalize:
         assert _format_client_app("my-app", None) == "my-app"
         assert _format_client_app("my-app", "1 (dev)") == "my-app"
 
+    def test_strips_a_local_version_part(self):
+        assert _format_client_app("my-app", "1.2.3+alice.laptop") == "my-app/1.2.3"
+        assert _format_client_app("my-app", "+alice.laptop") == "my-app"
+
 
 class TestDeriveFromMain:
     def test_names_the_distribution_behind_python_m(self, tmp_path):
@@ -183,6 +188,23 @@ class TestDeriveFromMain:
         )
         assert result.stdout.strip() == "None"
 
+    def test_skips_a_namespace_package_shared_by_two_distributions(self):
+        with (
+            patch.object(
+                sys.modules["__main__"],
+                "__spec__",
+                SimpleNamespace(name="acme.support"),
+                create=True,
+            ),
+            patch(
+                "importlib.metadata.packages_distributions",
+                return_value={"acme": ["acme-billing", "acme-support"]},
+            ),
+            patch("importlib.metadata.requires", return_value=["claude-agent-sdk"]),
+            patch("importlib.metadata.version", return_value="1.0.0"),
+        ):
+            assert derive_client_app() is None
+
     def test_skips_a_generic_distribution_name(self, tmp_path):
         _install_package(tmp_path, package="app", distribution="app")
         assert _run_module(tmp_path, "app") == "None"
@@ -231,6 +253,7 @@ def _env_passed_to_subprocess(
     options: ClaudeAgentOptions,
     derived: str | None = "my-agent/1.2.3",
     ambient: dict[str, str] | None = None,
+    cli_version: bytes = b"2.1.500 (Claude Code)",
 ) -> dict[str, str]:
     async def _connect() -> dict[str, str]:
         with (
@@ -239,20 +262,26 @@ def _env_passed_to_subprocess(
                 "claude_agent_sdk._internal.transport.subprocess_cli.derive_client_app",
                 return_value=derived,
             ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli"
+                ".DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION",
+                "2.1.500",
+            ),
             patch.dict(os.environ, ambient or {}),
         ):
             version_process = MagicMock()
-            version_process.stdout.receive = AsyncMock(
-                return_value=b"2.0.0 (Claude Code)"
-            )
+            version_process.stdout.receive = AsyncMock(return_value=cli_version)
             version_process.wait = AsyncMock()
             process = MagicMock()
             process.stdin.aclose = AsyncMock()
             process.returncode = None
-            mock_open_process.side_effect = [version_process, process]
+            skips_probe = bool(os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"))
+            mock_open_process.side_effect = (
+                [process] if skips_probe else [version_process, process]
+            )
             transport = SubprocessCLITransport(prompt="test", options=options)
             await transport.connect()
-            return mock_open_process.call_args_list[1].kwargs["env"]
+            return mock_open_process.call_args_list[-1].kwargs["env"]
 
     return anyio.run(_connect)
 
@@ -335,4 +364,31 @@ class TestPrecedence:
             self._options(client_app=""),
             ambient={DERIVED_CLIENT_APP_ENV: "outer-app"},
         )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_for_a_cli_below_the_minimum(self):
+        env = _env_passed_to_subprocess(
+            self._options(),
+            ambient={DERIVED_CLIENT_APP_ENV: "outer-app"},
+            cli_version=b"2.1.499 (Claude Code)",
+        )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_for_a_cli_of_unknown_version(self):
+        env = _env_passed_to_subprocess(self._options(), cli_version=b"unparseable")
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_when_the_version_check_is_skipped(self):
+        env = _env_passed_to_subprocess(
+            self._options(), ambient={"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"}
+        )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_a_failed_scan_does_not_stop_connect(self):
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli"
+            ".anyio.to_thread.run_sync",
+            side_effect=RuntimeError("can't start new thread"),
+        ):
+            env = _env_passed_to_subprocess(self._options())
         assert DERIVED_CLIENT_APP_ENV not in env

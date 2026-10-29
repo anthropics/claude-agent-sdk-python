@@ -3,7 +3,8 @@
 The derived value travels apart from ``CLAUDE_AGENT_SDK_CLIENT_APP`` because
 auth is decided in the subprocess: the CLI sends it for a subscription login
 and otherwise drops it, so an API customer's package name never leaves the
-machine. CLIs that predate the variable ignore it.
+machine. It is set only for a CLI that keeps it from shell commands, hooks and
+MCP and LSP servers.
 """
 
 import functools
@@ -47,7 +48,9 @@ def _normalize(value: str) -> str | None:
 def _format_client_app(name: str, version: str | None) -> str | None:
     if name.lower() in _GENERIC_NAMES:
         return None
-    label = _normalize(f"{name}/{version}") if version else None
+    # A local version part ("1.2.3+alice.laptop") can name a person or a machine.
+    public_version = version.partition("+")[0] if version else None
+    label = _normalize(f"{name}/{public_version}") if public_version else None
     return label or _normalize(name)
 
 
@@ -65,7 +68,7 @@ def derive_client_app() -> str | None:
     """Name the running app from its installed distribution.
 
     Returns None when nothing reliable names it: a plain script, a package with
-    no installed distribution, or a generic name. Never raises, and never
+    no installed distribution or several, or a generic name. Never raises, and never
     returns a path. Cached because ``packages_distributions()`` reads the
     metadata of every installed distribution; call it off the event loop.
     """
@@ -75,10 +78,12 @@ def derive_client_app() -> str | None:
         if spec is None or spec.name == "__main__":
             return None
         top_level_package = spec.name.partition(".")[0]
-        distributions = importlib.metadata.packages_distributions().get(
-            top_level_package, []
+        distributions = set(
+            importlib.metadata.packages_distributions().get(top_level_package, [])
         )
-        for distribution in distributions:
+        # More than one is a namespace package: nothing says which one is running.
+        if len(distributions) == 1:
+            distribution = distributions.pop()
             if _requires_agent_sdk(distribution):
                 return _format_client_app(
                     distribution, importlib.metadata.version(distribution)

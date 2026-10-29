@@ -43,6 +43,11 @@ MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 # First Claude Code version that honors `client_composed` on user messages,
 # which `ClaudeAgentOptions.verbatim_prompts` relies on.
 VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = "2.1.248"
+# First Claude Code version that keeps the derived app label from shell commands,
+# hooks and MCP and LSP servers; an older one passes the variable on to them,
+# where it can reach a request on any login. Above every release until one does,
+# so no label is derived before then.
+DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION = "999.0.0"
 # Asks the CLI for `session_state_changed` frames marked `sdk_host_only`, which
 # Query reads to tell when the run is over and keeps out of the caller's
 # stream (see Query._read_messages). CLIs that predate it send no frames.
@@ -811,8 +816,9 @@ class SubprocessCLITransport(Transport):
         # this guards the version probe below as well as the main spawn.
         self._reject_windows_batch_cli(self._cli_path)
 
+        cli_version: list[int] | None = None
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
-            await self._check_claude_version()
+            cli_version = await self._check_claude_version()
 
         cmd = self._build_command()
         try:
@@ -835,7 +841,7 @@ class SubprocessCLITransport(Transport):
             if self._options.client_app is not None:
                 process_env[EXPLICIT_CLIENT_APP_ENV] = self._options.client_app
             if EXPLICIT_CLIENT_APP_ENV not in process_env:
-                derived_client_app = await anyio.to_thread.run_sync(derive_client_app)
+                derived_client_app = await self._derive_client_app(cli_version)
                 if derived_client_app is not None:
                     process_env[DERIVED_CLIENT_APP_ENV] = derived_client_app
 
@@ -1176,17 +1182,41 @@ class SubprocessCLITransport(Transport):
             )
             raise self._exit_error
 
-    async def _check_claude_version(self) -> None:
-        """Check Claude Code version and warn if below minimum."""
+    @staticmethod
+    async def _derive_client_app(cli_version: list[int] | None) -> str | None:
+        """Name the app for a CLI that keeps the label from what it spawns.
+
+        A CLI of unknown version counts as too old.
+        """
+        try:
+            minimum = [
+                int(x)
+                for x in DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION.split(".")
+            ]
+            if cli_version is None or cli_version < minimum:
+                return None
+            return await anyio.to_thread.run_sync(derive_client_app)
+        except Exception:  # noqa: BLE001 - a label must never break connect()
+            logger.debug("Could not derive an app label", exc_info=True)
+            return None
+
+    async def _check_claude_version(self) -> list[int] | None:
+        """Warn if Claude Code is below minimum, and return its version if read."""
         if self._cli_path is None:
             raise CLINotFoundError("CLI path not resolved. Call connect() first.")
+        cli_version: list[int] | None = None
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
+                # Spawn as connect() does, so the probe resolves the same binary
+                # and runs it as options.user rather than as this process.
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
                     stdout=PIPE,
                     stderr=PIPE,
+                    cwd=self._cwd,
+                    env={**os.environ, **self._options.env},
+                    user=self._options.user,
                 )
 
                 if version_process.stdout:
@@ -1197,6 +1227,7 @@ class SubprocessCLITransport(Transport):
                     if match:
                         version = match.group(1)
                         version_parts = [int(x) for x in version.split(".")]
+                        cli_version = version_parts
                         min_parts = [
                             int(x) for x in MINIMUM_CLAUDE_CODE_VERSION.split(".")
                         ]
@@ -1237,6 +1268,7 @@ class SubprocessCLITransport(Transport):
                     version_process.terminate()
                 with suppress(Exception):
                     await version_process.wait()
+        return cli_version
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

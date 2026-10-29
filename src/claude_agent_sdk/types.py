@@ -2804,8 +2804,10 @@ class ClaudeAgentOptions:
     in with a Claude subscription send the name and version of the installed
     distribution behind ``python -m <package>``, if it depends on this SDK. API
     key, Bedrock, Vertex and Foundry sessions do not, and neither does a session
-    with telemetry turned off. Pass an empty string to send no identifier. Needs
-    a Claude Code version that reads the derived value; older ones ignore it.
+    with telemetry turned off. Pass an empty string to send no identifier. No
+    released Claude Code qualifies yet: nothing is derived for a version that does
+    not keep the value from shell commands, hooks and MCP and LSP servers, or one
+    whose version check failed or was skipped.
     """
 
 

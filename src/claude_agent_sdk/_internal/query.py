@@ -229,6 +229,10 @@ class Query:
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
         ](max_buffer_size=100)
+        # receive_messages() iterations in progress, and whether
+        # close_receive_stream() was asked for while one was running
+        self._active_receivers = 0
+        self._receive_close_pending = False
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
@@ -1134,17 +1138,23 @@ class Query:
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
-        async for message in self._message_receive:
-            # Check for special messages
-            if message.get("type") == "end":
-                break
-            elif message.get("type") == "error":
-                exc = message.get("exception")
-                if isinstance(exc, Exception):
-                    raise exc
-                raise Exception(message.get("error", "Unknown error"))
+        self._active_receivers += 1
+        try:
+            async for message in self._message_receive:
+                # Check for special messages
+                if message.get("type") == "end":
+                    break
+                elif message.get("type") == "error":
+                    exc = message.get("exception")
+                    if isinstance(exc, Exception):
+                        raise exc
+                    raise Exception(message.get("error", "Unknown error"))
 
-            yield message
+                yield message
+        finally:
+            self._active_receivers -= 1
+            if self._receive_close_pending and not self._active_receivers:
+                self._message_receive.close()
 
     async def close(self) -> None:
         """Close the query and transport.
@@ -1212,9 +1222,14 @@ class Query:
         Call once the consumer has finished iterating ``receive_messages()``.
         ``close()`` leaves this open so a still-draining consumer can read
         buffered messages; the consumer is responsible for closing it to
-        avoid a ``ResourceWarning`` from anyio's ``__del__``.
+        avoid a ``ResourceWarning`` from anyio's ``__del__``. If another task
+        is still iterating ``receive_messages()`` (``ClaudeSDKClient.disconnect()``
+        called from outside the reader), the close is deferred until that
+        iteration ends so the reader can drain the buffer.
         """
-        self._message_receive.close()
+        self._receive_close_pending = True
+        if not self._active_receivers:
+            self._message_receive.close()
 
     # Make Query an async iterator
     def __aiter__(self) -> AsyncIterator[dict[str, Any]]:

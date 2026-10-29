@@ -367,16 +367,25 @@ class Query:
         response = await self._send_control_request(
             request, timeout=self._initialize_timeout
         )
-        # A responder that doesn't honor onFailure, such as a CLI that predates
-        # it, drops the field and answers normally, so a guard set to fail
-        # closed would fail open with no signal.
-        if blocks_on_failure and not response.get("hook_on_failure_supported"):
-            raise CLIConnectionError(
-                "The process answering initialize does not honor on_failure on "
-                "hook matchers, so a hook that fails would not block. Update "
-                'Claude Code if it is old, or remove on_failure="block" from '
-                "your hooks."
-            )
+        # A guard set to fail closed would fail open or never run. A responder
+        # that doesn't honor onFailure, such as a CLI that predates it, drops the
+        # field and answers normally. hooks_applied: false means nothing
+        # registered these callbacks, as on a process that was already running.
+        if blocks_on_failure:
+            if not response.get("hook_on_failure_supported"):
+                raise CLIConnectionError(
+                    "The process answering initialize does not honor on_failure "
+                    "on hook matchers, so a hook that fails would not block. "
+                    'Update Claude Code if it is old, or remove on_failure="block" '
+                    "from your hooks."
+                )
+            if response.get("hooks_applied") is False:
+                raise CLIConnectionError(
+                    "This session was already running and did not register your "
+                    'hooks, so a hook set to on_failure="block" would never run. '
+                    'Start a new session, or remove on_failure="block" from your '
+                    "hooks."
+                )
         self._initialized = True
         self._initialization_result = response  # Store for later access
         return response

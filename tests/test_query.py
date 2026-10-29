@@ -116,6 +116,16 @@ def test_initialize_refuses_block_when_cli_lacks_on_failure():
         _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
 
 
+def test_initialize_refuses_block_when_hooks_were_not_applied():
+    """hooks_applied: false means the block guard's callbacks never registered."""
+    hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure="block")]}
+    with pytest.raises(CLIConnectionError, match="did not register"):
+        _capture_initialize_request(
+            reply={"hook_on_failure_supported": True, "hooks_applied": False},
+            hooks=_hooks_to_internal_format(hooks),
+        )
+
+
 def test_initialize_allows_continue_when_cli_lacks_on_failure():
     """Only "block" needs CLI support; "continue" matches an older CLI's behavior."""
     hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure="continue")]}

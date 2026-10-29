@@ -367,12 +367,15 @@ class Query:
         response = await self._send_control_request(
             request, timeout=self._initialize_timeout
         )
-        # A CLI that predates onFailure drops the field and answers normally, so
-        # a guard set to fail closed would fail open with no signal.
+        # A responder that doesn't honor onFailure, such as a CLI that predates
+        # it, drops the field and answers normally, so a guard set to fail
+        # closed would fail open with no signal.
         if blocks_on_failure and not response.get("hook_on_failure_supported"):
             raise CLIConnectionError(
-                'A hook matcher sets on_failure="block", but this Claude Code '
-                "CLI doesn't support it. Update the CLI, or remove on_failure."
+                "The process answering initialize does not honor on_failure on "
+                "hook matchers, so a hook that fails would not block. Update "
+                'Claude Code if it is old, or remove on_failure="block" from '
+                "your hooks."
             )
         self._initialized = True
         self._initialization_result = response  # Store for later access

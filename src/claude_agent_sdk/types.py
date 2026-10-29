@@ -1159,6 +1159,10 @@ class SandboxSettings(TypedDict, total=False):
         excludedCommands: Commands that should run outside the sandbox (e.g., ["git", "docker"])
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
             When False, all commands must run sandboxed (or be in excludedCommands). Default: True
+        failIfUnavailable: When ``enabled`` is True, error instead of running commands
+            unsandboxed if the sandbox dependency is unavailable (e.g. bubblewrap on
+            Linux). The transport defaults this to True when ``enabled`` is set and it
+            is absent, matching the TypeScript SDK.
         network: Network configuration for sandbox.
         ignoreViolations: Violations to leave unreported, as a map of command
             pattern (``"*"`` for every command) to substrings of the violation
@@ -1184,6 +1188,7 @@ class SandboxSettings(TypedDict, total=False):
     autoAllowBashIfSandboxed: bool
     excludedCommands: list[str]
     allowUnsandboxedCommands: bool
+    failIfUnavailable: bool
     network: SandboxNetworkConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool

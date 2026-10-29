@@ -18,6 +18,8 @@ PRs that touch the build scripts, `pyproject.toml`, or the publish workflow trig
 
 PyPI rejects any file over this project's per-file limit of 250 MiB (raised from the default 100 MiB in [pypi/support#12263](https://github.com/pypi/support/issues/12263)). A wheel over that limit does not block the release: the publish job leaves it out, shows a warning on the run, and publishes the sdist and the other wheels. `pip install` on the platform that was left out gets the sdist, which has no bundled CLI, so the SDK there uses a separately installed Claude Code. The wheel stays in the run's build artifacts. The release still fails if the sdist or every wheel is over the limit.
 
+PyPI also caps this project's total size at 150 GiB (raised from 50 GiB in [pypi/support#12262](https://github.com/pypi/support/issues/12262)). The publish job refuses a release, before uploading anything, if it would take the project past 95% of that.
+
 ## Versioning
 
 The project tracks two separate version numbers:

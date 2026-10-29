@@ -519,8 +519,16 @@ class SubprocessCLITransport(Transport):
                     logger.warning(f"Settings file not found: {settings_path}")
 
         # Merge sandbox settings
-        if has_sandbox:
-            settings_obj["sandbox"] = self._options.sandbox
+        sandbox_option = self._options.sandbox
+        if sandbox_option is not None:
+            sandbox = dict(sandbox_option)
+            # Match the TypeScript SDK: when sandboxing is enabled and the
+            # caller did not say what to do if the sandbox is unavailable,
+            # default failIfUnavailable to True so a missing dependency
+            # (e.g. bubblewrap) errors instead of silently running unsandboxed.
+            if sandbox.get("enabled") is True and "failIfUnavailable" not in sandbox:
+                sandbox["failIfUnavailable"] = True
+            settings_obj["sandbox"] = sandbox
 
         return json.dumps(settings_obj)
 

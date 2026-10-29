@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
 from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
-from claude_agent_sdk.types import HookMatcher
+from claude_agent_sdk.types import HookMatcher, _hooks_to_internal_format
 
 
 def _capture_initialize_request(**query_kwargs):
@@ -92,6 +92,25 @@ def test_initialize_omits_skills_for_none_and_all():
     assert "skills" not in _capture_initialize_request()
     assert "skills" not in _capture_initialize_request(skills=None)
     assert "skills" not in _capture_initialize_request(skills="all")
+
+
+async def _noop_hook(input_data, tool_use_id, context):
+    return {}
+
+
+@pytest.mark.parametrize("on_failure", ["block", "continue"])
+def test_initialize_sends_hook_on_failure(on_failure):
+    """HookMatcher.on_failure reaches the CLI as onFailure on the matcher."""
+    hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook], on_failure=on_failure)]}
+    sent = _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
+    assert sent["hooks"]["PreToolUse"][0]["onFailure"] == on_failure
+
+
+def test_initialize_omits_hook_on_failure_when_unset():
+    """A matcher without on_failure sends no onFailure, so the default stays."""
+    hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook])]}
+    sent = _capture_initialize_request(hooks=_hooks_to_internal_format(hooks))
+    assert "onFailure" not in sent["hooks"]["PreToolUse"][0]
 
 
 def test_initialize_sends_forward_subagent_text_when_enabled():

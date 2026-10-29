@@ -334,6 +334,8 @@ class Query:
                         }
                         if matcher.get("timeout") is not None:
                             hook_matcher_config["timeout"] = matcher.get("timeout")
+                        if matcher.get("on_failure") is not None:
+                            hook_matcher_config["onFailure"] = matcher.get("on_failure")
                         hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request

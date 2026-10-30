@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
 
-from .._errors import ProcessError, ResultError, _normalize_result_errors
+from .._errors import (
+    CLIConnectionError,
+    ProcessError,
+    ResultError,
+    _normalize_result_errors,
+)
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -317,6 +322,7 @@ class Query:
 
         # Build hooks configuration for initialization
         hooks_config: dict[str, Any] = {}
+        blocks_on_failure = False
         if self.hooks:
             for event, matchers in self.hooks.items():
                 if matchers:
@@ -334,6 +340,10 @@ class Query:
                         }
                         if matcher.get("timeout") is not None:
                             hook_matcher_config["timeout"] = matcher.get("timeout")
+                        if matcher.get("on_failure") is not None:
+                            hook_matcher_config["onFailure"] = matcher.get("on_failure")
+                            # The CLI reads an unknown value as "block".
+                            blocks_on_failure |= matcher.get("on_failure") != "continue"
                         hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request
@@ -358,6 +368,25 @@ class Query:
         response = await self._send_control_request(
             request, timeout=self._initialize_timeout
         )
+        # A guard set to fail closed would fail open or never run. A responder
+        # that doesn't honor onFailure, such as a CLI that predates it, drops the
+        # field and answers normally. hooks_applied: false means nothing
+        # registered these callbacks, as on a process that was already running.
+        if blocks_on_failure:
+            if not response.get("hook_on_failure_supported"):
+                raise CLIConnectionError(
+                    "The process answering initialize does not honor on_failure "
+                    "on hook matchers, so a hook that fails would not block. "
+                    'Update Claude Code if it is old, or remove on_failure="block" '
+                    "from your hooks."
+                )
+            if response.get("hooks_applied") is False:
+                raise CLIConnectionError(
+                    "This session was already running and did not register your "
+                    'hooks, so a hook set to on_failure="block" would never run. '
+                    'Start a new session, or remove on_failure="block" from your '
+                    "hooks."
+                )
         self._initialized = True
         self._initialization_result = response  # Store for later access
         return response

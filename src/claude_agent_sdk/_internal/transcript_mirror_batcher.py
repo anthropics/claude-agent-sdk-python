@@ -72,6 +72,7 @@ class TranscriptMirrorBatcher:
     _pending_entries: int = 0
     _pending_bytes: int = 0
     _flush_task: TaskHandle | None = None
+    _flush_scheduled: bool = False
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
     def enqueue(self, file_path: str, entries: list[SessionStoreEntry]) -> None:
@@ -86,12 +87,25 @@ class TranscriptMirrorBatcher:
             self._pending_entries > self.max_pending_entries
             or self._pending_bytes > self.max_pending_bytes
         ):
+            if (
+                self._flush_scheduled
+                and self._flush_task is not None
+                and not self._flush_task.done()
+            ):
+                return
             # Fire-and-forget on the current backend via the SDK's sniffio-
             # dispatched spawner; the lock in _drain() serializes against any
             # in-flight flush so append ordering holds. _drain() is contracted
             # never to raise; spawn_detached logs if that contract is ever
             # violated (parity with asyncio's unretrieved-exception warning).
-            self._flush_task = spawn_detached(self._drain())
+            self._flush_scheduled = True
+            self._flush_task = spawn_detached(self._eager_drain())
+
+    async def _eager_drain(self) -> None:
+        # Coalesce frames until this task starts, then allow the next buffer
+        # to schedule its own drain while this one waits for an adapter.
+        self._flush_scheduled = False
+        await self._drain()
 
     async def flush(self) -> None:
         """Flush all pending entries, serialized after any in-flight eager flush."""

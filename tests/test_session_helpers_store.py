@@ -7,6 +7,7 @@ Exercises the SessionStore-backed code paths in
 
 from __future__ import annotations
 
+import copy
 import uuid as uuid_mod
 from typing import Any
 
@@ -743,6 +744,87 @@ class TestDeleteSessionViaStore:
 
 
 class TestForkSessionViaStore:
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_fork_remaps_compaction_without_mutating_source(
+        self, partial: bool
+    ) -> None:
+        store = InMemorySessionStore()
+        sid, kept, boundary_id, anchor = [str(uuid_mod.uuid4()) for _ in range(4)]
+        missing = str(uuid_mod.uuid4())
+        metadata = {
+            "trigger": "auto",
+            "preTokens": 10000,
+            "preservedSegment": {
+                "headUuid": kept,
+                "tailUuid": kept,
+                "anchorUuid": anchor,
+            },
+            "preservedMessages": {
+                "anchorUuid": anchor,
+                "uuids": [kept],
+                "allUuids": [kept, missing],
+                "extra": kept,
+            },
+        }
+        entries = [
+            _user(kept, kept, None, sid),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": boundary_id,
+                "parentUuid": None,
+                "sessionId": sid,
+                "compactMetadata": metadata,
+            },
+            {**_user("Summary", anchor, boundary_id, sid), "isCompactSummary": True},
+        ]
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        await store.append(key, entries)  # type: ignore[arg-type]
+        original = copy.deepcopy(store.get_entries(key))
+
+        result = await fork_session_via_store(
+            store,
+            sid,
+            directory=DIR,
+            up_to_message_id=boundary_id if partial else None,
+        )
+
+        copied = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
+        messages = [entry for entry in copied if "forkedFrom" in entry]
+        mapping = {
+            entry["forkedFrom"]["messageUuid"]: entry["uuid"] for entry in messages
+        }
+        assert set(mapping) == (
+            {kept, boundary_id} if partial else {kept, boundary_id, anchor}
+        )
+        # A cutoff before the anchor must not pull the excluded source record in.
+        boundary = next(entry for entry in messages if entry["type"] == "system")
+        expected = {
+            "trigger": "auto",
+            "preTokens": 10000,
+        }
+        if not partial:
+            expected.update(
+                {
+                    "preservedSegment": {
+                        "headUuid": mapping[kept],
+                        "tailUuid": mapping[kept],
+                        "anchorUuid": mapping[anchor],
+                    },
+                    "preservedMessages": {
+                        "anchorUuid": mapping[anchor],
+                        "uuids": [mapping[kept]],
+                        "allUuids": [mapping[kept], missing],
+                        "extra": kept,
+                    },
+                }
+            )
+        assert boundary["compactMetadata"] == expected
+        assert messages[0]["message"]["content"] == kept
+        assert store.get_entries(key) == original
+
     async def test_round_trips_with_new_uuids(self) -> None:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())

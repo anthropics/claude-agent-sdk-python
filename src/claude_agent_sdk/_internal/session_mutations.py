@@ -363,6 +363,7 @@ def _build_fork_lines(
     so the disk path's head/tail byte scan and the store path's entry scan
     only run when needed.
     """
+    source_uuids = {entry["uuid"] for entry in transcript}
     # Filter out sidechains (subagent sessions with separate parentUuid
     # graphs). Keep isMeta entries — they're interleaved in the main chain.
     transcript = [e for e in transcript if not e.get("isSidechain")]
@@ -382,16 +383,16 @@ def _build_fork_lines(
             )
         transcript = transcript[: cutoff + 1]
 
-    # Include progress entries in the mapping — needed for parentUuid chain walk.
-    uuid_mapping: dict[str, str] = {}
-    for entry in transcript:
-        uuid_mapping[entry["uuid"]] = str(uuid_mod.uuid4())
-
     # Filter out progress messages from written output. They're UI-only
     # chain links; not needed in a fresh fork.
     writable = [e for e in transcript if e.get("type") != "progress"]
     if not writable:
         raise ValueError(f"Session {session_id} has no messages to fork")
+
+    # Only written entries get new IDs. Keep progress entries in by_uuid below
+    # for the parent walk, but never create references to omitted records.
+    uuid_mapping = {entry["uuid"]: str(uuid_mod.uuid4()) for entry in writable}
+    excluded_uuids = source_uuids - uuid_mapping.keys()
 
     by_uuid: dict[str, dict[str, Any]] = {}
     for entry in transcript:
@@ -440,6 +441,15 @@ def _build_fork_lines(
                 "messageUuid": original["uuid"],
             },
         }
+        metadata = original.get("compactMetadata")
+        if (
+            original.get("type") == "system"
+            and original.get("subtype") == "compact_boundary"
+            and isinstance(metadata, dict)
+        ):
+            forked["compactMetadata"] = _remap_compaction_metadata(
+                metadata, uuid_mapping, excluded_uuids
+            )
         # Remove fields that would leak state from the source session
         for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
             forked.pop(key, None)
@@ -482,6 +492,51 @@ def _build_fork_lines(
     )
 
     return forked_session_id, lines
+
+
+def _remap_compaction_metadata(
+    metadata: dict[str, Any],
+    uuid_mapping: dict[str, str],
+    excluded_uuids: set[str],
+) -> dict[str, Any]:
+    """Remap references to copied messages without mutating the source metadata.
+
+    Trim references to source records omitted by this fork. Drop a block if its
+    anchor/opener or segment endpoint was excluded; do not invent a new one.
+    IDs already absent from the source are left alone: allUuids and running-turn
+    bookkeeping can refer to earlier compacted-away messages. Unknown fields
+    and malformed values are not interpreted as message references.
+    """
+    remapped = dict(metadata)
+    for name, fields, list_fields in (
+        ("preservedSegment", ("headUuid", "tailUuid", "anchorUuid"), ()),
+        ("preservedMessages", ("anchorUuid",), ("uuids", "allUuids")),
+        ("runningTurnSends", ("openerUuid",), ("uuids", "summarisedOnly")),
+    ):
+        preserved = metadata.get(name)
+        if not isinstance(preserved, dict):
+            continue
+        if any(
+            isinstance(preserved.get(field), str) and preserved[field] in excluded_uuids
+            for field in fields
+        ):
+            remapped.pop(name)
+            continue
+        preserved = dict(preserved)
+        for field in fields:
+            value = preserved.get(field)
+            if isinstance(value, str):
+                preserved[field] = uuid_mapping.get(value, value)
+        for field in list_fields:
+            values = preserved.get(field)
+            if isinstance(values, list):
+                preserved[field] = [
+                    uuid_mapping.get(value, value) if isinstance(value, str) else value
+                    for value in values
+                    if not isinstance(value, str) or value not in excluded_uuids
+                ]
+        remapped[name] = preserved
+    return remapped
 
 
 # ---------------------------------------------------------------------------

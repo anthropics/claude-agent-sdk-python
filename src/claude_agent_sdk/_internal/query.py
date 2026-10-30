@@ -342,7 +342,8 @@ class Query:
                             hook_matcher_config["timeout"] = matcher.get("timeout")
                         if matcher.get("on_failure") is not None:
                             hook_matcher_config["onFailure"] = matcher.get("on_failure")
-                            blocks_on_failure |= matcher.get("on_failure") == "block"
+                            # The CLI reads an unknown value as "block".
+                            blocks_on_failure |= matcher.get("on_failure") != "continue"
                         hooks_config[event].append(hook_matcher_config)
 
         # Send initialize request

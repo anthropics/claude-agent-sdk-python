@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -107,6 +108,9 @@ def _sanitize_path(name: str) -> str:
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
+    # Work on UTF-16 code units like the CLI's JS (an emoji is two).
+    b = name.encode("utf-16-le", "surrogatepass")
+    name = "".join(map(chr, struct.unpack(f"<{len(b) // 2}H", b)))
     sanitized = _SANITIZE_RE.sub("-", name)
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized

@@ -11,7 +11,7 @@ never need to re-read previously appended entries.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, cast
 
 from ..types import (
@@ -43,7 +43,10 @@ def _iso_to_epoch_ms(ts: Any) -> int | None:
     try:
         # Python 3.10's fromisoformat doesn't support trailing 'Z'
         norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
-        return int(datetime.fromisoformat(norm).timestamp() * 1000)
+        parsed = datetime.fromisoformat(norm)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
     except ValueError:
         return None
 

@@ -1357,6 +1357,12 @@ class TestRunEndCeilingFromEnv:
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "soon"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "-1"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": ""}, "1234", 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e6"}, None, 1_000_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e2"}, None, 100),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1.5"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "inf"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e400"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "nan"}, None, 600_000),
         ],
         ids=[
             "default",
@@ -1367,6 +1373,12 @@ class TestRunEndCeilingFromEnv:
             "not_a_number",
             "negative",
             "empty_option_wins",
+            "scientific_1e6",
+            "scientific_1e2",
+            "fractional_rejected",
+            "infinity_rejected",
+            "overflow_rejected",
+            "nan_rejected",
         ],
     )
     def test_parse(self, monkeypatch, options_env, ambient, expected):

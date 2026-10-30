@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.175
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.314
+- CI: raised PyPI project size limit guard from 50 GiB to 150 GiB to match the new quota granted by PyPI (#1455)
+
 ## 0.2.174
 
 ### Internal/Other Changes

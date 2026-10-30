@@ -325,12 +325,13 @@ def _write_jsonl(path: Path, entries: list[Any]) -> None:
 
 def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
     """Seed ``tmp_base`` with the caller's auth and user config: ``.credentials.json``
-    (refreshToken redacted), ``.claude.json``, and user ``settings.json`` /
-    ``cowork_settings.json`` (plugin declarations stripped).
+    (refreshToken redacted), ``.claude.json``, the legacy ``.config.json``, and
+    user ``settings.json`` / ``cowork_settings.json`` (plugin declarations
+    stripped).
 
     Source resolution mirrors the CLI:
-    - ``.credentials.json``, ``settings.json`` and ``cowork_settings.json`` live
-      under the config dir (default ``~/.claude/``)
+    - ``.credentials.json``, ``.config.json``, ``settings.json`` and
+      ``cowork_settings.json`` live under the config dir (default ``~/.claude/``)
     - ``.claude.json`` lives at ``$CLAUDE_CONFIG_DIR/.claude.json`` when set,
       else ``~/.claude.json`` (NOT ``~/.claude/.claude.json``)
     """
@@ -372,6 +373,11 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
         else Path.home() / ".claude.json"
     )
     _copy_if_present(claude_json_src, tmp_base / ".claude.json")
+    # The CLI's legacy global-config location. When it exists (non-empty) the
+    # CLI reads it in preference to .claude.json, so without it the resumed
+    # subprocess would see a different global config (user-scope mcpServers,
+    # a /login primaryApiKey, ...) than the caller's.
+    _copy_if_present(source_config_dir / ".config.json", tmp_base / ".config.json")
 
     # User settings carry ``apiKeyHelper`` (a fourth auth mechanism alongside
     # .credentials.json / Keychain / env) plus env/hooks/permissions. Without

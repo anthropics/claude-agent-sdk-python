@@ -1058,7 +1058,11 @@ async def test_a_parameter_named_after_a_schema_keyword_is_still_a_parameter():
     `{"required": str}` name parameters; `{"required": ["x"]}` is a schema.
     """
 
-    @tool("sized", "Takes items and required", {"items": list, "required": str})
+    @tool(
+        "sized",
+        "Takes items, required, and description",
+        {"items": list, "required": str, "description": str},
+    )
     async def sized(args: dict[str, Any]) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": str(len(args["items"]))}]}
 
@@ -1066,15 +1070,46 @@ async def test_a_parameter_named_after_a_schema_keyword_is_still_a_parameter():
     async with connected(config) as client:
         [listed] = await client.list_tools("srv")
         result = await client.call_tool(
-            "srv", "sized", {"items": [1, 2], "required": "yes"}
+            "srv", "sized", {"items": [1, 2], "required": "yes", "description": "test"}
         )
 
     assert listed["inputSchema"] == {
         "type": "object",
-        "properties": {"items": {"type": "array"}, "required": {"type": "string"}},
-        "required": ["items", "required"],
+        "properties": {
+            "items": {"type": "array"},
+            "required": {"type": "string"},
+            "description": {"type": "string"},
+        },
+        "required": ["items", "required", "description"],
     }
     assert texts(result) == ["2"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"description": "free-form object"},
+        {"title": "Only a title"},
+        {"default": {}},
+        {"examples": [{}]},
+    ],
+    ids=["description", "title", "default", "examples"],
+)
+async def test_annotation_only_json_schema_is_not_treated_as_parameters(schema):
+    @tool("freeform", "Takes any object", schema)
+    async def freeform(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": json.dumps(args)}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[freeform])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        empty = await client.call_tool("srv", "freeform", {})
+        given = await client.call_tool("srv", "freeform", {"x": 1})
+
+    assert listed["inputSchema"] == {"type": "object", **schema}
+    assert texts(empty) == ["{}"]
+    assert texts(given) == ['{"x": 1}']
 
 
 @pytest.mark.anyio

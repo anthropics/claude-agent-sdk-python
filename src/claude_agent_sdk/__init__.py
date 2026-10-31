@@ -410,8 +410,8 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
 # Keywords a JSON Schema carries and a parameter map does not. A schema need
 # not declare a top-level `type`: oneOf/anyOf/allOf compose subschemas, $ref
 # points at one and $defs holds them, none of which leave a `type` behind.
-# Annotation keywords (title, description, examples, ...) stay out -- they
-# decorate a schema without defining one, so they read as parameter names.
+# Annotation-only objects are schemas too. The value-shape check below keeps
+# Python types such as {"description": str} in the parameter-map branch.
 _JSON_SCHEMA_KEYWORDS = frozenset(
     {
         "$comment",
@@ -468,6 +468,10 @@ _JSON_SCHEMA_KEYWORDS = frozenset(
         "readOnly",
         "writeOnly",
         "deprecated",
+        "title",
+        "description",
+        "default",
+        "examples",
     }
 )
 
@@ -475,7 +479,15 @@ _JSON_SCHEMA_KEYWORDS = frozenset(
 # in every slot, so a keyword carrying one of these is describing the schema
 # rather than naming a parameter. Numeric and null keywords ({minProperties: 1},
 # {minimum: 0.5}) count too, so int/float/None are included.
-_SCHEMA_SHAPED_VALUES: tuple[type, ...] = (dict, list, str, bool, int, float, type(None))
+_SCHEMA_SHAPED_VALUES: tuple[type, ...] = (
+    dict,
+    list,
+    str,
+    bool,
+    int,
+    float,
+    type(None),
+)
 
 
 def _is_json_schema(schema: dict[str, Any]) -> bool:

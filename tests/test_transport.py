@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 
+from claude_agent_sdk._errors import CLIConnectionError
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk.types import ClaudeAgentOptions
 
@@ -1893,6 +1894,124 @@ class TestSubprocessCLITransport:
         assert "--settings" in cmd
         settings_idx = cmd.index("--settings")
         assert cmd[settings_idx + 1] == "/path/to/settings.json"
+
+    def test_build_command_sandbox_reads_relative_settings_from_cwd(self, tmp_path):
+        """A relative settings path resolves against options.cwd, not the process cwd."""
+        import json
+
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"permissions": {"deny": ["Bash"]}})
+        )
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="settings.json", sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed == {
+            "permissions": {"deny": ["Bash"]},
+            "sandbox": {"enabled": True},
+        }
+
+    def test_build_command_sandbox_reads_absolute_settings_path(self, tmp_path):
+        """An absolute settings path is read as given, whatever options.cwd is."""
+        import json
+
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"permissions": {"deny": ["Bash"]}}))
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings=str(settings_file),
+                sandbox={"enabled": True},
+                cwd=tmp_path / "elsewhere",
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed["permissions"] == {"deny": ["Bash"]}
+
+    def test_build_command_sandbox_relative_settings_without_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """Without options.cwd, a relative settings path uses the process cwd."""
+        import json
+
+        (tmp_path / "settings.json").write_text(json.dumps({"model": "m"}))
+        monkeypatch.chdir(tmp_path)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings="settings.json", sandbox={"enabled": True}),
+        )
+
+        cmd = transport._build_command()
+
+        assert json.loads(cmd[cmd.index("--settings") + 1])["model"] == "m"
+
+    @pytest.mark.parametrize(
+        ("settings", "contents"),
+        [
+            ("missing.json", None),
+            ("settings.json", "{not json"),
+            ("settings.json", "[1, 2]"),
+            (".", None),
+            ("x" * 400 + ".json", None),
+        ],
+    )
+    def test_build_command_sandbox_unloadable_settings_file_raises(
+        self, tmp_path, settings, contents
+    ):
+        """A settings file that can't be loaded raises instead of being dropped."""
+        if contents is not None:
+            (tmp_path / settings).write_text(contents)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings=settings, sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        with pytest.raises(CLIConnectionError, match="[Ss]ettings file"):
+            transport._build_command()
+
+    def test_build_command_sandbox_malformed_inline_settings_raises(self):
+        """Malformed inline settings raise without echoing their value."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings='{"env": {"KEY": "secret-value",}}',
+                sandbox={"enabled": True},
+            ),
+        )
+
+        with pytest.raises(CLIConnectionError, match="not valid JSON") as exc_info:
+            transport._build_command()
+        assert "secret-value" not in str(exc_info.value)
+
+    def test_build_command_sandbox_reads_settings_file_with_bom(self, tmp_path):
+        """A settings file with a BOM loads, as it does for the CLI."""
+        import json
+
+        (tmp_path / "settings.json").write_text(
+            '{"permissions": {"deny": ["Bash"]}}', encoding="utf-8-sig"
+        )
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="settings.json", sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        merged = json.loads(cmd[cmd.index("--settings") + 1])
+        assert merged["permissions"] == {"deny": ["Bash"]}
 
     def test_build_command_sandbox_minimal(self):
         """Test sandbox with minimal configuration."""

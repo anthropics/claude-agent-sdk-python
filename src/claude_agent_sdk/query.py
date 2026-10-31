@@ -1,6 +1,7 @@
 """Query function for one-shot interactions with Claude Code."""
 
 from collections.abc import AsyncIterable, AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from ._internal.client import InternalClient
@@ -126,7 +127,7 @@ async def query(
 
     client = InternalClient()
 
-    async for message in client.process_query(
-        prompt=prompt, options=options, transport=transport
-    ):
-        yield message
+    messages = client.process_query(prompt=prompt, options=options, transport=transport)
+    async with aclosing(messages):
+        async for message in messages:
+            yield message

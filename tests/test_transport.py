@@ -1758,7 +1758,9 @@ class TestSubprocessCLITransport:
 
         async def _test():
             custom_user = "claude"
-            options = make_options(user=custom_user)
+            options = make_options(
+                user=custom_user, cwd="/some/dir", env={"PATH": "/custom/bin"}
+            )
 
             # Mock the subprocess to capture the env argument
             with patch(
@@ -1793,6 +1795,13 @@ class TestSubprocessCLITransport:
 
                 # Verify open_process was called twice (version check + main process)
                 assert mock_open_process.call_count == 2
+
+                # The version probe spawns as the same user, in the same cwd,
+                # and with the caller's PATH
+                first_call_kwargs = mock_open_process.call_args_list[0].kwargs
+                assert first_call_kwargs["user"] == custom_user
+                assert first_call_kwargs["cwd"] == "/some/dir"
+                assert first_call_kwargs["env"]["PATH"] == "/custom/bin"
 
                 # Check the second call (main process) for user
                 second_call_kwargs = mock_open_process.call_args_list[1].kwargs

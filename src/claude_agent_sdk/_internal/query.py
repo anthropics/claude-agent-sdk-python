@@ -170,6 +170,7 @@ class Query:
         exclude_dynamic_sections: bool | None = None,
         system_prompt_snapshot: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
+        include_hook_events: bool = False,
         forward_subagent_text: bool = False,
         verbatim_prompts: bool = False,
         run_end_ceiling_ms: int = DEFAULT_RUN_END_CEILING_MS,
@@ -190,6 +191,10 @@ class Query:
                 initialize (see ``SystemPromptPreset.snapshot``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
+            include_hook_events: When True, the CLI emits hook lifecycle
+                events (hook_started, hook_progress, hook_response) into the
+                message stream. Sent as ``includeHookEvents`` in the
+                initialize request to the CLI.
             forward_subagent_text: Ask the CLI (via initialize) to forward
                 subagent text/thinking blocks, not just tool_use/tool_result
             verbatim_prompts: Mark every outgoing user message
@@ -214,6 +219,7 @@ class Query:
         self._exclude_dynamic_sections = exclude_dynamic_sections
         self._system_prompt_snapshot = system_prompt_snapshot
         self._skills = skills
+        self._include_hook_events = include_hook_events
         self._forward_subagent_text = forward_subagent_text
         self._verbatim_prompts = verbatim_prompts
         self._run_end_ceiling_ms = run_end_ceiling_ms
@@ -353,6 +359,9 @@ class Query:
             request["skills"] = self._skills
         if self._forward_subagent_text:
             request["forwardSubagentText"] = True
+
+        if self._include_hook_events:
+            request["includeHookEvents"] = True
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(

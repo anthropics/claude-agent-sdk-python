@@ -37,7 +37,7 @@ from .sessions import (
     LITE_READ_BUF_SIZE,
     _canonicalize_path,
     _extract_first_prompt_from_head,
-    _extract_last_json_string_field,
+    _extract_last_top_level_json_string_field,
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
@@ -318,10 +318,10 @@ def fork_session(
             "utf-8", errors="replace"
         )
         return (
-            _extract_last_json_string_field(tail, "customTitle")
-            or _extract_last_json_string_field(head, "customTitle")
-            or _extract_last_json_string_field(tail, "aiTitle")
-            or _extract_last_json_string_field(head, "aiTitle")
+            _extract_last_top_level_json_string_field(tail, "customTitle")
+            or _extract_last_top_level_json_string_field(head, "customTitle")
+            or _extract_last_top_level_json_string_field(tail, "aiTitle")
+            or _extract_last_top_level_json_string_field(head, "aiTitle")
             or _extract_first_prompt_from_head(head)
             or None
         )
@@ -562,9 +562,10 @@ _TRANSCRIPT_TYPES = frozenset({"user", "assistant", "attachment", "system", "pro
 def _derive_title_from_entries(raw: list[Any]) -> str | None:
     """Mirror the disk path's head/tail title scan over parsed entry objects.
 
-    Precedence matches ``_extract_last_json_string_field`` semantics: last
-    occurrence wins for both ``customTitle`` and ``aiTitle``; ``customTitle``
-    beats ``aiTitle``; first user prompt is the final fallback.
+    Precedence matches ``_extract_last_top_level_json_string_field``: the
+    last entry carrying a top-level ``customTitle``/``aiTitle`` wins;
+    ``customTitle`` beats ``aiTitle``; first user prompt is the final
+    fallback.
     """
     custom: str | None = None
     ai: str | None = None

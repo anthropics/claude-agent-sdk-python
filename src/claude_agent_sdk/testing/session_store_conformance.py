@@ -1,7 +1,7 @@
 """Shared conformance test suite for :class:`SessionStore` adapters.
 
 Call :func:`run_session_store_conformance` from an async test to assert the
-14 behavioral contracts every adapter must satisfy. Tests for optional
+15 behavioral contracts every adapter must satisfy. Tests for optional
 methods (``list_sessions``, ``list_session_summaries``, ``delete``,
 ``list_subkeys``) are skipped when named in ``skip_optional`` or when the
 store does not override that method.
@@ -56,7 +56,7 @@ async def run_session_store_conformance(
     *,
     skip_optional: frozenset[str] = frozenset(),
 ) -> None:
-    """Assert the 14 :class:`SessionStore` behavioral contracts.
+    """Assert the 15 :class:`SessionStore` behavioral contracts.
 
     ``make_store`` is invoked once per contract to provide isolation. It may be
     sync or async. Contracts for optional methods (``list_sessions``,
@@ -133,6 +133,21 @@ async def run_session_store_conformance(
     if has_list_sessions:
         assert len(await store.list_sessions("A")) == 1
         assert len(await store.list_sessions("B")) == 1
+
+    # 15. distinct composite keys never collide, whatever the components contain
+    store = await fresh()
+    await store.append(
+        {"project_key": "a/b", "session_id": "c"}, [_e({"uuid": "x", "n": 1})]
+    )
+    await store.append(
+        {"project_key": "a", "session_id": "b/c"}, [_e({"uuid": "y", "n": 2})]
+    )
+    assert await store.load({"project_key": "a/b", "session_id": "c"}) == [
+        _e({"uuid": "x", "n": 1})
+    ]
+    assert await store.load({"project_key": "a", "session_id": "b/c"}) == [
+        _e({"uuid": "y", "n": 2})
+    ]
 
     # --- Optional: list_sessions -------------------------------------------
 

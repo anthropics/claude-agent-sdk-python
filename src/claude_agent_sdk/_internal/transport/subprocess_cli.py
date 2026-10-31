@@ -477,6 +477,11 @@ class SubprocessCLITransport(Transport):
         - A JSON string (if sandbox is provided or settings is JSON)
         - A file path (if only settings path is provided without sandbox)
         - None if neither settings nor sandbox is provided
+
+        Raises:
+        - ValueError: If ``settings`` is an inline JSON string that fails to
+          parse, or a settings file that exists but contains invalid JSON.
+          A missing settings file is only logged (documented degradation).
         """
         has_settings = self._options.settings is not None
         has_sandbox = self._options.sandbox is not None
@@ -494,27 +499,33 @@ class SubprocessCLITransport(Transport):
         if has_settings:
             assert self._options.settings is not None
             settings_str = self._options.settings.strip()
-            # Check if settings is a JSON string or a file path
-            if settings_str.startswith("{") and settings_str.endswith("}"):
-                # Parse JSON string
+            # Check if settings is a JSON string or a file path. Any value
+            # starting with "{" is treated as inline JSON and parsed
+            # strictly: also requiring the closing brace would let a
+            # truncated string (e.g. '{model:sonnet') fall through to the
+            # file-path branch and be silently dropped as "file not found".
+            if settings_str.startswith("{"):
+                # Inline JSON string: parse strictly. A malformed inline
+                # string must fail loudly -- silently dropping it would
+                # discard the caller's entire settings object (model,
+                # permissions, env, hooks) while the run looks healthy.
                 try:
                     settings_obj = json.loads(settings_str)
-                except json.JSONDecodeError:
-                    # If parsing fails, treat as file path
-                    logger.warning(
-                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
-                    )
-                    # Read the file
-                    settings_path = Path(settings_str)
-                    if settings_path.exists():
-                        with settings_path.open(encoding="utf-8") as f:
-                            settings_obj = json.load(f)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Invalid JSON in inline settings string: {e}"
+                    ) from e
             else:
                 # It's a file path - read and parse
                 settings_path = Path(settings_str)
                 if settings_path.exists():
-                    with settings_path.open(encoding="utf-8") as f:
-                        settings_obj = json.load(f)
+                    try:
+                        with settings_path.open(encoding="utf-8") as f:
+                            settings_obj = json.load(f)
+                    except json.JSONDecodeError as e:
+                        raise ValueError(
+                            f"Invalid JSON in settings file {settings_path}: {e}"
+                        ) from e
                 else:
                     logger.warning(f"Settings file not found: {settings_path}")
 
@@ -809,8 +820,8 @@ class SubprocessCLITransport(Transport):
         if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
             await self._check_claude_version()
 
-        cmd = self._build_command()
         try:
+            cmd = self._build_command()
             # Merge environment variables. CLAUDE_CODE_ENTRYPOINT defaults to
             # sdk-py regardless of inherited process env; options.env can override
             # it. CLAUDE_AGENT_SDK_VERSION is always set by the SDK.

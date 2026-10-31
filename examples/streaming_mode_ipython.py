@@ -148,15 +148,18 @@ try:
         print("User: Run a bash sleep command for 60 seconds")
         await client.query("Run a bash sleep command for 60 seconds")
 
-        # Timeout after 20 seconds
+        # Timeout after 20 seconds (asyncio.wait_for also works on Python 3.10)
         messages = []
-        async with asyncio.timeout(20.0):
+
+        async def collect_response():
             async for msg in client.receive_response():
                 messages.append(msg)
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             print(f"Claude: {block.text}")
+
+        await asyncio.wait_for(collect_response(), timeout=20.0)
 
 except asyncio.TimeoutError:
     print("Request timed out after 20 seconds")

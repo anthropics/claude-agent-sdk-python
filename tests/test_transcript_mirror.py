@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     SessionKey,
     query,
 )
+from claude_agent_sdk._internal._task_compat import TaskHandle, spawn_detached
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.session_resume import build_mirror_batcher
 from claude_agent_sdk._internal.session_store import file_path_to_session_key
@@ -262,6 +263,79 @@ class TestTranscriptMirrorBatcher:
         await _wait_until(lambda: len(store.append_calls) == 1)
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("threshold", ["entries", "bytes"])
+    async def test_eager_flush_coalesces_buffered_frames(self, threshold: str) -> None:
+        """A burst from buffered stdout needs one task, not one per frame."""
+        store = _RecordingStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+            max_pending_entries=5 if threshold == "entries" else 500,
+            max_pending_bytes=100 if threshold == "bytes" else MAX_PENDING_BYTES,
+        )
+        tasks: list[TaskHandle] = []
+
+        def record_spawn(coro: Coroutine[Any, Any, Any]) -> TaskHandle:
+            task = spawn_detached(coro)
+            tasks.append(task)
+            return task
+
+        with patch(
+            "claude_agent_sdk._internal.transcript_mirror_batcher.spawn_detached",
+            side_effect=record_spawn,
+        ):
+            for n in range(50):
+                batcher.enqueue(_main_path(), [{"type": "x", "n": n}])
+            for task in tasks:
+                await task.wait()
+
+        assert len(tasks) == 1
+        assert [e["n"] for _, entries in store.append_calls for e in entries] == list(
+            range(50)
+        )
+
+    @pytest.mark.anyio
+    async def test_eager_flush_schedules_next_burst_during_append(self) -> None:
+        started = anyio.Event()
+        release = anyio.Event()
+        appended: list[int] = []
+
+        class SlowStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                started.set()
+                await release.wait()
+                appended.extend(e["n"] for e in entries)
+
+        batcher = TranscriptMirrorBatcher(
+            store=SlowStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+            max_pending_entries=0,
+        )
+        tasks: list[TaskHandle] = []
+
+        def record_spawn(coro: Coroutine[Any, Any, Any]) -> TaskHandle:
+            task = spawn_detached(coro)
+            tasks.append(task)
+            return task
+
+        with patch(
+            "claude_agent_sdk._internal.transcript_mirror_batcher.spawn_detached",
+            side_effect=record_spawn,
+        ):
+            batcher.enqueue(_main_path(), [{"type": "x", "n": 0}])
+            await started.wait()
+            for n in range(1, 50):
+                batcher.enqueue(_main_path(), [{"type": "x", "n": n}])
+            release.set()
+            for task in tasks:
+                await task.wait()
+
+        assert len(tasks) == 2
+        assert appended == list(range(50))
+
+    @pytest.mark.anyio
     async def test_default_thresholds(self) -> None:
         assert MAX_PENDING_ENTRIES == 500
         assert MAX_PENDING_BYTES == 1 << 20
@@ -468,10 +542,12 @@ class TestTranscriptMirrorBatcher:
         second while the first is mid-append) must serialize via the lock
         — entries land once each, in enqueue order."""
         gate = anyio.Event()
+        started = anyio.Event()
         appended: list[int] = []
 
         class SlowStore(InMemorySessionStore):
             async def append(self, key, entries):
+                started.set()
                 await gate.wait()
                 appended.extend(e["n"] for e in entries)
 
@@ -483,7 +559,7 @@ class TestTranscriptMirrorBatcher:
         )
         batcher.enqueue(_main_path(), [{"type": "x", "n": 1}])
         first = batcher._flush_task
-        await anyio.sleep(0)  # let first drain detach + block on gate
+        await started.wait()  # first drain detached its buffer and is mid-append
         batcher.enqueue(_main_path(), [{"type": "x", "n": 2}])
         second = batcher._flush_task
         assert first is not None and second is not None and first is not second

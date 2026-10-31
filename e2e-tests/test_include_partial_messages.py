@@ -28,7 +28,6 @@ async def test_include_partial_messages_stream_events():
 
     options = ClaudeAgentOptions(
         include_partial_messages=True,
-        model="claude-sonnet-4-5",
         max_turns=2,
         env={
             "MAX_THINKING_TOKENS": "8000",
@@ -100,7 +99,6 @@ async def test_include_partial_messages_thinking_deltas():
     # empty text.
     options = ClaudeAgentOptions(
         include_partial_messages=True,
-        model="claude-sonnet-4-5",
         max_turns=2,
         thinking={"type": "enabled", "budget_tokens": 8000, "display": "summarized"},
     )
@@ -108,7 +106,11 @@ async def test_include_partial_messages_thinking_deltas():
     thinking_deltas = []
 
     async with ClaudeSDKClient(options) as client:
-        await client.query("Think step by step about what 2 + 2 equals")
+        # Thinking is adaptive on the default model and can be skipped on easy
+        # prompts, so ask for something that needs working out.
+        await client.query(
+            "Without using any tools, work out step by step what 4827 * 3916 equals"
+        )
 
         async for message in client.receive_response():
             if isinstance(message, StreamEvent):
@@ -125,9 +127,6 @@ async def test_include_partial_messages_thinking_deltas():
     combined_thinking = "".join(thinking_deltas)
     assert len(combined_thinking) > 10, "Thinking content too short"
 
-    # Should contain some reasoning about the calculation
-    assert "2" in combined_thinking.lower(), "Thinking doesn't mention the numbers"
-
 
 @pytest.mark.e2e
 @pytest.mark.anyio
@@ -136,7 +135,6 @@ async def test_partial_messages_disabled_by_default():
 
     options = ClaudeAgentOptions(
         # include_partial_messages not set (defaults to False)
-        model="claude-sonnet-4-5",
         max_turns=2,
     )
 

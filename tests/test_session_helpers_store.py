@@ -355,6 +355,35 @@ class TestGetSessionMessagesFromStore:
         assert msgs[0].type == "user"
         assert msgs[1].type == "assistant"
 
+    async def test_include_compacted_reads_pre_boundary_messages(self) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        await store.append(
+            key,
+            [
+                _user("before", "before", None, sid),
+                _assistant("reply", "reply", "before", sid),
+                {
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "uuid": "boundary",
+                    "parentUuid": None,
+                    "logicalParentUuid": "reply",
+                    "sessionId": sid,
+                },
+                _user("summary", "summary", "boundary", sid),
+                _assistant("after", "after", "summary", sid),
+            ],
+        )
+
+        default = await get_session_messages_from_store(store, sid, directory=DIR)
+        full = await get_session_messages_from_store(
+            store, sid, directory=DIR, include_compacted=True
+        )
+        assert [m.uuid for m in default] == ["summary", "after"]
+        assert [m.uuid for m in full] == ["before", "reply", "summary", "after"]
+
     async def test_ignores_metadata_entries(self) -> None:
         """custom-title/tag entries from rename/tag don't appear as messages."""
         store = InMemorySessionStore()

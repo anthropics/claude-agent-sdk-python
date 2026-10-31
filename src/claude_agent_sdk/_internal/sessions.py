@@ -930,6 +930,7 @@ def _parse_transcript_entries(content: str) -> list[_TranscriptEntry]:
 
 def _build_conversation_chain(
     entries: list[_TranscriptEntry],
+    include_compacted: bool = False,
 ) -> list[_TranscriptEntry]:
     """Builds the conversation chain by finding the leaf and walking parentUuid.
 
@@ -937,10 +938,9 @@ def _build_conversation_chain(
     tool results that the walk skipped because the turn ran its tools in
     parallel are put back by ``_recover_orphaned_parallel_tool_results``.
 
-    Note: logicalParentUuid (set on compact_boundary entries) is intentionally
-    NOT followed. This matches VS Code IDE behavior — post-compaction, the
-    isCompactSummary message replaces earlier messages, so following logical
-    parents would duplicate content.
+    By default, logicalParentUuid on compact_boundary entries is not followed:
+    the compact summary replaces earlier messages for resume. With
+    include_compacted, follow that backpointer to include pre-compaction history.
     """
     if not entries:
         return []
@@ -1016,6 +1016,14 @@ def _build_conversation_chain(
         chain_seen.add(uid)
         chain.append(chain_cur)
         parent = chain_cur.get("parentUuid")
+        if (
+            include_compacted
+            and chain_cur.get("type") == "system"
+            and chain_cur.get("subtype") == "compact_boundary"
+        ):
+            logical_parent = chain_cur.get("logicalParentUuid")
+            if isinstance(logical_parent, str) and logical_parent in by_uuid:
+                parent = logical_parent
         chain_cur = by_uuid.get(parent) if parent else None
 
     chain.reverse()
@@ -1286,6 +1294,7 @@ def get_session_messages(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    include_compacted: bool = False,
 ) -> list[SessionMessage]:
     """Reads a session's conversation messages from its JSONL transcript file.
 
@@ -1301,6 +1310,8 @@ def get_session_messages(
             searches all project directories under ``~/.claude/projects/``.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+        include_compacted: Include messages before compaction boundaries via
+            ``logicalParentUuid`` links. Defaults to the resume-visible chain.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Returns
@@ -1335,19 +1346,20 @@ def get_session_messages(
         return []
 
     entries = _parse_transcript_entries(content)
-    return _entries_to_session_messages(entries, limit, offset)
+    return _entries_to_session_messages(entries, limit, offset, include_compacted)
 
 
 def _entries_to_session_messages(
     entries: list[_TranscriptEntry],
     limit: int | None,
     offset: int,
+    include_compacted: bool = False,
 ) -> list[SessionMessage]:
     """Builds the conversation chain from parsed entries and applies paging.
 
     Shared by the filesystem and SessionStore-backed paths.
     """
-    chain = _build_conversation_chain(entries)
+    chain = _build_conversation_chain(entries, include_compacted=include_compacted)
     visible = [e for e in chain if _is_visible_message(e)]
     messages = [_to_session_message(e) for e in visible]
 
@@ -2090,6 +2102,7 @@ async def get_session_messages_from_store(
     directory: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    include_compacted: bool = False,
 ) -> list[SessionMessage]:
     """Read a session's conversation messages from a :class:`SessionStore`.
 
@@ -2104,6 +2117,8 @@ async def get_session_messages_from_store(
             Defaults to the current working directory.
         limit: Maximum number of messages to return.
         offset: Number of messages to skip from the start.
+        include_compacted: Include messages before compaction boundaries via
+            ``logicalParentUuid`` links. Defaults to the resume-visible chain.
 
     Returns:
         List of ``SessionMessage`` objects in chronological order. Empty
@@ -2117,7 +2132,7 @@ async def get_session_messages_from_store(
     if not entries:
         return []
     return _entries_to_session_messages(
-        _filter_transcript_entries(entries), limit, offset
+        _filter_transcript_entries(entries), limit, offset, include_compacted
     )
 
 

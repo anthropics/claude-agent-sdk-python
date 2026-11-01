@@ -1,5 +1,6 @@
 """Tests for Claude SDK client functionality."""
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -462,3 +463,48 @@ class TestClaudeSDKClientResourceCleanup:
                 receive_stream.receive_nowait()
 
         anyio.run(_test)
+
+    def test_cancelled_disconnect_still_removes_materialized_dir(self, tmp_path):
+        import shutil
+
+        from claude_agent_sdk import ClaudeSDKClient
+        from claude_agent_sdk._internal.query import Query
+        from claude_agent_sdk._internal.session_resume import MaterializedResume
+
+        config_dir = tmp_path / "resume"
+        config_dir.mkdir()
+        credentials = config_dir / ".credentials.json"
+        credentials.write_text("{}")
+
+        async def _test():
+            mock_transport = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+
+            async def read_messages():
+                await anyio.sleep_forever()
+                yield {}
+
+            async def slow_close():
+                await anyio.sleep_forever()
+
+            mock_transport.read_messages = read_messages
+            mock_transport.close = slow_close
+
+            async def cleanup():
+                shutil.rmtree(config_dir, ignore_errors=True)
+
+            client = ClaudeSDKClient(transport=mock_transport)
+            client._transport = mock_transport
+            client._query = Query(transport=mock_transport, is_streaming_mode=True)
+            await client._query.start()
+            client._materialized = MaterializedResume(
+                config_dir=config_dir, resume_session_id="s", cleanup=cleanup
+            )
+
+            # Query.close() shields itself from anyio cancel scopes, but not
+            # from asyncio's own cancellation (wait_for, timeout, task.cancel).
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(client.disconnect(), timeout=0.2)
+
+        anyio.run(_test, backend="asyncio")
+        assert not credentials.exists()

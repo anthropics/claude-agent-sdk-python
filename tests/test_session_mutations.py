@@ -784,6 +784,80 @@ class TestForkSession:
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
 
+    def test_fork_remaps_surfaced_definitions_same_as(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A re-announced MCP tool's sameAs points at the fork's copy of the delta.
+
+        Unknown targets are left as they are.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        user, first_delta, reannounced = (str(uuid.uuid4()) for _ in range(3))
+        definition = {"name": "mcp__docs__read", "input_schema": {"type": "object"}}
+
+        def delta(entry_uuid: str, parent: str, surfaced: dict) -> dict:
+            return {
+                "type": "attachment",
+                "uuid": entry_uuid,
+                "parentUuid": parent,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "surfacedNames": ["mcp__docs__read"],
+                    "surfacedDefinitions": [surfaced],
+                },
+            }
+
+        entries = [
+            {
+                "type": "user",
+                "uuid": user,
+                "parentUuid": None,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "Hello"},
+            },
+            delta(
+                first_delta,
+                user,
+                {"name": "mcp__docs__read", "listing": "a", "definition": definition},
+            ),
+            delta(
+                reannounced,
+                first_delta,
+                {"name": "mcp__docs__read", "listing": "a", "sameAs": first_delta},
+            ),
+        ]
+        dangling = delta(
+            str(uuid.uuid4()),
+            reannounced,
+            {"name": "mcp__docs__read", "listing": "a", "sameAs": "not-in-fork"},
+        )
+        file_path = project_dir / f"{sid}.jsonl"
+        file_path.write_text(
+            "".join(json.dumps(e) + "\n" for e in [*entries, dangling])
+        )
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+        forked = [json.loads(line) for line in fork_path.read_text().splitlines()]
+        by_source = {
+            e["forkedFrom"]["messageUuid"]: e for e in forked if "forkedFrom" in e
+        }
+
+        same_as = by_source[reannounced]["attachment"]["surfacedDefinitions"][0]
+        assert same_as["sameAs"] == by_source[first_delta]["uuid"]
+        first = by_source[first_delta]["attachment"]["surfacedDefinitions"][0]
+        assert first["definition"] == definition
+        unknown = by_source[dangling["uuid"]]["attachment"]["surfacedDefinitions"][0]
+        assert unknown["sameAs"] == "not-in-fork"
+
     def test_fork_clears_stale_fields(self, claude_config_dir: Path, tmp_path: Path):
         """teamName, agentName, slug are removed from forked entries."""
         project_path = str(tmp_path / "proj")

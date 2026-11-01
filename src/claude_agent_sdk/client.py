@@ -611,14 +611,18 @@ class ClaudeSDKClient:
         does not react to cancellation (one blocked in a worker thread, say)
         is given up on after a grace period of a few seconds per server.
         """
-        if self._query:
-            await self._query.close()
-            self._query.close_receive_stream()
-            self._query = None
-        self._transport = None
-        if self._materialized is not None:
-            await self._materialized.cleanup()
-            self._materialized = None
+        try:
+            if self._query:
+                await self._query.close()
+                self._query.close_receive_stream()
+                self._query = None
+        finally:
+            # The temp dir holds a .credentials.json copy, so remove it even
+            # when close() is cancelled or raises.
+            self._transport = None
+            if self._materialized is not None:
+                await self._materialized.cleanup()
+                self._materialized = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

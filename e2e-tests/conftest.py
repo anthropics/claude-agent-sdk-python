@@ -15,12 +15,6 @@ import pytest
 # set in the environment is kept.
 os.environ.setdefault("ANTHROPIC_DEFAULT_MODEL", "claude-opus-5")
 
-# On Windows the CLI also offers a PowerShell tool and tells the model it is the
-# primary shell, so a prompt like "Run: echo hi" sometimes goes to PowerShell and
-# fails any test that needs it to reach Bash (a "Bash" hook matcher never fires).
-# Turn the tool off for the suite. Elsewhere it is off already.
-os.environ.setdefault("CLAUDE_CODE_USE_POWERSHELL_TOOL", "0")
-
 
 @pytest.fixture(scope="session")
 def api_key():

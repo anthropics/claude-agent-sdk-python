@@ -11,6 +11,11 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 
+# On Windows the model can run a shell command with PowerShell instead of Bash, so
+# these tests accept either tool.
+SHELL_TOOLS = ["Bash", "PowerShell"]
+SHELL_MATCHER = "|".join(SHELL_TOOLS)
+
 
 @pytest.mark.e2e
 @pytest.mark.anyio
@@ -26,15 +31,15 @@ async def test_hook_with_permission_decision_and_reason():
         print(f"Hook called for tool: {tool_name}")
         hook_invocations.append(tool_name)
 
-        # Block Bash commands for this test
-        if tool_name == "Bash":
+        # Block shell commands for this test
+        if tool_name in SHELL_TOOLS:
             return {
-                "reason": "Bash commands are blocked in this test for safety",
+                "reason": "Shell commands are blocked in this test for safety",
                 "systemMessage": "⚠️ Command blocked by hook",
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": "Security policy: Bash blocked",
+                    "permissionDecisionReason": "Security policy: shell commands blocked",
                 },
             }
 
@@ -48,10 +53,10 @@ async def test_hook_with_permission_decision_and_reason():
         }
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash", "Write"],
+        allowed_tools=[*SHELL_TOOLS, "Write"],
         hooks={
             "PreToolUse": [
-                HookMatcher(matcher="Bash", hooks=[test_hook]),
+                HookMatcher(matcher=SHELL_MATCHER, hooks=[test_hook]),
             ],
         },
     )
@@ -64,8 +69,8 @@ async def test_hook_with_permission_decision_and_reason():
 
     print(f"Hook invocations: {hook_invocations}")
     # Verify hook was called
-    assert "Bash" in hook_invocations, (
-        f"Hook should have been invoked for Bash tool, got: {hook_invocations}"
+    assert set(SHELL_TOOLS) & set(hook_invocations), (
+        f"Hook should have been invoked for a shell tool, got: {hook_invocations}"
     )
 
 
@@ -91,10 +96,10 @@ async def test_hook_with_continue_and_stop_reason():
         }
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash"],
+        allowed_tools=SHELL_TOOLS,
         hooks={
             "PostToolUse": [
-                HookMatcher(matcher="Bash", hooks=[post_tool_hook]),
+                HookMatcher(matcher=SHELL_MATCHER, hooks=[post_tool_hook]),
             ],
         },
     )
@@ -107,7 +112,7 @@ async def test_hook_with_continue_and_stop_reason():
 
     print(f"Hook invocations: {hook_invocations}")
     # Verify hook was called
-    assert "Bash" in hook_invocations, (
+    assert set(SHELL_TOOLS) & set(hook_invocations), (
         f"PostToolUse hook should have been invoked, got: {hook_invocations}"
     )
 
@@ -135,10 +140,10 @@ async def test_hook_with_additional_context():
         }
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash"],
+        allowed_tools=SHELL_TOOLS,
         hooks={
             "PostToolUse": [
-                HookMatcher(matcher="Bash", hooks=[context_hook]),
+                HookMatcher(matcher=SHELL_MATCHER, hooks=[context_hook]),
             ],
         },
     )

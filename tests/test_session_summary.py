@@ -930,3 +930,48 @@ class TestParityWithLiteParse:
         assert incremental is not None and batch is not None
         batch.file_size = None
         assert incremental == batch
+
+    def test_parity_sidechain_flag_after_metadata_entry(self) -> None:
+        """Disk lite-parse and store fold must both exclude a late sidechain."""
+        sid = "44444444-4444-4444-8444-444444444444"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("subagent prompt", isSidechain=True),
+        ]
+        folded = fold_session_summary(None, key, entries)
+        incremental = summary_entry_to_sdk_info(folded, DIR)
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(_entries_to_jsonl(entries), folded["mtime"]), DIR
+        )
+        assert incremental is None
+        assert batch is None
+
+    def test_parity_sidechain_first_explicit_false_wins(self) -> None:
+        """A later true flag may not override an earlier explicit false."""
+        sid = "55555555-5555-4555-8555-555555555555"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "my session"},
+            _user("first", isSidechain=False),
+            _user("second", isSidechain=True),
+        ]
+        folded = fold_session_summary(None, key, entries)
+        incremental = summary_entry_to_sdk_info(folded, DIR)
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(_entries_to_jsonl(entries), folded["mtime"]), DIR
+        )
+        assert incremental is not None
+        assert batch is not None
+
+    def test_parity_ignores_nested_sidechain_flags(self) -> None:
+        """Nested untrusted JSON must not substitute for top-level flags."""
+        sid = "66666666-6666-4666-8666-666666666666"
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "normal session", "metadata": {"isSidechain": True}},
+            _user("main prompt", isSidechain=False),
+        ]
+        batch = _parse_session_info_from_lite(
+            sid, _jsonl_to_lite(_entries_to_jsonl(entries), 0), DIR
+        )
+        assert batch is not None

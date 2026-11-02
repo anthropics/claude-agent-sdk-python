@@ -432,11 +432,20 @@ def _parse_session_info_from_lite(
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
-    # Check first line for sidechain sessions
-    first_newline = head.find("\n")
-    first_line = head[:first_newline] if first_newline >= 0 else head
-    if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
-        return None
+    # Metadata-only JSONL entries may precede the first user/assistant entry.
+    # Match the store summary fold: the first explicit top-level boolean
+    # isSidechain value wins, even when it is not on the first line.
+    for line in head.split("\n"):
+        if '"isSidechain"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("isSidechain"), bool):
+            if entry["isSidechain"]:
+                return None
+            break
 
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
     # Head fallback covers short sessions where the title entry may not be in tail.

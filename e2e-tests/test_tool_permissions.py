@@ -55,10 +55,11 @@ async def test_permission_callback_gets_called():
 
         print(f"Callback invocations: {[name for name, _ in callback_invocations]}")
 
-        # Verify the callback was invoked for Bash
+        # Verify the callback was invoked for the shell tool. On Windows the model
+        # can use PowerShell instead of Bash.
         tool_names = [name for name, _ in callback_invocations]
-        assert "Bash" in tool_names, (
-            f"Permission callback should have been invoked for Bash, got: {tool_names}"
+        assert {"Bash", "PowerShell"} & set(tool_names), (
+            f"Permission callback should have been invoked for a shell tool, got: {tool_names}"
         )
 
     finally:

@@ -852,6 +852,17 @@ class HookMatcher:
     # Timeout in seconds for all hooks in this matcher (default: 60)
     timeout: float | None = None
 
+    # What happens when a callback in this matcher fails. With "block", a
+    # callback that raises, returns None (a path with no return), or returns a
+    # value the CLI rejects, such as permissionDecision "Deny", blocks the
+    # action, so a callback with no opinion must return {}. Unrecognized keys
+    # are not a failure. Stop, SubagentStop, TaskCompleted and TeammateIdle
+    # ignore this option. A PermissionRequest block counts only if it lands
+    # before can_use_tool answers. Unset or "continue" counts a failure as no
+    # decision. With "block", connecting to a CLI too old to honor it raises
+    # CLIConnectionError.
+    on_failure: Literal["continue", "block"] | None = None
+
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):
@@ -2318,6 +2329,8 @@ def _hooks_to_internal_format(
             }
             if hasattr(matcher, "timeout") and matcher.timeout is not None:
                 internal_matcher["timeout"] = matcher.timeout
+            if hasattr(matcher, "on_failure") and matcher.on_failure is not None:
+                internal_matcher["on_failure"] = matcher.on_failure
             internal_hooks[event].append(internal_matcher)
     return internal_hooks
 

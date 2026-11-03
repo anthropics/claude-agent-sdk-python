@@ -356,8 +356,9 @@ def _remap_surfaced_definitions(
     carried it>}``. Left pointing at the source session's uuid, the CLI
     can't resolve the definitions and renders the announcement differently
     in the fork, so the fork's requests stop matching the source session's
-    prompt cache from that point on. A ``sameAs`` whose target isn't in the
-    fork is kept as it is. Returns the remapped attachment, or None when
+    prompt cache from that point on. ``uuid_mapping`` holds only the entries
+    the fork writes, so a ``sameAs`` whose target isn't written (cut off, or a
+    progress entry) is kept as it is. Returns the remapped attachment, or None when
     there is nothing to change.
     """
     if (
@@ -427,6 +428,8 @@ def _build_fork_lines(
     writable = [e for e in transcript if e.get("type") != "progress"]
     if not writable:
         raise ValueError(f"Session {session_id} has no messages to fork")
+    # References inside attachments may only point at entries the fork writes.
+    written_mapping = {e["uuid"]: uuid_mapping[e["uuid"]] for e in writable}
 
     by_uuid: dict[str, dict[str, Any]] = {}
     for entry in transcript:
@@ -479,7 +482,9 @@ def _build_fork_lines(
         for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
             forked.pop(key, None)
 
-        attachment = _remap_surfaced_definitions(forked.get("attachment"), uuid_mapping)
+        attachment = _remap_surfaced_definitions(
+            forked.get("attachment"), written_mapping
+        )
         if attachment is not None:
             forked["attachment"] = attachment
 

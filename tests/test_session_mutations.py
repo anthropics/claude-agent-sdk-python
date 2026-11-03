@@ -789,7 +789,8 @@ class TestForkSession:
     ):
         """A re-announced MCP tool's sameAs points at the fork's copy of the delta.
 
-        Unknown targets are left as they are.
+        Targets the fork doesn't write (unknown, or a progress entry) are left
+        as they are.
         """
         project_path = str(tmp_path / "proj")
         Path(project_path).mkdir(parents=True)
@@ -839,9 +840,25 @@ class TestForkSession:
             reannounced,
             {"name": "mcp__docs__read", "listing": "a", "sameAs": "not-in-fork"},
         )
+        # Progress entries are mapped for the parentUuid walk but never written.
+        progress = {
+            "type": "progress",
+            "uuid": str(uuid.uuid4()),
+            "parentUuid": dangling["uuid"],
+            "sessionId": sid,
+            "timestamp": "2026-03-01T00:00:00Z",
+        }
+        to_progress = delta(
+            str(uuid.uuid4()),
+            progress["uuid"],
+            {"name": "mcp__docs__read", "listing": "a", "sameAs": progress["uuid"]},
+        )
         file_path = project_dir / f"{sid}.jsonl"
         file_path.write_text(
-            "".join(json.dumps(e) + "\n" for e in [*entries, dangling])
+            "".join(
+                json.dumps(e) + "\n"
+                for e in [*entries, dangling, progress, to_progress]
+            )
         )
 
         result = fork_session(sid, directory=project_path)
@@ -857,6 +874,9 @@ class TestForkSession:
         assert first["definition"] == definition
         unknown = by_source[dangling["uuid"]]["attachment"]["surfacedDefinitions"][0]
         assert unknown["sameAs"] == "not-in-fork"
+        assert progress["uuid"] not in by_source
+        unwritten = by_source[to_progress["uuid"]]["attachment"]
+        assert unwritten["surfacedDefinitions"][0]["sameAs"] == progress["uuid"]
 
     def test_fork_clears_stale_fields(self, claude_config_dir: Path, tmp_path: Path):
         """teamName, agentName, slug are removed from forked entries."""

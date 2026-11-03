@@ -506,5 +506,10 @@ class TestClaudeSDKClientResourceCleanup:
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(client.disconnect(), timeout=0.2)
 
+            # No stale half-closed query left behind for a later connect().
+            assert client._query is None
+            assert client._transport is None
+            assert client._materialized is None
+
         anyio.run(_test, backend="asyncio")
         assert not credentials.exists()

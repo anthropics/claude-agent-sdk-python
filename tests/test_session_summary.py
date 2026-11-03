@@ -1069,6 +1069,135 @@ class TestParityWithLiteParse:
         assert disk_lite.is_sidechain == memory_lite.is_sidechain
         assert _parse_session_info_from_lite(sid, disk_lite, DIR) is None
 
+    def test_parity_middle_false_precedes_tail_true(self, tmp_path: Path) -> None:
+        """The first explicit false in the unobserved middle wins over tail true."""
+        sid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        padding = [
+            {"type": "assistant", "message": {"content": "p" * 8000}} for _ in range(11)
+        ]
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "main task"},
+            _user("visible main prompt"),
+            *padding,
+            _user("first explicit main flag", isSidechain=False),
+            *padding,
+            _user("later sidechain flag", isSidechain=True),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        lite = _jsonl_to_lite(jsonl, 0)
+        assert lite.size > 2 * _sessions.LITE_READ_BUF_SIZE
+        assert '"isSidechain"' not in lite.head
+        assert "first explicit main flag" not in lite.tail
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is not None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is not None
+        source = tmp_path / "middle-false.jsonl"
+        source.write_bytes(jsonl.encode("utf-8"))
+        disk = _sessions._read_session_lite(source)
+        assert disk is not None
+        assert disk.is_sidechain is False
+        assert _parse_session_info_from_lite(sid, disk, DIR) is not None
+
+    def test_parity_middle_true_precedes_tail_false(self, tmp_path: Path) -> None:
+        """The first explicit true in the unobserved middle wins over tail false."""
+        sid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        padding = [
+            {"type": "assistant", "message": {"content": "p" * 8000}} for _ in range(11)
+        ]
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "subagent task"},
+            _user("visible prompt"),
+            *padding,
+            _user("first explicit subagent flag", isSidechain=True),
+            *padding,
+            _user("later main flag", isSidechain=False),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        lite = _jsonl_to_lite(jsonl, 0)
+        assert lite.size > 2 * _sessions.LITE_READ_BUF_SIZE
+        assert '"isSidechain"' not in lite.head
+        assert "first explicit subagent flag" not in lite.tail
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+        source = tmp_path / "middle-true.jsonl"
+        source.write_bytes(jsonl.encode("utf-8"))
+        disk = _sessions._read_session_lite(source)
+        assert disk is not None
+        assert disk.is_sidechain is True
+        assert _parse_session_info_from_lite(sid, disk, DIR) is None
+
+    def test_parity_large_line_first_flag_before_tail(self, tmp_path: Path) -> None:
+        """A >128-KiB line can contain the first flag outside both windows."""
+        sid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "subagent"},
+            _user("p" * (2 * _sessions.LITE_READ_BUF_SIZE + 5000), isSidechain=True),
+            _user("late main", isSidechain=False),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        lite = _jsonl_to_lite(jsonl, 0)
+        assert lite.size > 2 * _sessions.LITE_READ_BUF_SIZE
+        assert (
+            summary_entry_to_sdk_info(fold_session_summary(None, key, entries), DIR)
+            is None
+        )
+        assert lite.is_sidechain is True
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+        path = tmp_path / "oversized-line.jsonl"
+        path.write_bytes(jsonl.encode("utf-8"))
+        disk_lite = _sessions._read_session_lite(path)
+        assert disk_lite is not None
+        assert disk_lite.is_sidechain is True
+
+    def test_parity_decoded_unicode_escaped_flag_key(self) -> None:
+        """A JSON unicode escape in the top-level key is still explicit."""
+        sid = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        line = (
+            '{"type":"user","message":{"role":"user","content":"prompt"},'
+            '"is\\u0053idechain":true}\n'
+        )
+        entry = json.loads(line)
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        assert (
+            summary_entry_to_sdk_info(fold_session_summary(None, key, [entry]), DIR)
+            is None
+        )
+        lite = _jsonl_to_lite(line, 0)
+        assert lite.is_sidechain is True
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+
+    def test_large_session_head_flag_keeps_bounded_fast_path(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """An explicit head boolean avoids the large-file sequential fallback."""
+        sid = "12121212-1212-4212-8212-121212121212"
+        entries: list[dict[str, Any]] = [
+            _user("visible main", isSidechain=False),
+            {
+                "type": "assistant",
+                "message": {"content": "x" * (3 * _sessions.LITE_READ_BUF_SIZE)},
+            },
+            _user("later sidechain", isSidechain=True),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        path = tmp_path / (sid + ".jsonl")
+        path.write_bytes(jsonl.encode("utf-8"))
+
+        def unexpected_scan(*_args: Any) -> None:
+            raise AssertionError("Full sequential scan should not be needed")
+
+        monkeypatch.setattr(
+            _sessions, "_first_sidechain_flag_from_jsonl_lines", unexpected_scan
+        )
+        disk_lite = _sessions._read_session_lite(path)
+        assert disk_lite is not None
+        assert disk_lite.is_sidechain is False
+        assert _jsonl_to_lite(jsonl, 0).is_sidechain is False
+
     def test_parity_flag_in_disjoint_tail_after_large_transcript(self) -> None:
         """The tail is checked even when it does not overlap the first head."""
         sid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

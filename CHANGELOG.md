@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.177
+
+### New Features
+
+- **`on_failure` option for `HookMatcher`**: Control what happens when a hook callback fails. Set `on_failure="block"` to block the action when a callback raises, returns `None`, or returns a value the CLI rejects. Defaults to `"continue"` (treat failure as no decision). Requires a CLI version that supports this option; connecting to an older CLI with `on_failure="block"` raises `CLIConnectionError` (#1460)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.317
+- Tests: e2e tests now accept either `Bash` or `PowerShell` tool in shell-dependent tests, fixing intermittent failures on Windows (#1467)
+
 ## 0.2.176
 
 ### Internal/Other Changes

@@ -7,8 +7,10 @@ Covers ``fold_session_summary``, ``summary_entry_to_sdk_info``,
 
 from __future__ import annotations
 
+import json
 import uuid as uuid_mod
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -458,7 +460,9 @@ class TestListSessionsFromStoreFastPath:
         assert sessions[0].summary == "first b"
         assert sessions[1].first_prompt == "first a"
 
-    async def test_fast_path_filters_sidechain_when_first_record_has_no_flag(self) -> None:
+    async def test_fast_path_filters_sidechain_when_first_record_has_no_flag(
+        self,
+    ) -> None:
         """Late sidechain metadata must not make a subagent appear as a main session."""
         store = InMemorySessionStore()
         main_id = str(uuid_mod.uuid4())
@@ -968,10 +972,141 @@ class TestParityWithLiteParse:
         """Nested untrusted JSON must not substitute for top-level flags."""
         sid = "66666666-6666-4666-8666-666666666666"
         entries: list[dict[str, Any]] = [
-            {"type": "summary", "summary": "normal session", "metadata": {"isSidechain": True}},
+            {
+                "type": "summary",
+                "summary": "normal session",
+                "metadata": {"isSidechain": True},
+            },
             _user("main prompt", isSidechain=False),
         ]
         batch = _parse_session_info_from_lite(
             sid, _jsonl_to_lite(_entries_to_jsonl(entries), 0), DIR
         )
         assert batch is not None
+
+    def test_parity_sidechain_explicit_flag_beyond_head_window(self) -> None:
+        """An explicit sidechain flag in the already-read tail must be honored."""
+        sid = "77777777-7777-4777-8777-777777777777"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("initial prompt"),
+            *[
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "p" * 7000},
+                }
+                for _ in range(10)
+            ],
+            _user("subagent prompt", isSidechain=True),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        lite = _jsonl_to_lite(jsonl, 0)
+        assert lite.size > _sessions.LITE_READ_BUF_SIZE
+        assert '"isSidechain": true' not in lite.head
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+
+    def test_parity_head_false_wins_over_tail_true(self) -> None:
+        """Do not override an earlier explicit false by scanning the tail."""
+        sid = "88888888-8888-4888-8888-888888888888"
+        entries: list[dict[str, Any]] = [
+            _user("normal prompt", isSidechain=False),
+            *[
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "p" * 7000},
+                }
+                for _ in range(20)
+            ],
+            _user("later flag", isSidechain=True),
+        ]
+        lite = _jsonl_to_lite(_entries_to_jsonl(entries), 0)
+        assert lite.size > 2 * _sessions.LITE_READ_BUF_SIZE
+        assert _parse_session_info_from_lite(sid, lite, DIR) is not None
+
+    def test_parity_flag_line_straddles_head_and_tail_boundaries(self) -> None:
+        """A long JSONL line is complete only after merging overlapping reads."""
+        sid = "99999999-9999-4999-8999-999999999999"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("p" * 65500, isSidechain=True),
+            {"type": "custom-title", "customTitle": "visible in tail"},
+        ]
+        lite = _jsonl_to_lite(_entries_to_jsonl(entries), 0)
+        assert (
+            _sessions.LITE_READ_BUF_SIZE < lite.size < 2 * _sessions.LITE_READ_BUF_SIZE
+        )
+        assert '"isSidechain": true' not in lite.head
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+
+    def test_disk_lite_reader_parity_after_head_window(self, tmp_path: Path) -> None:
+        """The real file reader and in-memory reader agree beyond 64 KiB."""
+        sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("visible main prompt"),
+            *[
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "p" * 7000},
+                }
+                for _ in range(10)
+            ],
+            _user("hidden subagent", isSidechain=True),
+        ]
+        jsonl = _entries_to_jsonl(entries)
+        path = tmp_path / "session.jsonl"
+        path.write_bytes(jsonl.encode("utf-8"))
+        disk_lite = _sessions._read_session_lite(path)
+        assert disk_lite is not None
+        memory_lite = _jsonl_to_lite(jsonl, disk_lite.mtime)
+        assert disk_lite.is_sidechain is True
+        assert disk_lite.is_sidechain == memory_lite.is_sidechain
+        assert _parse_session_info_from_lite(sid, disk_lite, DIR) is None
+
+    def test_parity_flag_in_disjoint_tail_after_large_transcript(self) -> None:
+        """The tail is checked even when it does not overlap the first head."""
+        sid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("initial prompt"),
+            *[
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "p" * 7000},
+                }
+                for _ in range(20)
+            ],
+            _user("late subagent prompt", isSidechain=True),
+        ]
+        lite = _jsonl_to_lite(_entries_to_jsonl(entries), 0)
+        assert lite.size > 2 * _sessions.LITE_READ_BUF_SIZE
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None
+
+    def test_parity_multibyte_head_tail_boundary(self) -> None:
+        """Joining raw byte windows avoids invalid partial UTF-8 JSON lines."""
+        sid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        entries: list[dict[str, Any]] = [
+            {"type": "summary", "summary": "agent task"},
+            _user("ğ" * 32750, isSidechain=True),
+            {"type": "custom-title", "customTitle": "visible title"},
+        ]
+        jsonl = (
+            "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n"
+        )
+        lite = _jsonl_to_lite(jsonl, 0)
+        assert (
+            _sessions.LITE_READ_BUF_SIZE < lite.size < 2 * _sessions.LITE_READ_BUF_SIZE
+        )
+        folded = fold_session_summary(None, key, entries)
+        assert summary_entry_to_sdk_info(folded, DIR) is None
+        assert _parse_session_info_from_lite(sid, lite, DIR) is None

@@ -338,16 +338,56 @@ def _extract_first_prompt_from_head(head: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _first_sidechain_flag_from_lite_bytes(
+    head: bytes, tail: bytes, size: int
+) -> bool | None:
+    """Read the first explicit sidechain boolean from available JSONL windows.
+
+    Files up to two read windows long are reconstructed byte-exactly; this
+    preserves JSON lines that straddle a window boundary, including UTF-8.
+    Larger files keep the lite reader's bounded head+tail scan.
+    """
+    windows: tuple[bytes, ...]
+    if size <= LITE_READ_BUF_SIZE:
+        windows = (head,)
+    elif size <= 2 * LITE_READ_BUF_SIZE:
+        overlap = 2 * LITE_READ_BUF_SIZE - size
+        windows = (head + tail[overlap:],)
+    else:
+        # For disjoint windows, inspect only the sampled data. The unseen
+        # middle cannot establish first-flag ordering without a full read.
+        # The last head line may be truncated; use complete lines only.
+        last_newline = head.rfind(b"\n")
+        windows = (head[: last_newline + 1], tail)
+
+    for window in windows:
+        for line in window.split(b"\n"):
+            if b'"isSidechain"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (ValueError, UnicodeDecodeError, TypeError):
+                continue
+            if isinstance(entry, dict):
+                flag = entry.get("isSidechain")
+                if isinstance(flag, bool):
+                    return flag
+    return None
+
+
 class _LiteSessionFile:
     """Result of reading a session file's head, tail, mtime and size."""
 
-    __slots__ = ("mtime", "size", "head", "tail")
+    __slots__ = ("mtime", "size", "head", "tail", "is_sidechain")
 
-    def __init__(self, mtime: int, size: int, head: str, tail: str) -> None:
+    def __init__(
+        self, mtime: int, size: int, head: str, tail: str, is_sidechain: bool | None
+    ) -> None:
         self.mtime = mtime
         self.size = size
         self.head = head
         self.tail = tail
+        self.is_sidechain = is_sidechain
 
 
 def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
@@ -369,13 +409,22 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
 
             tail_offset = max(0, size - LITE_READ_BUF_SIZE)
             if tail_offset == 0:
+                tail_bytes = head_bytes
                 tail = head
             else:
                 f.seek(tail_offset)
                 tail_bytes = f.read(LITE_READ_BUF_SIZE)
                 tail = tail_bytes.decode("utf-8", errors="replace")
 
-            return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
+            return _LiteSessionFile(
+                mtime=mtime,
+                size=size,
+                head=head,
+                tail=tail,
+                is_sidechain=_first_sidechain_flag_from_lite_bytes(
+                    head_bytes, tail_bytes, size
+                ),
+            )
     except OSError:
         return None
 
@@ -432,20 +481,10 @@ def _parse_session_info_from_lite(
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
-    # Metadata-only JSONL entries may precede the first user/assistant entry.
-    # Match the store summary fold: the first explicit top-level boolean
-    # isSidechain value wins, even when it is not on the first line.
-    for line in head.split("\n"):
-        if '"isSidechain"' not in line:
-            continue
-        try:
-            entry = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(entry, dict) and isinstance(entry.get("isSidechain"), bool):
-            if entry["isSidechain"]:
-                return None
-            break
+    # The lite reader has inspected the available windows in order, including
+    # lines spanning an overlap. A very large unseen middle is not scanned.
+    if lite.is_sidechain is True:
+        return None
 
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
     # Head fallback covers short sessions where the title entry may not be in tail.
@@ -1795,7 +1834,17 @@ def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
         if size > LITE_READ_BUF_SIZE
         else head
     )
-    return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
+    return _LiteSessionFile(
+        mtime=mtime,
+        size=size,
+        head=head,
+        tail=tail,
+        is_sidechain=_first_sidechain_flag_from_lite_bytes(
+            buf[:LITE_READ_BUF_SIZE],
+            buf[max(0, size - LITE_READ_BUF_SIZE) :],
+            size,
+        ),
+    )
 
 
 def _mtime_from_jsonl_tail(jsonl: str) -> int:

@@ -1979,6 +1979,60 @@ class TestSubprocessCLITransport:
             "npm test": ["registry.npmjs.org"],
         }
 
+    @pytest.mark.parametrize("option", ["tools", "allowed_tools", "disallowed_tools"])
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "",
+            "Read,Bash",
+            "Read Bash",
+            " Read",
+            "Read ",
+            "Read\tBash",
+            "Read\nBash",
+            "Read\x00Bash",
+            "Read\x7fBash",
+            "Read\x85Bash",
+            "Read\u00a0Bash",
+            "Read\ufeffBash",
+        ],
+    )
+    def test_tool_lists_reject_ambiguous_entries(self, option, entry):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(**{option: ["Read", entry]})
+        )
+        with pytest.raises(ValueError, match=rf"{option}\[1\]"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("entry", ["Bash(git status:*)", "Read)", "(Read"])
+    def test_tools_reject_rule_syntax(self, entry):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(tools=[entry])
+        )
+        with pytest.raises(ValueError, match=r"tools\[0\]"):
+            transport._build_command()
+
+    @pytest.mark.parametrize("option", ["allowed_tools", "disallowed_tools"])
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "Bash(git status:*",
+            "Bash(git status:*))",
+            "Bash)Read(",
+            "Bash(echo $(pwd)",
+            "Bash(git status:*),Read",
+            "Bash(git status:*) Read",
+            "Bash(echo\nhello)",
+            "Bash(echo\x00hello)",
+        ],
+    )
+    def test_permission_lists_reject_split_or_unbalanced_rules(self, option, entry):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(**{option: [entry]})
+        )
+        with pytest.raises(ValueError, match=rf"{option}\[0\]"):
+            transport._build_command()
+
     def test_build_command_with_tools_array(self):
         """Test building CLI command with tools as array of tool names."""
         transport = SubprocessCLITransport(

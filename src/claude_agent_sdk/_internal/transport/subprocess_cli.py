@@ -160,6 +160,49 @@ def _validate_skill_name(name: str) -> None:
         )
 
 
+def _validate_tool_entry(entry: str, option: str, index: int) -> None:
+    """Keep one list entry from becoming multiple CLI tool names or rules.
+
+    The CLI tokenizer does not honor escapes. Permission rules may contain
+    spaces and commas inside balanced parentheses; base tool names may not.
+    This checks token boundaries, not whether a tool or rule exists.
+    """
+    label = f"ClaudeAgentOptions.{option}[{index}]"
+    if not isinstance(entry, str):
+        raise TypeError(f"{label} must be a string, got {entry!r}")
+    if not entry:
+        raise ValueError(f"{label} must be a non-empty string")
+
+    if option == "tools":
+        if _SKILL_NAME_INVALID_CHARS.search(entry) or any(
+            char.isspace() for char in entry
+        ):
+            raise ValueError(
+                f"{label} must be one bare tool name, got {entry!r};"
+                " use separate list entries for separate tools"
+            )
+        return
+
+    depth = 0
+    for char in entry:
+        codepoint = ord(char)
+        if codepoint < 32 or 127 <= codepoint <= 159 or char == "\ufeff":
+            raise ValueError(f"{label} contains a control character: {entry!r}")
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                break
+        elif depth == 0 and (char == "," or char.isspace()):
+            raise ValueError(
+                f"{label} must be one permission rule, got {entry!r};"
+                " use separate list entries for separate rules"
+            )
+    if depth != 0:
+        raise ValueError(f"{label} has unbalanced parentheses: {entry!r}")
+
+
 class _LineFramer:
     """Reassembles complete lines from a stream that yields arbitrary chunks.
 
@@ -592,6 +635,8 @@ class SubprocessCLITransport(Transport):
         if self._options.tools is not None:
             tools = self._options.tools
             if isinstance(tools, list):
+                for index, tool in enumerate(tools):
+                    _validate_tool_entry(tool, "tools", index)
                 if len(tools) == 0:
                     cmd.extend(["--tools", ""])
                 else:
@@ -605,6 +650,8 @@ class SubprocessCLITransport(Transport):
         )
 
         if effective_allowed_tools:
+            for index, rule in enumerate(effective_allowed_tools):
+                _validate_tool_entry(rule, "allowed_tools", index)
             cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])
 
         if self._options.max_turns:
@@ -614,6 +661,8 @@ class SubprocessCLITransport(Transport):
             cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
 
         if self._options.disallowed_tools:
+            for index, rule in enumerate(self._options.disallowed_tools):
+                _validate_tool_entry(rule, "disallowed_tools", index)
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
         if self._options.task_budget is not None:

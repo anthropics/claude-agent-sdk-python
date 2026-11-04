@@ -1285,13 +1285,22 @@ ContentBlock = (
 
 
 # Message types
+# Order follows SDKAssistantMessageError in the TypeScript SDK's sdk.d.ts, so
+# the two can be diffed by eye when the CLI adds a value.
 AssistantMessageError = Literal[
     "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "verification_required",
     "billing_error",
     "rate_limit",
+    "overloaded",
     "invalid_request",
+    "model_not_found",
     "server_error",
     "unknown",
+    "max_output_tokens",
+    "cloud_credential_error",
 ]
 
 
@@ -1309,7 +1318,12 @@ MessageOriginKind = Literal[
 """Known values of ``MessageOrigin["kind"]``. Newer CLI versions may emit
 kinds not listed here; treat anything unrecognized as "not human"."""
 
-TaskNotificationOriginSubkind = Literal["scheduled-trigger", "peer-send-message"]
+TaskNotificationOriginSubkind = Literal[
+    "scheduled-trigger",
+    "peer-send-message",
+    "projects-relay",
+    "session-inbox",
+]
 """Values of ``MessageOrigin["subkind"]`` for ``kind == "task-notification"``."""
 
 # Functional syntax because ``from`` is a keyword.
@@ -1756,7 +1770,12 @@ class StreamEvent:
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
 RateLimitStatus = Literal["allowed", "allowed_warning", "rejected"]
 RateLimitType = Literal[
-    "five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"
+    "five_hour",
+    "seven_day",
+    "seven_day_opus",
+    "seven_day_sonnet",
+    "seven_day_overage_included",
+    "overage",
 ]
 
 

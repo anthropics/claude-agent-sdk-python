@@ -345,6 +345,42 @@ def fork_session(
     return ForkSessionResult(session_id=forked_session_id)
 
 
+def _remap_surfaced_definitions(
+    attachment: Any, uuid_mapping: dict[str, str]
+) -> dict[str, Any] | None:
+    """Point a re-announced MCP tool's ``sameAs`` at the fork's entries.
+
+    When an MCP server's tools are announced again (e.g. after it
+    reconnects), the ``deferred_tools_delta`` stores each tool's definition
+    as ``{"name", "listing", "sameAs": <uuid of the earlier delta that
+    carried it>}``. Left pointing at the source session's uuid, the CLI
+    can't resolve the definitions and renders the announcement differently
+    in the fork, so the fork's requests stop matching the source session's
+    prompt cache from that point on. ``uuid_mapping`` holds only the entries
+    the fork writes, so a ``sameAs`` whose target isn't written (cut off, or a
+    progress entry) is kept as it is. Returns the remapped attachment, or None when
+    there is nothing to change.
+    """
+    if (
+        not isinstance(attachment, dict)
+        or attachment.get("type") != "deferred_tools_delta"
+    ):
+        return None
+    definitions = attachment.get("surfacedDefinitions")
+    if not isinstance(definitions, list):
+        return None
+    changed = False
+    remapped: list[Any] = []
+    for definition in definitions:
+        same_as = definition.get("sameAs") if isinstance(definition, dict) else None
+        if isinstance(same_as, str) and same_as in uuid_mapping:
+            remapped.append({**definition, "sameAs": uuid_mapping[same_as]})
+            changed = True
+        else:
+            remapped.append(definition)
+    return {**attachment, "surfacedDefinitions": remapped} if changed else None
+
+
 def _build_fork_lines(
     transcript: list[dict[str, Any]],
     content_replacements: list[Any],
@@ -392,6 +428,8 @@ def _build_fork_lines(
     writable = [e for e in transcript if e.get("type") != "progress"]
     if not writable:
         raise ValueError(f"Session {session_id} has no messages to fork")
+    # References inside attachments may only point at entries the fork writes.
+    written_mapping = {e["uuid"]: uuid_mapping[e["uuid"]] for e in writable}
 
     by_uuid: dict[str, dict[str, Any]] = {}
     for entry in transcript:
@@ -443,6 +481,12 @@ def _build_fork_lines(
         # Remove fields that would leak state from the source session
         for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
             forked.pop(key, None)
+
+        attachment = _remap_surfaced_definitions(
+            forked.get("attachment"), written_mapping
+        )
+        if attachment is not None:
+            forked["attachment"] = attachment
 
         lines.append(json.dumps(forked, separators=(",", ":")))
 

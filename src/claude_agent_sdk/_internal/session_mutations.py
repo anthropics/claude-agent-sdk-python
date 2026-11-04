@@ -345,6 +345,51 @@ def fork_session(
     return ForkSessionResult(session_id=forked_session_id)
 
 
+def _remap_compact_metadata(
+    metadata: dict[str, Any],
+    uuid_mapping: dict[str, str],
+) -> dict[str, Any]:
+    """Remap message UUID references in compactMetadata for a forked session.
+
+    Leaves unmapped UUIDs (e.g. truncated via up_to_message_id) unchanged.
+    Ensures source metadata objects remain unmodified.
+    """
+    remapped = dict(metadata)
+
+    segment = metadata.get("preservedSegment")
+    if isinstance(segment, dict):
+        new_segment = dict(segment)
+        for key in ("headUuid", "tailUuid", "anchorUuid"):
+            val = segment.get(key)
+            if isinstance(val, str) and val in uuid_mapping:
+                new_segment[key] = uuid_mapping[val]
+        remapped["preservedSegment"] = new_segment
+
+    messages = metadata.get("preservedMessages")
+    if isinstance(messages, dict):
+        new_messages = dict(messages)
+        anchor = messages.get("anchorUuid")
+        if isinstance(anchor, str) and anchor in uuid_mapping:
+            new_messages["anchorUuid"] = uuid_mapping[anchor]
+
+        uuids = messages.get("uuids")
+        if isinstance(uuids, list):
+            new_messages["uuids"] = [
+                uuid_mapping[u] if isinstance(u, str) and u in uuid_mapping else u
+                for u in uuids
+            ]
+
+        all_uuids = messages.get("allUuids")
+        if isinstance(all_uuids, list):
+            new_messages["allUuids"] = [
+                uuid_mapping[u] if isinstance(u, str) and u in uuid_mapping else u
+                for u in all_uuids
+            ]
+        remapped["preservedMessages"] = new_messages
+
+    return remapped
+
+
 def _build_fork_lines(
     transcript: list[dict[str, Any]],
     content_replacements: list[Any],
@@ -426,6 +471,14 @@ def _build_fork_lines(
             uuid_mapping.get(logical_parent) if logical_parent else logical_parent
         )
 
+        # Remap compactMetadata message references if present.
+        compact_metadata = original.get("compactMetadata")
+        new_compact_metadata = (
+            _remap_compact_metadata(compact_metadata, uuid_mapping)
+            if isinstance(compact_metadata, dict)
+            else None
+        )
+
         forked = {
             **original,
             "uuid": new_uuid,
@@ -440,6 +493,8 @@ def _build_fork_lines(
                 "messageUuid": original["uuid"],
             },
         }
+        if new_compact_metadata is not None:
+            forked["compactMetadata"] = new_compact_metadata
         # Remove fields that would leak state from the source session
         for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
             forked.pop(key, None)

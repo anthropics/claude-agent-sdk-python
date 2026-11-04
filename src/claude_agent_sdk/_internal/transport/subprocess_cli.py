@@ -636,7 +636,11 @@ class SubprocessCLITransport(Transport):
         if self._options.permission_mode:
             cmd.extend(["--permission-mode", self._options.permission_mode])
 
-        if self._options.continue_conversation:
+        # With a session_store, the store decides what to continue: a session
+        # it has was already rewritten to --resume before spawn. Otherwise start
+        # fresh, as materialize_resume_session documents, rather than let the
+        # CLI continue a local transcript the store never saw.
+        if self._options.continue_conversation and self._options.session_store is None:
             cmd.append("--continue")
 
         # Pass these as --flag=value rather than as two argv tokens. The CLI

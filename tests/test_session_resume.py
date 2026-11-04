@@ -1107,6 +1107,54 @@ class TestClientIntegration:
             assert captured["options"].resume == SESSION_ID
             await client.disconnect()
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("contents", ["empty", "only_sidechains"])
+    async def test_connect_continue_with_nothing_in_store_starts_fresh(
+        self, cwd: Path, project_key: str, isolated_home: Path, contents: str
+    ) -> None:
+        """A store with no session to continue must not fall back to --continue,
+        which would pick up a local transcript the store never had."""
+        store = InMemorySessionStore()
+        if contents == "only_sidechains":
+            await store.append(
+                {"project_key": project_key, "session_id": str(uuid.uuid4())},
+                [{"type": "user", "isSidechain": True}],
+            )
+        captured: dict[str, Any] = {}
+        mock_transport = _make_mock_transport()
+
+        def capture_transport(*, prompt, options):
+            captured["options"] = options
+            return mock_transport
+
+        opts = ClaudeAgentOptions(
+            cwd=cwd,
+            session_store=store,
+            continue_conversation=True,
+            cli_path="/usr/bin/claude",
+        )
+        client = ClaudeSDKClient(options=opts)
+
+        with (
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli."
+                "SubprocessCLITransport",
+                side_effect=capture_transport,
+            ),
+            patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await client.connect()
+            await client.disconnect()
+
+        cmd = SubprocessCLITransport(
+            prompt="x", options=captured["options"]
+        )._build_command()
+        assert "--continue" not in cmd
+        assert not any(arg.startswith("--resume") for arg in cmd)
+
 
 # ---------------------------------------------------------------------------
 # Temp-dir leak on spawn failure

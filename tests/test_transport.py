@@ -492,6 +492,24 @@ class TestSubprocessCLITransport:
         assert "--continue" in cmd
         assert "--resume=session-123" in cmd
 
+    def test_continue_not_forwarded_with_session_store(self):
+        """With a session_store, continue_conversation is resolved against the
+        store before spawn (materialized into --resume). If it is still set
+        here, the store had nothing to continue, so the CLI must start fresh
+        instead of continuing a local transcript the store never saw."""
+        from claude_agent_sdk import InMemorySessionStore
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                session_store=InMemorySessionStore(), continue_conversation=True
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert "--continue" not in cmd
+        assert "--session-mirror" in cmd
+
     def test_session_id(self):
         """Test custom session ID option."""
         transport = SubprocessCLITransport(

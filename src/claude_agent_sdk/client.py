@@ -611,18 +611,17 @@ class ClaudeSDKClient:
         does not react to cancellation (one blocked in a worker thread, say)
         is given up on after a grace period of a few seconds per server.
         """
-        query = self._query
         try:
-            if query is not None:
-                await query.close()
-        finally:
-            # Reset state even when close() is cancelled or raises, so a later
-            # connect() or disconnect() never sees a half-closed query, and the
-            # temp dir with its .credentials.json copy is always removed.
-            self._query = None
+            if self._query is not None:
+                await self._query.close()
+                self._query.close_receive_stream()
+                self._query = None
             self._transport = None
-            if query is not None:
-                query.close_receive_stream()
+        finally:
+            # The temp dir holds a .credentials.json copy, so remove it even
+            # when close() is cancelled or raises. _query is only dropped once
+            # close() returns, so a cancelled disconnect() can be retried to
+            # finish shutting down the CLI.
             if self._materialized is not None:
                 await self._materialized.cleanup()
                 self._materialized = None

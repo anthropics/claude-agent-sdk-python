@@ -484,11 +484,16 @@ class TestClaudeSDKClientResourceCleanup:
                 await anyio.sleep_forever()
                 yield {}
 
-            async def slow_close():
-                await anyio.sleep_forever()
+            close_calls = 0
+
+            async def close_wedged_once():
+                nonlocal close_calls
+                close_calls += 1
+                if close_calls == 1:
+                    await anyio.sleep_forever()
 
             mock_transport.read_messages = read_messages
-            mock_transport.close = slow_close
+            mock_transport.close = close_wedged_once
 
             async def cleanup():
                 shutil.rmtree(config_dir, ignore_errors=True)
@@ -506,10 +511,17 @@ class TestClaudeSDKClientResourceCleanup:
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(client.disconnect(), timeout=0.2)
 
-            # No stale half-closed query left behind for a later connect().
+            # The credentials dir is gone even though close() was cancelled.
+            assert client._materialized is None
+            assert not credentials.exists()
+
+            # The query is kept, so retrying disconnect() finishes the
+            # shutdown the cancelled close() never completed.
+            assert client._query is not None
+            await asyncio.wait_for(client.disconnect(), timeout=5)
+            assert close_calls == 2
             assert client._query is None
             assert client._transport is None
-            assert client._materialized is None
 
         anyio.run(_test, backend="asyncio")
         assert not credentials.exists()

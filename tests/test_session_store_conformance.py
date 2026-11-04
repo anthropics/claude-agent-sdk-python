@@ -35,6 +35,68 @@ class TestInMemorySessionStore:
         await run_session_store_conformance(InMemorySessionStore)
 
     @pytest.mark.anyio
+    async def test_append_is_idempotent_by_uuid(self) -> None:
+        """`uuid` is contractually an idempotency key, and the mirror batcher
+        can retry a batch that partially overlaps a prior partial write."""
+        store = InMemorySessionStore()
+        await store.append(
+            _KEY, [{"type": "user", "uuid": "a"}, {"type": "user", "uuid": "b"}]
+        )
+        await store.append(
+            _KEY, [{"type": "user", "uuid": "b"}, {"type": "user", "uuid": "c"}]
+        )
+        loaded = await store.load(_KEY)
+        assert loaded is not None
+        assert [e["uuid"] for e in loaded] == ["a", "b", "c"]
+
+    @pytest.mark.anyio
+    async def test_append_does_not_dedup_entries_without_uuid(self) -> None:
+        """Entries without a uuid (titles, tags, mode markers) append verbatim."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [{"type": "summary", "title": "t"}])
+        await store.append(_KEY, [{"type": "summary", "title": "t"}])
+        loaded = await store.load(_KEY)
+        assert loaded is not None
+        assert len(loaded) == 2
+
+    @pytest.mark.anyio
+    async def test_skipped_duplicate_does_not_reach_the_summary_sidecar(self) -> None:
+        """A deduped entry must be kept out of the summary fold too.
+
+        Every field `fold_session_summary` derives is set-once or last-wins, so
+        folding a skipped duplicate would leave `list_session_summaries()`
+        reporting metadata that `load()` never returns.
+        """
+        store = InMemorySessionStore()
+        await store.append(
+            _KEY,
+            [{"type": "user", "uuid": "a", "gitBranch": "main", "customTitle": "real"}],
+        )
+        # The same uuid retried, carrying changed last-wins metadata.
+        await store.append(
+            _KEY,
+            [
+                {
+                    "type": "user",
+                    "uuid": "a",
+                    "gitBranch": "rewritten",
+                    "customTitle": "ghost",
+                }
+            ],
+        )
+
+        loaded = await store.load(_KEY)
+        assert loaded is not None
+        assert [e["uuid"] for e in loaded] == ["a"]
+        assert loaded[0]["gitBranch"] == "main"
+
+        summaries = await store.list_session_summaries(_KEY["project_key"])
+        assert len(summaries) == 1
+        # The sidecar agrees with the stored transcript.
+        assert summaries[0]["data"]["git_branch"] == "main"
+        assert summaries[0]["data"]["custom_title"] == "real"
+
+    @pytest.mark.anyio
     async def test_conformance_with_async_factory(self) -> None:
         async def make() -> SessionStore:
             return InMemorySessionStore()
@@ -177,6 +239,56 @@ class TestSessionStoreOptionsValidation:
                 session_store=InMemorySessionStore(), continue_conversation=True
             )
         )
+
+    def test_continue_conversation_ok_when_list_sessions_set_on_instance(
+        self,
+    ) -> None:
+        """SessionStore is a structural Protocol, so an implementation assigned
+        on the instance (delegation, functools.partial, a test double) satisfies
+        it just as a class-level def does.
+        """
+
+        class DelegatingStore(SessionStore):
+            def __init__(self, inner: SessionStore) -> None:
+                self.list_sessions = inner.list_sessions
+
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        validate_session_store_options(
+            ClaudeAgentOptions(
+                session_store=DelegatingStore(InMemorySessionStore()),
+                continue_conversation=True,
+            )
+        )
+
+    def test_non_callable_instance_attribute_is_not_an_implementation(
+        self,
+    ) -> None:
+        """Resolving against the instance must still require a callable — a
+        non-callable attribute would otherwise pass validation here and fail
+        mid-session at the call site.
+        """
+
+        class DisabledStore(SessionStore):
+            def __init__(self) -> None:
+                self.list_sessions = "disabled"
+
+            async def append(self, key, entries):
+                pass
+
+            async def load(self, key):
+                return None
+
+        with pytest.raises(ValueError, match="list_sessions"):
+            validate_session_store_options(
+                ClaudeAgentOptions(
+                    session_store=DisabledStore(), continue_conversation=True
+                )
+            )
 
     def test_continue_with_resume_and_store_lacking_list_sessions(self) -> None:
         """Parity with TS: when resume is explicitly set, continue=True

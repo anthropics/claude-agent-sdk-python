@@ -224,6 +224,27 @@ class TestWarnIfCanUseToolShadowed:
         with pytest.warns(CanUseToolShadowedWarning, match="invoked for: Read"):
             _warn_if_can_use_tool_shadowed(options)
 
+    def test_none_allowed_tools_treated_as_empty(self):
+        """Regression: allowed_tools=None used to raise TypeError at emit time."""
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool,
+            allowed_tools=None,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", CanUseToolShadowedWarning)
+            _warn_if_can_use_tool_shadowed(options)
+
+    def test_none_allowed_tools_with_skills_all_does_not_crash(self):
+        """skills='all' appends Skill on top of a None allowed_tools without crashing."""
+        options = ClaudeAgentOptions(
+            can_use_tool=_can_use_tool,
+            permission_mode="bypassPermissions",
+            allowed_tools=None,
+            skills="all",
+        )
+        with pytest.warns(CanUseToolShadowedWarning, match="bypassPermissions"):
+            _warn_if_can_use_tool_shadowed(options)
+
     def test_no_warning_for_accept_edits_with_specifier_entries(self):
         options = ClaudeAgentOptions(
             can_use_tool=_can_use_tool,

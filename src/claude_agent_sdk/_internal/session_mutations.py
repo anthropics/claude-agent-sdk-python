@@ -41,8 +41,8 @@ from .sessions import (
     _find_project_dir,
     _get_projects_dir,
     _get_worktree_paths,
+    _resolve_store_session,
     _validate_uuid,
-    project_key_for_directory,
 )
 
 # ---------------------------------------------------------------------------
@@ -781,20 +781,20 @@ async def rename_session_via_store(
         session_id: UUID of the session to rename.
         title: New session title. Leading/trailing whitespace is stripped.
             Must be non-empty after stripping.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``title``
-            is empty/whitespace-only.
+            is empty/whitespace-only, or the ID is ambiguous across worktrees.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
     stripped = title.strip()
     if not stripped:
         raise ValueError("title must be non-empty")
-    project_key = project_key_for_directory(directory)
-    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    key, _ = await _resolve_store_session(session_store, session_id, directory)
     entry: dict[str, Any] = {
         "type": "custom-title",
         "customTitle": stripped,
@@ -822,12 +822,14 @@ async def tag_session_via_store(
         session_store: The store to write to.
         session_id: UUID of the session to tag.
         tag: Tag string, or ``None`` to clear.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID, or if ``tag`` is
-            empty/whitespace-only after sanitization.
+            empty/whitespace-only after sanitization, or the ID is ambiguous
+            across worktrees.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
@@ -836,8 +838,7 @@ async def tag_session_via_store(
         if not sanitized:
             raise ValueError("tag must be non-empty (use None to clear)")
         tag = sanitized
-    project_key = project_key_for_directory(directory)
-    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    key, _ = await _resolve_store_session(session_store, session_id, directory)
     entry: dict[str, Any] = {
         "type": "tag",
         "tag": tag if tag is not None else "",
@@ -867,18 +868,19 @@ async def delete_session_via_store(
     Args:
         session_store: The store to delete from.
         session_id: UUID of the session to delete.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
 
     Raises:
-        ValueError: If ``session_id`` is not a valid UUID.
+        ValueError: If ``session_id`` is not a valid UUID or is ambiguous
+            across worktrees.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
     if not _store_implements(session_store, "delete"):
         return
-    project_key = project_key_for_directory(directory)
-    key: SessionKey = {"project_key": project_key, "session_id": session_id}
+    key, _ = await _resolve_store_session(session_store, session_id, directory)
     await session_store.delete(key)
 
 
@@ -902,8 +904,9 @@ async def fork_session_via_store(
         session_store: The store to read the source from and write the fork
             to.
         session_id: UUID of the source session to fork.
-        directory: Project directory used to compute the ``project_key``.
-            Defaults to the current working directory.
+        directory: Project directory, defaulting to the current working
+            directory. If the session is absent there, look in registered
+            git worktrees. Pass the owning worktree if the ID is ambiguous.
         up_to_message_id: Slice transcript up to this message UUID
             (inclusive). If omitted, copies the full transcript.
         title: Custom title for the fork. If omitted, derives from the
@@ -914,16 +917,15 @@ async def fork_session_via_store(
 
     Raises:
         ValueError: If ``session_id`` or ``up_to_message_id`` is not a
-            valid UUID, or if the session has no messages to fork.
+            valid UUID, if the session has no messages to fork, or if its ID
+            is ambiguous across worktrees.
         FileNotFoundError: If the source session is not found in the store.
     """
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
     if up_to_message_id and not _validate_uuid(up_to_message_id):
         raise ValueError(f"Invalid up_to_message_id: {up_to_message_id}")
-    project_key = project_key_for_directory(directory)
-    src_key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    loaded = await session_store.load(src_key)
+    src_key, loaded = await _resolve_store_session(session_store, session_id, directory)
     if not loaded:
         raise FileNotFoundError(f"Session {session_id} not found")
 
@@ -954,7 +956,10 @@ async def fork_session_via_store(
         lambda: _derive_title_from_entries(raw),
     )
 
-    dst_key: SessionKey = {"project_key": project_key, "session_id": forked_session_id}
+    dst_key: SessionKey = {
+        "project_key": src_key["project_key"],
+        "session_id": forked_session_id,
+    }
     # _build_fork_lines emits compact JSON strings; re-parse to objects so the
     # store receives the same shape it would from the mirror path. All entries
     # satisfy the SessionStoreEntry structural supertype ({type: str, ...}).

@@ -161,8 +161,10 @@ def fold_session_summary(
 
         ms = _iso_to_epoch_ms(entry.get("timestamp"))
 
-        if "is_sidechain" not in data:
-            data["is_sidechain"] = entry.get("isSidechain") is True
+        # The flag is optional in transcript metadata records. Do not latch a
+        # missing value as False: a later user message may identify a subagent.
+        if "is_sidechain" not in data and isinstance(entry.get("isSidechain"), bool):
+            data["is_sidechain"] = entry["isSidechain"]
         if "created_at" not in data and ms is not None:
             data["created_at"] = ms
 

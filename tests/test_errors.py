@@ -110,3 +110,26 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_json_decode_error_survives_pickle_and_copy(self):
+        """CLIJSONDecodeError crosses process boundaries too (multiprocessing,
+        ProcessPoolExecutor): the transport raises it for an undecodable stdout
+        line, so it must round-trip instead of taking the pool down with it."""
+        import copy
+        import json
+        import pickle
+
+        try:
+            json.loads("{invalid json}")
+        except json.JSONDecodeError as e:
+            # 注意：`except ... as e` 会在离开该块时删除 e，必须另存一份
+            original_error = e
+
+        error = CLIJSONDecodeError("{invalid json}", original_error)
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+            assert type(clone) is CLIJSONDecodeError
+            assert str(clone) == str(error)
+            assert clone.line == "{invalid json}"
+            # original_error 反序列化后是新对象，比类型与消息（不比身份/相等）
+            assert type(clone.original_error) is type(original_error)
+            assert str(clone.original_error) == str(original_error)

@@ -527,8 +527,7 @@ class TestListSessionsFromStoreFastPath:
         assert sessions[0].session_id == sid_without
 
     async def test_gap_fill_load_bounded_by_limit(self) -> None:
-        """Gap-fill paginates BEFORE per-session load(), so load() count is
-        bounded by page size, not total missing."""
+        """A full first page loads at most that page's missing sidecars."""
 
         class CountingStore(InMemorySessionStore):
             def __init__(self) -> None:
@@ -564,7 +563,8 @@ class TestListSessionsFromStoreFastPath:
         # Page = newest 2: sid_with (sidecar) + newest 1 missing.
         assert len(page) == 2
         assert page[0].session_id == sid_with
-        # load() bounded by page size (≤2), not total missing (5).
+        # No invalid placeholders require backfill, so load() stays bounded by
+        # the first page instead of reading every missing sidecar.
         assert len(store.load_calls) <= 2
         # Specifically, only the one placeholder in the page was loaded.
         assert len(store.load_calls) == 1
@@ -573,8 +573,7 @@ class TestListSessionsFromStoreFastPath:
         """Summary-backed sidechain/empty sessions are dropped BEFORE
         pagination (free — already determined from the sidecar) so they don't
         consume offset/limit positions. Matches the disk and slow-path
-        filter-then-paginate semantics. Only gap-fill placeholders that
-        resolve to None after load can short-page."""
+        filter-then-paginate semantics."""
         store = InMemorySessionStore()
         sids = [str(uuid_mod.uuid4()) for _ in range(3)]
         # Append order determines storage mtime (InMemorySessionStore
@@ -606,6 +605,138 @@ class TestListSessionsFromStoreFastPath:
         # after sids[2] and is therefore newer by storage mtime.
         assert len(page) == 2
         assert [s.session_id for s in page] == [sids[1], sids[2]]
+
+    async def test_missing_sidechain_sidecar_backfills_full_page(self) -> None:
+        """An unknown sidechain is filtered before limit consumes its slot."""
+        sidechain_sid = str(uuid_mod.uuid4())
+        valid_sids = [str(uuid_mod.uuid4()) for _ in range(2)]
+
+        class MissingSidechainSummaryStore(InMemorySessionStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                summaries = await super().list_session_summaries(project_key)
+                return [s for s in summaries if s["session_id"] != sidechain_sid]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = MissingSidechainSummaryStore()
+        for i, sid in enumerate(valid_sids):
+            await store.append(
+                {"project_key": PROJECT_KEY, "session_id": sid},
+                [_user(f"valid {i}", ts=f"2024-01-0{i + 1}T00:00:00Z")],
+            )
+        # Newest slot is an unknown placeholder that resolves to a sidechain.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sidechain_sid},
+            [
+                {
+                    "type": "user",
+                    "timestamp": "2024-01-03T00:00:00Z",
+                    "isSidechain": True,
+                    "message": {"content": "internal"},
+                }
+            ],
+        )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=2)
+
+        assert [s.session_id for s in page] == list(reversed(valid_sids))
+        assert store.load_calls == [sidechain_sid]
+
+    async def test_stale_no_summary_sidecar_backfills_full_page(self) -> None:
+        """A stale placeholder that folds to no summary does not short-page."""
+        empty_sid = str(uuid_mod.uuid4())
+        valid_sids = [str(uuid_mod.uuid4()) for _ in range(2)]
+
+        class StaleEmptySummaryStore(InMemorySessionStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                summaries = await super().list_session_summaries(project_key)
+                return [
+                    {**s, "mtime": 0} if s["session_id"] == empty_sid else s
+                    for s in summaries
+                ]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = StaleEmptySummaryStore()
+        for i, sid in enumerate(valid_sids):
+            await store.append(
+                {"project_key": PROJECT_KEY, "session_id": sid},
+                [_user(f"valid {i}", ts=f"2024-01-0{i + 1}T00:00:00Z")],
+            )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": empty_sid},
+            [{"type": "x", "timestamp": "2024-01-03T00:00:00Z"}],
+        )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=2)
+
+        assert [s.session_id for s in page] == list(reversed(valid_sids))
+        assert store.load_calls == [empty_sid]
+
+    async def test_gap_fill_filters_before_offset_across_chunks(self) -> None:
+        """Invalid placeholders before an offset cannot make valid rows skip."""
+        valid_sids = [str(uuid_mod.uuid4()) for _ in range(4)]
+        invalid_sids = [str(uuid_mod.uuid4()) for _ in range(2)]
+
+        class MissingInvalidSummariesStore(InMemorySessionStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.load_calls: list[str] = []
+
+            async def list_session_summaries(self, project_key: str):  # noqa: ANN201
+                summaries = await super().list_session_summaries(project_key)
+                return [s for s in summaries if s["session_id"] not in invalid_sids]
+
+            async def load(self, key):  # noqa: ANN001, ANN201
+                self.load_calls.append(key["session_id"])
+                return await super().load(key)
+
+        store = MissingInvalidSummariesStore()
+        # Append order determines descending storage mtime. Interleave invalid
+        # rows so satisfying offset=1, limit=2 requires more than one chunk.
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": valid_sids[0]},
+            [_user("valid 0")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": invalid_sids[0]},
+            [{"type": "x"}],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": valid_sids[1]},
+            [_user("valid 1")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": invalid_sids[1]},
+            [{"type": "user", "isSidechain": True, "message": {"content": "x"}}],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": valid_sids[2]},
+            [_user("valid 2")],
+        )
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": valid_sids[3]},
+            [_user("valid 3")],
+        )
+
+        page = await list_sessions_from_store(store, directory=DIR, limit=2, offset=1)
+
+        assert [s.session_id for s in page] == [valid_sids[2], valid_sids[1]]
+        # Only the newer invalid row can affect this page. The older invalid
+        # row sorts after the third valid result and must not be loaded.
+        assert store.load_calls == [invalid_sids[1]]
 
     async def test_stale_sidecar_triggers_gap_fill(self) -> None:
         """A sidecar whose mtime lags the session's current mtime from

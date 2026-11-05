@@ -5,6 +5,7 @@ in the receive loop.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -151,6 +152,18 @@ def _main_path(project: str = "proj", session: str = "sess") -> str:
 
 async def _noop_error(_key: SessionKey | None, _err: str) -> None:
     pass
+
+
+def _not_retrying_note(caplog: pytest.LogCaptureFixture) -> str:
+    """The batcher's one debug line saying it will not retry a timed-out append."""
+    notes = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "claude_agent_sdk._internal.transcript_mirror_batcher"
+        and "not retrying" in r.getMessage()
+    ]
+    assert len(notes) == 1, notes
+    return notes[0]
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 1.0) -> None:
@@ -316,6 +329,94 @@ class TestTranscriptMirrorBatcher:
         assert len(calls) == 1  # not retried on timeout
         assert len(errors) == 1
         sleep_mock.assert_not_awaited()  # no backoff sleep
+
+    @pytest.mark.anyio
+    async def test_append_timeout_error_message_says_what_happened(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A timeout has no message of its own (``str(TimeoutError())`` is
+        empty), so on_error must be handed text that names the timeout."""
+
+        class HangingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                await anyio.Event().wait()  # never resolves
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=HangingStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+            send_timeout=0.05,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with caplog.at_level(logging.DEBUG):
+            await batcher.flush()
+
+        assert errors == ["SessionStore.append() timed out after 0.05s"]
+        # The "not retrying" debug line says the same thing.
+        assert "timed out after 0.05s" in _not_retrying_note(caplog)
+
+    @pytest.mark.anyio
+    async def test_adapter_timeout_error_keeps_its_own_message(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A TimeoutError the adapter raises itself (say, a client library's
+        read timeout) is not the batcher's deadline firing: its message must
+        not be replaced with the batcher's."""
+
+        class AdapterTimeoutStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                raise TimeoutError("s3 PutObject read timeout after 5s")
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=AdapterTimeoutStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+            send_timeout=60.0,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with caplog.at_level(logging.DEBUG):
+            await batcher.flush()
+
+        assert errors == ["s3 PutObject read timeout after 5s"]
+        # The "not retrying" debug line reports the adapter's error too, not
+        # the batcher's 60s deadline (which never fired).
+        note = _not_retrying_note(caplog)
+        assert "s3 PutObject read timeout after 5s" in note
+        assert "60" not in note
+
+    @pytest.mark.anyio
+    async def test_append_error_without_message_is_not_reported_empty(self) -> None:
+        """An adapter exception with no message still yields non-empty text."""
+
+        class SilentFailingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                raise RuntimeError()
+
+        errors: list[str] = []
+
+        async def on_error(_key: SessionKey | None, err: str) -> None:
+            errors.append(err)
+
+        batcher = TranscriptMirrorBatcher(
+            store=SilentFailingStore(),
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "x"}])
+        with patch(_BATCHER_SLEEP, new=AsyncMock()):
+            await batcher.flush()
+
+        assert errors == ["RuntimeError"]
 
     @pytest.mark.anyio
     async def test_append_timeout_no_concurrent_retry(self) -> None:

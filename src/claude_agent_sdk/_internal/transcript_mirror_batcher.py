@@ -181,7 +181,7 @@ class TranscriptMirrorBatcher:
                 if attempt > 0:
                     await anyio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
                 try:
-                    with anyio.fail_after(self.send_timeout):
+                    with anyio.fail_after(self.send_timeout) as scope:
                         await self.store.append(key, entries)
                     succeeded = True
                     break
@@ -192,12 +192,22 @@ class TranscriptMirrorBatcher:
                     # still land — a retry would launch a concurrent
                     # duplicate. Also keeps worst-case lock hold at
                     # ~send_timeout rather than ~3×send_timeout + backoff.
-                    last_err = e
+                    # The deadline's own TimeoutError carries no message, so
+                    # give it one; a TimeoutError the adapter raised itself
+                    # keeps its own text.
+                    last_err = (
+                        TimeoutError(
+                            "SessionStore.append() timed out after "
+                            f"{self.send_timeout:g}s"
+                        )
+                        if scope.cancelled_caught
+                        else e
+                    )
                     logger.debug(
-                        "[TranscriptMirrorBatcher] append timed out after "
-                        "%.1fs for %s — not retrying",
-                        self.send_timeout,
+                        "[TranscriptMirrorBatcher] append failed for %s: %s"
+                        " — not retrying",
                         file_path,
+                        last_err,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 - adapter is user code
@@ -211,9 +221,12 @@ class TranscriptMirrorBatcher:
                         e,
                     )
             if not succeeded:
+                # An exception can carry no message at all; name its type then
+                # so on_error / mirror_error never report an empty reason.
+                reason = str(last_err) or type(last_err).__name__
                 logger.error(
                     "[TranscriptMirrorBatcher] flush failed for %s: %s",
                     file_path,
-                    last_err,
+                    reason,
                 )
-                errors.append((key, str(last_err)))
+                errors.append((key, reason))

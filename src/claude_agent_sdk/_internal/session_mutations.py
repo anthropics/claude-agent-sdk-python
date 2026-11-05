@@ -45,6 +45,11 @@ from .sessions import (
     project_key_for_directory,
 )
 
+# Transcripts are LF-only JSONL. On Windows ``os.open`` returns a text-mode
+# descriptor unless O_BINARY is set, and ``os.write`` then turns every "\n"
+# into "\r\n". The flag does not exist elsewhere, so fall back to 0.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -336,7 +341,7 @@ def fork_session(
     )
 
     fork_path = project_dir / f"{forked_session_id}.jsonl"
-    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(fork_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     try:
         os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
     finally:
@@ -696,7 +701,7 @@ def _try_append(path: Path, data: str) -> bool:
     fallback is needed.
     """
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | _O_BINARY)
     except OSError as e:
         if e.errno in (errno.ENOENT, errno.ENOTDIR):
             return False

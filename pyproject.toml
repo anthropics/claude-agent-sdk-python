@@ -33,12 +33,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Opt-in per-spawn shell-command permission evaluator (claude_agent_sdk.shell_permissions).
+shell-permissions = [
+    "bashlex>=0.18",
+]
 dev = [
     "pytest>=7.0.0",
     "anyio[trio]>=4.0.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+    # Exercises the shell-permissions extra in CI.
+    "bashlex>=0.18",
 ]
 otel = [
     "opentelemetry-api>=1.20.0",
@@ -109,6 +115,13 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # jsonschema ships without type information or a py.typed marker.
 module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# bashlex is an optional dependency (the [shell-permissions] extra) and ships
+# without type information; the import in shell_permissions.py is lazy and
+# guarded by a helpful ImportError.
+module = ["bashlex", "bashlex.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

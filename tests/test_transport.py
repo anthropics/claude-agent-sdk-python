@@ -649,7 +649,7 @@ class TestSubprocessCLITransport:
         assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_all_enables_skill_tool(self):
-        """skills='all' enables the bare Skill tool and defaults setting_sources."""
+        """skills='all' enables the bare Skill tool, leaves setting_sources unset."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(skills="all"),
@@ -657,20 +657,20 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--allowedTools" in cmd
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
-        assert "--setting-sources=user,project" in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_empty_list_adds_no_skill_entries(self):
-        """skills=[] is a degenerate subset: setting_sources defaults, no Skill entries."""
+        """skills=[] is a degenerate subset: no Skill entries, setting_sources unset."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(skills=[]),
         )
         cmd = transport._build_command()
         assert "--allowedTools" not in cmd
-        assert "--setting-sources=user,project" in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_named_list_uses_skill_patterns(self):
-        """Non-empty skills list adds Skill(name) entries and defaults setting_sources."""
+        """Non-empty skills list adds Skill(name) entries, leaves setting_sources unset."""
         transport = SubprocessCLITransport(
             prompt="test",
             options=make_options(skills=["pdf", "docx"]),
@@ -678,7 +678,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
         assert "--allowedTools" in cmd
         assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
-        assert "--setting-sources=user,project" in cmd
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_merges_with_existing_allowed_tools(self):
         """skills augment (not replace) an existing allowed_tools list."""
@@ -943,14 +943,14 @@ class TestSubprocessCLITransport:
                 "user,project",
                 _ABSENT,
             ),
-            # (3) "all": bare Skill, default sources, no wire filter
-            ("all", {}, "Skill", "user,project", _ABSENT),
-            # (4) named subset
+            # (3) "all": bare Skill, no defaulting of setting_sources
+            ("all", {}, "Skill", None, _ABSENT),
+            # (4) named subset: setting_sources stays unset
             (
                 ["pdf", "docx"],
                 {},
                 "Skill(pdf),Skill(docx)",
-                "user,project",
+                None,
                 ["pdf", "docx"],
             ),
             # (5) subset + explicit setting_sources (user wins)
@@ -966,11 +966,11 @@ class TestSubprocessCLITransport:
                 ["pdf"],
                 {"allowed_tools": ["Read", "Bash"]},
                 "Read,Bash,Skill(pdf)",
-                "user,project",
+                None,
                 ["pdf"],
             ),
             # (7) empty list = degenerate subset (not "all")
-            ([], {}, None, "user,project", []),
+            ([], {}, None, None, []),
         ],
         ids=[
             "default-none",
@@ -1013,6 +1013,39 @@ class TestSubprocessCLITransport:
             assert not isinstance(skills, list)
         else:
             assert skills == want_init_skills
+
+    def test_skills_does_not_drop_local_setting_sources(self):
+        """Regression: skills should not narrow setting_sources to user,project.
+
+        When ``skills`` is set but ``setting_sources`` is left unset, the SDK
+        must NOT add ``--setting-sources=user,project`` because that would
+        prevent ``.claude/settings.local.json`` from loading.
+
+        See GitHub issue #1393.
+        """
+        # skills set, setting_sources unset → no --setting-sources flag
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=["pdf"]),
+        )
+        cmd = transport._build_command()
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+        # same for "all"
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills="all"),
+        )
+        cmd = transport._build_command()
+        assert not any(a.startswith("--setting-sources") for a in cmd)
+
+        # empty list should also leave it unset
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(skills=[]),
+        )
+        cmd = transport._build_command()
+        assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""

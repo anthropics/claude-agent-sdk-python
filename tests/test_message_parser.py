@@ -11,6 +11,7 @@ from claude_agent_sdk.types import (
     DeferredToolUse,
     HookEventMessage,
     RateLimitEvent,
+    RedactedThinkingBlock,
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
@@ -308,6 +309,25 @@ class TestMessageParser:
         assert message.content[0].signature == "sig-123"
         assert isinstance(message.content[1], TextBlock)
         assert message.content[1].text == "Here's my response"
+
+    def test_parse_assistant_message_with_redacted_thinking(self):
+        """redacted_thinking blocks are kept, not silently dropped."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "redacted_thinking", "data": "EmwKAhgBEgy3va3pzix"},
+                    {"type": "text", "text": "Here's my response"},
+                ],
+                "model": "claude-opus-4-1-20250805",
+            },
+        }
+        message = parse_message(data)
+        assert isinstance(message, AssistantMessage)
+        assert len(message.content) == 2
+        assert isinstance(message.content[0], RedactedThinkingBlock)
+        assert message.content[0].data == "EmwKAhgBEgy3va3pzix"
+        assert isinstance(message.content[1], TextBlock)
 
     def test_parse_assistant_message_with_server_tool_use(self):
         """server_tool_use blocks (e.g. advisor, web_search) are preserved.

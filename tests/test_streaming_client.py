@@ -311,6 +311,25 @@ class TestClaudeSDKClientStreaming:
                 assert user_msg_found, "User message not found in write calls"
 
     @pytest.mark.anyio
+    async def test_query_preserves_user_message_uuid(self):
+        async def message_stream():
+            yield {
+                "type": "user",
+                "uuid": "user-1",
+                "message": {"role": "user", "content": "Hello"},
+            }
+
+        transport = create_mock_transport()
+        async with ClaudeSDKClient(transport=transport) as client:
+            await client.query(message_stream())
+
+        sent = [json.loads(call.args[0]) for call in transport.write.call_args_list]
+        user_messages = [message for message in sent if message["type"] == "user"]
+        assert len(user_messages) == 1
+        assert user_messages[0]["uuid"] == "user-1"
+        assert user_messages[0]["message"] == {"role": "user", "content": "Hello"}
+
+    @pytest.mark.anyio
     async def test_send_message_with_session_id(self):
         """Test sending a message with custom session ID."""
 
@@ -1033,8 +1052,16 @@ class TestQueryWithAsyncIterable:
         """Test query with async iterable of messages."""
 
         async def message_stream():
-            yield {"type": "user", "message": {"role": "user", "content": "First"}}
-            yield {"type": "user", "message": {"role": "user", "content": "Second"}}
+            yield {
+                "type": "user",
+                "uuid": "user-1",
+                "message": {"role": "user", "content": "First"},
+            }
+            yield {
+                "type": "user",
+                "uuid": "user-2",
+                "message": {"role": "user", "content": "Second"},
+            }
 
         # Create a simple test script that validates stdin and outputs a result
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
@@ -1081,9 +1108,23 @@ while True:
 assert len(stdin_messages) == 2
 assert '"First"' in stdin_messages[0]
 assert '"Second"' in stdin_messages[1]
+assert json.loads(stdin_messages[0])["uuid"] == "user-1"
+assert json.loads(stdin_messages[1])["uuid"] == "user-2"
 
 # Output a valid result
-print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_api_ms": 50, "is_error": false, "num_turns": 1, "session_id": "test", "total_cost_usd": 0.001}')
+print(json.dumps({
+    "type": "result",
+    "subtype": "success",
+    "duration_ms": 100,
+    "duration_api_ms": 50,
+    "is_error": False,
+    "num_turns": 1,
+    "session_id": "test",
+    "total_cost_usd": 0.001,
+    "user_message_uuid": "user-2",
+    "user_message_uuids": ["user-1", "user-2"],
+    "queued_turn_count": 0,
+}))
 """)
 
         # Make script executable (Unix-style systems)
@@ -1122,6 +1163,9 @@ print('{"type": "result", "subtype": "success", "duration_ms": 100, "duration_ap
                     assert len(messages) == 1
                     assert isinstance(messages[0], ResultMessage)
                     assert messages[0].subtype == "success"
+                    assert messages[0].user_message_uuid == "user-2"
+                    assert messages[0].user_message_uuids == ["user-1", "user-2"]
+                    assert messages[0].queued_turn_count == 0
         finally:
             # Clean up
             Path(test_script).unlink()

@@ -918,6 +918,78 @@ class TestClaudeSDKClientStreaming:
                 assert usage["agents"][0]["tokens"] == 299
 
     @pytest.mark.anyio
+    async def test_rewind_files_dry_run_returns_result(self):
+        """rewind_files(dry_run=True) sends dry_run and returns the CLI's result."""
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+            mock_transport_class.return_value = mock_transport
+
+            written_messages: list[str] = []
+            requests_seen: list[dict[str, Any]] = []
+
+            async def mock_write(data):
+                written_messages.append(data)
+
+            mock_transport.write = AsyncMock(side_effect=mock_write)
+
+            async def control_protocol_generator():
+                last_check = 0
+                timeout_counter = 0
+                while timeout_counter < 200:
+                    await anyio.sleep(0.01)
+                    timeout_counter += 1
+                    for msg_str in written_messages[last_check:]:
+                        msg = json.loads(msg_str.strip())
+                        if msg.get("type") != "control_request":
+                            continue
+                        request = msg["request"]
+                        if request["subtype"] == "initialize":
+                            payload: dict[str, Any] = {}
+                        elif request["subtype"] == "rewind_files":
+                            requests_seen.append(request)
+                            payload = {
+                                "canRewind": True,
+                                "filesChanged": ["src/app.py", "README.md"],
+                                "insertions": 4,
+                                "deletions": 9,
+                            }
+                        else:
+                            continue
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg["request_id"],
+                                "subtype": "success",
+                                "response": payload,
+                            },
+                        }
+                    last_check = len(written_messages)
+
+            mock_transport.read_messages = control_protocol_generator
+
+            async with ClaudeSDKClient() as client:
+                result = await client.rewind_files("user-uuid-1", dry_run=True)
+
+            assert requests_seen == [
+                {
+                    "subtype": "rewind_files",
+                    "user_message_id": "user-uuid-1",
+                    "dry_run": True,
+                }
+            ]
+            assert result["canRewind"] is True
+            assert result["filesChanged"] == ["src/app.py", "README.md"]
+            assert result["insertions"] == 4
+            assert result["deletions"] == 9
+
+    @pytest.mark.anyio
     async def test_get_context_usage_not_connected(self):
         """Test get_context_usage when not connected raises error."""
 

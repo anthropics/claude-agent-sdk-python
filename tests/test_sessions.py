@@ -180,6 +180,25 @@ class TestHelpers:
         text = '{"summary":"first"}\n{"summary":"second"}\n{"summary":"third"}'
         assert _extract_last_json_string_field(text, "summary") == "third"
 
+    def test_extract_last_json_string_field_mixed_spacing(self):
+        """The last occurrence by POSITION wins, whichever spacing it uses.
+
+        A transcript can mix both serializations: the CLI and this SDK write
+        compact (``json.dumps(..., separators=(",", ":"))``), while a host
+        tool writing the same file with a bare ``json.dumps`` produces the
+        spaced form. Scanning the patterns one after another must not let an
+        earlier spaced match outrank a later compact one.
+        """
+        spaced_then_compact = '{"customTitle": "old"}\n{"customTitle":"new"}'
+        assert _extract_last_json_string_field(spaced_then_compact, "customTitle") == (
+            "new"
+        )
+
+        compact_then_spaced = '{"customTitle":"old"}\n{"customTitle": "new"}'
+        assert _extract_last_json_string_field(compact_then_spaced, "customTitle") == (
+            "new"
+        )
+
     def test_extract_first_prompt_simple(self):
         head = json.dumps({"type": "user", "message": {"content": "Hello!"}}) + "\n"
         assert _extract_first_prompt_from_head(head) == "Hello!"

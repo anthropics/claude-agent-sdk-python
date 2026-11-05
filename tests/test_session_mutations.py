@@ -215,6 +215,47 @@ class TestRenameSession:
         assert sessions[0].custom_title == "Final Title"
         assert sessions[0].summary == "Final Title"
 
+    def test_rename_wins_over_earlier_spaced_title(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A rename must win over a pre-existing spaced-form custom-title line.
+
+        rename_session appends compact JSON. A transcript written by a host
+        tool with a bare ``json.dumps`` carries the spaced form instead, so a
+        file can hold both. The rename is physically the last line and has to
+        be the one that list_sessions reports.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        # json.dumps defaults -> '"customTitle": "Imported Title"' (spaced).
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "custom-title",
+                        "customTitle": "Imported Title",
+                        "sessionId": sid,
+                    }
+                )
+                + "\n"
+            )
+
+        rename_session(sid, "Renamed Title", directory=project_path)
+
+        assert (
+            json.loads(file_path.read_text().strip().split("\n")[-1])["customTitle"]
+            == "Renamed Title"
+        )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "Renamed Title"
+        assert sessions[0].summary == "Renamed Title"
+
     def test_search_all_projects(self, claude_config_dir: Path):
         """When no directory given, searches all project directories."""
         project_dir = _make_project_dir(claude_config_dir, "/some/project")

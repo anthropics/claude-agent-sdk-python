@@ -120,10 +120,16 @@ class ResultError(ProcessError):
 class CLIJSONDecodeError(ClaudeSDKError):
     """Raised when unable to decode JSON from CLI output."""
 
-    def __init__(self, line: str, original_error: Exception):
+    def __init__(self, line: str, original_error: Exception, hint: str | None = None):
         self.line = line
         self.original_error = original_error
-        super().__init__(f"Failed to decode JSON: {line[:100]}...")
+        self.hint = hint
+        message = f"Failed to decode JSON: {line[:100]}..."
+        # Appended AFTER the truncated line so actionable guidance survives:
+        # `line` is cut at 100 chars, so anything folded into it can be lost.
+        if hint:
+            message = f"{message} {hint}"
+        super().__init__(message)
 
 
 class MessageParseError(ClaudeSDKError):

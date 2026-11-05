@@ -134,6 +134,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         uuid=uuid,
                         parent_tool_use_id=parent_tool_use_id,
                         tool_use_result=tool_use_result,
+                        session_id=data.get("session_id"),
                         origin=origin,
                     )
                 return UserMessage(
@@ -141,6 +142,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
+                    session_id=data.get("session_id"),
                     origin=origin,
                 )
             except KeyError as e:

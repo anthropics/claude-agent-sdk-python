@@ -195,6 +195,28 @@ async def test_reaped_child_is_untracked(tmp_path: Path) -> None:
 
 
 @posix_only
+async def test_concurrent_close_does_not_raise(tmp_path: Path) -> None:
+    """Two overlapping close() calls (e.g. two tasks calling disconnect())
+    both finish cleanly and reap the child. The one that finished second used
+    to re-read self._process after the other had set it to None."""
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path=str(_write_fake_cli(tmp_path))),
+    )
+    await transport.connect()
+    process = transport._process
+    assert process is not None
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(transport.close)
+        tg.start_soon(transport.close)
+
+    assert process.returncode is not None
+    assert process not in _ACTIVE_CHILDREN
+    assert transport._process is None
+
+
+@posix_only
 def test_fake_cli_speaks_the_protocol(tmp_path: Path) -> None:
     """Guard the fixture itself: a broken fake CLI would make the tests above
     pass for the wrong reason."""

@@ -197,6 +197,35 @@ class TestRenameSession:
         entry = json.loads(lines[-1])
         assert entry["customTitle"] == "Trimmed Title"
 
+    def test_unicode_sanitization(self, claude_config_dir: Path, tmp_path: Path):
+        """Title is Unicode-sanitized like a tag: zero-width/BOM chars stripped."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir)
+
+        rename_session(sid, "clean\u200btitle\ufeff", directory=project_path)
+
+        lines = file_path.read_text().strip().split("\n")
+        entry = json.loads(lines[-1])
+        assert entry["customTitle"] == "cleantitle"
+
+    def test_sanitization_rejects_pure_invisible(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A title that is only invisible chars is rejected, like a tag."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _ = _make_session_file(project_dir)
+
+        with pytest.raises(ValueError, match="title must be non-empty"):
+            rename_session(sid, "\u200b\u200c\ufeff", directory=project_path)
+
     def test_last_wins_via_list_sessions(self, claude_config_dir: Path, tmp_path: Path):
         """Multiple renames — list_sessions sees the last one."""
         project_path = str(tmp_path / "proj")
@@ -723,6 +752,57 @@ class TestForkSession:
         sessions = list_sessions(directory=project_path)
         fork_info = next(s for s in sessions if s.session_id == result.session_id)
         assert fork_info.custom_title == "My Fork"
+
+    def test_fork_title_unicode_sanitized(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """An explicit fork title is Unicode-sanitized like rename/tag."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _, _ = _make_transcript_session(project_dir)
+
+        result = fork_session(
+            sid, directory=project_path, title="clean\u200bfork\ufeff"
+        )
+
+        sessions = list_sessions(directory=project_path)
+        fork_info = next(s for s in sessions if s.session_id == result.session_id)
+        assert fork_info.custom_title == "cleanfork"
+
+    def test_fork_derived_title_unicode_sanitized(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A derived fork title (from the source transcript, which may carry an
+        unsanitized customTitle/aiTitle) is sanitized before it surfaces."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path, _ = _make_transcript_session(project_dir)
+        # Simulate a title written outside the SDK (e.g. by the CLI) that still
+        # contains invisible characters.
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "custom-title",
+                        "customTitle": "dirty\u200bsrc",
+                        "sessionId": sid,
+                    }
+                )
+                + "\n"
+            )
+
+        result = fork_session(sid, directory=project_path)
+
+        sessions = list_sessions(directory=project_path)
+        fork_info = next(s for s in sessions if s.session_id == result.session_id)
+        assert fork_info.custom_title == "dirtysrc (fork)"
+        assert "\u200b" not in (fork_info.custom_title or "")
 
     def test_fork_default_title_has_suffix(
         self, claude_config_dir: Path, tmp_path: Path

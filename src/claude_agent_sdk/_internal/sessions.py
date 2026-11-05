@@ -6,7 +6,6 @@ extracts metadata from stat + head/tail reads without full JSONL parsing.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -15,7 +14,6 @@ import subprocess
 import sys
 import time
 import unicodedata
-from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -340,78 +338,16 @@ def _extract_first_prompt_from_head(head: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _first_sidechain_flag_from_lite_bytes(
-    head: bytes, tail: bytes, size: int
-) -> bool | None:
-    """Read the first explicit sidechain boolean from available JSONL windows.
-
-    Files up to two read windows long are reconstructed byte-exactly; this
-    preserves JSON lines that straddle a window boundary, including UTF-8.
-    Larger disjoint reads yield a flag only if the complete head has one;
-    callers must scan the unsampled middle before using a tail flag.
-    """
-    windows: tuple[bytes, ...]
-    if size <= LITE_READ_BUF_SIZE:
-        windows = (head,)
-    elif size <= 2 * LITE_READ_BUF_SIZE:
-        overlap = 2 * LITE_READ_BUF_SIZE - size
-        windows = (head + tail[overlap:],)
-    else:
-        # A tail flag cannot win while the unsampled middle may contain an
-        # earlier explicit boolean. Leave this case for a sequential scan.
-        # The last head line may be truncated; use complete lines only.
-        last_newline = head.rfind(b"\n")
-        windows = (head[: last_newline + 1],)
-
-    for window in windows:
-        for line in window.split(b"\n"):
-            if b'"isSidechain"' not in line and b"\\u" not in line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (ValueError, UnicodeDecodeError, TypeError):
-                continue
-            if isinstance(entry, dict):
-                flag = entry.get("isSidechain")
-                if isinstance(flag, bool):
-                    return flag
-    return None
-
-
-def _first_sidechain_flag_from_jsonl_lines(lines: Iterable[bytes]) -> bool | None:
-    """Find the first explicit top-level boolean across ordered JSONL records.
-
-    Only invoked on large files whose head has no decisive boolean. Iterate
-    the underlying file or in-memory byte stream without loading the entire
-    disk transcript into memory.
-    """
-    for line in lines:
-        if b'"isSidechain"' not in line and b"\\u" not in line:
-            continue
-        try:
-            entry = json.loads(line)
-        except (ValueError, UnicodeDecodeError, TypeError):
-            continue
-        if isinstance(entry, dict):
-            flag = entry.get("isSidechain")
-            if isinstance(flag, bool):
-                return flag
-    return None
-
-
 class _LiteSessionFile:
     """Result of reading a session file's head, tail, mtime and size."""
 
-    __slots__ = ("mtime", "size", "head", "tail", "is_sidechain")
+    __slots__ = ("mtime", "size", "head", "tail")
 
-    def __init__(
-        self, mtime: int, size: int, head: str, tail: str, is_sidechain: bool | None
-    ) -> None:
+    def __init__(self, mtime: int, size: int, head: str, tail: str) -> None:
         self.mtime = mtime
         self.size = size
         self.head = head
         self.tail = tail
-        self.is_sidechain = is_sidechain
 
 
 def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
@@ -433,29 +369,13 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
 
             tail_offset = max(0, size - LITE_READ_BUF_SIZE)
             if tail_offset == 0:
-                tail_bytes = head_bytes
                 tail = head
             else:
                 f.seek(tail_offset)
                 tail_bytes = f.read(LITE_READ_BUF_SIZE)
                 tail = tail_bytes.decode("utf-8", errors="replace")
 
-            is_sidechain = _first_sidechain_flag_from_lite_bytes(
-                head_bytes, tail_bytes, size
-            )
-            if size > 2 * LITE_READ_BUF_SIZE and is_sidechain is None:
-                # The first explicit flag could be in the unsampled middle.
-                # Avoid this extra I/O when the complete head is decisive.
-                f.seek(0)
-                is_sidechain = _first_sidechain_flag_from_jsonl_lines(f)
-
-            return _LiteSessionFile(
-                mtime=mtime,
-                size=size,
-                head=head,
-                tail=tail,
-                is_sidechain=is_sidechain,
-            )
+            return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
     except OSError:
         return None
 
@@ -512,10 +432,10 @@ def _parse_session_info_from_lite(
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
-    # The lite reader checks overlapping windows exactly; for larger files,
-    # a missing head flag triggers an ordered scan of the previously unseen
-    # records. An unexamined middle may never be outranked by a tail flag.
-    if lite.is_sidechain is True:
+    # Check first line for sidechain sessions
+    first_newline = head.find("\n")
+    first_line = head[:first_newline] if first_newline >= 0 else head
+    if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
         return None
 
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
@@ -1866,21 +1786,7 @@ def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
         if size > LITE_READ_BUF_SIZE
         else head
     )
-    is_sidechain = _first_sidechain_flag_from_lite_bytes(
-        buf[:LITE_READ_BUF_SIZE],
-        buf[max(0, size - LITE_READ_BUF_SIZE) :],
-        size,
-    )
-    if size > 2 * LITE_READ_BUF_SIZE and is_sidechain is None:
-        # The store already has the complete transcript in memory.
-        is_sidechain = _first_sidechain_flag_from_jsonl_lines(io.BytesIO(buf))
-    return _LiteSessionFile(
-        mtime=mtime,
-        size=size,
-        head=head,
-        tail=tail,
-        is_sidechain=is_sidechain,
-    )
+    return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
 
 
 def _mtime_from_jsonl_tail(jsonl: str) -> int:

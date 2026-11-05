@@ -142,7 +142,8 @@ class TestConformance:
             for t in tables:
                 await pool.execute(f"DROP TABLE IF EXISTS {t}")
 
-    def test_store_implements_required_methods(self, store: SessionStore) -> None:
+    @pytest.mark.anyio
+    async def test_store_implements_required_methods(self, store: SessionStore) -> None:
         """SessionStore is not @runtime_checkable; probe via _store_implements()."""
         from claude_agent_sdk._internal.session_store_validation import (
             _store_implements,
@@ -151,7 +152,8 @@ class TestConformance:
         assert _store_implements(store, "append")
         assert _store_implements(store, "load")
 
-    def test_rejects_unsafe_table_name(self, pool: asyncpg.Pool) -> None:
+    @pytest.mark.anyio
+    async def test_rejects_unsafe_table_name(self, pool: asyncpg.Pool) -> None:
         with pytest.raises(ValueError, match="must match"):
             PostgresSessionStore(pool=pool, table="bad; DROP TABLE x")
 

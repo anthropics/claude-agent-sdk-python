@@ -48,12 +48,14 @@ _UUID_RE = re.compile(
 )
 
 # Pattern matching auto-generated or system messages that should be skipped
-# when looking for the first meaningful user prompt.
+# when looking for the first meaningful user prompt. Text that opens with an
+# XML-style tag (<system-reminder>, <ide_opened_file>, <task-notification>,
+# ...) is injected context, not what the user typed. Same rule as the
+# TypeScript SDK, except <pasted_content> is kept: it wraps text the user
+# pasted, which the TypeScript SDK unwraps rather than skips.
 _SKIP_FIRST_PROMPT_PATTERN = re.compile(
-    r"^(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|"
-    r"\[Request interrupted by user[^\]]*\]|"
-    r"\s*<ide_opened_file>[\s\S]*</ide_opened_file>\s*$|"
-    r"\s*<ide_selection>[\s\S]*</ide_selection>\s*$)"
+    r"^(?:\s*<(?!pasted_content[\s>])[a-z][\w-]*[\s>]"
+    r"|\[Request interrupted by user[^\]]*\])"
 )
 
 _COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>")

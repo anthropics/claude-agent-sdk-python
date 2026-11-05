@@ -1914,7 +1914,64 @@ class TestSubprocessCLITransport:
         settings_value = cmd[settings_idx + 1]
 
         parsed = json.loads(settings_value)
-        assert parsed == {"sandbox": {"enabled": True}}
+        assert parsed == {"sandbox": {"enabled": True, "failIfUnavailable": True}}
+
+    def test_build_command_sandbox_defaults_fail_if_unavailable(self):
+        """Test enabled sandbox gets failIfUnavailable=True by default."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        parsed = json.loads(cmd[settings_idx + 1])
+
+        assert parsed["sandbox"]["failIfUnavailable"] is True
+
+    def test_build_command_sandbox_respects_explicit_fail_if_unavailable(self):
+        """Test an explicit failIfUnavailable value is passed through unchanged."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True, "failIfUnavailable": False}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        parsed = json.loads(cmd[settings_idx + 1])
+
+        assert parsed["sandbox"]["failIfUnavailable"] is False
+
+    def test_build_command_sandbox_disabled_no_fail_if_unavailable(self):
+        """Test failIfUnavailable is not added when sandbox is not enabled."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": False}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        parsed = json.loads(cmd[settings_idx + 1])
+
+        assert "failIfUnavailable" not in parsed["sandbox"]
 
     def test_sandbox_network_config(self):
         """Test sandbox with full network configuration."""

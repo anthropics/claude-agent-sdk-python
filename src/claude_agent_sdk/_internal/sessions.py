@@ -928,6 +928,62 @@ def _parse_transcript_entries(content: str) -> list[_TranscriptEntry]:
     return entries
 
 
+def _relink_preserved_messages(
+    entries: list[_TranscriptEntry],
+) -> list[_TranscriptEntry]:
+    """Puts the messages a compaction kept verbatim back after its summary.
+
+    Those messages stay on disk with their old parents, and the first message
+    after the compaction hangs off the summary (``anchorUuid``). As the CLI
+    does on load, only the last compact boundary counts, and metadata that does
+    not name a complete run of messages in the transcript is ignored.
+    """
+    boundaries = [
+        e
+        for e in entries
+        if e.get("type") == "system" and e.get("subtype") == "compact_boundary"
+    ]
+    meta = boundaries[-1].get("compactMetadata") if boundaries else None
+    if not isinstance(meta, dict):
+        return entries
+    by_uuid = {e["uuid"]: e for e in entries}
+    listed, segment = meta.get("preservedMessages"), meta.get("preservedSegment")
+    if isinstance(listed, dict):
+        anchor, uuids = listed.get("anchorUuid"), listed.get("uuids")
+        if not isinstance(uuids, list) or not all(
+            isinstance(u, str) and u in by_uuid for u in uuids
+        ):
+            return entries
+    elif isinstance(segment, dict):
+        anchor, head, uuids = segment.get("anchorUuid"), segment.get("headUuid"), []
+        tail = segment.get("tailUuid")
+        cur = by_uuid.get(tail) if isinstance(tail, str) else None
+        seen: set[str] = set()
+        while cur is not None and cur["uuid"] not in seen:
+            seen.add(cur["uuid"])
+            uuids.append(cur["uuid"])
+            if cur["uuid"] == head:
+                break
+            parent = cur.get("parentUuid")
+            cur = by_uuid.get(parent) if isinstance(parent, str) else None
+        if not uuids or uuids[-1] != head:
+            return entries
+        uuids.reverse()
+    else:
+        return entries
+    if not uuids or not isinstance(anchor, str):
+        return entries
+    new_parents = dict(zip(uuids, [anchor, *uuids[:-1]], strict=True))
+    relinked: list[_TranscriptEntry] = []
+    for e in entries:
+        if e["uuid"] in new_parents:
+            e = {**e, "parentUuid": new_parents[e["uuid"]]}
+        elif e.get("parentUuid") == anchor:
+            e = {**e, "parentUuid": uuids[-1]}
+        relinked.append(e)
+    return relinked
+
+
 def _build_conversation_chain(
     entries: list[_TranscriptEntry],
 ) -> list[_TranscriptEntry]:
@@ -944,6 +1000,8 @@ def _build_conversation_chain(
     """
     if not entries:
         return []
+
+    entries = _relink_preserved_messages(entries)
 
     # Index by uuid for O(1) parent lookup
     by_uuid: dict[str, _TranscriptEntry] = {}

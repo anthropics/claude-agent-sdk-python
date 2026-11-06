@@ -51,6 +51,12 @@ _SDK_READS_SESSION_STATE_ENV = "CLAUDE_CODE_SDK_READS_SESSION_STATE"
 # verbatim. See _reject_windows_batch_cli / _reject_windows_cmd_metacharacters.
 _CMD_EXE_METACHARACTERS = '&|<>^%!"'
 
+# Valid values for the ``effort`` option.  Validated in ``_build_command`` so
+# callers get a clear ValueError before the subprocess is ever spawned.
+_VALID_EFFORT_VALUES: frozenset[str] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
+
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
 # prevents orphaned `claude` processes from leaking when callers crash or exit
@@ -775,7 +781,15 @@ class SubprocessCLITransport(Transport):
             )
 
         if self._options.effort is not None:
-            cmd.extend(["--effort", self._options.effort])
+            if (
+                isinstance(self._options.effort, str)
+                and self._options.effort not in _VALID_EFFORT_VALUES
+            ):
+                raise ValueError(
+                    f"Invalid effort value {self._options.effort!r}. "
+                    f"Valid values: {', '.join(sorted(_VALID_EFFORT_VALUES))}"
+                )
+            cmd.extend(["--effort", str(self._options.effort)])
 
         # Extract schema from output_format structure if provided
         # Expected: {"type": "json_schema", "schema": {...}}

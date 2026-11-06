@@ -1168,10 +1168,15 @@ class SubprocessCLITransport(Transport):
         version_process = None
         try:
             with anyio.fail_after(2):  # 2 second timeout
+                # Spawn as connect() does, so the probe resolves the same binary
+                # and runs it as options.user rather than as this process.
                 version_process = await anyio.open_process(
                     [self._cli_path, "-v"],
                     stdout=PIPE,
                     stderr=PIPE,
+                    cwd=self._cwd,
+                    env={**os.environ, **self._options.env},
+                    user=self._options.user,
                 )
 
                 if version_process.stdout:

@@ -190,6 +190,198 @@ class _RecordingStore(InMemorySessionStore):
 
 class TestTranscriptMirrorBatcher:
     @pytest.mark.anyio
+    @pytest.mark.parametrize("eager", [False, True])
+    async def test_cancelled_waiter_preserves_queued_entries(self, eager: bool) -> None:
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        started = anyio.Event()
+        release = anyio.Event()
+        store = _RecordingStore()
+        original_append = store.append
+
+        async def append(key: SessionKey, entries: list[Any]) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            await original_append(key, entries)
+
+        store.append = append  # type: ignore[method-assign]
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "n": 1}])
+        first = spawn_detached(batcher.flush())
+        with anyio.fail_after(2):
+            await started.wait()
+            if eager:
+                batcher.max_pending_entries = 0
+            batcher.enqueue(_main_path(), [{"type": "assistant", "n": 2}])
+            second = batcher._flush_task if eager else spawn_detached(batcher.flush())
+            assert second is not None
+            try:
+                await _wait_until(lambda: batcher._lock.statistics().tasks_waiting == 1)
+                second.cancel()
+                await second.wait()
+                # New frames must follow the retained batch when close flushes it.
+                batcher.max_pending_entries = MAX_PENDING_ENTRIES
+                batcher.enqueue(_main_path(), [{"type": "user", "n": 3}])
+            finally:
+                release.set()
+                await first.wait()
+            await batcher.close()
+        assert await store.load({"project_key": "proj", "session_id": "sess"}) == [
+            {"type": "user", "n": 1},
+            {"type": "assistant", "n": 2},
+            {"type": "user", "n": 3},
+        ]
+
+    @pytest.mark.anyio
+    async def test_repeated_cancelled_waiters_preserve_main_and_subagent_entries(
+        self,
+    ) -> None:
+        """Repeated cancellation must retain pending frames across file paths."""
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        started = anyio.Event()
+        release = anyio.Event()
+        store = _RecordingStore()
+        original_append = store.append
+        errors: list[str] = []
+
+        async def gated_append(key: SessionKey, entries: list[Any]) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            await original_append(key, entries)
+
+        async def on_error(_key: SessionKey | None, message: str) -> None:
+            errors.append(message)
+
+        store.append = gated_append  # type: ignore[method-assign]
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=on_error,
+        )
+        main_path = _main_path()
+        subagent_path = _p("proj", "sess", "subagents", "agent-a.jsonl")
+        batcher.enqueue(main_path, [{"type": "user", "uuid": "main-1"}])
+        first = spawn_detached(batcher.flush())
+        handles = [first]
+        try:
+            with anyio.fail_after(5):
+                await started.wait()
+                for index in (2, 3):
+                    batcher.enqueue(
+                        main_path, [{"type": "assistant", "uuid": f"main-{index}"}]
+                    )
+                    batcher.enqueue(
+                        subagent_path, [{"type": "assistant", "uuid": f"sub-{index}"}]
+                    )
+                    waiter = spawn_detached(batcher.flush())
+                    handles.append(waiter)
+                    await _wait_until(
+                        lambda: batcher._lock.statistics().tasks_waiting == 1
+                    )
+                    waiter.cancel()
+                    await waiter.wait()
+
+                survivor = spawn_detached(batcher.flush())
+                handles.append(survivor)
+                await _wait_until(lambda: batcher._lock.statistics().tasks_waiting == 1)
+                release.set()
+                await first.wait()
+                await survivor.wait()
+                await batcher.close()
+        finally:
+            release.set()
+            for handle in handles:
+                handle.cancel()
+            for handle in handles:
+                await handle.wait()
+
+        main_entries = await store.load({"project_key": "proj", "session_id": "sess"})
+        subagent_entries = await store.load(
+            {
+                "project_key": "proj",
+                "session_id": "sess",
+                "subpath": "subagents/agent-a",
+            }
+        )
+        assert [entry["uuid"] for entry in main_entries] == [
+            "main-1",
+            "main-2",
+            "main-3",
+        ]
+        assert [entry["uuid"] for entry in subagent_entries] == ["sub-2", "sub-3"]
+        assert [
+            entry["uuid"] for _key, entries in store.append_calls for entry in entries
+        ] == ["main-1", "main-2", "main-3", "sub-2", "sub-3"]
+        assert errors == []
+
+    @pytest.mark.anyio
+    async def test_eager_flush_coalesces_waiters_behind_in_flight_append(self) -> None:
+        from claude_agent_sdk._internal._task_compat import spawn_detached
+
+        started = anyio.Event()
+        release = anyio.Event()
+        store = _RecordingStore()
+        original_append = store.append
+
+        async def append(key: SessionKey, entries: list[Any]) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            await original_append(key, entries)
+
+        store.append = append  # type: ignore[method-assign]
+        batcher = TranscriptMirrorBatcher(
+            store=store,
+            projects_dir=PROJECTS_DIR,
+            on_error=_noop_error,
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "n": 1}])
+        first = spawn_detached(batcher.flush())
+
+        with anyio.fail_after(2):
+            await started.wait()
+            batcher.max_pending_entries = 0
+            for n in range(2, 22):
+                batcher.enqueue(_main_path(), [{"type": "assistant", "n": n}])
+                await anyio.sleep(0)
+
+            waiter = batcher._flush_task
+            assert waiter is not None
+            assert batcher._lock.statistics().tasks_waiting == 1
+
+            release.set()
+            await first.wait()
+            await waiter.wait()
+            await batcher.close()
+
+        assert [
+            entry["n"] for _key, entries in store.append_calls for entry in entries
+        ] == list(range(1, 22))
+
+    @pytest.mark.anyio
+    async def test_already_cancelled_flush_preserves_pending_entries(self) -> None:
+        store = _RecordingStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=_noop_error
+        )
+        entries = [{"type": "assistant", "n": 1}]
+        batcher.enqueue(_main_path(), entries)
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await batcher.flush()
+        await batcher.close()
+        assert (
+            await store.load({"project_key": "proj", "session_id": "sess"}) == entries
+        )
+
+    @pytest.mark.anyio
     async def test_enqueue_then_flush_calls_store_append(self) -> None:
         store = _RecordingStore()
         batcher = TranscriptMirrorBatcher(
@@ -486,11 +678,16 @@ class TestTranscriptMirrorBatcher:
         await anyio.sleep(0)  # let first drain detach + block on gate
         batcher.enqueue(_main_path(), [{"type": "x", "n": 2}])
         second = batcher._flush_task
-        assert first is not None and second is not None and first is not second
+        assert first is not None and second is not None
 
         gate.set()
         await first.wait()
-        await second.wait()
+        # If the first drain detached before the second enqueue, a successor
+        # drain is queued. Otherwise the second frame coalesces into the first
+        # drain and both handles are the same. Both schedules must preserve
+        # append ordering without duplication.
+        if second is not first:
+            await second.wait()
         assert appended == [1, 2]  # no dup, no interleave
 
     @pytest.mark.anyio

@@ -19,10 +19,12 @@ from claude_agent_sdk import (
     list_subagents,
 )
 from claude_agent_sdk._internal.sessions import (
+    LITE_READ_BUF_SIZE,
     _build_conversation_chain,
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _extract_last_top_level_json_string_field,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -180,6 +182,51 @@ class TestHelpers:
         text = '{"summary":"first"}\n{"summary":"second"}\n{"summary":"third"}'
         assert _extract_last_json_string_field(text, "summary") == "third"
 
+    def test_extract_last_top_level_field_cut_first_line(self):
+        """A first line cut by a read window still yields its top-level field."""
+        full = json.dumps(
+            {"type": "custom-title", "customTitle": "Straddle title"}, **_COMPACT
+        )
+        fragment = full[5:]  # window opened 5 bytes into the line
+        text = fragment + "\n" + json.dumps({"type": "user"}, **_COMPACT) + "\n"
+        assert (
+            _extract_last_top_level_json_string_field(text, "customTitle")
+            == "Straddle title"
+        )
+
+    def test_extract_last_top_level_field_cut_nested_line_rejected(self):
+        """A cut tool_use line must not leak its nested input value."""
+        full = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "mcp__fixture__create_item",
+                            "input": {"customTitle": "Nested tool value"},
+                        }
+                    ]
+                },
+            },
+            **_COMPACT,
+        )
+        text = full[5:] + "\n"
+        assert _extract_last_top_level_json_string_field(text, "customTitle") is None
+
+    def test_extract_last_top_level_field_whole_line_beats_cut_line(self):
+        """A complete entry later in the text wins over a cut first line."""
+        cut = json.dumps(
+            {"type": "custom-title", "customTitle": "Cut title"}, **_COMPACT
+        )[5:]
+        text = (
+            cut + "\n" + json.dumps({"customTitle": "Whole title"}, **_COMPACT) + "\n"
+        )
+        assert (
+            _extract_last_top_level_json_string_field(text, "customTitle")
+            == "Whole title"
+        )
+
     def test_extract_first_prompt_simple(self):
         head = json.dumps({"type": "user", "message": {"content": "Hello!"}}) + "\n"
         assert _extract_first_prompt_from_head(head) == "Hello!"
@@ -307,6 +354,171 @@ class TestListSessions:
         assert sessions[0].summary == "My Custom Title"
         assert sessions[0].custom_title == "My Custom Title"
         assert sessions[0].first_prompt == "original question"
+
+    def test_custom_title_ignores_nested_tool_input(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A tool input field named customTitle is not session metadata."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(
+            project_dir,
+            first_prompt="hello",
+        )
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "custom-title",
+                        "customTitle": "My Custom Title",
+                        "sessionId": sid,
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "mcp__fixture__create_item",
+                                    "input": {"customTitle": "Nested tool value"},
+                                }
+                            ]
+                        },
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "My Custom Title"
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.custom_title == "My Custom Title"
+
+    def test_ai_title_ignores_nested_tool_input(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A tool input field named aiTitle is not session metadata."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        _, file_path = _make_session_file(project_dir, first_prompt="hello")
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"aiTitle": "Generated title"}, **_COMPACT) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "mcp__fixture__create_item",
+                                    "input": {"aiTitle": "Nested tool value"},
+                                }
+                            ]
+                        },
+                    },
+                    **_COMPACT,
+                )
+                + "\n"
+            )
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "Generated title"
+
+    def test_custom_title_straddling_tail_window(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A title entry cut by the tail window boundary is still found.
+
+        Files larger than 2x LITE_READ_BUF_SIZE have a byte gap between the
+        head and tail windows. When the only custom-title line starts a few
+        bytes before the tail window opens, its line reaches the parser as a
+        fragment; whole-line JSON parsing drops it and the head window cannot
+        recover it. The fragment must still yield the title, and a later
+        tool_use input named customTitle must still not win.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, file_path = _make_session_file(project_dir, first_prompt="hello")
+
+        title_line = (
+            json.dumps(
+                {
+                    "type": "custom-title",
+                    "customTitle": "Straddle title",
+                    "sessionId": sid,
+                },
+                **_COMPACT,
+            )
+            + "\n"
+        )
+        nested_line = (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "mcp__fixture__create_item",
+                                "input": {"customTitle": "Nested tool value"},
+                            }
+                        ]
+                    },
+                },
+                **_COMPACT,
+            )
+            + "\n"
+        )
+        filler = (
+            json.dumps(
+                {"type": "user", "message": {"role": "user", "content": "filler"}},
+                **_COMPACT,
+            )
+            + "\n"
+        )
+
+        with file_path.open("ab") as f:
+            # Push the title line past the head window.
+            while f.tell() < LITE_READ_BUF_SIZE + 4096:
+                f.write(filler.encode())
+            title_start = f.tell()
+            f.write(title_line.encode())
+            f.write(nested_line.encode())
+            # Grow the file so the tail window opens 5 bytes into the title
+            # line, matching the reviewer's repro: a 136083-byte session
+            # whose title line starts at byte 70542 with the window at 70547.
+            target = title_start + 5 + LITE_READ_BUF_SIZE
+            while f.tell() + len(filler.encode()) <= target:
+                f.write(filler.encode())
+            remaining = target - f.tell()
+            if remaining:
+                f.write(filler.encode()[:remaining])
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert sessions[0].custom_title == "Straddle title"
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.custom_title == "Straddle title"
 
     def test_summary_wins_first_prompt(self, claude_config_dir: Path, tmp_path: Path):
         """Explicit summary takes precedence over first_prompt when no custom_title."""

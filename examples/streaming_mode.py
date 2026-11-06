@@ -286,12 +286,15 @@ async def example_async_iterable_prompt():
         # fewer ResultMessages, so we cannot assume a 1:1 mapping.  We call
         # receive_response() in a loop with a short timeout so we drain all
         # available results without hanging if fewer results arrive than
-        # messages were sent.
+        # messages were sent. asyncio.wait_for() rather than asyncio.timeout()
+        # keeps this runnable on Python 3.10, which the SDK supports.
+        async def drain_response():
+            async for msg in client.receive_response():
+                display_message(msg)
+
         while True:
             try:
-                async with asyncio.timeout(30.0):
-                    async for msg in client.receive_response():
-                        display_message(msg)
+                await asyncio.wait_for(drain_response(), timeout=30.0)
             except (asyncio.TimeoutError, StopAsyncIteration):
                 break
 
@@ -440,18 +443,21 @@ async def example_error_handling():
         )
 
         # Try to receive response with a short timeout
+        messages = []
+
+        async def collect_response():
+            async for msg in client.receive_response():
+                messages.append(msg)
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            print(f"Claude: {block.text[:50]}...")
+                elif isinstance(msg, ResultMessage):
+                    display_message(msg)
+                    break
+
         try:
-            messages = []
-            async with asyncio.timeout(3.0):
-                async for msg in client.receive_response():
-                    messages.append(msg)
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                print(f"Claude: {block.text[:50]}...")
-                    elif isinstance(msg, ResultMessage):
-                        display_message(msg)
-                        break
+            await asyncio.wait_for(collect_response(), timeout=3.0)
 
         except asyncio.TimeoutError:
             print(

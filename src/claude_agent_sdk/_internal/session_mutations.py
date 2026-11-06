@@ -259,7 +259,8 @@ def fork_session(
             ``list_sessions(directory=...)``). When omitted, all project
             directories are searched for the session file.
         up_to_message_id: Slice transcript up to this message UUID
-            (inclusive). If omitted, copies the full transcript.
+            (inclusive). If it is a compact boundary, the fork ends just
+            before the boundary. If omitted, copies the full transcript.
         title: Custom title for the fork. If omitted, derives from
             the original title + " (fork)".
 
@@ -381,6 +382,12 @@ def _build_fork_lines(
             raise ValueError(
                 f"Message {up_to_message_id} not found in session {session_id}"
             )
+        # A compact boundary's preserved-message anchor follows it, so a fork
+        # ending on the boundary would drop those blocks, and resuming it then
+        # loses the earlier conversation. End the fork before the boundary.
+        cut = transcript[cutoff]
+        if cut.get("type") == "system" and cut.get("subtype") == "compact_boundary":
+            cutoff -= 1
         transcript = transcript[: cutoff + 1]
 
     # Filter out progress messages from written output. They're UI-only
@@ -960,7 +967,8 @@ async def fork_session_via_store(
         directory: Project directory used to compute the ``project_key``.
             Defaults to the current working directory.
         up_to_message_id: Slice transcript up to this message UUID
-            (inclusive). If omitted, copies the full transcript.
+            (inclusive). If it is a compact boundary, the fork ends just
+            before the boundary. If omitted, copies the full transcript.
         title: Custom title for the fork. If omitted, derives from the
             original title + " (fork)".
 

@@ -796,34 +796,30 @@ class TestForkSessionViaStore:
         mapping = {
             entry["forkedFrom"]["messageUuid"]: entry["uuid"] for entry in messages
         }
-        assert set(mapping) == (
-            {kept, boundary_id} if partial else {kept, boundary_id, anchor}
-        )
-        # A cutoff before the anchor must not pull the excluded source record in.
-        boundary = next(entry for entry in messages if entry["type"] == "system")
-        expected = {
-            "trigger": "auto",
-            "preTokens": 10000,
-        }
-        if not partial:
-            expected.update(
-                {
-                    "preservedSegment": {
-                        "headUuid": mapping[kept],
-                        "tailUuid": mapping[kept],
-                        "anchorUuid": mapping[anchor],
-                    },
-                    "preservedMessages": {
-                        "anchorUuid": mapping[anchor],
-                        "uuids": [mapping[kept]],
-                        "allUuids": [mapping[kept], missing],
-                        "extra": kept,
-                    },
-                }
-            )
-        assert boundary["compactMetadata"] == expected
         assert messages[0]["message"]["content"] == kept
         assert store.get_entries(key) == original
+        if partial:
+            # A cut at the boundary ends the fork before it, so neither the
+            # boundary nor its excluded summary anchor is copied.
+            assert set(mapping) == {kept}
+            return
+        assert set(mapping) == {kept, boundary_id, anchor}
+        boundary = next(entry for entry in messages if entry["type"] == "system")
+        assert boundary["compactMetadata"] == {
+            "trigger": "auto",
+            "preTokens": 10000,
+            "preservedSegment": {
+                "headUuid": mapping[kept],
+                "tailUuid": mapping[kept],
+                "anchorUuid": mapping[anchor],
+            },
+            "preservedMessages": {
+                "anchorUuid": mapping[anchor],
+                "uuids": [mapping[kept]],
+                "allUuids": [mapping[kept], missing],
+                "extra": kept,
+            },
+        }
 
     async def test_round_trips_with_new_uuids(self) -> None:
         store = InMemorySessionStore()

@@ -254,3 +254,41 @@ async def test_partial_fork_can_trim_entire_preserved_list(fork_entries):
         "allUuids": [],
     }
     assert actual["runningTurnSends"]["summarisedOnly"] == []
+
+
+async def test_fork_ending_at_compact_boundary_stops_before_it(fork_entries):
+    rows = _transcript()
+    copied = await fork_entries(rows, rows[2]["uuid"])
+    assert [row["forkedFrom"]["messageUuid"] for row in copied] == [
+        rows[0]["uuid"],
+        rows[1]["uuid"],
+    ]
+
+
+async def test_fork_ending_at_later_boundary_keeps_earlier_one(fork_entries):
+    rows = _transcript()
+    later, summary = str(uuid.uuid4()), str(uuid.uuid4())
+    rows.append(
+        {
+            **rows[2],
+            "uuid": later,
+            "logicalParentUuid": rows[-1]["uuid"],
+            "compactMetadata": {
+                "trigger": "auto",
+                "preservedMessages": {"anchorUuid": summary, "uuids": []},
+            },
+        }
+    )
+    rows.append({**rows[3], "uuid": summary, "parentUuid": later})
+    copied = await fork_entries(rows, later)
+    metadata, mapping = _metadata_and_mapping(copied)
+    assert later not in mapping
+    assert summary not in mapping
+    assert metadata["preservedSegment"]["anchorUuid"] == mapping[rows[3]["uuid"]]
+    assert metadata["preservedMessages"]["anchorUuid"] == mapping[rows[3]["uuid"]]
+
+
+async def test_fork_cannot_end_on_leading_compact_boundary(fork_entries):
+    rows = _transcript()[2:]
+    with pytest.raises(ValueError, match="no messages to fork"):
+        await fork_entries(rows, rows[0]["uuid"])

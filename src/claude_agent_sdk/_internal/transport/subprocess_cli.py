@@ -691,6 +691,11 @@ class SubprocessCLITransport(Transport):
                 # String or Path format: pass directly as file path or JSON string
                 cmd.extend(["--mcp-config", str(self._options.mcp_servers)])
 
+        if self._options.resume and self._options.hooks:
+            # Deferred tools can replay during CLI startup. Wait for initialize
+            # to install Python hook callbacks before resuming the session.
+            cmd.append("--await-initialize")
+
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
 

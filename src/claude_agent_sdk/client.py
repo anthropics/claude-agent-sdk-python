@@ -20,6 +20,7 @@ from .types import (
     ResultMessage,
     _configure_can_use_tool,
     _hooks_to_internal_format,
+    _validate_user_dialog_options,
 )
 
 
@@ -152,6 +153,7 @@ class ClaudeSDKClient:
 
         # Validate and configure permission settings (matching TypeScript SDK logic)
         options = _configure_can_use_tool(self.options)
+        _validate_user_dialog_options(options)
 
         if self._materialized is not None:
             options = apply_materialized_options(options, self._materialized)
@@ -221,6 +223,10 @@ class ClaudeSDKClient:
             forward_subagent_text=self.options.forward_subagent_text,
             verbatim_prompts=self._verbatim_prompts,
             run_end_ceiling_ms=run_end_ceiling_ms(self.options.env),
+            on_elicitation=self.options.on_elicitation,
+            on_user_dialog=self.options.on_user_dialog,
+            supported_dialog_kinds=self.options.supported_dialog_kinds,
+            per_task_stop_affordance=self.options.per_task_stop_affordance,
         )
 
         if self.options.session_store is not None:
@@ -306,7 +312,11 @@ class ClaudeSDKClient:
                 )
 
     async def interrupt(self) -> None:
-        """Send interrupt signal (only works with streaming mode)."""
+        """Send interrupt signal (only works with streaming mode).
+
+        By default this also kills running background tasks; see
+        ``ClaudeAgentOptions.per_task_stop_affordance``.
+        """
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.interrupt()

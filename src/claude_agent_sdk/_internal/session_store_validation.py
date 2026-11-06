@@ -37,6 +37,14 @@ def validate_session_store_options(options: ClaudeAgentOptions) -> None:
             "implement list_sessions()"
         )
 
+    if not options.persist_session:
+        raise ValueError(
+            "session_store cannot be combined with persist_session=False "
+            "(the store mirrors the transcript the CLI writes to local disk; "
+            "point CLAUDE_CONFIG_DIR at a temporary directory for ephemeral "
+            "local writes with external mirroring)"
+        )
+
     if options.enable_file_checkpointing:
         raise ValueError(
             "session_store cannot be combined with enable_file_checkpointing "

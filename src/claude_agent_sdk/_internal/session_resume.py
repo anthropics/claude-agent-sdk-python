@@ -315,7 +315,8 @@ async def _with_timeout(coro: Awaitable[Any], timeout_s: float, what: str) -> An
 def _write_jsonl(path: Path, entries: list[Any]) -> None:
     """Stream-write ``entries`` as one JSON line each to ``path`` (mode 0o600)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    # newline="\n": the default would write "\r\n" on Windows.
+    with path.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:
             f.write(json.dumps(e, separators=(",", ":")))
             f.write("\n")

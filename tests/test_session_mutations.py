@@ -110,6 +110,16 @@ class TestTryAppend:
         _try_append(f, "line3\n")
         assert f.read_text() == "line1\nline2\nline3\n"
 
+    def test_append_keeps_lf_line_endings(self, tmp_path: Path):
+        """Raw bytes stay LF: os.open is text mode on Windows without O_BINARY.
+
+        read_text() would hide a stray CRLF, so compare the bytes.
+        """
+        f = tmp_path / "test.jsonl"
+        f.write_bytes(b"line1\n")
+        _try_append(f, "line2\n")
+        assert f.read_bytes() == b"line1\nline2\n"
+
 
 # ---------------------------------------------------------------------------
 # rename_session() tests
@@ -632,6 +642,21 @@ class TestForkSession:
         # New file exists
         fork_path = project_dir / f"{result.session_id}.jsonl"
         assert fork_path.exists()
+
+    def test_fork_writes_lf_line_endings(self, claude_config_dir: Path, tmp_path: Path):
+        """The fork is LF-only JSONL like the CLI's, not CRLF on Windows."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid, _, _ = _make_transcript_session(project_dir)
+
+        result = fork_session(sid, directory=project_path)
+
+        data = (project_dir / f"{result.session_id}.jsonl").read_bytes()
+        assert data.endswith(b"\n")
+        assert b"\r" not in data
 
     def test_fork_remaps_uuids(self, claude_config_dir: Path, tmp_path: Path):
         """uuid and parentUuid fields are remapped; originals only appear in forkedFrom."""

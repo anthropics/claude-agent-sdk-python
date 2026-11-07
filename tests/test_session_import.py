@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -49,6 +51,16 @@ def _entry(i: int) -> SessionStoreEntry:
 def _write_jsonl(path: Path, entries: list[SessionStoreEntry]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+
+def _symlink_or_skip(
+    link: Path, target: Path, *, target_is_directory: bool = True
+) -> None:
+    """Create a symlink, or skip where the platform disallows it."""
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +242,35 @@ class TestSubagents:
         }
 
     @pytest.mark.anyio
+    async def test_symlinked_meta_json_sidecar_is_not_followed(
+        self, claude_dir: Path, cwd: Path, project_key: str, tmp_path: Path
+    ) -> None:
+        """A derived sidecar link must not import metadata from outside the tree."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        sub_dir = claude_dir / SESSION_ID / "subagents"
+        _write_jsonl(sub_dir / "agent-abc.jsonl", [_entry(10)])
+        external_sidecar = tmp_path / "agent-abc.meta.json"
+        external_sidecar.write_text(
+            json.dumps({"agentType": "external", "worktreePath": "/outside"}),
+            encoding="utf-8",
+        )
+        _symlink_or_skip(
+            sub_dir / "agent-abc.meta.json",
+            external_sidecar,
+            target_is_directory=False,
+        )
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        sub_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+            "subpath": "subagents/agent-abc",
+        }
+        assert store.get_entries(sub_key) == [_entry(10)]
+
+    @pytest.mark.anyio
     @pytest.mark.parametrize("sidecar", ["not json {", "[1, 2]", "42"])
     async def test_unusable_meta_json_sidecar_is_treated_as_absent(
         self, claude_dir: Path, cwd: Path, project_key: str, sidecar: str
@@ -285,6 +326,113 @@ class TestSubagents:
 
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == [_entry(0)]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_unreadable_subagents_dir_raises(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        monkeypatch: pytest.MonkeyPatch,
+        nested: bool,
+    ) -> None:
+        """A failed traversal at any depth must not look like a complete import."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        subagents_dir = claude_dir / SESSION_ID / "subagents"
+        _write_jsonl(subagents_dir / "agent-abc.jsonl", [_entry(10)])
+        blocked_dir = subagents_dir / "workflows" if nested else subagents_dir
+        if nested:
+            _write_jsonl(blocked_dir / "run-1" / "agent-def.jsonl", [_entry(20)])
+
+        original_iterdir = Path.iterdir
+
+        def fail_for_subagents(path: Path) -> Iterator[Path]:
+            if path == blocked_dir:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail_for_subagents)
+
+        store = InMemorySessionStore()
+        with pytest.raises(PermissionError, match="Permission denied"):
+            await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        main_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+        }
+        assert store.get_entries(main_key) == [_entry(0)]
+        assert await store.list_subkeys(main_key) == (
+            ["subagents/agent-abc"] if nested else []
+        )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("shape", ["cycle", "sibling", "external", "file"])
+    async def test_symlinks_below_subagents_are_not_followed(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        tmp_path: Path,
+        shape: str,
+    ) -> None:
+        """Links must not re-enter, duplicate, or escape the transcript tree."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        subagents_dir = claude_dir / SESSION_ID / "subagents"
+        real_dir = subagents_dir / "real"
+        _write_jsonl(real_dir / "agent-abc.jsonl", [_entry(10)])
+
+        if shape == "cycle":
+            _symlink_or_skip(subagents_dir / "loop", subagents_dir)
+        elif shape == "sibling":
+            _symlink_or_skip(subagents_dir / "alias", real_dir)
+        elif shape == "external":
+            outside = tmp_path / "outside"
+            _write_jsonl(outside / "agent-foreign.jsonl", [_entry(20)])
+            _symlink_or_skip(subagents_dir / "external", outside)
+        else:
+            foreign = tmp_path / "agent-foreign.jsonl"
+            _write_jsonl(foreign, [_entry(20)])
+            _symlink_or_skip(
+                real_dir / "agent-foreign.jsonl",
+                foreign,
+                target_is_directory=False,
+            )
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        main_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+        }
+        assert await store.list_subkeys(main_key) == ["subagents/real/agent-abc"]
+
+    @pytest.mark.anyio
+    async def test_symlinked_subagents_root_is_followed(
+        self,
+        claude_dir: Path,
+        cwd: Path,
+        project_key: str,
+        tmp_path: Path,
+    ) -> None:
+        """A relocated subagents root remains a supported traversal root."""
+        _write_jsonl(claude_dir / f"{SESSION_ID}.jsonl", [_entry(0)])
+        relocated = tmp_path / "relocated-subagents"
+        _write_jsonl(relocated / "agent-abc.jsonl", [_entry(10)])
+        session_dir = claude_dir / SESSION_ID
+        session_dir.mkdir(parents=True)
+        _symlink_or_skip(session_dir / "subagents", relocated)
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        main_key: SessionKey = {
+            "project_key": project_key,
+            "session_id": SESSION_ID,
+        }
+        assert await store.list_subkeys(main_key) == ["subagents/agent-abc"]
 
 
 # ---------------------------------------------------------------------------

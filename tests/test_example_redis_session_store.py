@@ -231,6 +231,48 @@ class TestDelete:
         assert await store.load(base) == [{"type": "x", "m": 1}]
         assert await store.list_subkeys(base) == ["b"]
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("existing_subpath", [False, True])
+    async def test_cascade_retries_when_a_subpath_is_added_during_delete(
+        self,
+        client: fakeredis.FakeAsyncRedis,
+        store: SessionStore,
+        monkeypatch: pytest.MonkeyPatch,
+        existing_subpath: bool,
+    ) -> None:
+        from redis.commands.core import SetCommands
+
+        base: SessionKey = {"project_key": "proj", "session_id": "sess"}
+        new_key: SessionKey = {**base, "subpath": "subagents/new"}
+        other_key: SessionKey = {"project_key": "proj", "session_id": "other"}
+        await store.append(base, [{"type": "user"}])
+        await store.append(other_key, [{"type": "user", "keep": True}])
+        if existing_subpath:
+            await store.append({**base, "subpath": "subagents/old"}, [{"type": "user"}])
+
+        original_smembers = SetCommands.smembers
+        injected = False
+
+        async def read_then_append(connection, name):
+            nonlocal injected
+            members = await original_smembers(connection, name)
+            if name == "p:proj:sess:__subkeys" and not injected:
+                injected = True
+                # Finish the append after deletion reads its subkey snapshot,
+                # but before it commits the cascade.
+                await store.append(new_key, [{"type": "user", "new": True}])
+            return members
+
+        monkeypatch.setattr(SetCommands, "smembers", read_then_append)
+        await store.delete(base)
+
+        assert injected
+        assert await store.load(base) is None
+        assert await store.load(new_key) is None
+        assert await client.keys("p:proj:sess*") == []
+        assert await store.load(other_key) == [{"type": "user", "keep": True}]
+        assert [s["session_id"] for s in await store.list_sessions("proj")] == ["other"]
+
 
 class TestListSubkeys:
     @pytest.mark.anyio

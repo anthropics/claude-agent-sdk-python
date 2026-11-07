@@ -66,8 +66,10 @@ class ResultError(ProcessError):
             async for message in query(prompt="..."):
                 ...
         except ResultError as e:
-            if e.terminal_reason == "api_error":   # e.g. overloaded / timeout
+            if e.error in ("rate_limit", "server_error"):  # transient
                 retry()
+            elif e.error == "authentication_failed":  # retrying won't help
+                relogin()
             elif e.subtype == "error_max_turns":
                 ...
 
@@ -85,6 +87,11 @@ class ResultError(ProcessError):
         terminal_reason: Why the run ended (e.g. ``"api_error"``,
             ``"max_turns"``), if reported by the CLI.
         session_id: Session the result belongs to, if reported.
+        error: The ``error`` kind of the last top-level assistant message
+            (an :data:`AssistantMessageError` value such as
+            ``"authentication_failed"`` or ``"rate_limit"``), if any.
+            ``terminal_reason`` is ``"api_error"`` for all of these, so this
+            is the field that tells a dead login from a transient failure.
         data: The raw ``result`` message payload as emitted by the CLI.
         exit_code: Inherited from :class:`ProcessError`.
     """
@@ -94,7 +101,9 @@ class ResultError(ProcessError):
         message: str,
         data: dict[str, Any] | None = None,
         exit_code: int | None = None,
+        error: str | None = None,
     ):
+        self.error: str | None = error
         # `data` is optional so the default exception reconstruction protocol
         # (``type(e)(*e.args)``, used by pickle/copy and therefore by
         # multiprocessing) still works; the real attributes are restored from

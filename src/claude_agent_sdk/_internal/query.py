@@ -276,6 +276,9 @@ class Query:
         # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
         # (Query.ts), but keeps the whole payload rather than just the text.
         self._last_error_result: dict[str, Any] | None = None
+        # `error` of the latest top-level assistant message (e.g.
+        # "authentication_failed"); attached to ResultError as its error kind.
+        self._last_assistant_error: str | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -519,6 +522,14 @@ class Query:
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
                     self._last_error_result = None
+                    if (
+                        msg_type == "assistant"
+                        and message.get("parent_tool_use_id") is None
+                    ):
+                        error_kind = message.get("error")
+                        self._last_assistant_error = (
+                            error_kind if isinstance(error_kind, str) else None
+                        )
                     # A main-thread turn is under way, so the ceiling stops
                     # (it counts only the wait between turns, as the CLI's
                     # does) and the run reopens even if the ceiling ended it
@@ -555,7 +566,10 @@ class Query:
                 # stderr deliberately not carried over: the transport's value is
                 # a generic placeholder, and the result text is the real cause.
                 pending_error = ResultError(
-                    error_text, data=self._last_error_result, exit_code=e.exit_code
+                    error_text,
+                    data=self._last_error_result,
+                    exit_code=e.exit_code,
+                    error=self._last_assistant_error,
                 )
                 pending_error.__cause__ = e
                 logger.debug(

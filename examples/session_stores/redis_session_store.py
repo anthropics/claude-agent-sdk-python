@@ -143,7 +143,9 @@ class RedisSessionStore(SessionStore):
         for line in raw:
             # Skip malformed entries (parity with the S3 adapter).
             with contextlib.suppress(json.JSONDecodeError, TypeError):
-                out.append(json.loads(line))
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    out.append(entry)
         return out if out else None
 
     async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:

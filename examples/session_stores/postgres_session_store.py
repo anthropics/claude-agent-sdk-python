@@ -170,15 +170,15 @@ class PostgresSessionStore(SessionStore):
         if not entries:
             return
         subpath = key.get("subpath") or ""
-        # Single round-trip multi-row INSERT: unnest() the jsonb[] payload so
-        # the whole batch lands in one statement (atomic, ordered by array
-        # position via WITH ORDINALITY, one bigserial draw per row).
+        # Bind serialized entries as text so a custom jsonb encoder on the
+        # pool cannot serialize them a second time. The server casts to jsonb.
+        # WITH ORDINALITY preserves batch order, one bigserial draw per row.
         await self._pool.execute(
             f"""
             INSERT INTO {self._table} (project_key, session_id, subpath, entry, mtime)
-            SELECT $1, $2, $3, e,
+            SELECT $1, $2, $3, e::jsonb,
                    (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
-            FROM unnest($4::jsonb[]) WITH ORDINALITY AS t(e, ord)
+            FROM unnest($4::text[]) WITH ORDINALITY AS t(e, ord)
             ORDER BY ord
             """,
             key["project_key"],

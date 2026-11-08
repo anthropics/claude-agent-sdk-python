@@ -320,8 +320,8 @@ This installs a pre-push hook that runs lint checks before pushing, matching the
 To build wheels with the bundled Claude Code CLI:
 
 ```bash
-# Install build dependencies
-pip install build twine
+# Install build dependencies (wheel is used to retag the wheel for your platform)
+pip install build twine wheel
 
 # Build wheel with bundled CLI
 python scripts/build_wheel.py
@@ -350,27 +350,19 @@ See `python scripts/build_wheel.py --help` for all options.
 
 ### Release Workflow
 
-The package is published to PyPI via the GitHub Actions workflow in `.github/workflows/publish.yml`. To create a new release:
+The package is published to PyPI by the reusable `.github/workflows/build-and-publish.yml` workflow, which is called in one of two ways. See [RELEASING.md](RELEASING.md) for the full flow.
 
-1. **Trigger the workflow** manually from the Actions tab with two inputs:
-   - `version`: The package version to publish (e.g., `0.1.5`)
-   - `claude_code_version`: The Claude Code CLI version to bundle (e.g., `2.0.0` or `latest`)
+- **Automatically**: a `chore: bump bundled CLI version to X.Y.Z` commit on `main` (it changes `src/claude_agent_sdk/_cli_version.py`) releases the next patch version once the `Test` workflow passes.
+- **Manually**: run the `Publish to PyPI` workflow (`.github/workflows/publish.yml`) from the Actions tab with one input, `version` (e.g., `0.1.5`).
 
-2. **The workflow will**:
-   - Build platform-specific wheels for macOS, Linux, and Windows
-   - Bundle the specified Claude Code CLI version in each wheel
-   - Build a source distribution
-   - Publish all artifacts to PyPI
-   - Create a release branch with version updates
-   - Open a PR to main with:
-     - Updated `pyproject.toml` version
-     - Updated `src/claude_agent_sdk/_version.py`
-     - Updated `src/claude_agent_sdk/_cli_version.py` with bundled CLI version
-     - Auto-generated `CHANGELOG.md` entry
+Either way the workflow:
 
-3. **Review and merge** the release PR to update main with the new version information
+- Builds platform-specific wheels for macOS, Linux, and Windows, each bundling the Claude Code CLI version pinned in `_cli_version.py`, plus a source distribution
+- Publishes them to PyPI
+- Commits the version bump (`pyproject.toml` and `src/claude_agent_sdk/_version.py`) and an auto-generated `CHANGELOG.md` entry directly to `main`
+- Creates a `vX.Y.Z` tag and a GitHub Release
 
-The workflow tracks both the package version and the bundled CLI version separately, allowing you to release a new package version with an updated CLI without code changes.
+The bundled CLI version is not a workflow input: to ship a different CLI, change `_cli_version.py`.
 
 ## License and terms
 

@@ -153,6 +153,23 @@ class TestHelpers:
         # The hash suffix is appended after the 200-char prefix
         assert "-" in result[200:]
 
+    def test_sanitize_path_non_bmp_matches_cli(self):
+        """Characters outside the BMP count as two UTF-16 code units, as in JS.
+
+        Expected values come from the CLI's sanitizePath/simpleHash run in Node.
+        """
+        assert _sanitize_path("/Users/foo/\U0001f680 launch") == (
+            "-Users-foo----launch"
+        )
+        # 200 code points but 201 UTF-16 code units: the CLI truncates and
+        # appends a hash.
+        long_path = "/x" * 99 + "/\U0001f680"
+        assert _sanitize_path(long_path) == "-x" * 99 + "---v7cms7"
+
+    def test_simple_hash_non_bmp_matches_cli(self):
+        assert _simple_hash("\U0001f680") == "1202r"
+        assert _simple_hash("a\U0001f680b") == "yg066"
+
     def test_simple_hash_deterministic(self):
         assert _simple_hash("hello") == _simple_hash("hello")
         assert _simple_hash("hello") != _simple_hash("world")
@@ -287,6 +304,26 @@ class TestListSessions:
         assert s.file_size > 0
         assert s.last_modified > 0
         assert s.custom_title is None
+
+    def test_directory_with_emoji(self, claude_config_dir: Path, tmp_path: Path):
+        """Finds sessions the CLI stored for a cwd containing a non-BMP char."""
+        project_path = str(tmp_path / "\U0001f680-app")
+        Path(project_path).mkdir(parents=True)
+        real = os.path.realpath(project_path)
+        # The CLI replaces each UTF-16 code unit outside [a-zA-Z0-9] with "-",
+        # so the emoji (a surrogate pair) becomes "--".
+        cli_dir_name = "".join(
+            ("--" if ord(c) > 0xFFFF else "-")
+            if not (c.isascii() and c.isalnum())
+            else c
+            for c in real
+        )
+        project_dir = claude_config_dir / "projects" / cli_dir_name
+        project_dir.mkdir(parents=True)
+        sid, _ = _make_session_file(project_dir, cwd=project_path)
+
+        sessions = list_sessions(directory=project_path, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
 
     def test_custom_title_wins_summary(self, claude_config_dir: Path, tmp_path: Path):
         """custom_title takes precedence over summary and first_prompt."""

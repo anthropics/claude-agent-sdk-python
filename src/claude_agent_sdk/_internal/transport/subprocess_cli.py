@@ -260,40 +260,19 @@ class SubprocessCLITransport(Transport):
             return bundled_cli
 
         # Fall back to system-wide search
-        which_hit: str | None = None
-        if cli := shutil.which("claude"):
-            if platform.system() != "Windows" or self._is_windows_native_exe(cli):
-                return cli
-            # Windows resolved something CreateProcess cannot run directly
-            # as the CLI: npm's claude.cmd shim (which connect() refuses to
-            # spawn) or an extensionless wrapper script from a git-bash /
-            # WSL setup (which fails at spawn with WinError 193). shutil.which
-            # walks PATH directory-major, so such an entry in an early PATH
-            # directory shadows a native claude.exe installed in a later
-            # one (within one directory the default PATHEXT would prefer
-            # .EXE, so the shadowing is purely the directory order). Prefer
-            # any discoverable native executable, and keep this hit only as
-            # the last resort so a shim-only machine still gets the
-            # explanatory batch-script refusal from connect(). The claude.exe
-            # probe is vetted too: PATHEXT resolution can append an
-            # extension and hand back "claude.exe.cmd".
-            exe = shutil.which("claude.exe")
-            if exe and self._is_windows_native_exe(exe):
-                return exe
-            which_hit = cli
-
         if platform.system() == "Windows":
-            # Only the native installer's claude.exe. Path.exists() does
-            # no PATHEXT resolution, so the .exe name must be probed
-            # explicitly. The POSIX-shaped entries below are deliberately
-            # not probed on Windows: an extensionless match (a WSL / git-bash
-            # script artifact at ~/.local/bin/claude) would preempt the
-            # explanatory batch-script refusal with an opaque spawn
-            # failure, and a rooted-but-driveless "/usr/local/bin/claude"
-            # resolves against the current drive (C:\usr\local\bin\...),
-            # a location another local user can create -- a
-            # binary-planting probe.
+            # Only a native claude.exe: CreateProcess can't run an extensionless
+            # wrapper script, and connect() refuses npm's claude.cmd shim. And
+            # only in absolute PATH entries: shutil.which() would search the
+            # working directory first.
+            for directory in map(Path, os.environ.get("PATH", "").split(os.pathsep)):
+                exe = directory / "claude.exe"
+                # Path.is_file() raises on an unreadable directory
+                if directory.is_absolute() and os.path.isfile(exe):  # noqa: PTH113
+                    return str(exe)
             locations = [Path.home() / ".local/bin/claude.exe"]
+        elif cli := shutil.which("claude"):
+            return cli
         else:
             locations = [
                 Path.home() / ".npm-global/bin/claude",
@@ -307,13 +286,6 @@ class SubprocessCLITransport(Transport):
         for path in locations:
             if path.exists() and path.is_file():
                 return str(path)
-
-        if which_hit is not None:
-            # No native executable was discoverable anywhere: return the
-            # original which() hit so connect() raises the batch-script
-            # refusal (with its remediation) for a shim, or the spawn error
-            # for a wrapper script, rather than a bare not-found error.
-            return which_hit
 
         if platform.system() == "Windows":
             # npm's Windows install is a claude.cmd shim, which connect()
@@ -352,16 +324,6 @@ class SubprocessCLITransport(Transport):
             return str(bundled_path)
 
         return None
-
-    @staticmethod
-    def _is_windows_native_exe(cli_path: str) -> bool:
-        """Whether cli_path's final component names an image CreateProcess
-        runs directly (.exe / .com), used only to decide which discovery
-        result to prefer. It is not a security gate: every returned path
-        still passes _reject_windows_batch_cli in connect().
-        """
-        name = cli_path.replace("\\", "/").rsplit("/", 1)[-1]
-        return name.rstrip(". ").lower().endswith((".exe", ".com"))
 
     @staticmethod
     def _is_windows_batch_cli(cli_path: str) -> bool:
@@ -428,10 +390,9 @@ class SubprocessCLITransport(Transport):
         Node.js shipped for this vulnerability class (CVE-2024-27980,
         "BatBadBut").
 
-        In practice this refuses npm's claude.cmd shim, which _find_cli
-        returns only when no native claude.exe is discoverable (for
-        example sdist installs on a machine with just the npm shim). The
-        alternatives in the error message avoid cmd.exe entirely.
+        _find_cli never returns one on Windows, so this applies to an
+        explicit cli_path, such as npm's claude.cmd shim. The alternatives
+        in the error message avoid cmd.exe entirely.
         """
         if not SubprocessCLITransport._is_windows_batch_cli(cli_path):
             return

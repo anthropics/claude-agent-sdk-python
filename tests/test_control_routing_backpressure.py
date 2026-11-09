@@ -6,6 +6,7 @@ handled, or silently discard messages when consumption resumes.
 """
 
 import json
+import math
 
 import anyio
 import pytest
@@ -16,7 +17,7 @@ from claude_agent_sdk._internal.transport import Transport
 
 class ScriptedTransport(Transport):
     def __init__(self):
-        self._send, self._receive = anyio.create_memory_object_stream[dict](256)
+        self._send, self._receive = anyio.create_memory_object_stream[dict](math.inf)
         self.writes = []
 
     async def connect(self):

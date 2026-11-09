@@ -120,6 +120,65 @@ class TestNoMaterialization:
 
 class TestHappyPath:
     @pytest.mark.anyio
+    @pytest.mark.parametrize("plan_record", ["attachment", "user", "tool_use"])
+    async def test_resume_preserves_embedded_plan_content(
+        self, cwd: Path, project_key: str, isolated_home: Path, plan_record: str
+    ) -> None:
+        plan_content = "# Plan\n\n1. Inspect the input.\n2. Verify the result.\n"
+        plan_path = "/previous-host/config/plans/gentle-purple-river.md"
+        entry: dict[str, Any] = {
+            "type": plan_record,
+            "uuid": str(uuid.uuid4()),
+            "sessionId": SESSION_ID,
+            "slug": "gentle-purple-river",
+        }
+        if plan_record == "attachment":
+            entry["attachment"] = {
+                "type": "plan_file_reference",
+                "planFilePath": plan_path,
+                "planContent": plan_content,
+            }
+        elif plan_record == "user":
+            entry["message"] = {"role": "user", "content": "Proceed with the plan."}
+            entry["planContent"] = plan_content
+        else:
+            entry["type"] = "assistant"
+            entry["message"] = {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_plan",
+                        "name": "ExitPlanMode",
+                        "input": {"plan": plan_content, "planFilePath": plan_path},
+                    }
+                ],
+            }
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID}, [entry]
+        )
+        materialized = await materialize_resume_session(
+            ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        )
+        assert materialized is not None
+        try:
+            assert (
+                materialized.config_dir / "plans" / "gentle-purple-river.md"
+            ).read_text(encoding="utf-8") == plan_content
+            transcript = (
+                materialized.config_dir
+                / "projects"
+                / project_key
+                / f"{SESSION_ID}.jsonl"
+            )
+            assert [
+                json.loads(line) for line in transcript.read_text().splitlines()
+            ] == [entry]
+        finally:
+            await materialized.cleanup()
+
+    @pytest.mark.anyio
     async def test_resume_writes_jsonl_and_cleanup_removes_dir(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:

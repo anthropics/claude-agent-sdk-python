@@ -37,10 +37,7 @@ class TestSubprocessCLITransport:
             assert transport._cli_path is None
 
             with (
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    return_value=None,
-                ),
+                patch.dict(os.environ, {"PATH": ""}),
                 patch("pathlib.Path.exists", return_value=False),
                 pytest.raises(CLINotFoundError) as exc_info,
             ):
@@ -2765,10 +2762,7 @@ class TestWindowsBatchScriptRefusal:
             patch.object(
                 SubprocessCLITransport, "_find_bundled_cli", return_value=None
             ),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
+            patch.dict(os.environ, {"PATH": ""}),
             patch("pathlib.Path.exists", return_value=False),
             pytest.raises(CLINotFoundError) as exc_info,
         ):

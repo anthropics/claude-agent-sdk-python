@@ -457,8 +457,24 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            [],
+            [{"type": "summary", "summary": "internal task"}],
+            [
+                {"type": "summary", "summary": "internal task"},
+                {"type": "file-history-snapshot", "snapshot": {}},
+            ],
+        ],
+        ids=["no-header", "summary-header", "multiple-headers"],
+    )
     async def test_continue_skips_sidechain_sessions(
-        self, cwd: Path, project_key: str, isolated_home: Path
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        prefix: list[SessionStoreEntry],
     ) -> None:
         """Sidechain transcripts are mirrored as ordinary top-level keys and
         often have the highest mtime. ``continue_conversation`` must skip them
@@ -473,7 +489,7 @@ class TestHappyPath:
         store._mtimes[f"{project_key}/{SESSION_ID}"] = 1000
         await store.append(
             {"project_key": project_key, "session_id": sidechain_sid},
-            [{"type": "user", "uuid": "sc", "isSidechain": True}],
+            [*prefix, {"type": "user", "uuid": "sc", "isSidechain": True}],
         )
         store._mtimes[f"{project_key}/{sidechain_sid}"] = 2000  # newer
 
@@ -484,6 +500,38 @@ class TestHappyPath:
         assert m is not None
         assert m.resume_session_id == SESSION_ID
         await m.cleanup()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("first_flag", [False, True])
+    async def test_continue_uses_first_explicit_sidechain_flag(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        first_flag: bool,
+    ) -> None:
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "main"}],
+        )
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID_2},
+            [
+                {"type": "summary", "summary": "task"},
+                {"type": "user", "isSidechain": first_flag},
+                {"type": "assistant", "isSidechain": not first_flag},
+            ],
+        )
+        opts = ClaudeAgentOptions(
+            cwd=cwd, session_store=store, continue_conversation=True
+        )
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        try:
+            assert m.resume_session_id == (SESSION_ID if first_flag else SESSION_ID_2)
+        finally:
+            await m.cleanup()
 
     @pytest.mark.anyio
     async def test_continue_returns_none_when_only_sidechains(
@@ -936,6 +984,15 @@ class TestClientIntegration:
         await store.append(
             {"project_key": project_key, "session_id": SESSION_ID},
             [{"type": "user", "uuid": "u1"}],
+        )
+        # A more recent subagent with a metadata header must not be selected
+        # as the conversation the client passes to the CLI's --resume flag.
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID_2},
+            [
+                {"type": "summary", "summary": "internal task"},
+                {"type": "user", "uuid": "subagent", "isSidechain": True},
+            ],
         )
 
         captured: dict[str, Any] = {}

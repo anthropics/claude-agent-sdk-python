@@ -2671,7 +2671,8 @@ class ClaudeAgentOptions:
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
     When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    to disable filesystem settings (SDK isolation mode), for example when
+    ``cwd`` may be untrusted: project settings can run hooks. Must include
     ``"project"`` to load CLAUDE.md files.
     """
 

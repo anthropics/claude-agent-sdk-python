@@ -1528,7 +1528,7 @@ Introducing the Claude Agent SDK! The Claude Code SDK has been renamed to better
 
 #### Settings Isolation
 
-- **No filesystem settings by default**: Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. This ensures SDK applications have predictable behavior independent of local filesystem configurations
+- **No filesystem settings by default** (until 0.1.53): Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. Since 0.1.53, filesystem settings load unless you opt out; use `setting_sources=[]` (0.1.60 or later)
 - **Explicit settings control**: Use the new `setting_sources` field to specify which settings locations to load: `["user", "project", "local"]`
 
 For full migration instructions, see our [migration guide](https://docs.claude.com/en/docs/claude-code/sdk/migration-guide).

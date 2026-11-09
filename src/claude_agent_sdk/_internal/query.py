@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
@@ -230,10 +231,15 @@ class Query:
         self.next_callback_id = 0
         self._request_counter = 0
 
-        # Message stream
+        # The reader also routes hook, permission and MCP control requests.
+        # A bounded stream would block it when a caller stops consuming regular
+        # messages (for example after an early ResultMessage on resume), starving
+        # control requests queued behind that traffic. Preserve all messages in
+        # order without letting downstream backpressure stop control routing.
+        # Hosts should continue consuming messages to avoid unbounded memory use.
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
-        ](max_buffer_size=100)
+        ](max_buffer_size=math.inf)
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}

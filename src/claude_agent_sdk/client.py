@@ -2,7 +2,8 @@
 
 import json
 import os
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
+from contextlib import aclosing
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -257,17 +258,21 @@ class ClaudeSDKClient:
         elif prompt is not None and isinstance(prompt, AsyncIterable):
             self._query.spawn_task(self._query.stream_input(prompt))
 
-    async def receive_messages(self) -> AsyncIterator[Message]:
+    async def receive_messages(self) -> AsyncGenerator[Message, None]:
         """Receive all messages from Claude."""
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
 
         from ._internal.message_parser import parse_message
 
-        async for data in self._query.receive_messages():
-            message = parse_message(data)
-            if message is not None:
-                yield message
+        # aclosing() ends the inner iteration as soon as this one ends, rather
+        # than when it is garbage collected, so disconnect() can close the
+        # receive stream right away (see Query.close_receive_stream()).
+        async with aclosing(self._query.receive_messages()) as messages:
+            async for data in messages:
+                message = parse_message(data)
+                if message is not None:
+                    yield message
 
     async def query(
         self, prompt: str | AsyncIterable[dict[str, Any]], session_id: str = "default"
@@ -599,10 +604,11 @@ class ClaudeSDKClient:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
         """
-        async for message in self.receive_messages():
-            yield message
-            if isinstance(message, ResultMessage):
-                return
+        async with aclosing(self.receive_messages()) as messages:
+            async for message in messages:
+                yield message
+                if isinstance(message, ResultMessage):
+                    return
 
     async def disconnect(self) -> None:
         """Disconnect from Claude.
@@ -610,6 +616,12 @@ class ClaudeSDKClient:
         Any SDK MCP tool call still running is cancelled first; a tool that
         does not react to cancellation (one blocked in a worker thread, say)
         is given up on after a grace period of a few seconds per server.
+
+        A ``receive_messages()`` iteration still running in another task can
+        read the messages already buffered before it ends. The message stream
+        is closed once every such iteration has ended; one left suspended by
+        ``break`` ends when it is closed (``contextlib.aclosing``) or
+        garbage collected.
         """
         if self._query:
             await self._query.close()

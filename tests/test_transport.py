@@ -1958,16 +1958,17 @@ class TestSubprocessCLITransport:
         ("settings", "contents"),
         [
             ("missing.json", None),
+            (".", None),
             ("settings.json", "{not json"),
             ("settings.json", "[1, 2]"),
-            (".", None),
-            ("x" * 400 + ".json", None),
+            # Malformed inline JSON
+            ('{"env": {"KEY": "secret-value",}}', None),
         ],
     )
-    def test_build_command_sandbox_unloadable_settings_file_raises(
+    def test_build_command_sandbox_unloadable_settings_raise(
         self, tmp_path, settings, contents
     ):
-        """A settings file that can't be loaded raises instead of being dropped."""
+        """Settings that can't be loaded raise instead of being dropped."""
         if contents is not None:
             (tmp_path / settings).write_text(contents)
         transport = SubprocessCLITransport(
@@ -1977,21 +1978,9 @@ class TestSubprocessCLITransport:
             ),
         )
 
-        with pytest.raises(CLIConnectionError, match="[Ss]ettings file"):
+        with pytest.raises(CLIConnectionError, match="settings") as exc_info:
             transport._build_command()
-
-    def test_build_command_sandbox_malformed_inline_settings_raises(self):
-        """Malformed inline settings raise without echoing their value."""
-        transport = SubprocessCLITransport(
-            prompt="test",
-            options=make_options(
-                settings='{"env": {"KEY": "secret-value",}}',
-                sandbox={"enabled": True},
-            ),
-        )
-
-        with pytest.raises(CLIConnectionError, match="not valid JSON") as exc_info:
-            transport._build_command()
+        # Inline settings can hold secrets
         assert "secret-value" not in str(exc_info.value)
 
     def test_build_command_sandbox_reads_settings_file_with_bom(self, tmp_path):

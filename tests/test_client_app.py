@@ -253,7 +253,8 @@ def _env_passed_to_subprocess(
     options: ClaudeAgentOptions,
     derived: str | None = "my-agent/1.2.3",
     ambient: dict[str, str] | None = None,
-    cli_version: bytes = b"2.1.500 (Claude Code)",
+    cli_version: str = "2.1.500",
+    bundled_cli: str | None = "/usr/bin/claude",
 ) -> dict[str, str]:
     async def _connect() -> dict[str, str]:
         with (
@@ -267,21 +268,25 @@ def _env_passed_to_subprocess(
                 ".DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION",
                 "2.1.500",
             ),
+            patch(
+                "claude_agent_sdk._internal.transport.subprocess_cli.__cli_version__",
+                cli_version,
+            ),
+            patch.object(
+                SubprocessCLITransport,
+                "_find_bundled_cli",
+                return_value=bundled_cli,
+            ),
             patch.dict(os.environ, ambient or {}),
         ):
-            version_process = MagicMock()
-            version_process.stdout.receive = AsyncMock(return_value=cli_version)
-            version_process.wait = AsyncMock()
             process = MagicMock()
             process.stdin.aclose = AsyncMock()
             process.returncode = None
-            skips_probe = bool(os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"))
-            mock_open_process.side_effect = (
-                [process] if skips_probe else [version_process, process]
-            )
+            mock_open_process.return_value = process
             transport = SubprocessCLITransport(prompt="test", options=options)
             await transport.connect()
-            return mock_open_process.call_args_list[-1].kwargs["env"]
+            mock_open_process.assert_awaited_once()
+            return mock_open_process.call_args.kwargs["env"]
 
     return anyio.run(_connect)
 
@@ -370,18 +375,22 @@ class TestPrecedence:
         env = _env_passed_to_subprocess(
             self._options(),
             ambient={DERIVED_CLIENT_APP_ENV: "outer-app"},
-            cli_version=b"2.1.499 (Claude Code)",
+            cli_version="2.1.499",
         )
         assert DERIVED_CLIENT_APP_ENV not in env
 
     def test_derives_nothing_for_a_cli_of_unknown_version(self):
-        env = _env_passed_to_subprocess(self._options(), cli_version=b"unparseable")
+        env = _env_passed_to_subprocess(self._options(), cli_version="unparseable")
         assert DERIVED_CLIENT_APP_ENV not in env
 
-    def test_derives_nothing_when_the_version_check_is_skipped(self):
+    def test_derives_nothing_for_a_cli_other_than_the_bundled_one(self):
         env = _env_passed_to_subprocess(
-            self._options(), ambient={"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"}
+            self._options(), bundled_cli="/opt/sdk/_bundled/claude"
         )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_without_a_bundled_cli(self):
+        env = _env_passed_to_subprocess(self._options(), bundled_cli=None)
         assert DERIVED_CLIENT_APP_ENV not in env
 
     def test_a_failed_scan_does_not_stop_connect(self):

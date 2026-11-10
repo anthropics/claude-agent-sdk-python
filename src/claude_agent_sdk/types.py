@@ -189,10 +189,12 @@ class PermissionUpdate:
             if self.mode is not None:
                 result["mode"] = self.mode
 
-        elif self.type in ["addDirectories", "removeDirectories"]:
+        elif (
+            self.type in ["addDirectories", "removeDirectories"]
+            and self.directories is not None
+        ):
             # Directory variants require directories
-            if self.directories is not None:
-                result["directories"] = self.directories
+            result["directories"] = self.directories
 
         return result
 
@@ -851,6 +853,17 @@ class HookMatcher:
 
     # Timeout in seconds for all hooks in this matcher (default: 60)
     timeout: float | None = None
+
+    # What happens when a callback in this matcher fails. With "block", a
+    # callback that raises, returns None (a path with no return), or returns a
+    # value the CLI rejects, such as permissionDecision "Deny", blocks the
+    # action, so a callback with no opinion must return {}. Unrecognized keys
+    # are not a failure. Stop, SubagentStop, TaskCompleted and TeammateIdle
+    # ignore this option. A PermissionRequest block counts only if it lands
+    # before can_use_tool answers. Unset or "continue" counts a failure as no
+    # decision. With "block", connecting to a CLI too old to honor it raises
+    # CLIConnectionError.
+    on_failure: Literal["continue", "block"] | None = None
 
 
 # MCP Server config
@@ -2318,6 +2331,8 @@ def _hooks_to_internal_format(
             }
             if hasattr(matcher, "timeout") and matcher.timeout is not None:
                 internal_matcher["timeout"] = matcher.timeout
+            if hasattr(matcher, "on_failure") and matcher.on_failure is not None:
+                internal_matcher["on_failure"] = matcher.on_failure
             internal_hooks[event].append(internal_matcher)
     return internal_hooks
 
@@ -2463,8 +2478,8 @@ class ClaudeAgentOptions:
     Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
     flag. When ``sandbox`` is also set, the settings are merged with the sandbox
     settings and passed as one JSON string: an inline string is parsed
-    directly, and a path is read from disk (a missing file is logged and only
-    the sandbox settings are passed).
+    directly, and a path is read from disk, relative to ``cwd`` when ``cwd`` is
+    set. Settings that cannot be loaded raise ``CLIConnectionError``.
 
     These are loaded into the "flag settings" layer, which has the highest
     priority among user-controlled settings.
@@ -2660,7 +2675,8 @@ class ClaudeAgentOptions:
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
     When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    to disable filesystem settings (SDK isolation mode), for example when
+    ``cwd`` may be untrusted: project settings can run hooks. Must include
     ``"project"`` to load CLAUDE.md files.
     """
 
@@ -2806,8 +2822,8 @@ class ClaudeAgentOptions:
     key, Bedrock, Vertex and Foundry sessions do not, and neither does a session
     with telemetry turned off. Pass an empty string to send no identifier. No
     released Claude Code qualifies yet: nothing is derived for a version that does
-    not keep the value from shell commands, hooks and MCP and LSP servers, or one
-    whose version check failed or was skipped.
+    not keep the value from shell commands, hooks and MCP and LSP servers, or for
+    a CLI other than the bundled one, whose version is unknown until it starts.
     """
 
 

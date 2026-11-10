@@ -471,57 +471,28 @@ class SubprocessCLITransport(Transport):
             )
 
     def _build_settings_value(self) -> str | None:
-        """Build settings value, merging sandbox settings if provided.
+        """Build the --settings value, merging sandbox settings in if provided.
 
-        Returns the settings value as either:
-        - A JSON string (if sandbox is provided or settings is JSON)
-        - A file path (if only settings path is provided without sandbox)
-        - None if neither settings nor sandbox is provided
+        Settings that can't be loaded raise: launching without them would drop
+        the caller's permission rules and hooks.
         """
-        has_settings = self._options.settings is not None
-        has_sandbox = self._options.sandbox is not None
+        settings = self._options.settings
+        if self._options.sandbox is None:
+            return settings
 
-        if not has_settings and not has_sandbox:
-            return None
-
-        # If only settings path and no sandbox, pass through as-is
-        if has_settings and not has_sandbox:
-            return self._options.settings
-
-        # If we have sandbox settings, we need to merge into a JSON object
         settings_obj: dict[str, Any] = {}
-
-        if has_settings:
-            assert self._options.settings is not None
-            settings_str = self._options.settings.strip()
-            # Check if settings is a JSON string or a file path
-            if settings_str.startswith("{") and settings_str.endswith("}"):
-                # Parse JSON string
-                try:
-                    settings_obj = json.loads(settings_str)
-                except json.JSONDecodeError:
-                    # If parsing fails, treat as file path
-                    logger.warning(
-                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
-                    )
-                    # Read the file
-                    settings_path = Path(settings_str)
-                    if settings_path.exists():
-                        with settings_path.open(encoding="utf-8") as f:
-                            settings_obj = json.load(f)
-            else:
-                # It's a file path - read and parse
-                settings_path = Path(settings_str)
-                if settings_path.exists():
-                    with settings_path.open(encoding="utf-8") as f:
-                        settings_obj = json.load(f)
-                else:
-                    logger.warning(f"Settings file not found: {settings_path}")
-
-        # Merge sandbox settings
-        if has_sandbox:
+        try:
+            if settings is not None:
+                settings = settings.strip()
+                if not (settings.startswith("{") and settings.endswith("}")):
+                    # A file path. Read it as the CLI does: relative to its cwd,
+                    # and with or without a BOM.
+                    path = Path(self._cwd or "") / settings
+                    settings = path.read_text(encoding="utf-8-sig")
+                settings_obj = json.loads(settings)
             settings_obj["sandbox"] = self._options.sandbox
-
+        except (OSError, ValueError, TypeError) as e:
+            raise CLIConnectionError(f"Failed to load settings: {e}") from e
         return json.dumps(settings_obj)
 
     def _apply_skills_defaults(

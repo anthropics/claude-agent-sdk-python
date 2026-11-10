@@ -341,13 +341,48 @@ def _extract_first_prompt_from_head(head: str) -> str:
 class _LiteSessionFile:
     """Result of reading a session file's head, tail, mtime and size."""
 
-    __slots__ = ("mtime", "size", "head", "tail")
+    __slots__ = ("mtime", "size", "head", "tail", "sidechain")
 
-    def __init__(self, mtime: int, size: int, head: str, tail: str) -> None:
+    def __init__(
+        self,
+        mtime: int,
+        size: int,
+        head: str,
+        tail: str,
+        sidechain: bool | None,
+    ) -> None:
         self.mtime = mtime
         self.size = size
         self.head = head
         self.tail = tail
+        self.sidechain = sidechain
+
+
+def _sampled_sidechain_flag(head: bytes, tail: bytes, size: int) -> bool | None:
+    """Read the first explicit boolean from the contiguous sampled prefix.
+
+    Up to two buffers cover the entire file: join their raw bytes before
+    decoding, so overlapping reads and split UTF-8/JSON records are exact.
+    For larger files, only complete head records establish ordering. A tail
+    flag cannot decide it because an earlier flag may be in the unread gap.
+    This does not perform additional I/O or scan the unobserved middle.
+    """
+    tail_offset = max(0, size - LITE_READ_BUF_SIZE)
+    if size <= len(head):
+        prefix = head
+    elif tail_offset <= len(head):
+        prefix = head + tail[len(head) - tail_offset :]
+    else:
+        prefix = head[: head.rfind(b"\n") + 1]
+
+    for line in prefix.split(b"\n"):
+        try:
+            entry = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("isSidechain"), bool):
+            return bool(entry["isSidechain"])
+    return None
 
 
 def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
@@ -369,13 +404,20 @@ def _read_session_lite(file_path: Path) -> _LiteSessionFile | None:
 
             tail_offset = max(0, size - LITE_READ_BUF_SIZE)
             if tail_offset == 0:
+                tail_bytes = head_bytes
                 tail = head
             else:
                 f.seek(tail_offset)
                 tail_bytes = f.read(LITE_READ_BUF_SIZE)
                 tail = tail_bytes.decode("utf-8", errors="replace")
 
-            return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
+            return _LiteSessionFile(
+                mtime=mtime,
+                size=size,
+                head=head,
+                tail=tail,
+                sidechain=_sampled_sidechain_flag(head_bytes, tail_bytes, size),
+            )
     except OSError:
         return None
 
@@ -432,10 +474,8 @@ def _parse_session_info_from_lite(
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
-    # Check first line for sidechain sessions
-    first_newline = head.find("\n")
-    first_line = head[:first_newline] if first_newline >= 0 else head
-    if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
+    # Classification was computed once from the contiguous raw-byte sample.
+    if lite.sidechain:
         return None
 
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
@@ -479,7 +519,7 @@ def _parse_session_info_from_lite(
 
     # created_at from the first ISO timestamp found in the head (epoch ms).
     # More reliable than stat().birthtime which is unsupported on some
-    # filesystems. Scans the whole head rather than only first_line because
+    # filesystems. Scans the whole head rather than only the first line because
     # the first record may be a metadata-only entry (e.g. permission-mode)
     # with no timestamp field; the first user/assistant record that follows
     # does carry one.
@@ -690,6 +730,11 @@ def list_sessions(
     across all projects.
 
     Use ``limit`` and ``offset`` for pagination.
+
+    Sidechain flags are checked in the existing bounded head/tail samples.
+    Files up to 128 KiB are covered completely. For larger transcripts, a
+    first explicit flag outside complete head records may remain undetected;
+    no full-file scan is performed on the listing path.
 
     Args:
         directory: Directory to list sessions for. When provided, returns
@@ -1777,16 +1822,28 @@ def _jsonl_to_lite(jsonl: str, mtime: int) -> _LiteSessionFile:
     Matches ``_read_session_lite``'s byte semantics so the store path exposes
     the same slice to ``_parse_session_info_from_lite`` as the disk path
     would for the same transcript.
+
+    Sidechain classification uses only the contiguous sampled prefix: all
+    records up to 128 KiB, or complete head records for larger transcripts.
+    An unseen middle flag is intentionally not inferred from a later tail.
     """
     buf = jsonl.encode("utf-8")
     size = len(buf)
-    head = buf[:LITE_READ_BUF_SIZE].decode("utf-8", errors="replace")
+    head_bytes = buf[:LITE_READ_BUF_SIZE]
+    tail_bytes = buf[max(0, size - LITE_READ_BUF_SIZE) :]
+    head = head_bytes.decode("utf-8", errors="replace")
     tail = (
-        buf[max(0, size - LITE_READ_BUF_SIZE) :].decode("utf-8", errors="replace")
+        tail_bytes.decode("utf-8", errors="replace")
         if size > LITE_READ_BUF_SIZE
         else head
     )
-    return _LiteSessionFile(mtime=mtime, size=size, head=head, tail=tail)
+    return _LiteSessionFile(
+        mtime=mtime,
+        size=size,
+        head=head,
+        tail=tail,
+        sidechain=_sampled_sidechain_flag(head_bytes, tail_bytes, size),
+    )
 
 
 def _mtime_from_jsonl_tail(jsonl: str) -> int:

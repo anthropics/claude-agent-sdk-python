@@ -251,6 +251,9 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._version_checked = bool(
+            os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK")
+        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -432,57 +435,28 @@ class SubprocessCLITransport(Transport):
             )
 
     def _build_settings_value(self) -> str | None:
-        """Build settings value, merging sandbox settings if provided.
+        """Build the --settings value, merging sandbox settings in if provided.
 
-        Returns the settings value as either:
-        - A JSON string (if sandbox is provided or settings is JSON)
-        - A file path (if only settings path is provided without sandbox)
-        - None if neither settings nor sandbox is provided
+        Settings that can't be loaded raise: launching without them would drop
+        the caller's permission rules and hooks.
         """
-        has_settings = self._options.settings is not None
-        has_sandbox = self._options.sandbox is not None
+        settings = self._options.settings
+        if self._options.sandbox is None:
+            return settings
 
-        if not has_settings and not has_sandbox:
-            return None
-
-        # If only settings path and no sandbox, pass through as-is
-        if has_settings and not has_sandbox:
-            return self._options.settings
-
-        # If we have sandbox settings, we need to merge into a JSON object
         settings_obj: dict[str, Any] = {}
-
-        if has_settings:
-            assert self._options.settings is not None
-            settings_str = self._options.settings.strip()
-            # Check if settings is a JSON string or a file path
-            if settings_str.startswith("{") and settings_str.endswith("}"):
-                # Parse JSON string
-                try:
-                    settings_obj = json.loads(settings_str)
-                except json.JSONDecodeError:
-                    # If parsing fails, treat as file path
-                    logger.warning(
-                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
-                    )
-                    # Read the file
-                    settings_path = Path(settings_str)
-                    if settings_path.exists():
-                        with settings_path.open(encoding="utf-8") as f:
-                            settings_obj = json.load(f)
-            else:
-                # It's a file path - read and parse
-                settings_path = Path(settings_str)
-                if settings_path.exists():
-                    with settings_path.open(encoding="utf-8") as f:
-                        settings_obj = json.load(f)
-                else:
-                    logger.warning(f"Settings file not found: {settings_path}")
-
-        # Merge sandbox settings
-        if has_sandbox:
+        try:
+            if settings is not None:
+                settings = settings.strip()
+                if not (settings.startswith("{") and settings.endswith("}")):
+                    # A file path. Read it as the CLI does: relative to its cwd,
+                    # and with or without a BOM.
+                    path = Path(self._cwd or "") / settings
+                    settings = path.read_text(encoding="utf-8-sig")
+                settings_obj = json.loads(settings)
             settings_obj["sandbox"] = self._options.sandbox
-
+        except (OSError, ValueError, TypeError) as e:
+            raise CLIConnectionError(f"Failed to load settings: {e}") from e
         return json.dumps(settings_obj)
 
     def _apply_skills_defaults(
@@ -763,12 +737,8 @@ class SubprocessCLITransport(Transport):
         if self._cli_path is None:
             self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
 
-        # Validate the resolved CLI before anything is spawned with it --
-        # this guards the version probe below as well as the main spawn.
+        # Validate the resolved CLI before spawning it.
         self._reject_windows_batch_cli(self._cli_path)
-
-        if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
-            await self._check_claude_version()
 
         cmd = self._build_command()
         try:
@@ -1084,6 +1054,7 @@ class SubprocessCLITransport(Transport):
                     guard(len(line))
                     data = _parse_stdout_line(line)
                     if data is not None:
+                        self._check_claude_version(data)
                         yield data
                 guard(framer.pending_len)
 
@@ -1122,67 +1093,43 @@ class SubprocessCLITransport(Transport):
             )
             raise self._exit_error
 
-    async def _check_claude_version(self) -> None:
-        """Check Claude Code version and warn if below minimum."""
-        if self._cli_path is None:
-            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
-        version_process = None
-        try:
-            with anyio.fail_after(2):  # 2 second timeout
-                version_process = await anyio.open_process(
-                    [self._cli_path, "-v"],
-                    stdout=PIPE,
-                    stderr=PIPE,
-                )
+    def _check_claude_version(self, data: dict[str, Any]) -> None:
+        """Warn if the CLI's first init message shows it is an old version.
 
-                if version_process.stdout:
-                    stdout_bytes = await version_process.stdout.receive()
-                    version_output = stdout_bytes.decode().strip()
-
-                    match = re.match(r"([0-9]+\.[0-9]+\.[0-9]+)", version_output)
-                    if match:
-                        version = match.group(1)
-                        version_parts = [int(x) for x in version.split(".")]
-                        min_parts = [
-                            int(x) for x in MINIMUM_CLAUDE_CODE_VERSION.split(".")
-                        ]
-
-                        if version_parts < min_parts:
-                            logger.warning(
-                                "Claude Code version %s at %s is unsupported in the Agent SDK. "
-                                "Minimum required version is %s. "
-                                "Some features may not work correctly.",
-                                version,
-                                self._cli_path,
-                                MINIMUM_CLAUDE_CODE_VERSION,
-                            )
-
-                        verbatim_min_parts = [
-                            int(x)
-                            for x in VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION.split(
-                                "."
-                            )
-                        ]
-                        if self._options.verbatim_prompts and (
-                            version_parts < verbatim_min_parts
-                        ):
-                            logger.warning(
-                                "verbatim_prompts is enabled, but Claude Code "
-                                "version %s at %s ignores it: prompts will still "
-                                "have @path mentions expanded and slash commands "
-                                "dispatched. Claude Code %s or later is required.",
-                                version,
-                                self._cli_path,
-                                VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION,
-                            )
-        except Exception:
-            pass
-        finally:
-            if version_process:
-                with suppress(Exception):
-                    version_process.terminate()
-                with suppress(Exception):
-                    await version_process.wait()
+        The version comes from the running CLI rather than from a separate
+        ``cli_path -v``, so ``cli_path`` is only ever executed by connect().
+        """
+        if self._version_checked or (data.get("type"), data.get("subtype")) != (
+            "system",
+            "init",
+        ):
+            return
+        self._version_checked = True
+        # Versions below the minimum, and the first 2.0 releases, don't send one.
+        version = data.get("claude_code_version")
+        match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})", str(version))
+        if not match:
+            logger.warning(
+                "Claude Code at %s is too old to report its version, and may be "
+                "unsupported in the Agent SDK. Minimum required version is %s. "
+                "Some features may not work correctly.",
+                self._cli_path,
+                MINIMUM_CLAUDE_CODE_VERSION,
+            )
+        minimum = VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION
+        if self._options.verbatim_prompts and (
+            not match
+            or [int(x) for x in match.groups()] < [int(x) for x in minimum.split(".")]
+        ):
+            logger.warning(
+                "verbatim_prompts is enabled, but Claude Code "
+                "version %s at %s ignores it: prompts will still "
+                "have @path mentions expanded and slash commands "
+                "dispatched. Claude Code %s or later is required.",
+                version or "unknown",
+                self._cli_path,
+                minimum,
+            )
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

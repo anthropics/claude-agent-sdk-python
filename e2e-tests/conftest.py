@@ -4,6 +4,17 @@ import os
 
 import pytest
 
+# The CLI's default model, used by tests that don't set `model=` and by
+# `set_model(None)`. Left to the CLI, it changes between CLI releases: 2.1.280
+# moved it from claude-opus-5 to claude-opus-5-5, and for the organization CI
+# runs under, the API rejects claude-opus-5-5 requests from the public CLI with
+# a 400 ("This model requires Claude Code to attest its permission mode in
+# metadata.user_id"). Pin the model the suite last passed on. ANTHROPIC_MODEL
+# would not cover `set_model(None)`, which goes back to the CLI's default, not
+# to ANTHROPIC_MODEL. A test's own `model=` still wins, and a value already
+# set in the environment is kept.
+os.environ.setdefault("ANTHROPIC_DEFAULT_MODEL", "claude-opus-5")
+
 
 @pytest.fixture(scope="session")
 def api_key():

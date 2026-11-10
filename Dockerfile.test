@@ -8,6 +8,18 @@ FROM python:3.12-slim
 # leaving a green build with no CLI installed. Fail on any element instead.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# CI's egress firewall re-signs TLS with a per-run CA, passed in as the build
+# secret extra_ca. Trust it when present; without the secret this does nothing.
+# The ENV lines point pip and the Claude CLI at the system store, which also
+# holds the usual public roots.
+RUN --mount=type=secret,id=extra_ca \
+    if [ -s /run/secrets/extra_ca ]; then \
+      cp /run/secrets/extra_ca /usr/local/share/ca-certificates/extra-ca.crt \
+      && update-ca-certificates; \
+    fi
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+
 # Install dependencies for Claude CLI and git (needed for some tests)
 RUN apt-get update && apt-get install -y \
     curl \

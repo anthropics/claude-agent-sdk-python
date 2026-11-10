@@ -1,7 +1,9 @@
-"""Tests for scripts/build_wheel.py platform tagging and CLI-pin reading."""
+"""Tests for scripts/build_wheel.py: platform tags, the CLI pin, recompression."""
 
 import importlib.util
+import re
 import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -150,3 +152,181 @@ class TestSdistShipsTheScriptsItsTestsImport:
 
         assert "/tests" in include
         assert "/scripts" in include
+
+
+@pytest.mark.skipif(
+    not (REPO_ROOT / ".github").is_dir(), reason="the sdist does not ship .github"
+)
+class TestReleaseBuildToolsArePinned:
+    """The release workflows must run only the build tools in the hash-pinned files.
+
+    `python -m build` counts too: left isolated, it downloads the build backend
+    itself, and no hash covers that download.
+    """
+
+    WORKFLOWS = ["build-and-publish.yml", "build-wheel-check.yml"]
+    STEP = r"^\s*(?:- )?(?:run: )?"
+
+    @staticmethod
+    def _lines(workflow: str, pattern: str) -> list[str]:
+        path = REPO_ROOT / ".github" / "workflows" / workflow
+        text = path.read_text(encoding="utf-8")
+        return re.findall(pattern, text, flags=re.MULTILINE)
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_tools_are_installed_with_hashes(self, workflow: str) -> None:
+        # The check workflow's `pip install dist/*.whl` installs the wheel it built.
+        installs = self._lines(
+            workflow, self.STEP + r"(?:python3? -m )?pip3? install (?!dist/).*$"
+        )
+
+        assert any("scripts/requirements-build.txt" in line for line in installs)
+        for line in installs:
+            assert "--require-hashes --only-binary :all:" in line
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_builds_do_not_download_the_backend(self, workflow: str) -> None:
+        builds = self._lines(
+            workflow, self.STEP + r"python3? (?:-m build|scripts/build_wheel\.py).*$"
+        )
+
+        assert builds
+        assert all("--no-isolation" in line for line in builds)
+
+
+class TestNoIsolation:
+    """--no-isolation reaches `python -m build`, and only when it is asked for."""
+
+    @pytest.mark.parametrize("no_isolation", [True, False])
+    def test_main_passes_it_to_both_builds(
+        self, no_isolation: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        flags = ["--no-isolation"] if no_isolation else []
+        monkeypatch.setattr(sys, "argv", ["build_wheel.py", "--skip-download", *flags])
+
+        with (
+            patch.object(build_wheel, "run_command") as run,
+            patch.object(build_wheel, "check_package"),
+        ):
+            build_wheel.main()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        assert [cmd[3] for cmd in commands] == ["--wheel", "--sdist"]
+        assert all(("--no-isolation" in cmd) is no_isolation for cmd in commands)
+
+
+def _make_wheel(path: Path) -> None:
+    """Write a small stand-in wheel to path."""
+    members = [
+        ("pkg/__init__.py", b"print('hello')\n" * 200, 0o644, zipfile.ZIP_DEFLATED),
+        ("pkg/_bundled/tool", bytes(range(256)) * 400, 0o755, zipfile.ZIP_DEFLATED),
+        ("pkg/stored.bin", b"kept as it is", 0o644, zipfile.ZIP_STORED),
+        ("pkg/py.typed", b"", 0o644, zipfile.ZIP_DEFLATED),
+        (
+            "pkg-1.0.dist-info/RECORD",
+            b"pkg/__init__.py,,\n",
+            0o664,
+            zipfile.ZIP_DEFLATED,
+        ),
+    ]
+    with zipfile.ZipFile(path, "w") as wheel:
+        for name, data, mode, method in members:
+            info = zipfile.ZipInfo(name, date_time=(2020, 2, 2, 13, 37, 58))
+            info.external_attr = (0o100000 | mode) << 16
+            wheel.writestr(info, data, compress_type=method, compresslevel=1)
+
+
+def _describe(path: Path) -> list[tuple[object, ...]]:
+    """Each member's name, date, file mode, compression method and contents."""
+    with zipfile.ZipFile(path) as wheel:
+        assert wheel.testzip() is None
+        return [
+            (i.filename, i.date_time, i.external_attr, i.compress_type, wheel.read(i))
+            for i in wheel.infolist()
+        ]
+
+
+class TestRecompressWheel:
+    """recompress_wheel() may change only how well the members are compressed."""
+
+    def test_zlib_keeps_every_member_and_shrinks_the_file(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        before, old_size = _describe(wheel), wheel.stat().st_size
+
+        build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert _describe(wheel) == before
+        assert wheel.stat().st_size < old_size
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_zlib_output_is_what_zipfile_writes_at_level_9(
+        self, tmp_path: Path
+    ) -> None:
+        """Compares whole files: a wrong header byte can still read back fine."""
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        reference = tmp_path / "reference.zip"
+        with zipfile.ZipFile(wheel) as old, zipfile.ZipFile(reference, "w") as new:
+            for info in old.infolist():
+                new.writestr(info, old.read(info), info.compress_type, compresslevel=9)
+
+        build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert wheel.read_bytes() == reference.read_bytes()
+
+    def test_zopfli_keeps_every_member(self, tmp_path: Path) -> None:
+        pytest.importorskip("zopfli")
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        before, old_size = _describe(wheel), wheel.stat().st_size
+
+        build_wheel.recompress_wheel(wheel, "zopfli")
+
+        assert _describe(wheel) == before
+        assert wheel.stat().st_size < old_size
+
+    def test_unsupported_method_stops_the_build(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w", zipfile.ZIP_BZIP2) as archive:
+            archive.writestr("pkg/__init__.py", b"x = 1\n" * 100)
+        original = wheel.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert exc_info.value.code == 1
+        assert wheel.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_corrupt_output_stops_the_build(self, tmp_path: Path) -> None:
+        wheel = tmp_path / "pkg-1.0-py3-none-any.whl"
+        _make_wheel(wheel)
+        original = wheel.read_bytes()
+        deflate = build_wheel._deflate
+
+        def wrong_contents(data: bytes, encoder: str) -> bytes:
+            return deflate(data[::-1], encoder)
+
+        with (
+            patch.object(build_wheel, "_deflate", wrong_contents),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            build_wheel.recompress_wheel(wheel, "zlib")
+
+        assert exc_info.value.code == 1
+        assert wheel.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [wheel]
+
+    def test_missing_zopfli_stops_the_build(self) -> None:
+        with (
+            patch.dict(sys.modules, {"zopfli": None, "zopfli.zlib": None}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            build_wheel.require_encoder("zopfli")
+        assert exc_info.value.code == 1
+
+    def test_zlib_needs_no_extra_package(self) -> None:
+        with patch.dict(sys.modules, {"zopfli": None, "zopfli.zlib": None}):
+            build_wheel.require_encoder("zlib")

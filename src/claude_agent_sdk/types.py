@@ -55,6 +55,27 @@ class SystemPromptPreset(TypedDict):
     Requires a Claude Code CLI version that supports this option; older
     CLIs silently ignore it.
     """
+    snapshot: NotRequired[bool]
+    """Whether the session keeps the system prompt it recorded on its first
+    request. When True, every later request, including after resume, sends
+    the recorded prompt, so changing `append` has no effect until the session
+    is compacted or you start a new session. When False, the prompt is rebuilt
+    on every request, for example while you iterate on `append` text across
+    calls that resume the same session. When omitted, it acts as True, except
+    in bare mode (`--bare`), where it acts as False.
+
+    Requires Claude Code CLI 2.1.257 or later. Before 2.1.265, a session with
+    an `append` or custom prompt recorded it only when `snapshot` was True.
+    """
+
+
+class SystemPromptCustom(TypedDict):
+    """A custom system prompt, in the form that can also set `snapshot`."""
+
+    type: Literal["custom"]
+    prompt: str
+    snapshot: NotRequired[bool]
+    """Same as `SystemPromptPreset.snapshot`, applied to `prompt`."""
 
 
 class SystemPromptFile(TypedDict):
@@ -168,10 +189,12 @@ class PermissionUpdate:
             if self.mode is not None:
                 result["mode"] = self.mode
 
-        elif self.type in ["addDirectories", "removeDirectories"]:
+        elif (
+            self.type in ["addDirectories", "removeDirectories"]
+            and self.directories is not None
+        ):
             # Directory variants require directories
-            if self.directories is not None:
-                result["directories"] = self.directories
+            result["directories"] = self.directories
 
         return result
 
@@ -275,6 +298,14 @@ HookEvent = (
 
 
 # Hook input types - strongly typed for each hook event
+class HookEffort(TypedDict):
+    """Reasoning effort in effect when a hook fires."""
+
+    level: str
+    """Effort level for the current turn (e.g. ``"low"``, ``"high"``,
+    ``"max"``), after any downgrade for the selected model."""
+
+
 class BaseHookInput(TypedDict):
     """Base hook input fields present across many hook events."""
 
@@ -282,6 +313,13 @@ class BaseHookInput(TypedDict):
     transcript_path: str
     cwd: str
     permission_mode: NotRequired[str]
+    prompt_id: NotRequired[str]
+    """UUID of the user prompt being processed. Matches the ``prompt.id``
+    attribute on OpenTelemetry events. Absent until the first user input."""
+    effort: NotRequired[HookEffort]
+    """Effort in effect for the current turn. Present for hooks that fire
+    within a tool-use context (PreToolUse, PostToolUse, Stop, SubagentStop,
+    etc.) on models that support effort."""
 
 
 # agent_id/agent_type are present on BaseHookInput in the CLI's schema but are
@@ -326,6 +364,9 @@ class PostToolUseHookInput(BaseHookInput, _SubagentContextMixin):
     tool_input: dict[str, Any]
     tool_response: Any
     tool_use_id: str
+    duration_ms: NotRequired[int]
+    """Tool execution time in milliseconds. Excludes permission-prompt and
+    hook time."""
 
 
 class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
@@ -337,6 +378,9 @@ class PostToolUseFailureHookInput(BaseHookInput, _SubagentContextMixin):
     tool_use_id: str
     error: str
     is_interrupt: NotRequired[bool]
+    duration_ms: NotRequired[int]
+    """Tool execution time in milliseconds. Excludes permission-prompt and
+    hook time."""
 
 
 class UserPromptSubmitHookInput(BaseHookInput):
@@ -346,11 +390,58 @@ class UserPromptSubmitHookInput(BaseHookInput):
     prompt: str
 
 
+class BackgroundTaskSummary(TypedDict):
+    """In-flight background task, as listed on Stop and SubagentStop inputs.
+
+    ``description`` and ``command`` are capped at 1000 characters; a clipped
+    value ends with an in-string ``"… [+N chars]"`` marker, so it is not
+    always the original text.
+    """
+
+    id: str
+    type: str
+    """Task-type label (e.g. ``"shell"``, ``"subagent"``, ``"monitor"``,
+    ``"workflow"``). Falls back to the raw discriminant for unknown types."""
+    status: str
+    description: str
+    command: NotRequired[str]
+    """Shell command line. Only present for ``shell`` tasks."""
+    agent_type: NotRequired[str]
+    """Subagent type name. Only present for ``subagent`` tasks."""
+    server: NotRequired[str]
+    """MCP server name. Only present for ``monitor`` / MCP tasks."""
+    tool: NotRequired[str]
+    """MCP tool name. Only present for ``monitor`` / MCP tasks."""
+    name: NotRequired[str]
+    """Workflow name. Only present for ``workflow`` tasks."""
+
+
+class SessionCronSummary(TypedDict):
+    """Session-scoped scheduled wakeup, as listed on Stop and SubagentStop inputs."""
+
+    id: str
+    schedule: str
+    """Cron expression, e.g. ``"0 9 * * 1-5"``."""
+    recurring: bool
+    """False for one-shot wakeups; True for tasks that re-fire on every match."""
+    prompt: str
+    """Prompt submitted when the cron fires. Capped at 1000 characters; a
+    clipped value ends with an in-string ``"… [+N chars]"`` marker."""
+
+
 class StopHookInput(BaseHookInput):
     """Input data for Stop hook events."""
 
     hook_event_name: Literal["Stop"]
     stop_hook_active: bool
+    last_assistant_message: NotRequired[str]
+    """Text content of the last assistant message before stopping."""
+    background_tasks: NotRequired[list[BackgroundTaskSummary]]
+    """In-flight background work in this session. Empty when nothing is in
+    flight."""
+    session_crons: NotRequired[list[SessionCronSummary]]
+    """Session-scoped scheduled wakeups that will resume this session later.
+    Empty when none are scheduled."""
 
 
 class SubagentStopHookInput(BaseHookInput):
@@ -361,6 +452,12 @@ class SubagentStopHookInput(BaseHookInput):
     agent_id: str
     agent_transcript_path: str
     agent_type: str
+    last_assistant_message: NotRequired[str]
+    """Text content of the subagent's last assistant message before stopping."""
+    background_tasks: NotRequired[list[BackgroundTaskSummary]]
+    """In-flight background work, scoped to the parent session."""
+    session_crons: NotRequired[list[SessionCronSummary]]
+    """Scheduled wakeups, scoped to the parent session."""
 
 
 class PreCompactHookInput(BaseHookInput):
@@ -453,6 +550,21 @@ class UserPromptSubmitHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["UserPromptSubmit"]
     additionalContext: NotRequired[str]
+    sessionTitle: NotRequired[str]
+    """Sets the session title."""
+    suppressOriginalPrompt: NotRequired[bool]
+    """When ``decision`` is ``"block"``, omit the original prompt from the
+    block message."""
+
+
+class UserPromptExpansionHookSpecificOutput(TypedDict):
+    """Hook-specific output for UserPromptExpansion events."""
+
+    hookEventName: Literal["UserPromptExpansion"]
+    additionalContext: NotRequired[str]
+    suppressOriginalPrompt: NotRequired[bool]
+    """When ``decision`` is ``"block"``, omit the original prompt from the
+    block message."""
 
 
 class SessionStartHookSpecificOutput(TypedDict):
@@ -460,6 +572,17 @@ class SessionStartHookSpecificOutput(TypedDict):
 
     hookEventName: Literal["SessionStart"]
     additionalContext: NotRequired[str]
+    initialUserMessage: NotRequired[str]
+    """Used as the first user message of the session."""
+    sessionTitle: NotRequired[str]
+    """Sets the session title. Ignored when the session starts from
+    ``clear`` or ``compact``."""
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events during this session."""
+    reloadSkills: NotRequired[bool]
+    """Re-scan skill and command directories after SessionStart hooks
+    complete, so skills the hook installed are available in the same
+    session."""
 
 
 class NotificationHookSpecificOutput(TypedDict):
@@ -483,6 +606,127 @@ class PermissionRequestHookSpecificOutput(TypedDict):
     decision: dict[str, Any]
 
 
+class PostToolBatchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostToolBatch events."""
+
+    hookEventName: Literal["PostToolBatch"]
+    additionalContext: NotRequired[str]
+
+
+class StopHookSpecificOutput(TypedDict):
+    """Hook-specific output for Stop events.
+
+    ``additionalContext`` is non-error feedback delivered to the model; the
+    conversation continues so the model can act on it.
+    """
+
+    hookEventName: Literal["Stop"]
+    additionalContext: NotRequired[str]
+
+
+class SubagentStopHookSpecificOutput(TypedDict):
+    """Hook-specific output for SubagentStop events.
+
+    ``additionalContext`` is non-error feedback delivered to the subagent; the
+    subagent continues so it can act on it.
+    """
+
+    hookEventName: Literal["SubagentStop"]
+    additionalContext: NotRequired[str]
+
+
+class PermissionDeniedHookSpecificOutput(TypedDict):
+    """Hook-specific output for PermissionDenied events."""
+
+    hookEventName: Literal["PermissionDenied"]
+    retry: NotRequired[bool]
+    """Tell the model it may retry the denied tool call. Ignored for denials
+    without a classifier verdict."""
+
+
+class PreModelSwitchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PreModelSwitch events."""
+
+    hookEventName: Literal["PreModelSwitch"]
+    permissionDecision: NotRequired[Literal["allow", "deny", "ask"]]
+    """``"allow"`` proceeds, ``"deny"`` cancels the switch. ``"ask"`` is
+    treated as a refusal outside an interactive session."""
+    permissionDecisionReason: NotRequired[str]
+
+
+class PostModelSwitchHookSpecificOutput(TypedDict):
+    """Hook-specific output for PostModelSwitch events."""
+
+    hookEventName: Literal["PostModelSwitch"]
+    additionalContext: NotRequired[str]
+    """Reaches the model with the next request the new model serves."""
+
+
+class ElicitationHookSpecificOutput(TypedDict):
+    """Hook-specific output for Elicitation events.
+
+    Return this to accept or decline an MCP elicitation request
+    programmatically.
+    """
+
+    hookEventName: Literal["Elicitation"]
+    action: NotRequired[Literal["accept", "decline", "cancel"]]
+    content: NotRequired[dict[str, Any]]
+    """Form field values to submit. Only used when ``action`` is
+    ``"accept"``."""
+
+
+class ElicitationResultHookSpecificOutput(TypedDict):
+    """Hook-specific output for ElicitationResult events.
+
+    Return this to override the action or content before the response is sent
+    to the MCP server.
+    """
+
+    hookEventName: Literal["ElicitationResult"]
+    action: NotRequired[Literal["accept", "decline", "cancel"]]
+    content: NotRequired[dict[str, Any]]
+
+
+class CwdChangedHookSpecificOutput(TypedDict):
+    """Hook-specific output for CwdChanged events."""
+
+    hookEventName: Literal["CwdChanged"]
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events. Replaces the current
+    dynamic watch list."""
+
+
+class FileChangedHookSpecificOutput(TypedDict):
+    """Hook-specific output for FileChanged events."""
+
+    hookEventName: Literal["FileChanged"]
+    watchPaths: NotRequired[list[str]]
+    """Absolute paths to watch for FileChanged events. Replaces the current
+    dynamic watch list."""
+
+
+class WorktreeCreateHookSpecificOutput(TypedDict):
+    """Hook-specific output for WorktreeCreate events."""
+
+    hookEventName: Literal["WorktreeCreate"]
+    worktreePath: str
+    """Absolute path to the created worktree directory."""
+
+
+class MessageDisplayHookSpecificOutput(TypedDict):
+    """Hook-specific output for MessageDisplay events.
+
+    Display-only: replaces the text on screen without changing the stored
+    message or what the model sees.
+    """
+
+    hookEventName: Literal["MessageDisplay"]
+    displayContent: NotRequired[str]
+    """Text displayed in place of the delta. Omit it to display the
+    original."""
+
+
 HookSpecificOutput = (
     PreToolUseHookSpecificOutput
     | PostToolUseHookSpecificOutput
@@ -492,6 +736,19 @@ HookSpecificOutput = (
     | NotificationHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PermissionRequestHookSpecificOutput
+    | UserPromptExpansionHookSpecificOutput
+    | PostToolBatchHookSpecificOutput
+    | StopHookSpecificOutput
+    | SubagentStopHookSpecificOutput
+    | PermissionDeniedHookSpecificOutput
+    | PreModelSwitchHookSpecificOutput
+    | PostModelSwitchHookSpecificOutput
+    | ElicitationHookSpecificOutput
+    | ElicitationResultHookSpecificOutput
+    | CwdChangedHookSpecificOutput
+    | FileChangedHookSpecificOutput
+    | WorktreeCreateHookSpecificOutput
+    | MessageDisplayHookSpecificOutput
 )
 
 
@@ -505,7 +762,7 @@ HookSpecificOutput = (
 class AsyncHookJSONOutput(TypedDict):
     """Async hook output that defers hook execution.
 
-    Fields:
+    Attributes:
         async_: Set to True to defer hook execution. Note: This is converted to
             "async" when sent to the CLI - use "async_" in your Python code.
         asyncTimeout: Optional timeout in milliseconds for the async operation.
@@ -523,18 +780,14 @@ class SyncHookJSONOutput(TypedDict):
     This defines the structure for hook callbacks to control execution and provide
     feedback to Claude.
 
-    Common Control Fields:
+    Attributes:
         continue_: Whether Claude should proceed after hook execution (default: True).
             Note: This is converted to "continue" when sent to the CLI.
         suppressOutput: Hide stdout from transcript mode (default: False).
         stopReason: Message shown when continue is False.
-
-    Decision Fields:
         decision: Set to "block" to indicate blocking behavior.
         systemMessage: Warning message displayed to the user.
         reason: Feedback message for Claude about the decision.
-
-    Hook-Specific Output:
         hookSpecificOutput: Event-specific controls (e.g., permissionDecision for
             PreToolUse, additionalContext for PostToolUse).
 
@@ -567,7 +820,7 @@ HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 class HookContext(TypedDict):
     """Context information for hook callbacks.
 
-    Fields:
+    Attributes:
         signal: Reserved for future abort signal support. Currently always None.
     """
 
@@ -600,6 +853,17 @@ class HookMatcher:
 
     # Timeout in seconds for all hooks in this matcher (default: 60)
     timeout: float | None = None
+
+    # What happens when a callback in this matcher fails. With "block", a
+    # callback that raises, returns None (a path with no return), or returns a
+    # value the CLI rejects, such as permissionDecision "Deny", blocks the
+    # action, so a callback with no opinion must return {}. Unrecognized keys
+    # are not a failure. Stop, SubagentStop, TaskCompleted and TeammateIdle
+    # ignore this option. A PermissionRequest block counts only if it lands
+    # before can_use_tool answers. Unset or "continue" counts a failure as no
+    # decision. With "block", connecting to a CLI too old to honor it raises
+    # CLIConnectionError.
+    on_failure: Literal["continue", "block"] | None = None
 
 
 # MCP Server config
@@ -872,16 +1136,19 @@ class SandboxNetworkConfig(TypedDict, total=False):
     socksProxyPort: int
 
 
-class SandboxIgnoreViolations(TypedDict, total=False):
-    """Violations to ignore in sandbox.
+SandboxIgnoreViolations: TypeAlias = dict[str, list[str]]
+"""Sandbox violations to leave unreported.
 
-    Attributes:
-        file: File paths for which violations should be ignored.
-        network: Network hosts for which violations should be ignored.
-    """
+Maps a command pattern to a list of strings. A violation is left unreported
+when the command's text contains the pattern and the violation's text
+contains one of the strings. The pattern ``"*"`` matches every command.
+Both checks are plain substring matches, not globs.
 
-    file: list[str]
-    network: list[str]
+Example: ``{"*": ["/etc/hosts"]}`` leaves violations that mention
+``/etc/hosts`` unreported for every command.
+
+This only affects which violations are reported, not what the sandbox blocks.
+"""
 
 
 class SandboxSettings(TypedDict, total=False):
@@ -890,11 +1157,14 @@ class SandboxSettings(TypedDict, total=False):
     This controls how Claude Code sandboxes bash commands for filesystem
     and network isolation.
 
-    **Important:** Filesystem and network restrictions are configured via permission
-    rules, not via these sandbox settings:
+    **Important:** Tool-level filesystem and network restrictions are configured
+    via permission rules, not via these sandbox settings:
     - Filesystem read restrictions: Use Read deny rules
     - Filesystem write restrictions: Use Edit allow/deny rules
-    - Network restrictions: Use WebFetch allow/deny rules
+    - Network restrictions for tools: Use WebFetch allow/deny rules
+
+    The ``network`` entry below is different: it configures the sandbox's own
+    network isolation for sandboxed bash commands.
 
     Attributes:
         enabled: Enable bash sandboxing (macOS/Linux only). Default: False
@@ -903,7 +1173,9 @@ class SandboxSettings(TypedDict, total=False):
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
             When False, all commands must run sandboxed (or be in excludedCommands). Default: True
         network: Network configuration for sandbox.
-        ignoreViolations: Violations to ignore.
+        ignoreViolations: Violations to leave unreported, as a map of command
+            pattern (``"*"`` for every command) to substrings of the violation
+            text. See ``SandboxIgnoreViolations``.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
 
@@ -1132,10 +1404,126 @@ class AssistantMessage:
 
 @dataclass
 class SystemMessage:
-    """System message with metadata."""
+    """System message with metadata.
+
+    For ``subtype == "init"``, ``data`` is the session metadata frame
+    described by :class:`SystemInitData`.
+    """
 
     subtype: str
     data: dict[str, Any]
+
+
+class SystemInitMcpServer(TypedDict):
+    """An MCP server listed in :class:`SystemInitData`."""
+
+    name: str
+    status: str
+    source: NotRequired[str]
+    """Where the server definition came from: ``"sdk"``, ``"plugin"``, or a
+    config scope such as ``"user"`` or ``"project"``. Absent on CLIs that
+    predate the field."""
+
+
+class SystemInitPlugin(TypedDict):
+    """A loaded plugin listed in :class:`SystemInitData`."""
+
+    name: str
+    path: str
+    version: NotRequired[str]
+    """The version declared in the plugin's manifest, verbatim. Omitted when
+    the manifest declares none."""
+
+
+class SystemInitPluginError(TypedDict):
+    """A plugin load failure listed in :class:`SystemInitData`."""
+
+    plugin: str
+    """``name@marketplace``, or a positional tag such as ``inline[0]`` or
+    ``synced[0]`` when a directory entry failed before it had a name."""
+    type: str
+    """Failure category from an open set (e.g. ``"path-not-found"``,
+    ``"manifest-validation-error"``). Treat unknown values as a generic
+    failure."""
+    message: str
+    path: NotRequired[str]
+    """Present only when a ``plugins``, ``--plugin-dir`` or synced directory
+    entry did not load at all: that entry's path, resolved against the cwd.
+    Use it to match a positional ``plugin`` tag to your entry."""
+
+
+# Fast mode state reported in SystemInitData.
+FastModeState = Literal["off", "cooldown", "on"]
+
+# Why fast mode can't serve right now, reported in SystemInitData. Newer CLIs
+# may send values not listed here.
+FastModeDisabledReason = Literal[
+    "free",
+    "preference",
+    "extra_usage_disabled",
+    "network_error",
+    "unknown",
+    "not_first_party",
+    "disabled_by_env",
+    "model_not_allowed",
+    "sdk_opt_in_required",
+    "pending",
+]
+
+
+class SystemInitData(TypedDict):
+    """Shape of :attr:`SystemMessage.data` for a ``system``/``init`` message.
+
+    The CLI emits this session metadata at the start of each turn: model,
+    working directory, tools, MCP servers, slash commands, permission mode,
+    and the capabilities list for feature detection. Mirrors the fields the
+    TypeScript SDK reference documents for ``SDKSystemMessage``, with the same
+    key names as on the wire.
+
+    The parser does not validate the payload, so this describes what the CLI
+    sends rather than a guarantee. Narrow with a cast once you have checked
+    the subtype::
+
+        if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            init = cast(SystemInitData, msg.data)
+            print(init["model"], init.get("capabilities", []))
+    """
+
+    type: Literal["system"]
+    subtype: Literal["init"]
+    uuid: str
+    session_id: str
+    agents: NotRequired[list[str]]
+    apiKeySource: str
+    """Where the API credential came from: ``"ANTHROPIC_API_KEY"``,
+    ``"apiKeyHelper"``, ``"/login managed key"``, or ``"none"`` (no API key
+    in use, e.g. a claude.ai login or a third-party cloud provider)."""
+    betas: NotRequired[list[str]]
+    claude_code_version: str
+    cwd: str
+    tools: list[str]
+    mcp_servers: list[SystemInitMcpServer]
+    model: str
+    permissionMode: PermissionMode
+    slash_commands: list[str]
+    terminal_slash_commands: NotRequired[list[str]]
+    """Entries of ``slash_commands`` whose interface is bound to the local
+    terminal (e.g. ``exit``). Present only when non-empty."""
+    output_style: str
+    skills: list[str]
+    plugins: list[SystemInitPlugin]
+    plugin_errors: NotRequired[list[SystemInitPluginError]]
+    """Plugin load failures. The CLI omits the key when nothing failed, but
+    an omitted key does not by itself assert a clean load (older CLIs and
+    some hosted sessions never send it)."""
+    fast_mode_state: NotRequired[FastModeState]
+    fast_mode_disabled_reason: NotRequired[FastModeDisabledReason]
+    """Names the check that blocks fast mode, when something does."""
+    capabilities: NotRequired[list[str]]
+    """Protocol capabilities this CLI supports (e.g.
+    ``"interrupt_receipt_v1"``), for feature detection instead of comparing
+    ``claude_code_version``. Open set: ignore values you don't recognize.
+    Absent on CLIs before 2.1.205."""
 
 
 class TaskUsage(TypedDict):
@@ -1264,8 +1652,9 @@ class MirrorErrorMessage(SystemMessage):
     """System message emitted when a :meth:`SessionStore.append` call fails.
 
     Non-fatal — the local-disk transcript is already durable, so the session
-    continues unaffected. The mirrored copy in the external store will be
-    missing the failed batch.
+    continues unaffected. The failed batch has been dropped (retries exhausted,
+    or a single attempt timed out; see :meth:`SessionStore.append`), so the
+    external store may be missing it. A timed-out ``append()`` may still land.
 
     Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
     ``case SystemMessage()`` checks continue to match. The base ``subtype``
@@ -1378,8 +1767,9 @@ class RateLimitInfo:
     """Rate limit status emitted by the CLI when rate limit state changes.
 
     Attributes:
-        status: Current rate limit status. ``allowed_warning`` means approaching
-            the limit; ``rejected`` means the limit has been hit.
+        status: Current rate limit status. ``allowed`` means within the limit;
+            ``allowed_warning`` means approaching the limit; ``rejected`` means
+            the limit has been hit.
         resets_at: Unix timestamp when the rate limit window resets.
         rate_limit_type: Which rate limit window applies.
         utilization: Fraction of the rate limit consumed (0.0 - 1.0).
@@ -1587,8 +1977,8 @@ SessionStoreFlushMode = Literal["batched", "eager"]
 class SessionStore(Protocol):
     """Adapter for mirroring session transcripts to external storage.
 
-    The subprocess still writes to local disk (set ``CLAUDE_CONFIG_DIR=/tmp``
-    for an ephemeral local copy); the adapter receives a secondary copy.
+    The subprocess still writes to local disk under ``CLAUDE_CONFIG_DIR``; the
+    adapter receives a secondary copy.
 
     The SDK never deletes from your store unless you call
     ``delete_session_via_store()`` with :meth:`delete` implemented. Retention is
@@ -1631,9 +2021,17 @@ class SessionStore(Protocol):
     async def load(self, key: SessionKey) -> list[SessionStoreEntry] | None:
         """Load a full session for resume.
 
-        Called once, in the SDK parent, before subprocess spawn. The result is
-        materialized to a temporary JSONL file; the subprocess resumes from
-        that file using its existing resume code.
+        During a store-backed resume, called in the SDK parent before subprocess
+        spawn: once for an explicit ``resume`` session id; for
+        ``continue_conversation``, once per candidate walked newest-first until
+        a non-sidechain session loads; and once per subpath when
+        :meth:`list_subkeys` is implemented. The result is materialized to a
+        temporary JSONL file; the subprocess resumes from that file using its
+        existing resume code. The store-reading helpers
+        (``get_session_messages_from_store()``,
+        ``get_subagent_messages_from_store()``, ``fork_session_via_store()``,
+        and ``list_sessions_from_store()`` when :meth:`list_session_summaries`
+        is unimplemented) call it as well.
 
         Return ``None`` for a key that was never written; adapters that cannot
         distinguish "never written" from "emptied" (e.g. Redis ``LRANGE``) may
@@ -1671,7 +2069,7 @@ class SessionStore(Protocol):
         Optional — if unimplemented, ``list_sessions_from_store()`` falls back
         to ``list_sessions()`` + per-session ``load()``.
 
-        .. note::
+        Note:
             Stores that maintain summaries inside ``append()`` MUST serialize
             sidecar writes if ``append()`` calls can race for the same session
             — e.g., wrap the read-fold-write in a transaction/CAS, or hold a
@@ -1933,6 +2331,8 @@ def _hooks_to_internal_format(
             }
             if hasattr(matcher, "timeout") and matcher.timeout is not None:
                 internal_matcher["timeout"] = matcher.timeout
+            if hasattr(matcher, "on_failure") and matcher.on_failure is not None:
+                internal_matcher["on_failure"] = matcher.on_failure
             internal_hooks[event].append(internal_matcher)
     return internal_hooks
 
@@ -1958,13 +2358,14 @@ class ClaudeAgentOptions:
     These tools execute automatically without asking the user for approval.
     To restrict which tools are available at all, use ``tools``.
 
-    .. deprecated::
-        Passing ``"Skill"`` here is deprecated. Use the :attr:`skills` option
-        instead, which configures everything needed (including allowing the
-        ``Skill`` tool).
+    Passing ``"Skill"`` here is deprecated. Use the :attr:`skills` option
+    instead, which configures everything needed (including allowing the
+    ``Skill`` tool).
     """
 
-    system_prompt: str | SystemPromptPreset | SystemPromptFile | None = None
+    system_prompt: (
+        str | SystemPromptPreset | SystemPromptCustom | SystemPromptFile | None
+    ) = None
     """System prompt configuration.
 
     - ``str`` — Use a custom system prompt.
@@ -1972,13 +2373,16 @@ class ClaudeAgentOptions:
       system prompt.
     - ``{"type": "preset", "preset": "claude_code", "append": "..."}`` — Default
       prompt with appended instructions.
+    - ``{"type": "custom", "prompt": "..."}`` — Same as ``str``; this form can
+      also set ``snapshot`` (see :class:`SystemPromptCustom`).
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
     """MCP (Model Context Protocol) server configurations.
 
     Keys are server names, values are server configurations. May also be a path
-    to an MCP config JSON file.
+    to an MCP config JSON file or an inline JSON string; either is passed as-is
+    to the ``--mcp-config`` CLI flag.
     """
 
     strict_mcp_config: bool = False
@@ -1996,6 +2400,7 @@ class ClaudeAgentOptions:
     - ``"bypassPermissions"`` — Bypass all permission checks.
     - ``"plan"`` — Planning mode, no execution of tools.
     - ``"dontAsk"`` — Don't prompt for permissions; deny if not pre-approved.
+    - ``"auto"`` — A model classifier approves or denies each tool call.
     """
 
     continue_conversation: bool = False
@@ -2035,7 +2440,7 @@ class ClaudeAgentOptions:
     model: str | None = None
     """Claude model to use. Defaults to the CLI default model.
 
-    Examples: ``"claude-sonnet-4-5"``, ``"claude-opus-4-5"``.
+    Examples: ``"claude-sonnet-5"``, ``"claude-opus-5"``.
     """
 
     fallback_model: str | None = None
@@ -2068,11 +2473,16 @@ class ClaudeAgentOptions:
     """
 
     settings: str | None = None
-    """Path to an additional settings JSON file to load.
+    """Path to an additional settings JSON file to load, or an inline JSON string.
+
+    Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
+    flag. When ``sandbox`` is also set, the settings are merged with the sandbox
+    settings and passed as one JSON string: an inline string is parsed
+    directly, and a path is read from disk, relative to ``cwd`` when ``cwd`` is
+    set. Settings that cannot be loaded raise ``CLIConnectionError``.
 
     These are loaded into the "flag settings" layer, which has the highest
-    priority among user-controlled settings. Equivalent to the ``--settings``
-    CLI flag.
+    priority among user-controlled settings.
     """
 
     add_dirs: list[str | Path] = field(default_factory=list)
@@ -2083,6 +2493,14 @@ class ClaudeAgentOptions:
 
     env: dict[str, str] = field(default_factory=dict)
     """Environment variables to pass to the Claude Code subprocess.
+
+    Merged over the parent process's environment: entries here override
+    inherited values, and ``CLAUDECODE`` is dropped from the inherited set.
+    The transport sets ``CLAUDE_CODE_ENTRYPOINT`` (overridable here) and
+    ``CLAUDE_AGENT_SDK_VERSION`` (not overridable), plus ``PWD`` when ``cwd``
+    is set, ``CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`` when
+    ``enable_file_checkpointing`` is set, and W3C trace context from an active
+    OpenTelemetry span.
 
     SDK consumers can identify their app/library in the User-Agent header by
     setting ``CLAUDE_AGENT_SDK_CLIENT_APP`` (e.g. ``"my-app/1.0.0"``).
@@ -2144,15 +2562,17 @@ class ClaudeAgentOptions:
     include_partial_messages: bool = False
     """Include partial/streaming message events in the output.
 
-    When true, ``SDKPartialAssistantMessage`` events are emitted during streaming.
+    When true, :class:`StreamEvent` messages are emitted during streaming, one
+    per API stream event.
     """
 
     include_hook_events: bool = False
     """Include hook lifecycle events in the message stream.
 
     When true, the CLI emits hook events (PreToolUse, PostToolUse, Stop,
-    etc.) as ``HookEventMessage`` objects in the message stream. Matches the
-    TypeScript SDK's ``includeHookEvents``.
+    etc.) as ``HookEventMessage`` objects in the message stream. The
+    ``SessionStart`` and ``Setup`` hook events are emitted regardless of this
+    setting. Matches the TypeScript SDK's ``includeHookEvents``.
     """
 
     forward_subagent_text: bool = False
@@ -2165,6 +2585,36 @@ class ClaudeAgentOptions:
     subagent's text and thinking blocks are forwarded the same way, so
     consumers can render the full nested transcript. Matches the TypeScript
     SDK's ``forwardSubagentText``.
+    """
+
+    verbatim_prompts: bool = False
+    """Deliver every prompt to Claude as written.
+
+    When true, every user message the SDK sends (a string prompt or a message
+    from a streamed prompt, including those passed to
+    ``ClaudeSDKClient.query()``) is marked ``client_composed``. Claude Code
+    then delivers the text exactly as given: no ``@path`` file-mention
+    expansion and no slash-command dispatch. Use this when the prompt text is
+    assembled from content the end user did not type (prior turns, tool
+    results, third-party text), so an ``@/absolute/path`` inside it cannot make
+    Claude Code read a local file.
+
+    While this option is on there is no per-message opt-out: any
+    ``client_composed`` value on a streamed message is overwritten. For
+    per-turn control, leave the option off and set ``"client_composed": True``
+    on individual streamed messages instead.
+
+    On current Claude Code versions a turn delivered this way also skips the
+    turn-start attachment pass as a whole: ``@server:resource`` MCP mentions are
+    not expanded either, and the prompt is sent without the context Claude Code
+    normally attaches alongside it (nested ``CLAUDE.md`` and rules files, skill
+    and tool listings, and other per-turn reminders). The pass Claude Code runs
+    between tool calls is unaffected, so most of that context arrives after the
+    turn's first tool call rather than with the prompt.
+
+    Requires Claude Code 2.1.248 or later; older versions ignore the field, so
+    prompts are still expanded there. The SDK logs a warning when it connects to
+    an older CLI with this option on. The option is read when the session starts.
     """
 
     fork_session: bool = False
@@ -2223,7 +2673,8 @@ class ClaudeAgentOptions:
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
     When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    to disable filesystem settings (SDK isolation mode), for example when
+    ``cwd`` may be untrusted: project settings can run hooks. Must include
     ``"project"`` to load CLAUDE.md files.
     """
 
@@ -2253,10 +2704,10 @@ class ClaudeAgentOptions:
     """Sandbox settings for command execution isolation.
 
     When enabled, commands execute in a sandboxed environment that restricts
-    filesystem and network access. Filesystem and network restrictions are
-    configured via permission rules (Read/Edit for filesystem, WebFetch for
-    network), not via these sandbox settings — sandbox settings control
-    sandbox behavior (enabled, auto-allow, etc.).
+    filesystem and network access. Tool-level filesystem and network
+    restrictions are configured via permission rules (Read/Edit for
+    filesystem, WebFetch for network); the ``network`` key here configures
+    the sandbox's own network isolation. See :class:`SandboxSettings`.
 
     See https://docs.anthropic.com/en/docs/claude-code/settings#sandbox-settings.
     """
@@ -2271,11 +2722,10 @@ class ClaudeAgentOptions:
     max_thinking_tokens: int | None = None
     """Maximum tokens the model may use for its thinking/reasoning process.
 
-    .. deprecated::
-       Use ``thinking`` instead. On newer models, this is treated as on/off
-       (0 = disabled, any other value = adaptive). For explicit control, use
-       ``thinking={"type": "adaptive"}`` or
-       ``thinking={"type": "enabled", "budget_tokens": N}``.
+    Deprecated. Use ``thinking`` instead: ``thinking={"type": "adaptive"}``,
+    ``thinking={"type": "enabled", "budget_tokens": N}``, or
+    ``thinking={"type": "disabled"}``. On newer models, this value is treated
+    as on/off (0 = disabled, any other value = adaptive).
     """
 
     thinking: ThinkingConfig | None = None
@@ -2383,6 +2833,7 @@ class SDKControlInitializeRequest(TypedDict):
     hooks: dict[HookEvent, Any] | None
     agents: NotRequired[dict[str, dict[str, Any]]]
     excludeDynamicSections: NotRequired[bool]
+    systemPromptSnapshot: NotRequired[bool]
     skills: NotRequired[list[str]]
     forwardSubagentText: NotRequired[bool]
 

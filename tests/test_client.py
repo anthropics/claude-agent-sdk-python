@@ -130,8 +130,12 @@ class TestQueryFunction:
 
         anyio.run(_test)
 
-    def _run_query_with_mocked_internals(self, env_patch, expected_timeout):
-        """Helper: run query() with mocked transport/Query and verify initialize_timeout."""
+    def _run_query_with_mocked_internals(
+        self, env_patch, expected_timeout, options=None
+    ):
+        """Helper: run query() with mocked internals; check initialize_timeout and
+        return the kwargs given to Query."""
+        query_kwargs: dict = {}
 
         async def _test():
             with (
@@ -176,13 +180,17 @@ class TestQueryFunction:
 
                 mock_query.receive_messages = mock_receive
 
-                async for _ in query(prompt="test", options=ClaudeAgentOptions()):
+                async for _ in query(
+                    prompt="test", options=options or ClaudeAgentOptions()
+                ):
                     pass
 
                 call_kwargs = mock_query_class.call_args.kwargs
                 assert call_kwargs["initialize_timeout"] == expected_timeout
+                query_kwargs.update(call_kwargs)
 
         anyio.run(_test)
+        return query_kwargs
 
     def test_query_passes_initialize_timeout_from_env(self):
         """Test that query() reads CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and passes it to Query."""
@@ -200,6 +208,27 @@ class TestQueryFunction:
                 env_patch={},
                 expected_timeout=60.0,
             )
+
+    @pytest.mark.parametrize(
+        "system_prompt, expected",
+        [
+            ({"type": "custom", "prompt": "Be helpful", "snapshot": False}, False),
+            ({"type": "preset", "preset": "claude_code", "snapshot": True}, True),
+            ({"type": "preset", "preset": "claude_code"}, None),
+            ({"type": "file", "path": "/p.md", "snapshot": False}, None),
+            ("Be helpful", None),
+        ],
+    )
+    def test_query_passes_system_prompt_snapshot(self, system_prompt, expected):
+        """query() hands snapshot to Query only for the preset and custom forms."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", None)
+            call_kwargs = self._run_query_with_mocked_internals(
+                env_patch={},
+                expected_timeout=60.0,
+                options=ClaudeAgentOptions(system_prompt=system_prompt),
+            )
+        assert call_kwargs["system_prompt_snapshot"] is expected
 
     def test_string_prompt_spawns_wait_for_result_as_task(self):
         """Test that string prompts spawn wait_for_result_and_end_input as a background
@@ -324,6 +353,75 @@ class TestClaudeSDKClientTrioBackend:
             mock_transport.close.assert_called_once()
 
         anyio.run(_test, backend="trio")
+
+
+class TestClaudeSDKClientSystemPromptSnapshot:
+    """ClaudeSDKClient.connect() sends the system prompt's snapshot on initialize."""
+
+    @staticmethod
+    def _initialize_request_sent_by_client(options):
+        import json
+
+        from claude_agent_sdk import ClaudeSDKClient
+
+        written: list[str] = []
+        mock_transport = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+        mock_transport.write = AsyncMock(side_effect=written.append)
+
+        def initialize_requests():
+            messages = [json.loads(data) for data in written]
+            return [
+                m
+                for m in messages
+                if m.get("type") == "control_request"
+                and m["request"]["subtype"] == "initialize"
+            ]
+
+        async def read_messages():
+            for _ in range(200):
+                for msg in initialize_requests():
+                    yield {
+                        "type": "control_response",
+                        "response": {
+                            "request_id": msg["request_id"],
+                            "subtype": "success",
+                            "response": {},
+                        },
+                    }
+                    return
+                await anyio.sleep(0.01)
+
+        mock_transport.read_messages = read_messages
+
+        async def _connect():
+            async with ClaudeSDKClient(options=options, transport=mock_transport):
+                pass
+
+        anyio.run(_connect)
+        (sent,) = initialize_requests()
+        return sent["request"]
+
+    @pytest.mark.parametrize(
+        "system_prompt, expected",
+        [
+            ({"type": "custom", "prompt": "Be helpful", "snapshot": False}, False),
+            ({"type": "preset", "preset": "claude_code", "snapshot": True}, True),
+        ],
+    )
+    def test_connect_sends_snapshot(self, system_prompt, expected):
+        request = self._initialize_request_sent_by_client(
+            ClaudeAgentOptions(system_prompt=system_prompt)
+        )
+        assert request["systemPromptSnapshot"] is expected
+
+    def test_connect_omits_snapshot_when_unset(self):
+        request = self._initialize_request_sent_by_client(
+            ClaudeAgentOptions(
+                system_prompt={"type": "preset", "preset": "claude_code"}
+            )
+        )
+        assert "systemPromptSnapshot" not in request
 
 
 class TestClaudeSDKClientResourceCleanup:

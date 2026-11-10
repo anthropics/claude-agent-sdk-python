@@ -1,14 +1,17 @@
 """Tests for Claude SDK transport layer."""
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
 
+from claude_agent_sdk._errors import CLIConnectionError, CLINotFoundError
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk.types import ClaudeAgentOptions
 
@@ -30,18 +33,13 @@ class TestSubprocessCLITransport:
         """Test CLI not found error is raised during connect()."""
 
         async def _test():
-            from claude_agent_sdk._errors import CLINotFoundError
-
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
             )
             assert transport._cli_path is None
 
             with (
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    return_value=None,
-                ),
+                patch.dict(os.environ, {"PATH": ""}),
                 patch("pathlib.Path.exists", return_value=False),
                 pytest.raises(CLINotFoundError) as exc_info,
             ):
@@ -267,6 +265,21 @@ class TestSubprocessCLITransport:
         assert "--append-system-prompt" not in cmd
         assert "--system-prompt-file" in cmd
         assert "/path/to/prompt.md" in cmd
+
+    @pytest.mark.parametrize("prompt", ["Be helpful", "", "--help"])
+    def test_build_command_with_system_prompt_custom(self, prompt):
+        """The custom form reaches the CLI the same way a plain string does."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                system_prompt={"type": "custom", "prompt": prompt, "snapshot": False},
+            ),
+        )
+
+        cmd = transport._build_command()
+        assert cmd[cmd.index("--system-prompt") + 1] == prompt
+        assert "--append-system-prompt" not in cmd
+        assert "--system-prompt-snapshot" not in cmd
 
     def test_build_command_with_options(self):
         """Test building CLI command with options."""
@@ -502,16 +515,7 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
-                # Mock version check process
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
-                # Mock main process
+                # Mock the CLI process
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
@@ -524,8 +528,7 @@ class TestSubprocessCLITransport:
                 mock_stdin.aclose = AsyncMock()
                 mock_process.stdin = mock_stdin
 
-                # Return version process first, then main process
-                mock_exec.side_effect = [mock_version_process, mock_process]
+                mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1112,16 +1115,7 @@ class TestSubprocessCLITransport:
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
-                # Mock version check process
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
-                # Mock main process
+                # Mock the CLI process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1129,8 +1123,7 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                # Return version process first, then main process
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1139,13 +1132,12 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called twice (version check + main process)
-                assert mock_open_process.call_count == 2
+                # cli_path is only executed once
+                assert mock_open_process.call_count == 1
 
-                # Check the second call (main process) for env vars
-                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
-                assert "env" in second_call_kwargs
-                env_passed = second_call_kwargs["env"]
+                call_kwargs = mock_open_process.call_args.kwargs
+                assert "env" in call_kwargs
+                env_passed = call_kwargs["env"]
 
                 # Check that custom env var was passed
                 assert env_passed["MY_TEST_VAR"] == test_value
@@ -1171,14 +1163,6 @@ class TestSubprocessCLITransport:
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1186,7 +1170,7 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1194,13 +1178,63 @@ class TestSubprocessCLITransport:
                 )
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # Caller's entrypoint must win over the sdk-py default
                 assert env_passed["CLAUDE_CODE_ENTRYPOINT"] == "custom-caller"
 
                 # CLAUDE_AGENT_SDK_VERSION is still SDK-controlled
                 assert "CLAUDE_AGENT_SDK_VERSION" in env_passed
+
+        anyio.run(_test)
+
+    @pytest.mark.parametrize(
+        ("options_env", "ambient_env", "expected_value"),
+        [
+            ({}, {}, "1"),
+            ({"CLAUDE_CODE_SDK_READS_SESSION_STATE": "0"}, {}, "0"),
+            ({}, {"CLAUDE_CODE_SDK_READS_SESSION_STATE": "0"}, "0"),
+            ({"claude_code_sdk_reads_session_state": "0"}, {}, None),
+        ],
+        ids=["unset", "caller_off", "ambient_off", "caller_other_case"],
+    )
+    def test_sdk_reads_session_state_unless_caller_chose(
+        self, monkeypatch, options_env, ambient_env, expected_value
+    ):
+        """The transport asks for the sdk_host_only session_state_changed
+        frames Query reads, unless the caller's options.env or the ambient
+        environment names the variable, in any case (#1190). It never turns on
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, which is the caller's own opt-in
+        to seeing the frames."""
+        monkeypatch.delenv("CLAUDE_CODE_SDK_READS_SESSION_STATE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", raising=False)
+        for key, value in ambient_env.items():
+            monkeypatch.setenv(key, value)
+
+        async def _test():
+            options = make_options(env=options_env)
+
+            with patch(
+                "anyio.open_process", new_callable=AsyncMock
+            ) as mock_open_process:
+                mock_process = MagicMock()
+                mock_process.stdout = MagicMock()
+                mock_stdin = MagicMock()
+                mock_stdin.aclose = AsyncMock()
+                mock_process.stdin = mock_stdin
+                mock_process.returncode = None
+
+                mock_open_process.return_value = mock_process
+
+                transport = SubprocessCLITransport(prompt="test", options=options)
+                await transport.connect()
+
+                env_passed = mock_open_process.call_args.kwargs["env"]
+                assert (
+                    env_passed.get("CLAUDE_CODE_SDK_READS_SESSION_STATE")
+                    == expected_value
+                )
+                assert "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS" not in env_passed
 
         anyio.run(_test)
 
@@ -1231,14 +1265,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1246,12 +1272,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 assert (
                     env_passed["TRACEPARENT"]
@@ -1285,14 +1311,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1300,12 +1318,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # explicit ClaudeAgentOptions.env must win over the propagator
                 assert env_passed["TRACEPARENT"] == "custom"
@@ -1328,14 +1346,6 @@ class TestSubprocessCLITransport:
                 # Ensure no inherited TRACEPARENT leaks in
                 os.environ.pop("TRACEPARENT", None)
 
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1343,12 +1353,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()  # must not raise
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
                 assert "TRACEPARENT" not in env_passed
 
         anyio.run(_test)
@@ -1386,14 +1396,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1401,12 +1403,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # The stale ambient value from os.environ must be replaced by
                 # the active span's context.
@@ -1446,14 +1448,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1461,12 +1455,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # No active span -> we must NOT scrub the launcher's context.
                 assert env_passed["TRACEPARENT"] == inherited_tp
@@ -1507,14 +1501,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1522,12 +1508,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # Carrier was non-empty but had no traceparent -> still no
                 # active span, so the launcher's W3C context must pass through.
@@ -1561,14 +1547,6 @@ class TestSubprocessCLITransport:
                 # Ensure no inherited TRACEPARENT leaks in
                 os.environ.pop("TRACEPARENT", None)
 
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1576,12 +1554,12 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(prompt="test", options=options)
                 await transport.connect()  # must not raise CLIConnectionError
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
                 assert "TRACEPARENT" not in env_passed
 
         anyio.run(_test)
@@ -1598,14 +1576,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1613,10 +1583,7 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [
-                    mock_version_process,
-                    mock_process,
-                ]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1624,7 +1591,7 @@ class TestSubprocessCLITransport:
                 )
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # CLAUDECODE must NOT be inherited from the parent process
                 assert "CLAUDECODE" not in env_passed
@@ -1647,14 +1614,6 @@ class TestSubprocessCLITransport:
                     "anyio.open_process", new_callable=AsyncMock
                 ) as mock_open_process,
             ):
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1662,10 +1621,7 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                mock_open_process.side_effect = [
-                    mock_version_process,
-                    mock_process,
-                ]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1673,7 +1629,7 @@ class TestSubprocessCLITransport:
                 )
                 await transport.connect()
 
-                env_passed = mock_open_process.call_args_list[1].kwargs["env"]
+                env_passed = mock_open_process.call_args.kwargs["env"]
 
                 # Explicit options.env should be respected
                 assert env_passed.get("CLAUDECODE") == "1"
@@ -1691,16 +1647,7 @@ class TestSubprocessCLITransport:
             with patch(
                 "anyio.open_process", new_callable=AsyncMock
             ) as mock_open_process:
-                # Mock version check process
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
-                # Mock main process
+                # Mock the CLI process
                 mock_process = MagicMock()
                 mock_process.stdout = MagicMock()
                 mock_stdin = MagicMock()
@@ -1708,8 +1655,7 @@ class TestSubprocessCLITransport:
                 mock_process.stdin = mock_stdin
                 mock_process.returncode = None
 
-                # Return version process first, then main process
-                mock_open_process.side_effect = [mock_version_process, mock_process]
+                mock_open_process.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -1718,16 +1664,10 @@ class TestSubprocessCLITransport:
 
                 await transport.connect()
 
-                # Verify open_process was called twice (version check + main process)
-                assert mock_open_process.call_count == 2
-
-                # Check the second call (main process) for user
-                second_call_kwargs = mock_open_process.call_args_list[1].kwargs
-                assert "user" in second_call_kwargs
-                user_passed = second_call_kwargs["user"]
-
-                # Check that user was passed
-                assert user_passed == "claude"
+                # cli_path is never executed as anyone but options.user
+                assert [
+                    call.kwargs["user"] for call in mock_open_process.call_args_list
+                ] == [custom_user]
 
         anyio.run(_test)
 
@@ -1821,6 +1761,113 @@ class TestSubprocessCLITransport:
         settings_idx = cmd.index("--settings")
         assert cmd[settings_idx + 1] == "/path/to/settings.json"
 
+    def test_build_command_sandbox_reads_relative_settings_from_cwd(self, tmp_path):
+        """A relative settings path resolves against options.cwd, not the process cwd."""
+        import json
+
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"permissions": {"deny": ["Bash"]}})
+        )
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="settings.json", sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed == {
+            "permissions": {"deny": ["Bash"]},
+            "sandbox": {"enabled": True},
+        }
+
+    def test_build_command_sandbox_reads_absolute_settings_path(self, tmp_path):
+        """An absolute settings path is read as given, whatever options.cwd is."""
+        import json
+
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"permissions": {"deny": ["Bash"]}}))
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings=str(settings_file),
+                sandbox={"enabled": True},
+                cwd=tmp_path / "elsewhere",
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        parsed = json.loads(cmd[cmd.index("--settings") + 1])
+        assert parsed["permissions"] == {"deny": ["Bash"]}
+
+    def test_build_command_sandbox_relative_settings_without_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """Without options.cwd, a relative settings path uses the process cwd."""
+        import json
+
+        (tmp_path / "settings.json").write_text(json.dumps({"model": "m"}))
+        monkeypatch.chdir(tmp_path)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings="settings.json", sandbox={"enabled": True}),
+        )
+
+        cmd = transport._build_command()
+
+        assert json.loads(cmd[cmd.index("--settings") + 1])["model"] == "m"
+
+    @pytest.mark.parametrize(
+        ("settings", "contents"),
+        [
+            ("missing.json", None),
+            (".", None),
+            ("settings.json", "{not json"),
+            ("settings.json", "[1, 2]"),
+            # Malformed inline JSON
+            ('{"env": {"KEY": "secret-value",}}', None),
+        ],
+    )
+    def test_build_command_sandbox_unloadable_settings_raise(
+        self, tmp_path, settings, contents
+    ):
+        """Settings that can't be loaded raise instead of being dropped."""
+        if contents is not None:
+            (tmp_path / settings).write_text(contents)
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings=settings, sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        with pytest.raises(CLIConnectionError, match="settings") as exc_info:
+            transport._build_command()
+        # Inline settings can hold secrets
+        assert "secret-value" not in str(exc_info.value)
+
+    def test_build_command_sandbox_reads_settings_file_with_bom(self, tmp_path):
+        """A settings file with a BOM loads, as it does for the CLI."""
+        import json
+
+        (tmp_path / "settings.json").write_text(
+            '{"permissions": {"deny": ["Bash"]}}', encoding="utf-8-sig"
+        )
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings="settings.json", sandbox={"enabled": True}, cwd=tmp_path
+            ),
+        )
+
+        cmd = transport._build_command()
+
+        merged = json.loads(cmd[cmd.index("--settings") + 1])
+        assert merged["permissions"] == {"deny": ["Bash"]}
+
     def test_build_command_sandbox_minimal(self):
         """Test sandbox with minimal configuration."""
         import json
@@ -1877,6 +1924,34 @@ class TestSubprocessCLITransport:
         assert network["allowLocalBinding"] is True
         assert network["httpProxyPort"] == 8080
         assert network["socksProxyPort"] == 8081
+
+    def test_sandbox_ignore_violations_passed_through(self):
+        """Test ignoreViolations reaches --settings as a command-pattern map."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "ignoreViolations": {
+                "*": ["/etc/hosts"],
+                "npm test": ["registry.npmjs.org"],
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        parsed = json.loads(cmd[settings_idx + 1])
+
+        assert parsed["sandbox"]["ignoreViolations"] == {
+            "*": ["/etc/hosts"],
+            "npm test": ["registry.npmjs.org"],
+        }
 
     def test_build_command_with_tools_array(self):
         """Test building CLI command with tools as array of tool names."""
@@ -2062,15 +2137,6 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
-                # Mock version check process
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 # Mock main process that hangs (never exits on its own)
                 mock_process = MagicMock()
                 mock_process.returncode = None
@@ -2089,7 +2155,7 @@ class TestSubprocessCLITransport:
 
                 mock_process.wait = AsyncMock(side_effect=hanging_wait)
 
-                mock_exec.side_effect = [mock_version_process, mock_process]
+                mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -2112,14 +2178,6 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.returncode = None
                 mock_process.terminate = MagicMock()
@@ -2133,7 +2191,7 @@ class TestSubprocessCLITransport:
 
                 mock_process.wait = AsyncMock()
 
-                mock_exec.side_effect = [mock_version_process, mock_process]
+                mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -2166,14 +2224,6 @@ class TestSubprocessCLITransport:
 
         async def _test():
             with patch("anyio.open_process") as mock_exec:
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"2.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
                 mock_process = MagicMock()
                 mock_process.returncode = 0  # Already exited
                 mock_process.terminate = MagicMock()
@@ -2185,7 +2235,7 @@ class TestSubprocessCLITransport:
                 mock_stdin.aclose = AsyncMock()
                 mock_process.stdin = mock_stdin
 
-                mock_exec.side_effect = [mock_version_process, mock_process]
+                mock_exec.return_value = mock_process
 
                 transport = SubprocessCLITransport(
                     prompt="test",
@@ -2284,76 +2334,62 @@ class TestSubprocessCLITransport:
         cmd_str = " ".join(cmd)
         assert "@" not in cmd_str
 
-    def test_version_warning_includes_cli_path(self):
-        """Test that the version warning includes the CLI path and uses only logger.warning."""
+    @staticmethod
+    async def _read_frames(
+        frames: list[dict[str, Any]], transport: SubprocessCLITransport
+    ) -> MagicMock:
+        """Feed stdout frames through the transport, returning its mocked logger."""
+        stdout = [(json.dumps(frame) + "\n") for frame in frames]
+
+        async def _chunks() -> AsyncIterator[str]:
+            for chunk in stdout:
+                yield chunk
+
+        transport._process = MagicMock(wait=AsyncMock(return_value=0))
+        transport._stdout_stream = _chunks()  # type: ignore[assignment]
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+        ) as mock_logger:
+            assert [m async for m in transport.read_messages()] == frames
+        return mock_logger
+
+    def test_cli_too_old_to_report_its_version_warns_once(self):
+        """A CLI that reports no version is logged once, with its path."""
 
         async def _test():
-            transport = SubprocessCLITransport(
-                prompt="test",
-                options=make_options(),
-            )
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            frame = {"type": "system", "subtype": "init"}
+            # The CLI sends an init message per turn.
+            mock_logger = await self._read_frames([frame, frame], transport)
 
-            with (
-                patch("anyio.open_process") as mock_exec,
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
-                ) as mock_logger,
-                patch("builtins.print") as mock_print,
-            ):
-                # Mock version check returning an old version
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"1.0.0 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
-                mock_exec.return_value = mock_version_process
-
-                await transport._check_claude_version()
-
-                # logger.warning should be called with version and CLI path
-                mock_logger.warning.assert_called_once()
-                args, _ = mock_logger.warning.call_args
-                assert args[1] == "1.0.0"
-                assert args[2] == DEFAULT_CLI_PATH
-
-                # print should NOT be called (no duplicate output)
-                mock_print.assert_not_called()
+            mock_logger.warning.assert_called_once()
+            args, _ = mock_logger.warning.call_args
+            assert args[1:] == (DEFAULT_CLI_PATH, "2.0.0")
 
         anyio.run(_test)
 
-    def test_version_warning_not_emitted_for_current_version(self):
-        """Test that no warning is emitted when CLI version meets minimum."""
+    @pytest.mark.parametrize("version", ["2.0.20", "99.99.99"])
+    def test_supported_cli_version_does_not_warn(self, version):
+        async def _test():
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            mock_logger = await self._read_frames(
+                [{"type": "system", "subtype": "init", "claude_code_version": version}],
+                transport,
+            )
+            mock_logger.warning.assert_not_called()
+
+        anyio.run(_test)
+
+    def test_version_warning_can_be_skipped(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
 
         async def _test():
-            transport = SubprocessCLITransport(
-                prompt="test",
-                options=make_options(),
+            transport = SubprocessCLITransport(prompt="test", options=make_options())
+            mock_logger = await self._read_frames(
+                [{"type": "system", "subtype": "init"}],
+                transport,
             )
-
-            with (
-                patch("anyio.open_process") as mock_exec,
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.logger"
-                ) as mock_logger,
-            ):
-                # Mock version check returning a current version
-                mock_version_process = MagicMock()
-                mock_version_process.stdout = MagicMock()
-                mock_version_process.stdout.receive = AsyncMock(
-                    return_value=b"99.99.99 (Claude Code)"
-                )
-                mock_version_process.terminate = MagicMock()
-                mock_version_process.wait = AsyncMock()
-
-                mock_exec.return_value = mock_version_process
-
-                await transport._check_claude_version()
-
-                # No warning for a current version
-                mock_logger.warning.assert_not_called()
+            mock_logger.warning.assert_not_called()
 
         anyio.run(_test)
 
@@ -2506,21 +2542,15 @@ class TestAtexitChildCleanup:
         anyio.run(_test)
 
 
-def _mock_connect_processes() -> tuple[MagicMock, MagicMock]:
-    """Build the (version probe, main process) mocks connect() awaits."""
-    version_process = MagicMock()
-    version_process.stdout = MagicMock()
-    version_process.stdout.receive = AsyncMock(return_value=b"2.0.0 (Claude Code)")
-    version_process.terminate = MagicMock()
-    version_process.wait = AsyncMock()
-
+def _mock_connect_process() -> MagicMock:
+    """Build the process mock connect() awaits."""
     main_process = MagicMock()
     main_process.stdout = MagicMock()
     main_stdin = MagicMock()
     main_stdin.aclose = AsyncMock()
     main_process.stdin = main_stdin
     main_process.returncode = None
-    return version_process, main_process
+    return main_process
 
 
 class TestWindowsBatchScriptRefusal:
@@ -2528,166 +2558,10 @@ class TestWindowsBatchScriptRefusal:
 
     CreateProcess routes batch scripts through cmd.exe /c, and cmd.exe
     re-parses the whole command line, so every argument value would reach
-    a shell. The refusal happens before the version probe, so no spawn of
-    the script occurs at all.
+    a shell. The refusal happens before connect() spawns anything.
     """
 
     _PLATFORM = "claude_agent_sdk._internal.transport.subprocess_cli.platform.system"
-
-    def test_npm_cmd_shim_from_which_is_refused(self):
-        # Shim-only machine: which("claude") resolves npm's claude.cmd and
-        # no native claude.exe is discoverable (which("claude.exe") -> None,
-        # no .exe in the fallback locations). Discovery must still hand the
-        # shim to connect() so the batch-script refusal fires -- the .exe
-        # preference is additive and never lets a shim-only machine spawn.
-        async def _test():
-            from claude_agent_sdk._errors import CLIConnectionError
-
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-
-            def _which(name: str) -> str | None:
-                return shim if name == "claude" else None
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-                pytest.raises(CLIConnectionError, match="batch script"),
-            ):
-                await transport.connect()
-
-            assert mock_open.call_count == 0
-
-        anyio.run(_test)
-
-    def test_native_exe_is_preferred_over_shadowing_npm_shim(self):
-        # Dual-install machine: npm's %APPDATA%\npm precedes the native
-        # installer's %USERPROFILE%\.local\bin on PATH, so which("claude")
-        # resolves the claude.cmd shim -- shutil.which walks PATH
-        # directory-major, so the earlier npm directory wins (within one
-        # directory the default PATHEXT would prefer .EXE over .CMD; the
-        # shadowing comes purely from directory order). Discovery must find
-        # the shadowed native claude.exe via which("claude.exe") so connect()
-        # proceeds instead of refusing.
-        async def _test():
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
-
-            def _which(name: str) -> str | None:
-                return {"claude": shim, "claude.exe": native}.get(name)
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-            version_process, main_process = _mock_connect_processes()
-
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-            ):
-                mock_open.side_effect = [version_process, main_process]
-                await transport.connect()
-
-            assert mock_open.call_count == 2
-            assert mock_open.call_args_list[1].args[0][0] == native
-
-        anyio.run(_test)
-
-    def test_claude_exe_probe_result_is_vetted(self):
-        # Python 3.12+ shutil.which appends PATHEXT extensions even to a
-        # name that already carries one, so which("claude.exe") can hand
-        # back a stray "claude.exe.cmd". Discovery must not accept that as
-        # the rescued native exe: it falls through to the fallback location
-        # and, with none there, returns the original npm shim so connect()
-        # refuses naming the shim its remediation message is written for.
-        async def _test():
-            from claude_agent_sdk._errors import CLIConnectionError
-
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-            junk = "C:\\tools\\claude.exe.cmd"
-
-            def _which(name: str) -> str | None:
-                return {"claude": shim, "claude.exe": junk}.get(name)
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-                pytest.raises(CLIConnectionError, match=r"npm\\\\claude\.CMD"),
-            ):
-                await transport.connect()
-
-            assert mock_open.call_count == 0
-
-        anyio.run(_test)
-
-    def test_extensionless_which_hit_still_prefers_native_exe(self):
-        # Python 3.12+ shutil.which also probes the bare name, so an
-        # extensionless git-bash / WSL wrapper script named "claude" in an
-        # early PATH directory shadows a native claude.exe installed in a
-        # later one. CreateProcess cannot run that script (WinError 193),
-        # so discovery must run the same native-exe rescue instead of
-        # committing to the wrapper.
-        async def _test():
-            wrapper = "C:\\Users\\u\\bin\\claude"
-            native = "C:\\Users\\u\\.local\\bin\\claude.exe"
-
-            def _which(name: str) -> str | None:
-                return {"claude": wrapper, "claude.exe": native}.get(name)
-
-            transport = SubprocessCLITransport(
-                prompt="test", options=ClaudeAgentOptions()
-            )
-            version_process, main_process = _mock_connect_processes()
-
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", return_value=False),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-            ):
-                mock_open.side_effect = [version_process, main_process]
-                await transport.connect()
-
-            assert mock_open.call_count == 2
-            assert mock_open.call_args_list[1].args[0][0] == native
-
-        anyio.run(_test)
 
     def test_explicit_bat_cli_path_is_refused(self):
         async def _test():
@@ -2767,16 +2641,16 @@ class TestWindowsBatchScriptRefusal:
                     cli_path="C:\\Users\\u\\.local\\bin\\claude.EXE"
                 ),
             )
-            version_process, main_process = _mock_connect_processes()
+            main_process = _mock_connect_process()
 
             with (
                 patch(self._PLATFORM, return_value="Windows"),
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
             ):
-                mock_open.side_effect = [version_process, main_process]
+                mock_open.return_value = main_process
                 await transport.connect()
 
-            assert mock_open.call_count == 2
+            assert mock_open.call_count == 1
 
         anyio.run(_test)
 
@@ -2786,7 +2660,7 @@ class TestWindowsBatchScriptRefusal:
             transport = SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
             )
-            version_process, main_process = _mock_connect_processes()
+            main_process = _mock_connect_process()
 
             with (
                 patch(self._PLATFORM, return_value=system),
@@ -2799,16 +2673,13 @@ class TestWindowsBatchScriptRefusal:
                 ) as mock_which,
                 patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
             ):
-                mock_open.side_effect = [version_process, main_process]
+                mock_open.return_value = main_process
                 await transport.connect()
 
-            # POSIX discovery uses the which("claude") result directly: the
-            # native-exe preference is a Windows-only branch, so there is no
-            # claude.exe probe here.
             assert mock_which.call_count == 1
             assert mock_which.call_args.args == ("claude",)
-            assert mock_open.call_count == 2
-            assert mock_open.call_args_list[1].args[0][0] == "/usr/local/bin/claude"
+            assert mock_open.call_count == 1
+            assert mock_open.call_args.args[0][0] == "/usr/local/bin/claude"
 
         anyio.run(_test)
 
@@ -2817,18 +2688,13 @@ class TestWindowsBatchScriptRefusal:
             SubprocessCLITransport._reject_windows_batch_cli("/odd/claude.cmd")
 
     def _not_found_message(self, system: str) -> str:
-        from claude_agent_sdk._errors import CLINotFoundError
-
         transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
         with (
             patch(self._PLATFORM, return_value=system),
             patch.object(
                 SubprocessCLITransport, "_find_bundled_cli", return_value=None
             ),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
+            patch.dict(os.environ, {"PATH": ""}),
             patch("pathlib.Path.exists", return_value=False),
             pytest.raises(CLINotFoundError) as exc_info,
         ):
@@ -2852,76 +2718,86 @@ class TestWindowsBatchScriptRefusal:
         )
         assert "install.ps1" not in message
 
-    def test_fallback_locations_find_native_windows_exe(self):
-        # The native installer writes ~/.local/bin/claude.exe; Path.exists()
-        # does no PATHEXT resolution, so the fallback list must probe the
-        # .exe name explicitly for a stale-PATH process to find it.
-        from pathlib import Path
 
-        native_exe = Path.home() / ".local/bin/claude.exe"
+class TestWindowsCliLookup:
+    """On Windows, _find_cli() only finds claude.exe in absolute directories."""
 
-        def _exists(path: Path) -> bool:
-            return path == native_exe
+    @pytest.fixture
+    def find_cli(self, tmp_path, monkeypatch):
+        """Run _find_cli() as on Windows, from tmp_path with an empty home."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            lambda: "Windows",
+        )
+        monkeypatch.setattr(
+            SubprocessCLITransport, "_find_bundled_cli", lambda self: None
+        )
 
-        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
-        with (
-            patch(self._PLATFORM, return_value="Windows"),
-            patch.object(
-                SubprocessCLITransport, "_find_bundled_cli", return_value=None
-            ),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                return_value=None,
-            ),
-            patch("pathlib.Path.exists", new=_exists),
-            patch("pathlib.Path.is_file", new=_exists),
-        ):
-            assert transport._find_cli() == str(native_exe)
-
-    def test_windows_fallback_skips_posix_shaped_probes(self):
-        # Shim-only Windows machine that also has an extensionless
-        # ~/.local/bin/claude artifact (WSL / git-bash script) and a
-        # C:\usr\local\bin\claude planted on the current drive: the Windows
-        # fallback must probe only the native ~/.local/bin/claude.exe, so
-        # discovery still hands connect() the shim and the batch-script
-        # refusal fires (0 spawns) instead of spawning either artifact.
-        from pathlib import Path
-
-        native_exe = Path.home() / ".local/bin/claude.exe"
-
-        def _exists(path: Path) -> bool:
-            return path != native_exe
-
-        async def _test():
-            from claude_agent_sdk._errors import CLIConnectionError
-
-            shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.CMD"
-
-            def _which(name: str) -> str | None:
-                return shim if name == "claude" else None
-
-            transport = SubprocessCLITransport(
+        def _find_cli(*path: object) -> str:
+            monkeypatch.setenv("PATH", os.pathsep.join(map(str, path)))
+            return SubprocessCLITransport(
                 prompt="test", options=ClaudeAgentOptions()
-            )
-            with (
-                patch(self._PLATFORM, return_value="Windows"),
-                patch.object(
-                    SubprocessCLITransport, "_find_bundled_cli", return_value=None
-                ),
-                patch(
-                    "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
-                    side_effect=_which,
-                ),
-                patch("pathlib.Path.exists", new=_exists),
-                patch("pathlib.Path.is_file", new=_exists),
-                patch("anyio.open_process", new_callable=AsyncMock) as mock_open,
-                pytest.raises(CLIConnectionError, match="batch script"),
-            ):
-                await transport.connect()
+            )._find_cli()
 
-            assert mock_open.call_count == 0
+        return _find_cli
 
-        anyio.run(_test)
+    @staticmethod
+    def _add(directory, name="claude.exe"):
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_bytes(b"")
+        path.chmod(0o755)
+        return path
+
+    def test_finds_native_exe_on_path(self, find_cli, tmp_path):
+        exe = self._add(tmp_path / "bin")
+        assert find_cli(tmp_path / "missing", tmp_path / "bin") == str(exe)
+
+    def test_working_directory_is_not_searched(self, find_cli, tmp_path):
+        self._add(tmp_path)
+        self._add(tmp_path / "tools")
+        exe = self._add(tmp_path / "bin")
+        # "" and "." name the working directory, "tools" a directory under it
+        assert find_cli("", ".", "tools", tmp_path / "bin") == str(exe)
+
+    def test_only_working_directory_hits_is_not_found(self, find_cli, tmp_path):
+        self._add(tmp_path)
+        with pytest.raises(CLINotFoundError):
+            find_cli("", ".")
+
+    def test_shim_and_wrapper_do_not_shadow_native_exe(self, find_cli, tmp_path):
+        self._add(tmp_path / "npm", "claude.cmd")
+        self._add(tmp_path / "npm", "claude.exe.cmd")
+        self._add(tmp_path / "wsl", "claude")
+        exe = self._add(tmp_path / "bin")
+        assert find_cli(tmp_path / "npm", tmp_path / "wsl", tmp_path / "bin") == str(
+            exe
+        )
+
+    def test_shim_only_machine_gets_the_native_install_message(
+        self, find_cli, tmp_path
+    ):
+        self._add(tmp_path / "npm", "claude.cmd")
+        with pytest.raises(CLINotFoundError, match="claude.cmd shim"):
+            find_cli(tmp_path / "npm")
+
+    def test_path_hit_does_not_need_a_home_directory(
+        self, find_cli, tmp_path, monkeypatch
+    ):
+        def _no_home() -> None:
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr("pathlib.Path.home", _no_home)
+        exe = self._add(tmp_path / "bin")
+        assert find_cli(tmp_path / "bin") == str(exe)
+
+    def test_native_installer_location_is_the_fallback(self, find_cli, tmp_path):
+        exe = self._add(tmp_path / "home/.local/bin")
+        # Not the POSIX-shaped name beside it
+        self._add(tmp_path / "home/.local/bin", "claude")
+        assert find_cli(tmp_path / "missing") == str(exe)
 
 
 class TestExtraArgsValueBinding:

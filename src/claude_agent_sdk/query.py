@@ -60,21 +60,27 @@ async def query(
                  - 'dontAsk': Deny anything not pre-approved by allow rules
                  - 'auto': A model classifier approves or denies each tool call
                  Set options.cwd for working directory.
-        transport: Optional transport implementation. If provided, this will be used
-                  instead of the default transport selection based on options.
-                  The transport will be automatically configured with the prompt and options.
+        transport: Optional transport implementation. If provided, it is used
+                  instead of the default subprocess transport: the SDK calls its
+                  ``connect()``, delivers the prompt over ``write()``, and sends
+                  hooks, agents, and the other initialize-request settings through
+                  the control protocol. Command-line options in ``options`` (model,
+                  cwd, permission mode, tools, and the other fields the subprocess
+                  transport turns into CLI flags) are not applied to a custom
+                  transport, and store-backed session resume is skipped.
 
     Yields:
         Messages from the conversation
 
-    Example - Simple query:
+    Examples:
+        Simple query:
         ```python
         # One-off question
         async for message in query(prompt="What is the capital of France?"):
             print(message)
         ```
 
-    Example - With options:
+        With options:
         ```python
         # Code generation with specific settings
         async for message in query(
@@ -87,7 +93,7 @@ async def query(
             print(message)
         ```
 
-    Example - Streaming mode (still unidirectional):
+        Streaming mode (still unidirectional):
         ```python
         async def prompts():
             yield {"type": "user", "message": {"role": "user", "content": "Hello"}}
@@ -98,7 +104,7 @@ async def query(
             print(message)
         ```
 
-    Example - With custom transport:
+        With custom transport:
         ```python
         from claude_agent_sdk import query, Transport
 

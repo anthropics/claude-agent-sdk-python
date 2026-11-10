@@ -1,5 +1,204 @@
 # Changelog
 
+## 0.2.178
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.318
+
+## 0.2.177
+
+### New Features
+
+- **`on_failure` option for `HookMatcher`**: Control what happens when a hook callback fails. Set `on_failure="block"` to block the action when a callback raises, returns `None`, or returns a value the CLI rejects. Defaults to `"continue"` (treat failure as no decision). Requires a CLI version that supports this option; connecting to an older CLI with `on_failure="block"` raises `CLIConnectionError` (#1460)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.317
+- Tests: e2e tests now accept either `Bash` or `PowerShell` tool in shell-dependent tests, fixing intermittent failures on Windows (#1467)
+
+## 0.2.176
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.316
+
+## 0.2.175
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.314
+- CI: raised PyPI project size limit guard from 50 GiB to 150 GiB to match the new quota granted by PyPI (#1455)
+
+## 0.2.174
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.310
+
+## 0.2.173
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.309
+
+## 0.2.172
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.308
+
+## 0.2.171
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.307
+
+## 0.2.170
+
+### Bug Fixes
+
+- **Fixed parallel tool calls missing from session messages**: `get_session_messages` and `get_session_messages_from_store` now return every tool call and result from turns that ran tools in parallel. Previously only one branch of the forked transcript was followed, dropping some calls and results (#1422)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.306
+- CI: release uploads to PyPI now use trusted publishing (GitHub OIDC) instead of a long-lived API token (#1418)
+
+## 0.2.169
+
+### Documentation
+
+- Clarified that `include_hook_events` does not suppress `SessionStart` and `Setup` hook events, which the CLI emits regardless of the setting (#1336)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.305
+- CI: hash-pinned the release build tools (`build`, `twine`, `wheel`, `hatchling`) so a tampered or unexpected download stops the job (#1415)
+
+## 0.2.168
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.301
+
+## 0.2.167
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.300
+
+## 0.2.166
+
+### New Features
+
+- **Hook-specific output types**: Added typed output classes and missing input fields for hooks, giving hook implementations precise type information instead of untyped dicts (#1331)
+- **`SystemInitData` TypedDict**: The init system message payload is now fully typed via `SystemInitData`, along with nested types `SystemInitMcpServer`, `SystemInitPlugin`, `SystemInitPluginError`, and `FastModeState`/`FastModeDisabledReason` literals. Use `cast(SystemInitData, msg.data)` to access typed fields like `capabilities`, `model`, `mcp_servers`, and more (#1332)
+
+### Bug Fixes
+
+- **Fixed `SandboxSettings.ignoreViolations` type**: Changed from a `TypedDict` with `file`/`network` keys to `dict[str, list[str]]` to match the CLI's actual schema — a map from command-pattern substring to violation-text substrings. The old type caused `"file"` and `"network"` to be interpreted as command patterns, and strict type checkers rejected the correct `{"*": [...]}` shape (#1380)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.299
+
+## 0.2.165
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.294
+- CI: alert Slack when a release is blocked or fails (#1368)
+
+## 0.2.164
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.292
+- CI: security hardening for GitHub Actions workflows that call Claude — egress-firewall runner, network allow list, auto permission mode, and a check workflow to enforce them (#1329)
+- CI: raised PyPI per-file limit guard to 250 MiB to match the updated project limit (#1366)
+- Tests: fixed thinking-deltas e2e test for CLI 2.1.287+ by using explicit thinking display options (#1367)
+
+## 0.2.163
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.286
+- CI: pinned the model for issue triage to fix failures caused by the CLI's new default model (#1328)
+
+## 0.2.162
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.285
+
+## 0.2.161
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.284
+
+## 0.2.160
+
+### Bug Fixes
+
+- **Fixed follow-up turns failing after background subagents**: When using `query()` with hooks, `can_use_tool`, or SDK MCP servers, stdin was closed too early if a subagent finished just before the turn's result arrived. Follow-up turns would then fail with "Stream closed" and the model would report the tool as refused. The SDK now listens for the CLI's `session_state_changed` messages and keeps stdin open until the CLI reports `idle`, matching the TypeScript SDK's behavior. A bounded wait ceiling (configurable via `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, default 10 minutes) prevents indefinite hangs. Older CLIs without state events fall back to the previous close-at-first-result behavior. (#1190, #1279)
+
+### Documentation
+
+- Aligned docstrings with the code and fixed docstring formatting (#1293)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.283
+- CI: skip wheels over PyPI's per-file limit instead of failing the release (#1309)
+
+## 0.2.159
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.281
+- Pinned default model for e2e tests to `claude-opus-5` to work around CI failures with the CLI's new default model (#1287)
+
+## 0.2.158
+
+### New Features
+
+- **`verbatim_prompts` option**: Added `ClaudeAgentOptions.verbatim_prompts` (default `False`). When `True`, user messages are delivered to the CLI exactly as written — no `@path` file expansion and no slash-command dispatch. This prevents untrusted text inlined into prompts from triggering unintended file reads or command execution. Works with `query()`, `ClaudeSDKClient.connect()`, and `ClaudeSDKClient.query()` for both string and async-iterable prompts. Requires CLI 2.1.248+; a warning is logged on older CLIs. (#1269)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.280
+- CI improvements: recompressed wheels and raised the PyPI pre-flight threshold (#1283)
+
+## 0.2.156
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.276
+
+## 0.2.155
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.275
+
+## 0.2.154
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.274
+
+## 0.2.153
+
+### New Features
+
+- **`snapshot` option for system prompts**: Added a `snapshot` field to `SystemPromptPreset` and a new `SystemPromptCustom` typed dict. When `snapshot` is True, the session keeps the system prompt recorded on its first request, improving prompt-caching behavior across resumed sessions. When False, the prompt is rebuilt on every request, useful for iterating on `append` text. Requires CLI 2.1.257+ (#1268)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.273
+
 ## 0.2.152
 
 ### Internal/Other Changes
@@ -1329,7 +1528,7 @@ Introducing the Claude Agent SDK! The Claude Code SDK has been renamed to better
 
 #### Settings Isolation
 
-- **No filesystem settings by default**: Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. This ensures SDK applications have predictable behavior independent of local filesystem configurations
+- **No filesystem settings by default** (until 0.1.53): Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. Since 0.1.53, filesystem settings load unless you opt out; use `setting_sources=[]` (0.1.60 or later)
 - **Explicit settings control**: Use the new `setting_sources` field to specify which settings locations to load: `["user", "project", "local"]`
 
 For full migration instructions, see our [migration guide](https://docs.claude.com/en/docs/claude-code/sdk/migration-guide).

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from .types import (
     ClaudeAgentOptions,
     ContextUsageResponse,
+    McpServerConfig,
     McpStatusResponse,
     Message,
     PermissionMode,
@@ -439,6 +440,45 @@ class ClaudeSDKClient:
         if not self._query:
             raise CLIConnectionError("Not connected. Call connect() first.")
         await self._query.toggle_mcp_server(server_name, enabled)
+
+    async def set_mcp_servers(self, servers: dict[str, McpServerConfig]) -> None:
+        """Apply a new set of MCP servers to the running session (streaming mode only).
+
+        Use this to change MCP server configuration without restarting -- for
+        example rotating an HTTP server's `Authorization` header when a token
+        expires mid-session. Raises an exception on failure.
+
+        This is authoritative: it replaces the whole dynamically-managed server
+        set. The in-process SDK servers you passed in
+        `ClaudeAgentOptions.mcp_servers` are preserved automatically, so their
+        tools stay available -- you do not need to list them. To add or replace
+        an SDK server, include its config (with `instance`) and it is registered
+        so its tools route; the `instance` is stripped before the config reaches
+        the CLI, exactly as at startup.
+
+        Args:
+            servers: Mapping of server name to `McpServerConfig` to apply.
+                Entries here take precedence over a preserved SDK server of the
+                same name.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient(options) as client:
+                # Rotate an HTTP MCP server's bearer token mid-session
+                await client.set_mcp_servers(
+                    {
+                        "my-http": {
+                            "type": "http",
+                            "url": "https://example.com/mcp",
+                            "headers": {"Authorization": "Bearer NEW_TOKEN"},
+                        }
+                    }
+                )
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        await self._query.set_mcp_servers(servers)
 
     async def stop_task(self, task_id: str) -> None:
         """Stop a running task (only works with streaming mode).

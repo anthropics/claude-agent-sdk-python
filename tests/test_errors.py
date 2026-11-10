@@ -74,6 +74,7 @@ class TestErrorTypes:
         assert error.terminal_reason is None
         assert error.session_id is None
         assert error.exit_code is None
+        assert error.error is None
         assert ResultError("boom").data == {}
 
     def test_result_error_normalizes_errors_like_the_message_text(self):
@@ -89,11 +90,17 @@ class TestErrorTypes:
         import pickle
 
         data = {"subtype": "error_max_turns", "errors": ["too many"], "session_id": "s"}
-        error = ResultError("Claude Code returned an error result: too many", data, 1)
+        error = ResultError(
+            "Claude Code returned an error result: too many",
+            data,
+            1,
+            error="rate_limit",
+        )
         for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
             assert type(clone) is ResultError
             assert str(clone) == str(error)
             assert clone.exit_code == 1
+            assert clone.error == "rate_limit"
             assert clone.subtype == "error_max_turns"
             assert clone.errors == ["too many"]
             assert clone.session_id == "s"

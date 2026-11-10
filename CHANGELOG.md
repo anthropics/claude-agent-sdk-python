@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.178
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.318
+
+## 0.2.177
+
+### New Features
+
+- **`on_failure` option for `HookMatcher`**: Control what happens when a hook callback fails. Set `on_failure="block"` to block the action when a callback raises, returns `None`, or returns a value the CLI rejects. Defaults to `"continue"` (treat failure as no decision). Requires a CLI version that supports this option; connecting to an older CLI with `on_failure="block"` raises `CLIConnectionError` (#1460)
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.1.317
+- Tests: e2e tests now accept either `Bash` or `PowerShell` tool in shell-dependent tests, fixing intermittent failures on Windows (#1467)
+
 ## 0.2.176
 
 ### Internal/Other Changes
@@ -1511,7 +1528,7 @@ Introducing the Claude Agent SDK! The Claude Code SDK has been renamed to better
 
 #### Settings Isolation
 
-- **No filesystem settings by default**: Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. This ensures SDK applications have predictable behavior independent of local filesystem configurations
+- **No filesystem settings by default** (until 0.1.53): Settings files (`settings.json`, `CLAUDE.md`), slash commands, and subagents are no longer loaded automatically. Since 0.1.53, filesystem settings load unless you opt out; use `setting_sources=[]` (0.1.60 or later)
 - **Explicit settings control**: Use the new `setting_sources` field to specify which settings locations to load: `["user", "project", "local"]`
 
 For full migration instructions, see our [migration guide](https://docs.claude.com/en/docs/claude-code/sdk/migration-guide).

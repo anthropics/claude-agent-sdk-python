@@ -189,10 +189,12 @@ class PermissionUpdate:
             if self.mode is not None:
                 result["mode"] = self.mode
 
-        elif self.type in ["addDirectories", "removeDirectories"]:
+        elif (
+            self.type in ["addDirectories", "removeDirectories"]
+            and self.directories is not None
+        ):
             # Directory variants require directories
-            if self.directories is not None:
-                result["directories"] = self.directories
+            result["directories"] = self.directories
 
         return result
 
@@ -2476,8 +2478,8 @@ class ClaudeAgentOptions:
     Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
     flag. When ``sandbox`` is also set, the settings are merged with the sandbox
     settings and passed as one JSON string: an inline string is parsed
-    directly, and a path is read from disk (a missing file is logged and only
-    the sandbox settings are passed).
+    directly, and a path is read from disk, relative to ``cwd`` when ``cwd`` is
+    set. Settings that cannot be loaded raise ``CLIConnectionError``.
 
     These are loaded into the "flag settings" layer, which has the highest
     priority among user-controlled settings.
@@ -2671,7 +2673,8 @@ class ClaudeAgentOptions:
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
     When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    to disable filesystem settings (SDK isolation mode), for example when
+    ``cwd`` may be untrusted: project settings can run hooks. Must include
     ``"project"`` to load CLAUDE.md files.
     """
 

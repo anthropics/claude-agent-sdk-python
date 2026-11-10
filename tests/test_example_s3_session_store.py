@@ -600,3 +600,53 @@ async def test_batcher_50_entries(s3_client: Any, tmp_path: Path) -> None:
     loaded = await store.load({"project_key": "proj", "session_id": "sess"})
     assert loaded is not None
     assert [e["n"] for e in loaded] == list(range(50))
+
+
+@pytest.mark.anyio
+async def test_folder_markers_do_not_create_sessions_or_change_mtime(
+    s3_client: Any,
+) -> None:
+    store = _make_store(s3_client)
+    s3_client.put_object(
+        Bucket=BUCKET,
+        Key="p/proj/existing/part-1700000000000-aaaaaa.jsonl",
+        Body=b'{"type":"user"}\n',
+    )
+    for marker in ("p/proj/", "p/proj/empty/", "p/proj/existing/"):
+        s3_client.put_object(Bucket=BUCKET, Key=marker, Body=b"")
+
+    assert await store.list_sessions("proj") == [
+        {"session_id": "existing", "mtime": 1_700_000_000_000}
+    ]
+
+
+@pytest.mark.anyio
+async def test_folder_markers_do_not_create_subkeys(s3_client: Any) -> None:
+    store = _make_store(s3_client)
+    key: SessionKey = {"project_key": "proj", "session_id": "sess"}
+    await store.append({**key, "subpath": "subagents/real"}, [{"type": "user"}])
+    for marker in (
+        "p/proj/sess/",
+        "p/proj/sess/subagents/",
+        "p/proj/sess/subagents/empty/",
+        "p/proj/sess/subagents/real/",
+    ):
+        s3_client.put_object(Bucket=BUCKET, Key=marker, Body=b"")
+
+    assert await store.list_subkeys(key) == ["subagents/real"]
+
+
+@pytest.mark.anyio
+async def test_load_does_not_fetch_folder_marker() -> None:
+    client = _RecordingClient()
+    client.objects = {
+        "p/proj/sess/": b"",
+        "p/proj/sess/part-1700000000000-aaaaaa.jsonl": b'{"type":"user"}\n',
+    }
+    store = _make_store(client)
+    assert await store.load({"project_key": "proj", "session_id": "sess"}) == [
+        {"type": "user"}
+    ]
+    assert [c["Key"] for c in _calls_of(client, "get_object")] == [
+        "p/proj/sess/part-1700000000000-aaaaaa.jsonl"
+    ]

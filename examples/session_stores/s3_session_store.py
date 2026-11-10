@@ -211,7 +211,7 @@ class S3SessionStore(SessionStore):
                 k = obj.get("Key")
                 # Guard against S3-compatibles that ignore Delimiter: keep only
                 # direct children (part files have no '/' after the prefix).
-                if k and "/" not in k[len(prefix) :]:
+                if k and not k.endswith("/") and "/" not in k[len(prefix) :]:
                     keys.append(k)
             continuation_token = result.get("NextContinuationToken")
             if not continuation_token:
@@ -272,7 +272,8 @@ class S3SessionStore(SessionStore):
             result = await self._list_objects_v2(**kwargs)
             for obj in result.get("Contents") or []:
                 k = obj.get("Key")
-                if not k:
+                # S3 console folders are zero-byte objects with a trailing slash.
+                if not k or k.endswith("/"):
                     continue
                 # {prefix}{session_id}/part-{epochMs13}-{rand}.jsonl
                 rest = k[len(prefix) :]
@@ -355,7 +356,8 @@ class S3SessionStore(SessionStore):
             result = await self._list_objects_v2(**kwargs)
             for obj in result.get("Contents") or []:
                 k = obj.get("Key")
-                if not k:
+                # S3 console folders are zero-byte objects with a trailing slash.
+                if not k or k.endswith("/"):
                     continue
                 # Extract subpath from key:
                 # {prefix}{project_key}/{session_id}/{subpath}/part-{epochMs}-{rand}.jsonl

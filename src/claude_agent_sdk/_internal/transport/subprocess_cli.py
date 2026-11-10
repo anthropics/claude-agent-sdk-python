@@ -962,6 +962,9 @@ class SubprocessCLITransport(Transport):
                 except asyncio.CancelledError as exc:
                     cancellation = exc
         if cancellation is not None:
+            # exception() raises for a cancelled task instead of returning it.
+            if cleanup_task.cancelled():
+                raise cancellation
             cleanup_error = cleanup_task.exception()
             if cleanup_error is not None:
                 raise cancellation from cleanup_error

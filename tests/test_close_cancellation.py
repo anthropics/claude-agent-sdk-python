@@ -278,6 +278,43 @@ async def test_cleanup_failure_surfaces_without_cancellation() -> None:
         await transport.close()
 
 
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_cancelled_cleanup_task_does_not_replace_caller_cancellation() -> None:
+    """A cancelled cleanup task must not replace the caller's cancellation."""
+    transport = SubprocessCLITransport(
+        prompt="hi",
+        options=ClaudeAgentOptions(cli_path="/usr/bin/claude"),
+    )
+    cleanup_started = asyncio.Event()
+    cleanup_tasks: list[asyncio.Task[None]] = []
+
+    async def stuck_close() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        cleanup_tasks.append(task)
+        cleanup_started.set()
+        await asyncio.Event().wait()
+
+    async def close_and_catch() -> asyncio.CancelledError | None:
+        try:
+            await transport.close()
+        except asyncio.CancelledError as exc:
+            return exc
+        return None
+
+    with patch.object(transport, "_close_impl", side_effect=stuck_close):
+        close_task = asyncio.create_task(close_and_catch())
+        await cleanup_started.wait()
+        close_task.cancel("caller")
+        await anyio.sleep(0)
+        cleanup_tasks[0].cancel("cleanup")
+        raised = await close_task
+
+    assert cleanup_tasks[0].cancelled()
+    assert raised is not None
+    assert raised.args == ("caller",)
+
+
 @posix_only
 async def test_cancelled_client_context_leaves_no_child(tmp_path: Path) -> None:
     """A cancelled `async with ClaudeSDKClient()` must not leak the CLI child."""

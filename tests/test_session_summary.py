@@ -174,6 +174,36 @@ class TestFoldSessionSummary:
         )
         assert s["data"]["is_sidechain"] is True
 
+    def test_sidechain_flag_after_unmarked_initial_entry(self) -> None:
+        """A summary entry without isSidechain must not lock in False."""
+        s = fold_session_summary(
+            None,
+            KEY,
+            [
+                {"type": "summary", "summary": "internal task"},
+                {"type": "user", "isSidechain": True, "message": {"content": "Hi"}},
+            ],
+        )
+        assert s["data"]["is_sidechain"] is True
+        assert summary_entry_to_sdk_info(s, DIR) is None
+
+    def test_sidechain_flag_latched_across_append_batches(self) -> None:
+        """The first explicitly reported boolean survives incremental writes."""
+        s = fold_session_summary(None, KEY, [{"type": "summary", "summary": "task"}])
+        assert "is_sidechain" not in s["data"]
+        s = fold_session_summary(
+            s,
+            KEY,
+            [{"type": "user", "isSidechain": True, "message": {"content": "hi"}}],
+        )
+        assert s["data"]["is_sidechain"] is True
+        assert summary_entry_to_sdk_info(s, DIR) is None
+
+    def test_explicit_false_sidechain_flag_is_still_latched(self) -> None:
+        s = fold_session_summary(None, KEY, [{"type": "user", "isSidechain": False}])
+        s = fold_session_summary(s, KEY, [{"type": "user", "isSidechain": True}])
+        assert s["data"]["is_sidechain"] is False
+
     def test_sidechain_latched_when_first_entry_lacks_timestamp(self) -> None:
         """Regression: is_sidechain must latch on entry 0 even if its timestamp
         is absent/unparseable, so entry 1 cannot overwrite it to False."""
@@ -427,6 +457,25 @@ class TestListSessionsFromStoreFastPath:
         assert sessions[0].session_id == sid_b
         assert sessions[0].summary == "first b"
         assert sessions[1].first_prompt == "first a"
+
+    async def test_fast_path_filters_sidechain_when_first_record_has_no_flag(
+        self,
+    ) -> None:
+        """Late sidechain metadata must not make a subagent appear as a main session."""
+        store = InMemorySessionStore()
+        main_id = str(uuid_mod.uuid4())
+        side_id = str(uuid_mod.uuid4())
+        main_key: SessionKey = {"project_key": PROJECT_KEY, "session_id": main_id}
+        side_key: SessionKey = {"project_key": PROJECT_KEY, "session_id": side_id}
+
+        await store.append(main_key, [_user("ordinary session", cwd=DIR)])
+        await store.append(side_key, [{"type": "summary", "summary": "agent task"}])
+        await store.append(
+            side_key, [_user("subagent message", cwd=DIR, isSidechain=True)]
+        )
+
+        sessions = await list_sessions_from_store(store, directory=DIR)
+        assert {item.session_id for item in sessions} == {main_id}
 
     async def test_fast_path_filters_sidechain_and_empty(self) -> None:
         store = InMemorySessionStore()

@@ -7,6 +7,8 @@ adapter authors can import it.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from claude_agent_sdk import (
@@ -155,6 +157,25 @@ class TestInMemorySessionStore:
         await store.append(sub, [])
         assert await store.load(sub) is None
         assert await store.list_subkeys(_KEY) == []
+
+    @pytest.mark.anyio
+    async def test_append_empty_preserves_existing_session_metadata(self) -> None:
+        """An empty append must not make an older session appear newly written."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [{"type": "user", "message": {"content": "Hello"}}])
+        newer_key: SessionKey = {"project_key": "proj", "session_id": "newer"}
+        await store.append(newer_key, [{"n": 2}])
+
+        sessions = deepcopy(await store.list_sessions("proj"))
+        summaries = deepcopy(await store.list_session_summaries("proj"))
+        entries = await store.load(_KEY)
+
+        for _ in range(2):
+            await store.append(_KEY, [])
+            assert await store.list_sessions("proj") == sessions
+            assert await store.list_session_summaries("proj") == summaries
+            assert await store.load(_KEY) == entries
+            assert store.size == 2
 
 
 # ---------------------------------------------------------------------------

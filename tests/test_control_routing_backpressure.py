@@ -65,7 +65,9 @@ async def test_control_request_is_answered_after_unconsumed_message_burst():
     try:
         # Exceed the old 100-message buffer without reading any of it.
         for index in range(150):
-            await transport.inject({"type": "system", "subtype": "test_event", "index": index})
+            await transport.inject(
+                {"type": "system", "subtype": "test_event", "index": index}
+            )
         await transport.inject(
             {
                 "type": "control_request",
@@ -140,9 +142,61 @@ async def test_buffer_does_not_block_after_result_before_follow_up():
             ):
                 await anyio.sleep(0)
         response = next(
-            msg for msg in transport.writes
+            msg
+            for msg in transport.writes
             if msg.get("response", {}).get("request_id") == "request-2"
         )
         assert response["response"]["subtype"] == "error"
+    finally:
+        await query.close()
+
+
+@pytest.mark.anyio
+async def test_message_buffer_warning_is_emitted_once(caplog):
+    """Warn once when unread messages reach the high-water mark."""
+    import logging
+
+    transport = ScriptedTransport()
+    query = Query(
+        transport=transport,
+        is_streaming_mode=True,
+        can_use_tool=None,
+        hooks=None,
+    )
+    await query.start()
+    try:
+        with caplog.at_level(logging.WARNING):
+            for index in range(1100):
+                await transport.inject(
+                    {"type": "system", "subtype": "test_event", "index": index}
+                )
+
+            with anyio.fail_after(5):
+                while not any(
+                    "SDK message buffer contains at least 1000 unread messages"
+                    in record.message
+                    for record in caplog.records
+                ):
+                    await anyio.sleep(0)
+
+            warnings = [
+                record
+                for record in caplog.records
+                if "SDK message buffer contains at least 1000 unread messages"
+                in record.message
+            ]
+            assert len(warnings) == 1
+
+            with anyio.fail_after(5):
+                while query._message_send.statistics().current_buffer_used < 1100:
+                    await anyio.sleep(0)
+
+            warnings = [
+                record
+                for record in caplog.records
+                if "SDK message buffer contains at least 1000 unread messages"
+                in record.message
+            ]
+            assert len(warnings) == 1
     finally:
         await query.close()

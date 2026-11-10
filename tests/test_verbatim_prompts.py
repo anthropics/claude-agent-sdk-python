@@ -214,44 +214,32 @@ class TestClaudeSDKClient:
 
 class TestOlderCliWarning:
     @staticmethod
-    async def _check_version(verbatim_prompts: bool, version: bytes) -> Mock:
+    def _check_version(verbatim_prompts: bool, version: str) -> Mock:
         transport = SubprocessCLITransport(
             prompt="test",
             options=ClaudeAgentOptions(
                 cli_path="/usr/bin/claude", verbatim_prompts=verbatim_prompts
             ),
         )
-        process = Mock()
-        process.stdout.receive = AsyncMock(return_value=version)
-        process.terminate = Mock()
-        process.wait = AsyncMock()
-        with (
-            patch("anyio.open_process", AsyncMock(return_value=process)),
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.logger"
-            ) as logger,
-        ):
-            await transport._check_claude_version()
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.logger"
+        ) as logger:
+            transport._check_claude_version(
+                {"type": "system", "subtype": "init", "claude_code_version": version}
+            )
         return logger
 
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("version", [b"2.1.247 (Claude Code)", b"2.0.5"])
-    async def test_warns_when_cli_predates_client_composed(self, version):
-        logger = await self._check_version(True, version)
+    @pytest.mark.parametrize("version", ["2.1.247", "2.0.5"])
+    def test_warns_when_cli_predates_client_composed(self, version):
+        logger = self._check_version(True, version)
         logger.warning.assert_called_once()
         message = logger.warning.call_args.args[0]
         assert "verbatim_prompts" in message
         assert logger.warning.call_args.args[-1] == "2.1.248"
 
-    @pytest.mark.anyio
-    @pytest.mark.parametrize(
-        "version", [b"2.1.248", b"2.1.273 (Claude Code)", b"3.0.0"]
-    )
-    async def test_no_warning_when_cli_supports_client_composed(self, version):
-        logger = await self._check_version(True, version)
-        logger.warning.assert_not_called()
+    @pytest.mark.parametrize("version", ["2.1.248", "2.1.273", "3.0.0"])
+    def test_no_warning_when_cli_supports_client_composed(self, version):
+        self._check_version(True, version).warning.assert_not_called()
 
-    @pytest.mark.anyio
-    async def test_no_warning_when_option_is_off(self):
-        logger = await self._check_version(False, b"2.1.100 (Claude Code)")
-        logger.warning.assert_not_called()
+    def test_no_warning_when_option_is_off(self):
+        self._check_version(False, "2.1.100").warning.assert_not_called()

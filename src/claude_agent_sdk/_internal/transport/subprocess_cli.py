@@ -251,6 +251,9 @@ class SubprocessCLITransport(Transport):
             else _DEFAULT_MAX_BUFFER_SIZE
         )
         self._write_lock: anyio.Lock = anyio.Lock()
+        self._version_checked = bool(
+            os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK")
+        )
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
@@ -773,12 +776,8 @@ class SubprocessCLITransport(Transport):
         if self._cli_path is None:
             self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
 
-        # Validate the resolved CLI before anything is spawned with it --
-        # this guards the version probe below as well as the main spawn.
+        # Validate the resolved CLI before spawning it.
         self._reject_windows_batch_cli(self._cli_path)
-
-        if not os.environ.get("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"):
-            await self._check_claude_version()
 
         cmd = self._build_command()
         try:
@@ -1094,6 +1093,7 @@ class SubprocessCLITransport(Transport):
                     guard(len(line))
                     data = _parse_stdout_line(line)
                     if data is not None:
+                        self._check_claude_version(data)
                         yield data
                 guard(framer.pending_len)
 
@@ -1132,67 +1132,43 @@ class SubprocessCLITransport(Transport):
             )
             raise self._exit_error
 
-    async def _check_claude_version(self) -> None:
-        """Check Claude Code version and warn if below minimum."""
-        if self._cli_path is None:
-            raise CLINotFoundError("CLI path not resolved. Call connect() first.")
-        version_process = None
-        try:
-            with anyio.fail_after(2):  # 2 second timeout
-                version_process = await anyio.open_process(
-                    [self._cli_path, "-v"],
-                    stdout=PIPE,
-                    stderr=PIPE,
-                )
+    def _check_claude_version(self, data: dict[str, Any]) -> None:
+        """Warn if the CLI's first init message shows it is an old version.
 
-                if version_process.stdout:
-                    stdout_bytes = await version_process.stdout.receive()
-                    version_output = stdout_bytes.decode().strip()
-
-                    match = re.match(r"([0-9]+\.[0-9]+\.[0-9]+)", version_output)
-                    if match:
-                        version = match.group(1)
-                        version_parts = [int(x) for x in version.split(".")]
-                        min_parts = [
-                            int(x) for x in MINIMUM_CLAUDE_CODE_VERSION.split(".")
-                        ]
-
-                        if version_parts < min_parts:
-                            logger.warning(
-                                "Claude Code version %s at %s is unsupported in the Agent SDK. "
-                                "Minimum required version is %s. "
-                                "Some features may not work correctly.",
-                                version,
-                                self._cli_path,
-                                MINIMUM_CLAUDE_CODE_VERSION,
-                            )
-
-                        verbatim_min_parts = [
-                            int(x)
-                            for x in VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION.split(
-                                "."
-                            )
-                        ]
-                        if self._options.verbatim_prompts and (
-                            version_parts < verbatim_min_parts
-                        ):
-                            logger.warning(
-                                "verbatim_prompts is enabled, but Claude Code "
-                                "version %s at %s ignores it: prompts will still "
-                                "have @path mentions expanded and slash commands "
-                                "dispatched. Claude Code %s or later is required.",
-                                version,
-                                self._cli_path,
-                                VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION,
-                            )
-        except Exception:
-            pass
-        finally:
-            if version_process:
-                with suppress(Exception):
-                    version_process.terminate()
-                with suppress(Exception):
-                    await version_process.wait()
+        The version comes from the running CLI rather than from a separate
+        ``cli_path -v``, so ``cli_path`` is only ever executed by connect().
+        """
+        if self._version_checked or (data.get("type"), data.get("subtype")) != (
+            "system",
+            "init",
+        ):
+            return
+        self._version_checked = True
+        # Versions below the minimum, and the first 2.0 releases, don't send one.
+        version = data.get("claude_code_version")
+        match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})", str(version))
+        if not match:
+            logger.warning(
+                "Claude Code at %s is too old to report its version, and may be "
+                "unsupported in the Agent SDK. Minimum required version is %s. "
+                "Some features may not work correctly.",
+                self._cli_path,
+                MINIMUM_CLAUDE_CODE_VERSION,
+            )
+        minimum = VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION
+        if self._options.verbatim_prompts and (
+            not match
+            or [int(x) for x in match.groups()] < [int(x) for x in minimum.split(".")]
+        ):
+            logger.warning(
+                "verbatim_prompts is enabled, but Claude Code "
+                "version %s at %s ignores it: prompts will still "
+                "have @path mentions expanded and slash commands "
+                "dispatched. Claude Code %s or later is required.",
+                version or "unknown",
+                self._cli_path,
+                minimum,
+            )
 
     def is_ready(self) -> bool:
         """Check if transport is ready for communication."""

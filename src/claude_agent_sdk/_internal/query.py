@@ -239,6 +239,7 @@ class Query:
         self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
+        self._reader_exited = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
@@ -562,6 +563,14 @@ class Query:
                 {"type": "error", "error": error_text, "exception": pending_error}
             )
         finally:
+            # Reader exit is terminal for outgoing control requests. Wake
+            # waiters before a shielded flush enters user-provided store code.
+            self._reader_exited = True
+            self._fail_pending_control_requests(
+                CLIConnectionError(
+                    "Query message reader closed while waiting for control response"
+                )
+            )
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
             # batched this turn. flush() never raises. Shielded so the await
@@ -573,14 +582,6 @@ class Query:
             # of the run) so they don't stall on early exit.
             self._run_final = True
             self._end_run()
-            # A clean stdout EOF is not an exception, but no control response can
-            # arrive after the reader exits. Preserve any response or richer
-            # error already recorded by checking the shared helper first.
-            self._fail_pending_control_requests(
-                CLIConnectionError(
-                    "Query message reader closed while waiting for control response"
-                )
-            )
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
@@ -733,6 +734,8 @@ class Query:
             raise Exception("Control requests require streaming mode")
         if self._closed:
             raise CLIConnectionError("Query is closed")
+        if self._reader_exited:
+            raise CLIConnectionError("Query message reader closed")
 
         # Generate unique request ID
         self._request_counter += 1

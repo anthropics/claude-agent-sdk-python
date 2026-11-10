@@ -188,6 +188,28 @@ class TestLoad:
             {"type": "x", "ok": 2},
         ]
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "invalid", ["null", "true", "42", '"text"', "[]", '[{"type":"user"}]']
+    )
+    @pytest.mark.parametrize("with_valid_entries", [False, True])
+    async def test_skips_non_object_json(
+        self,
+        client: fakeredis.FakeAsyncRedis,
+        store: SessionStore,
+        invalid: str,
+        with_valid_entries: bool,
+    ) -> None:
+        records = [invalid]
+        expected = None
+        if with_valid_entries:
+            expected = [{"type": "user", "extra": {"nested": [None, 42]}}, {}]
+            records = [json.dumps(expected[0]), invalid, json.dumps(expected[1])]
+        await client.rpush("p:proj:sess", *records)
+        assert (
+            await store.load({"project_key": "proj", "session_id": "sess"}) == expected
+        )
+
 
 class TestListSessions:
     @pytest.mark.anyio

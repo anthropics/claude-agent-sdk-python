@@ -335,6 +335,29 @@ async def test_load_skips_malformed_lines() -> None:
     assert result == [{"ok": 1}, {"ok": 2}]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "invalid", ["null", "true", "42", '"text"', "[]", '[{"type":"user"}]']
+)
+@pytest.mark.parametrize("with_valid_entries", [False, True])
+async def test_load_skips_non_object_json(
+    invalid: str, with_valid_entries: bool
+) -> None:
+    client = _RecordingClient()
+    records = [invalid]
+    expected = None
+    if with_valid_entries:
+        expected = [{"type": "user", "extra": {"nested": [None, 42]}}, {}]
+        records = [json.dumps(expected[0]), invalid, json.dumps(expected[1])]
+    client.objects = {
+        "p/proj/sess/part-0000000000000-000000.jsonl": (
+            "\n".join(records) + "\n"
+        ).encode(),
+    }
+    store = _make_store(client)
+    assert await store.load({"project_key": "proj", "session_id": "sess"}) == expected
+
+
 # ---------------------------------------------------------------------------
 # list_sessions — mtime extraction, subagent filtering
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Bounded sidechain classification from contiguous head/tail samples."""
+"""Exact sidechain classification with sampled and streaming read paths."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 
 from claude_agent_sdk._internal.sessions import (
     LITE_READ_BUF_SIZE,
+    _first_sidechain_flag,
     _jsonl_to_lite,
     _parse_session_info_from_lite,
     _read_session_lite,
@@ -71,14 +72,15 @@ def test_exact_sample_boundaries_accept_final_record_without_newline(size: int) 
 
 
 @pytest.mark.parametrize("head_flag", [None, False, True])
-def test_tail_cannot_override_unknown_or_earlier_middle_flag(
+def test_tail_cannot_override_earlier_middle_flag(
+    tmp_path: Path,
     head_flag: bool | None,
 ) -> None:
     first = {"type": "summary", "summary": "synthetic session"}
     if head_flag is not None:
         first["isSidechain"] = head_flag
-    # Head has no flag (or a known flag), the omitted middle says false, and
-    # the sampled tail says true. Tail alone cannot establish first ordering.
+    # The middle says false, and the sampled tail says true. The reader must
+    # inspect the missing records in order instead of trusting the tail.
     text = json.dumps(first) + "\n"
     text += (
         json.dumps(
@@ -92,10 +94,14 @@ def test_tail_cannot_override_unknown_or_earlier_middle_flag(
     text += json.dumps({"isSidechain": True}) + "\n"
     lite = _jsonl_to_lite(text, 0)
     assert lite.size > 2 * LITE_READ_BUF_SIZE
-    assert lite.sidechain is head_flag
-    assert (_parse_session_info_from_lite("synthetic", lite) is None) is (
-        head_flag is True
-    )
+    expected = False if head_flag is None else head_flag
+    path = tmp_path / "middle.jsonl"
+    path.write_bytes(text.encode())
+    disk = _read_session_lite(path)
+    assert disk is not None
+    assert lite.sidechain is expected
+    assert disk.sidechain is expected
+    assert (_parse_session_info_from_lite("synthetic", lite) is None) is expected
 
 
 @pytest.mark.parametrize(
@@ -122,26 +128,32 @@ def test_deeply_nested_invalid_record_does_not_break_listing() -> None:
     assert _jsonl_to_lite(text, 0).sidechain is True
 
 
-def test_large_incomplete_head_record_cannot_be_classified_from_substring() -> None:
+def test_large_record_crossing_both_sample_boundaries(tmp_path: Path) -> None:
     text = '{"isSidechain":true,"padding":"' + "p" * 200000 + '"}\n'
     lite = _jsonl_to_lite(text, 0)
-    assert lite.sidechain is None
+    assert lite.sidechain is True
+    path = tmp_path / "large-record.jsonl"
+    path.write_bytes(text.encode())
+    disk = _read_session_lite(path)
+    assert disk is not None and disk.sidechain is True
 
 
-def test_disk_read_budget_is_two_fixed_buffers() -> None:
-    raw = transcript(200000, [True]).encode()
+def test_head_flag_keeps_two_buffer_fast_path_without_streaming() -> None:
+    raw = b'{"isSidechain":false}\n' + transcript(200000, [True]).encode()
     opened = mock_open()
     opened.return_value.read.side_effect = [
         raw[:LITE_READ_BUF_SIZE],
         raw[-LITE_READ_BUF_SIZE:],
     ]
     stat = SimpleNamespace(st_size=len(raw), st_mtime=0)
+    opened.return_value.__iter__.side_effect = AssertionError("unexpected full scan")
     with (
         patch.object(Path, "open", opened),
         patch("claude_agent_sdk._internal.sessions.os.fstat", return_value=stat),
     ):
         lite = _read_session_lite(Path("synthetic.jsonl"))
     assert lite is not None
+    assert lite.sidechain is False
     assert opened.return_value.read.call_args_list == [
         call(LITE_READ_BUF_SIZE),
         call(LITE_READ_BUF_SIZE),
@@ -149,5 +161,96 @@ def test_disk_read_budget_is_two_fixed_buffers() -> None:
     opened.return_value.seek.assert_called_once_with(len(raw) - LITE_READ_BUF_SIZE)
 
 
-def test_missing_flag_does_not_read_or_parse_unsampled_middle() -> None:
+def test_missing_sample_flag_requires_streaming_for_exact_result() -> None:
     assert _sampled_sidechain_flag(b'{"summary":"head"}\n', b"{}\n", 300000) is None
+
+
+@pytest.mark.parametrize("prefix_size", [65000, 70000, 130000, 200000, 1000000])
+@pytest.mark.parametrize("flags", [[], [True], [False, True], [True, False]])
+def test_all_sizes_match_fold_and_disk_memory_classification(
+    tmp_path: Path, prefix_size: int, flags: list[bool]
+) -> None:
+    from claude_agent_sdk import fold_session_summary
+    from claude_agent_sdk._internal.session_summary import summary_entry_to_sdk_info
+
+    text = transcript(prefix_size, flags)
+    entries = [json.loads(line) for line in text.splitlines()]
+    key = {"session_id": "synthetic", "project_key": "synthetic-project"}
+    folded = fold_session_summary(None, key, entries)
+    expected = folded["data"].get("is_sidechain")
+    path = tmp_path / "session.jsonl"
+    path.write_bytes(text.encode())
+    disk = _read_session_lite(path)
+    assert disk is not None
+    for lite in [disk, _jsonl_to_lite(text, 0)]:
+        assert lite.sidechain is expected
+        assert (_parse_session_info_from_lite("synthetic", lite) is None) == (
+            summary_entry_to_sdk_info(folded, None) is None
+        )
+
+
+def test_stream_stops_at_first_explicit_boolean() -> None:
+    def records():
+        yield b'{"isSidechain":"not a boolean"}\n'
+        yield b'{"isSidechain":false}\n'
+        raise AssertionError("read beyond first explicit boolean")
+
+    assert _first_sidechain_flag(records()) is False
+
+
+def test_rewrite_is_reclassified_without_stale_cache(tmp_path: Path) -> None:
+    path = tmp_path / "rewritten.jsonl"
+    for flag in [True, False]:
+        path.write_bytes(transcript(200000, [flag]).encode())
+        lite = _read_session_lite(path)
+        assert lite is not None and lite.sidechain is flag
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("flag", [None, False, True])
+@pytest.mark.parametrize("use_summaries", [False, True])
+async def test_public_disk_and_store_listing_lookup_agree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: bool | None,
+    use_summaries: bool,
+) -> None:
+    from claude_agent_sdk import (
+        InMemorySessionStore,
+        get_session_info,
+        get_session_info_from_store,
+        list_sessions,
+        list_sessions_from_store,
+        project_key_for_directory,
+    )
+    from claude_agent_sdk._internal.sessions import _sanitize_path
+
+    class FallbackStore(InMemorySessionStore):
+        async def list_session_summaries(self, project_key):
+            raise NotImplementedError
+
+    directory = str(tmp_path / "project")
+    config = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    project = config / "projects" / _sanitize_path(directory)
+    project.mkdir(parents=True)
+    session_id = "11111111-1111-4111-8111-111111111111"
+    flags = [] if flag is None else [flag, not flag]
+    text = transcript(200000, flags)
+    (project / f"{session_id}.jsonl").write_bytes(text.encode())
+    entries = [json.loads(line) for line in text.splitlines()]
+    store = InMemorySessionStore() if use_summaries else FallbackStore()
+    await store.append(
+        {"project_key": project_key_for_directory(directory), "session_id": session_id},
+        entries,
+    )
+    expected = [] if flag is True else [session_id]
+    disk = list_sessions(directory=directory, include_worktrees=False)
+    stored = await list_sessions_from_store(store, directory=directory)
+    assert [item.session_id for item in disk] == expected
+    assert [item.session_id for item in stored] == expected
+    assert (get_session_info(session_id, directory=directory) is None) is (flag is True)
+    stored_info = await get_session_info_from_store(
+        store, session_id, directory=directory
+    )
+    assert (stored_info is None) is (flag is True)

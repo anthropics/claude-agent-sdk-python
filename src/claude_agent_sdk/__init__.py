@@ -343,8 +343,9 @@ def tool(
         - Arguments are validated against the input schema before the function
           is called; invalid input is reported back to Claude as an error result
         - The function should return a dict with a "content" key containing the response
-        - Errors can be indicated by including "is_error": True in the response;
-          an exception raised by the function is reported the same way
+        - Errors can be indicated by including "is_error": True in the response
+          (MCP's spelling, "isError", is read as well); an exception raised by
+          the function is reported the same way
     """
 
     def decorator(
@@ -634,7 +635,9 @@ def create_sdk_mcp_server(
             return CallToolResult.model_validate(
                 {
                     "content": _convert_tool_content(result.get("content", [])),
-                    "isError": result.get("is_error", False),
+                    # "isError" is MCP's spelling, which the content blocks
+                    # of the same dict already use (mimeType).
+                    "isError": result.get("is_error", result.get("isError", False)),
                 }
             )
         except Exception as e:

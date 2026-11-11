@@ -926,6 +926,33 @@ async def test_is_error_flag_propagated():
 
 
 @pytest.mark.anyio
+async def test_mcp_spelling_of_is_error_is_honored():
+    """A result dict already uses MCP's camelCase keys (mimeType), so a handler
+    that writes isError must not have its failure reported as a success."""
+
+    @tool("camel", "Fails with isError", {})
+    async def camel(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "failed"}], "isError": True}
+
+    @tool("both", "Sets both spellings", {})
+    async def both(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "ok"}],
+            "is_error": False,
+            "isError": True,
+        }
+
+    config = create_sdk_mcp_server(name="srv", tools=[camel, both])
+    async with connected(config) as client:
+        failure = await client.call_tool("srv", "camel", {})
+        documented_key_wins = await client.call_tool("srv", "both", {})
+
+    assert failure["isError"] is True
+    assert texts(failure) == ["failed"]
+    assert documented_key_wins["isError"] is False
+
+
+@pytest.mark.anyio
 async def test_unknown_tool_is_an_error_result():
     @tool("known", "Known tool", {})
     async def known(args: dict[str, Any]) -> dict[str, Any]:

@@ -161,8 +161,8 @@ def fold_session_summary(
 
         ms = _iso_to_epoch_ms(entry.get("timestamp"))
 
-        # The flag is optional in transcript metadata records. Do not latch a
-        # missing value as False: a later user message may identify a subagent.
+        # The first explicit boolean in record order classifies the session.
+        # Leave it unset until a record supplies one.
         if "is_sidechain" not in data and isinstance(entry.get("isSidechain"), bool):
             data["is_sidechain"] = entry["isSidechain"]
         if "created_at" not in data and ms is not None:

@@ -177,15 +177,17 @@ def test_all_sizes_match_fold_and_disk_memory_classification(
     entries = [json.loads(line) for line in text.splitlines()]
     key = {"session_id": "synthetic", "project_key": "synthetic-project"}
     folded = fold_session_summary(None, key, entries)
-    expected = folded["data"].get("is_sidechain")
+    expected = flags[0] if flags else None
+    assert folded["data"].get("is_sidechain") is expected
+    assert (summary_entry_to_sdk_info(folded, None) is None) is (expected is True)
     path = tmp_path / "session.jsonl"
     path.write_bytes(text.encode())
     disk = _read_session_lite(path)
     assert disk is not None
     for lite in [disk, _jsonl_to_lite(text, 0)]:
         assert lite.sidechain is expected
-        assert (_parse_session_info_from_lite("synthetic", lite) is None) == (
-            summary_entry_to_sdk_info(folded, None) is None
+        assert (_parse_session_info_from_lite("synthetic", lite) is None) is (
+            expected is True
         )
 
 

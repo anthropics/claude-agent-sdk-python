@@ -493,8 +493,8 @@ def _parse_session_info_from_lite(
     """
     head, tail, mtime, size = lite.head, lite.tail, lite.mtime, lite.size
 
-    # Classification was computed in record order by the sample/stream reader.
-    if lite.sidechain:
+    # Include explicitly main (False) and unclassified (None) transcripts.
+    if lite.sidechain is True:
         return None
 
     # User-set title (customTitle) wins over AI-generated title (aiTitle).

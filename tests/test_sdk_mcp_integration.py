@@ -937,7 +937,7 @@ async def test_mcp_spelling_of_is_error_is_honored():
     @tool("both", "Sets both spellings", {})
     async def both(args: dict[str, Any]) -> dict[str, Any]:
         return {
-            "content": [{"type": "text", "text": "ok"}],
+            "content": [{"type": "text", "text": "failed late"}],
             "is_error": False,
             "isError": True,
         }
@@ -945,11 +945,12 @@ async def test_mcp_spelling_of_is_error_is_honored():
     config = create_sdk_mcp_server(name="srv", tools=[camel, both])
     async with connected(config) as client:
         failure = await client.call_tool("srv", "camel", {})
-        documented_key_wins = await client.call_tool("srv", "both", {})
+        either_flag_is_an_error = await client.call_tool("srv", "both", {})
 
     assert failure["isError"] is True
     assert texts(failure) == ["failed"]
-    assert documented_key_wins["isError"] is False
+    assert either_flag_is_an_error["isError"] is True
+    assert texts(either_flag_is_an_error) == ["failed late"]
 
 
 @pytest.mark.anyio

@@ -344,8 +344,9 @@ def tool(
           is called; invalid input is reported back to Claude as an error result
         - The function should return a dict with a "content" key containing the response
         - Errors can be indicated by including "is_error": True in the response
-          (MCP's spelling, "isError", is read as well); an exception raised by
-          the function is reported the same way
+          (MCP's spelling, "isError", is read as well, and either one marks
+          the result as an error); an exception raised by the function is
+          reported the same way
     """
 
     def decorator(
@@ -637,7 +638,8 @@ def create_sdk_mcp_server(
                     "content": _convert_tool_content(result.get("content", [])),
                     # "isError" is MCP's spelling, which the content blocks
                     # of the same dict already use (mimeType).
-                    "isError": result.get("is_error", result.get("isError", False)),
+                    "isError": bool(result.get("is_error"))
+                    or bool(result.get("isError")),
                 }
             )
         except Exception as e:

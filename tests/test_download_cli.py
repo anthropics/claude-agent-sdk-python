@@ -631,6 +631,79 @@ class TestMissingBinaryFailsFast:
         assert "could not run the install command" in capsys.readouterr().err
 
 
+class TestRecordBundledVersion:
+    """The file the SDK trusts for the version of the binary it ships."""
+
+    def test_records_what_the_binary_reports(self, tmp_path: Path) -> None:
+        version_file = tmp_path / "claude.version"
+        reported = subprocess.CompletedProcess([], 0, stdout=b"2.1.321 (Claude Code)\n")
+        with patch.object(subprocess, "run", return_value=reported) as run:
+            download_cli.record_bundled_version(tmp_path / "claude", version_file)
+        assert version_file.read_text() == "2.1.321 (Claude Code)\n"
+        assert run.call_args.args[0] == [str(tmp_path / "claude"), "--version"]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("exec format error"),
+            subprocess.CalledProcessError(1, "claude"),
+            subprocess.TimeoutExpired("claude", 30),
+        ],
+    )
+    def test_a_failed_read_writes_nothing_and_does_not_raise(
+        self, tmp_path: Path, error: Exception
+    ) -> None:
+        version_file = tmp_path / "claude.version"
+        with patch.object(subprocess, "run", side_effect=error):
+            download_cli.record_bundled_version(tmp_path / "claude", version_file)
+        assert not version_file.exists()
+
+    @pytest.mark.parametrize("stdout", [b"", b"not a version\n", b"\xff\xfe 2.1.321\n"])
+    def test_output_that_is_not_a_version_writes_nothing(
+        self, tmp_path: Path, stdout: bytes
+    ) -> None:
+        version_file = tmp_path / "claude.version"
+        reported = subprocess.CompletedProcess([], 0, stdout=stdout)
+        with patch.object(subprocess, "run", return_value=reported):
+            download_cli.record_bundled_version(tmp_path / "claude", version_file)
+        assert not version_file.exists()
+
+    def test_a_failed_write_does_not_raise(self, tmp_path: Path) -> None:
+        reported = subprocess.CompletedProcess([], 0, stdout=b"2.1.321 (Claude Code)\n")
+        with patch.object(subprocess, "run", return_value=reported):
+            download_cli.record_bundled_version(tmp_path / "claude", tmp_path)
+
+    def test_bundling_records_the_copied_binary(self, tmp_path: Path) -> None:
+        bundle_dir = tmp_path / "src" / "claude_agent_sdk" / "_bundled"
+        installed = tmp_path / "installed-claude"
+        installed.write_text("binary")
+        reported = subprocess.CompletedProcess([], 0, stdout=b"2.1.321 (Claude Code)\n")
+        with (
+            patch.object(download_cli, "__file__", str(tmp_path / "scripts" / "d.py")),
+            patch.object(download_cli, "find_installed_cli", return_value=installed),
+            patch.object(download_cli.platform, "system", return_value="Linux"),
+            patch.object(subprocess, "run", return_value=reported) as run,
+        ):
+            download_cli.copy_cli_to_bundle()
+        assert run.call_args.args[0] == [str(bundle_dir / "claude"), "--version"]
+        assert (bundle_dir / "claude.version").read_text() == "2.1.321 (Claude Code)\n"
+
+    def test_a_new_binary_drops_the_previous_version(self, tmp_path: Path) -> None:
+        bundle_dir = tmp_path / "src" / "claude_agent_sdk" / "_bundled"
+        bundle_dir.mkdir(parents=True)
+        version_file = bundle_dir / "claude.version"
+        version_file.write_text("2.1.100 (Claude Code)\n")
+        installed = tmp_path / "installed-claude"
+        installed.write_text("binary")
+        with (
+            patch.object(download_cli, "__file__", str(tmp_path / "scripts" / "d.py")),
+            patch.object(download_cli, "find_installed_cli", return_value=installed),
+            patch.object(subprocess, "run", side_effect=OSError("no exec")),
+        ):
+            download_cli.copy_cli_to_bundle()
+        assert not version_file.exists()
+
+
 class TestCommandLine:
     """The script itself reports a bad version rather than raising through.
 

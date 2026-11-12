@@ -18,6 +18,7 @@ import anyio
 from anyio.abc import Process
 from anyio.streams.text import TextReceiveStream, TextSendStream
 
+from ..._cli_version import __cli_version__
 from ..._errors import CLIConnectionError, CLINotFoundError, ProcessError
 from ..._errors import CLIJSONDecodeError as SDKJSONDecodeError
 from ..._version import __version__
@@ -27,6 +28,11 @@ from ...types import (
     SystemPromptCustom,
     SystemPromptFile,
     SystemPromptPreset,
+)
+from .._client_app import (
+    DERIVED_CLIENT_APP_ENV,
+    EXPLICIT_CLIENT_APP_ENV,
+    derive_client_app,
 )
 from .._task_compat import TaskHandle, spawn_detached
 from . import Transport
@@ -38,6 +44,14 @@ MINIMUM_CLAUDE_CODE_VERSION = "2.0.0"
 # First Claude Code version that honors `client_composed` on user messages,
 # which `ClaudeAgentOptions.verbatim_prompts` relies on.
 VERBATIM_PROMPTS_MINIMUM_CLAUDE_CODE_VERSION = "2.1.248"
+# First Claude Code version that keeps the derived app label from shell commands,
+# hooks and MCP and LSP servers; an older one passes the variable on to them,
+# where it can reach a request on any login. Above every release until one does,
+# so no label is derived before then.
+DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION = "999.0.0"
+# What the bundled CLI reported at build time, written beside it by
+# scripts/download_cli.py, which holds the same name: change them together.
+_BUNDLED_CLI_VERSION_FILE = "claude.version"
 # Asks the CLI for `session_state_changed` frames marked `sdk_host_only`, which
 # Query reads to tell when the run is over and keeps out of the caller's
 # stream (see Query._read_messages). CLIs that predate it send no frames.
@@ -755,6 +769,16 @@ class SubprocessCLITransport(Transport):
                 "CLAUDE_AGENT_SDK_VERSION": __version__,
             }
 
+            # A label from an outer SDK session names that session's app. Set
+            # counts even when empty: that is how a developer opts out.
+            process_env.pop(DERIVED_CLIENT_APP_ENV, None)
+            if self._options.client_app is not None:
+                process_env[EXPLICIT_CLIENT_APP_ENV] = self._options.client_app
+            if EXPLICIT_CLIENT_APP_ENV not in process_env:
+                derived_client_app = await self._derive_client_app()
+                if derived_client_app is not None:
+                    process_env[DERIVED_CLIENT_APP_ENV] = derived_client_app
+
             # Propagate active OTEL trace context to the CLI so its spans
             # parent under the caller's distributed trace. No-op if
             # opentelemetry-api is not installed or there's no active span.
@@ -1092,6 +1116,39 @@ class SubprocessCLITransport(Transport):
                 stderr="Check stderr output for details",
             )
             raise self._exit_error
+
+    async def _derive_client_app(self) -> str | None:
+        """Name the app for a CLI that keeps the label from what it spawns.
+
+        Nothing runs the CLI before connect() spawns it, so only the bundled
+        CLI's version is known here, from the file recorded beside it. Any other
+        CLI counts as too old, and so does a bundled one with no such file. The
+        pin is only a shortcut: below the minimum, nothing reads the disk.
+        """
+        try:
+            if not self._meets_derived_client_app_minimum(__cli_version__):
+                return None
+            return await anyio.to_thread.run_sync(self._derive_for_bundled_cli)
+        except Exception:  # noqa: BLE001 - a label must never break connect()
+            logger.debug("Could not derive an app label", exc_info=True)
+            return None
+
+    def _derive_for_bundled_cli(self) -> str | None:
+        """Name the app if this is the bundled CLI and its record qualifies."""
+        if self._cli_path is None or self._cli_path != self._find_bundled_cli():
+            return None
+        version_file = Path(self._cli_path).with_name(_BUNDLED_CLI_VERSION_FILE)
+        if not self._meets_derived_client_app_minimum(version_file.read_text()):
+            return None
+        return derive_client_app()
+
+    @staticmethod
+    def _meets_derived_client_app_minimum(version: str) -> bool:
+        minimum = DERIVED_CLIENT_APP_MINIMUM_CLAUDE_CODE_VERSION
+        match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})", version)
+        return match is not None and (
+            [int(x) for x in match.groups()] >= [int(x) for x in minimum.split(".")]
+        )
 
     def _check_claude_version(self, data: dict[str, Any]) -> None:
         """Warn if the CLI's first init message shows it is an old version.

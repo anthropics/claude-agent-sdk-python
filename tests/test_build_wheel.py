@@ -216,6 +216,24 @@ class TestNoIsolation:
         assert all(("--no-isolation" in cmd) is no_isolation for cmd in commands)
 
 
+def test_skipping_the_download_drops_the_version_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["build_wheel.py", "--skip-download"])
+    record = build_wheel.BUNDLED_VERSION_FILE
+    record.parent.mkdir(parents=True)
+    record.write_text("2.1.321 (Claude Code)\n")
+
+    with (
+        patch.object(build_wheel, "run_command"),
+        patch.object(build_wheel, "check_package"),
+    ):
+        build_wheel.main()
+
+    assert not record.exists()
+
+
 def _make_wheel(path: Path) -> None:
     """Write a small stand-in wheel to path."""
     members = [

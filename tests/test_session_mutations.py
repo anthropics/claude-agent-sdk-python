@@ -652,6 +652,59 @@ class TestForkSession:
                 if entry["parentUuid"] is not None:
                     assert entry["parentUuid"] not in original_uuids
 
+    def test_fork_preserves_entries_with_unicode_line_separators(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Entries whose JSON contains U+2028/U+2029/U+0085 survive the fork.
+
+        Claude Code writes JSONL with JS JSON.stringify, which leaves these
+        characters unescaped inside strings; a line-splitting routine that
+        treats them as line boundaries silently drops the entry and orphans
+        the next one (parentUuid -> None).
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        uuids = [str(uuid.uuid4()) for _ in range(3)]
+        texts = ["first", "a b d", "third"]
+        parent_uuid: str | None = None
+        records = []
+        for i, (u, t) in enumerate(zip(uuids, texts, strict=True)):
+            records.append(
+                {
+                    "type": "user" if i % 2 == 0 else "assistant",
+                    "uuid": u,
+                    "parentUuid": parent_uuid,
+                    "sessionId": sid,
+                    "message": {
+                        "role": "user" if i % 2 == 0 else "assistant",
+                        "content": [{"type": "text", "text": t}],
+                    },
+                }
+            )
+            parent_uuid = u
+        (project_dir / f"{sid}.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+            encoding="utf-8",
+        )
+
+        result = fork_session(sid, directory=project_path)
+
+        fork_entries = [
+            json.loads(line)
+            for line in (project_dir / f"{result.session_id}.jsonl")
+            .read_text(encoding="utf-8")
+            .split("\n")
+            if line.strip()
+        ]
+        messages = [e for e in fork_entries if e.get("type") in ("user", "assistant")]
+        assert [m["message"]["content"][0]["text"] for m in messages] == texts
+        assert messages[0]["parentUuid"] is None
+        assert all(m["parentUuid"] is not None for m in messages[1:])
+
     def test_fork_preserves_message_count(
         self, claude_config_dir: Path, tmp_path: Path
     ):

@@ -65,6 +65,7 @@ from claude_agent_sdk import (
 
 if TYPE_CHECKING:
     import redis.asyncio as redis
+    from redis.asyncio.client import Pipeline
 
 #: Reserved subpath sentinel for the per-session subkey set.
 _SUBKEYS = "__subkeys"
@@ -166,13 +167,19 @@ class RedisSessionStore(SessionStore):
             return
         # Cascade: main list + every subpath list + subkey set + session-index entry.
         subkeys_key = self._subkeys_key(key)
-        subpaths = await self._client.smembers(subkeys_key)
-        to_delete = [self._entry_key(key), subkeys_key]
-        to_delete.extend(self._entry_key({**key, "subpath": sp}) for sp in subpaths)
-        pipe = self._client.pipeline(transaction=True)
-        pipe.delete(*to_delete)
-        pipe.zrem(self._sessions_key(key["project_key"]), key["session_id"])
-        await pipe.execute()
+
+        async def delete_snapshot(pipe: Pipeline) -> None:
+            subpaths = await pipe.smembers(subkeys_key)
+            to_delete = [self._entry_key(key), subkeys_key]
+            to_delete.extend(self._entry_key({**key, "subpath": sp}) for sp in subpaths)
+            pipe.multi()
+            pipe.delete(*to_delete)
+            pipe.zrem(self._sessions_key(key["project_key"]), key["session_id"])
+
+        # A concurrent append can add a subpath after SMEMBERS. Watch its
+        # index so transaction() retries with a fresh snapshot instead of
+        # deleting the index and leaving the new transcript orphaned.
+        await self._client.transaction(delete_snapshot, subkeys_key)
 
     async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]:
         return list(await self._client.smembers(self._subkeys_key(key)))

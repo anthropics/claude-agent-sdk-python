@@ -65,6 +65,137 @@ _SDK_READS_SESSION_STATE_ENV = "CLAUDE_CODE_SDK_READS_SESSION_STATE"
 # verbatim. See _reject_windows_batch_cli / _reject_windows_cmd_metacharacters.
 _CMD_EXE_METACHARACTERS = '&|<>^%!"'
 
+# Lists in a sandbox block, by dotted path, that the sandbox option adds to
+# instead of replacing: the settings' entries come first, then the option's,
+# with repeated strings dropped. The option's value replaces every other list,
+# since combining an allow-list, `excludedCommands` or an `ignoreViolations`
+# entry's list would allow, exempt or hide more than the option chose.
+_SANDBOX_COMBINED_LISTS = frozenset(
+    {
+        "filesystem.denyRead",
+        "filesystem.denyWrite",
+        "network.deniedDomains",
+        "credentials.files",
+        "credentials.envVars",
+    }
+)
+
+# Nested objects in a sandbox block that the sandbox option replaces whole
+# instead of merging key by key. Each describes one ripgrep command or one
+# certificate and key pair, so mixing halves from two places would run one
+# side's command with the other side's arguments, or pair one side's
+# certificate with the other side's key.
+_SANDBOX_REPLACED_WHOLE = frozenset({"ripgrep", "network.tlsTerminate"})
+
+
+def _without_none(value: Any) -> Any:
+    """Copy a value from the sandbox option, leaving out every None.
+
+    None means "not set" for every key in the option, at any depth, and a
+    None list entry is dropped too. Tuples become lists, so the merge rules
+    apply to them.
+    """
+    if isinstance(value, dict):
+        return {k: _without_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_without_none(item) for item in value if item is not None]
+    return value
+
+
+def _combine_sandbox_lists(base: list[Any], option: list[Any]) -> list[Any]:
+    """Return ``base`` followed by ``option``, dropping repeated strings.
+
+    Other entries, such as credential dicts, are all kept.
+    """
+    combined: list[Any] = []
+    seen: set[str] = set()
+    for entry in [*base, *option]:
+        if isinstance(entry, str):
+            if entry in seen:
+                continue
+            seen.add(entry)
+        combined.append(entry)
+    return combined
+
+
+def _merge_sandbox_block(
+    base: Any, option: dict[str, Any], path: str = ""
+) -> dict[str, Any]:
+    """Merge the sandbox option over the settings' ``sandbox`` block.
+
+    Nested dicts merge key by key, except the ones in _SANDBOX_REPLACED_WHOLE.
+    Any other key the option sets replaces the settings' value, except the
+    lists in _SANDBOX_COMBINED_LISTS, which are combined. Keys the option
+    leaves out keep the settings' value. A ``base`` that is not a dict counts
+    as empty.
+    """
+    merged: dict[str, Any] = dict(base) if isinstance(base, dict) else {}
+    for key, value in option.items():
+        key_path = f"{path}.{key}" if path else key
+        existing = merged.get(key)
+        if (
+            key_path in _SANDBOX_COMBINED_LISTS
+            and isinstance(existing, list)
+            and isinstance(value, list)
+        ):
+            merged[key] = _combine_sandbox_lists(existing, value)
+        elif (
+            isinstance(existing, dict)
+            and isinstance(value, dict)
+            and key_path not in _SANDBOX_REPLACED_WHOLE
+        ):
+            merged[key] = _merge_sandbox_block(existing, value, key_path)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_sandbox_settings(base: Any, sandbox: dict[str, Any]) -> dict[str, Any]:
+    """Combine the settings' ``sandbox`` block with the sandbox option.
+
+    ``sandbox`` is the caller's dict and is not changed; ``base`` was parsed
+    for this call, so it may be changed.
+    """
+    option = _without_none(sandbox)
+    merged = _merge_sandbox_block(base, option)
+
+    option_filesystem = option.get("filesystem")
+    credentials = option.get("credentials")
+    files = credentials.get("files") if isinstance(credentials, dict) else None
+    configures_filesystem = "filesystem" in option or (
+        isinstance(files, list)
+        and any(isinstance(f, dict) and f.get("mode") == "deny" for f in files)
+    )
+    sets_disabled = (
+        isinstance(option_filesystem, dict) and "disabled" in option_filesystem
+    )
+    merged_filesystem = merged.get("filesystem")
+    # Claude Code would otherwise turn off filesystem isolation and its denies.
+    if (
+        configures_filesystem
+        and not sets_disabled
+        and isinstance(merged_filesystem, dict)
+        and merged_filesystem.get("disabled") is True
+    ):
+        del merged_filesystem["disabled"]
+
+    option_network = option.get("network")
+    merged_network = merged.get("network")
+    if isinstance(option_network, dict) and isinstance(merged_network, dict):
+        denied = option_network.get("deniedDomains")
+        # Traffic to the settings' own proxy would otherwise skip these lists.
+        if (
+            "allowedDomains" in option_network
+            or (isinstance(denied, list) and len(denied) > 0)
+            or option_network.get("strictAllowlist") is True
+        ):
+            for port in ("httpProxyPort", "socksProxyPort"):
+                if port not in option_network:
+                    merged_network.pop(port, None)
+
+    return merged
+
+
 # Track live CLI subprocesses so we can terminate them when the parent Python
 # process exits. This mirrors the TypeScript SDK's parent-exit cleanup and
 # prevents orphaned `claude` processes from leaking when callers crash or exit
@@ -453,22 +584,35 @@ class SubprocessCLITransport(Transport):
 
         Settings that can't be loaded raise: launching without them would drop
         the caller's permission rules and hooks.
+
+        With sandbox set, ``extra_args["settings"]`` is used when ``settings`` is
+        unset, and _build_command does not send it as a flag of its own: Claude
+        Code reads only the last --settings flag, so a second one would replace
+        this value.
         """
         settings = self._options.settings
-        if self._options.sandbox is None:
+        sandbox = self._options.sandbox
+        if sandbox is None:
             return settings
+        if settings is None:
+            settings = self._options.extra_args.get("settings")
 
         settings_obj: dict[str, Any] = {}
         try:
             if settings is not None:
-                settings = settings.strip()
+                settings = str(settings).strip()  # extra_args may hold a Path
                 if not (settings.startswith("{") and settings.endswith("}")):
                     # A file path. Read it as the CLI does: relative to its cwd,
                     # and with or without a BOM.
                     path = Path(self._cwd or "") / settings
                     settings = path.read_text(encoding="utf-8-sig")
-                settings_obj = json.loads(settings)
-            settings_obj["sandbox"] = self._options.sandbox
+                parsed = json.loads(settings)
+                if not isinstance(parsed, dict):
+                    raise TypeError(f"{path} must contain a JSON object")
+                settings_obj = parsed
+            settings_obj["sandbox"] = _merge_sandbox_settings(
+                settings_obj.get("sandbox"), cast(dict[str, Any], sandbox)
+            )
         except (OSError, ValueError, TypeError) as e:
             raise CLIConnectionError(f"Failed to load settings: {e}") from e
         return json.dumps(settings_obj)
@@ -688,6 +832,10 @@ class SubprocessCLITransport(Transport):
 
         # Add extra args for future CLI flags
         for flag, value in self._options.extra_args.items():
+            if flag == "settings" and self._options.sandbox is not None:
+                # _build_settings_value handles it; a second --settings flag
+                # would replace its value.
+                continue
             if value is None:
                 # Boolean flag without value
                 cmd.append(f"--{flag}")

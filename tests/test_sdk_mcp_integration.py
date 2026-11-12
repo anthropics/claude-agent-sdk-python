@@ -152,10 +152,27 @@ async def test_tool_creation():
     assert echo_tool.description == "Echo input"
     assert echo_tool.input_schema == {"input": str}
     assert echo_tool.annotations is None
+    assert echo_tool.strict is False
     assert callable(echo_tool.handler)
 
     result = await echo_tool.handler({"input": "test"})
     assert result == {"output": "test"}
+
+    @tool("echo_strict", "Echo input", {"input": str}, strict=True)
+    async def echo_strict_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"output": args["input"]}
+
+    assert echo_strict_tool.strict is True
+
+    direct = SdkMcpTool(
+        name="direct",
+        description="Built directly",
+        input_schema={"input": str},
+        handler=echo_tool.handler,
+        strict=True,
+    )
+    assert direct.strict is True
+    assert direct.annotations is None
 
 
 @pytest.mark.anyio
@@ -662,6 +679,15 @@ async def test_tools_list_wire_format():
     async def plain(args: dict[str, Any]) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": args["x"]}]}
 
+    @tool(
+        "find",
+        "Match records with strict argument parsing",
+        {"query": str},
+        strict=True,
+    )
+    async def find(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": args["query"]}]}
+
     # Annotations are kept on the SdkMcpTool as given.
     assert read_data.annotations is not None
     assert read_data.annotations.model_dump(by_alias=True, exclude_none=True) == {
@@ -670,11 +696,13 @@ async def test_tools_list_wire_format():
     }
     assert plain.annotations is None
 
-    config = create_sdk_mcp_server(name="srv", tools=[read_data, delete_item, plain])
+    config = create_sdk_mcp_server(
+        name="srv", tools=[read_data, delete_item, plain, find]
+    )
     async with connected(config) as client:
         tools = {t["name"]: t for t in await client.list_tools("srv")}
 
-    assert set(tools) == {"read_data", "delete_item", "plain"}
+    assert set(tools) == {"read_data", "delete_item", "plain", "find"}
     assert tools["plain"] == {
         "name": "plain",
         "description": "Tool without annotations",
@@ -684,6 +712,8 @@ async def test_tools_list_wire_format():
             "required": ["x", "n"],
         },
     }
+    assert "strict" not in tools["plain"]
+    assert tools["find"]["strict"] is True
     assert tools["read_data"]["annotations"] == {
         "readOnlyHint": True,
         "openWorldHint": False,

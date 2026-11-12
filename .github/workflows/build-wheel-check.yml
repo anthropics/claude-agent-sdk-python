@@ -82,11 +82,15 @@ jobs:
               exit 1
             }
           else
-            grep -q "_bundled/claude" wheel_contents.txt || {
+            grep -Eq "_bundled/claude[[:space:]]" wheel_contents.txt || {
               echo "::error::Bundled CLI (claude) not found in wheel"
               exit 1
             }
           fi
+          grep -q "_bundled/claude.version" wheel_contents.txt || {
+            echo "::error::Bundled CLI version record not found in wheel"
+            exit 1
+          }
           echo "Bundled CLI found in wheel ✓"
 
       - name: Smoke-test install and import

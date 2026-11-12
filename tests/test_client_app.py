@@ -3,6 +3,8 @@
 import os
 import subprocess
 import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -249,14 +251,18 @@ class TestDeriveFromMain:
             assert derive_client_app() is None
 
 
+_THE_CLI_ITSELF = "the CLI under test"
+
+
 def _env_passed_to_subprocess(
     options: ClaudeAgentOptions,
     derived: str | None = "my-agent/1.2.3",
     ambient: dict[str, str] | None = None,
     cli_version: str = "2.1.500",
-    bundled_cli: str | None = "/usr/bin/claude",
+    bundled_cli: str | None = _THE_CLI_ITSELF,
+    recorded_version: str | None = "2.1.500 (Claude Code)\n",
 ) -> dict[str, str]:
-    async def _connect() -> dict[str, str]:
+    async def _connect(cli_path: Path) -> dict[str, str]:
         with (
             patch("anyio.open_process", new_callable=AsyncMock) as mock_open_process,
             patch(
@@ -275,7 +281,9 @@ def _env_passed_to_subprocess(
             patch.object(
                 SubprocessCLITransport,
                 "_find_bundled_cli",
-                return_value=bundled_cli,
+                return_value=(
+                    str(cli_path) if bundled_cli == _THE_CLI_ITSELF else bundled_cli
+                ),
             ),
             patch.dict(os.environ, ambient or {}),
         ):
@@ -283,12 +291,18 @@ def _env_passed_to_subprocess(
             process.stdin.aclose = AsyncMock()
             process.returncode = None
             mock_open_process.return_value = process
-            transport = SubprocessCLITransport(prompt="test", options=options)
+            transport = SubprocessCLITransport(
+                prompt="test", options=replace(options, cli_path=str(cli_path))
+            )
             await transport.connect()
             mock_open_process.assert_awaited_once()
             return mock_open_process.call_args.kwargs["env"]
 
-    return anyio.run(_connect)
+    with tempfile.TemporaryDirectory() as directory:
+        cli_path = Path(directory) / "claude"
+        if recorded_version is not None:
+            cli_path.with_name("claude.version").write_text(recorded_version)
+        return anyio.run(_connect, cli_path)
 
 
 @pytest.fixture
@@ -387,6 +401,20 @@ class TestPrecedence:
         env = _env_passed_to_subprocess(
             self._options(), bundled_cli="/opt/sdk/_bundled/claude"
         )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_for_a_binary_older_than_the_pin(self):
+        env = _env_passed_to_subprocess(
+            self._options(), recorded_version="2.1.499 (Claude Code)\n"
+        )
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_with_no_recorded_version(self):
+        env = _env_passed_to_subprocess(self._options(), recorded_version=None)
+        assert DERIVED_CLIENT_APP_ENV not in env
+
+    def test_derives_nothing_for_an_unreadable_recorded_version(self):
+        env = _env_passed_to_subprocess(self._options(), recorded_version="unknown\n")
         assert DERIVED_CLIENT_APP_ENV not in env
 
     def test_derives_nothing_without_a_bundled_cli(self):

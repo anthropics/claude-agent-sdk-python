@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
@@ -230,10 +231,16 @@ class Query:
         self.next_callback_id = 0
         self._request_counter = 0
 
-        # Message stream
+        # The reader also routes hook, permission and MCP control requests.
+        # A bounded stream would block it when a caller stops consuming regular
+        # messages (for example after an early ResultMessage on resume), starving
+        # control requests queued behind that traffic. Preserve all messages in
+        # order without letting downstream backpressure stop control routing.
+        # Hosts should continue consuming messages to avoid unbounded memory use.
         self._message_send, self._message_receive = anyio.create_memory_object_stream[
             dict[str, Any]
-        ](max_buffer_size=100)
+        ](max_buffer_size=math.inf)
+        self._message_buffer_warned = False
         self._read_task: TaskHandle | None = None
         self._child_tasks: set[TaskHandle] = set()
         self._inflight_requests: dict[str, TaskHandle] = {}
@@ -295,8 +302,8 @@ class Query:
         Called from the batcher's ``on_error`` once a batch has been dropped
         (after its retries, or after a single timed-out attempt), so this is
         the consumer's only signal.
-        Non-blocking — if the message buffer is full the error is logged and
-        dropped rather than back-pressuring the read loop.
+        Non-blocking — the error is queued without back-pressuring the read
+        loop. The queue is unbounded, so consumers must keep draining it.
         """
         msg: dict[str, Any] = {
             "type": "system",
@@ -308,8 +315,10 @@ class Query:
         }
         try:
             self._message_send.send_nowait(msg)
-        except Exception as e:  # pragma: no cover - buffer-full edge case
-            logger.warning("Dropping mirror_error message (buffer full): %s", e)
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError) as e:
+            logger.warning(
+                "Could not queue mirror_error message (stream closed): %s", e
+            )
 
     async def initialize(self) -> dict[str, Any] | None:
         """Initialize control protocol if in streaming mode.
@@ -533,6 +542,15 @@ class Query:
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
+                if (
+                    not self._message_buffer_warned
+                    and self._message_send.statistics().current_buffer_used >= 1000
+                ):
+                    self._message_buffer_warned = True
+                    logger.warning(
+                        "SDK message buffer contains at least 1000 unread messages; "
+                        "memory usage may continue to grow until messages are consumed"
+                    )
 
         except anyio.get_cancelled_exc_class():
             # Task was cancelled - this is expected behavior
@@ -596,9 +614,8 @@ class Query:
             # Always signal end of stream. send_nowait: trio's level-triggered
             # cancellation would re-raise Cancelled at an await checkpoint
             # here, dropping the sentinel and leaving receive_messages() hung.
-            # close() is the fallback for the buffer-full case where
-            # send_nowait raises WouldBlock — receivers then exit on
-            # EndOfStream after draining.
+            # Closing the stream ensures receivers eventually observe
+            # EndOfStream after draining queued messages.
             with suppress(anyio.WouldBlock):
                 self._message_send.send_nowait({"type": "end"})
             self._message_send.close()

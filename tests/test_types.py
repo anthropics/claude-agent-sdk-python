@@ -2,6 +2,8 @@
 
 from typing import Any, get_args, get_type_hints
 
+import pytest
+
 from claude_agent_sdk import (
     AssistantMessage,
     BaseHookInput,
@@ -60,7 +62,7 @@ class TestPermissionUpdate:
             "behavior": "allow",
             "rules": [
                 {"toolName": "Bash", "ruleContent": "npm *"},
-                {"toolName": "Read", "ruleContent": None},
+                {"toolName": "Read"},
             ],
         }
         update = PermissionUpdate.from_dict(wire)
@@ -72,6 +74,129 @@ class TestPermissionUpdate:
             PermissionRuleValue(tool_name="Read", rule_content=None),
         ]
         assert update.to_dict() == wire
+
+    def test_whole_tool_rule_has_no_rule_content_key(self):
+        """Claude Code rejects a null ruleContent, so None leaves the key out."""
+        update = PermissionUpdate(
+            type="addRules",
+            rules=[PermissionRuleValue(tool_name="WebSearch")],
+            behavior="allow",
+            destination="localSettings",
+        )
+        assert update.to_dict() == {
+            "type": "addRules",
+            "destination": "localSettings",
+            "behavior": "allow",
+            "rules": [{"toolName": "WebSearch"}],
+        }
+
+    def test_empty_rule_content_is_sent_as_is(self):
+        update = PermissionUpdate(
+            type="addRules",
+            rules=[PermissionRuleValue(tool_name="Bash", rule_content="")],
+            behavior="deny",
+            destination="session",
+        )
+        assert update.to_dict()["rules"] == [{"toolName": "Bash", "ruleContent": ""}]
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            PermissionUpdate(
+                type="addRules",
+                rules=[PermissionRuleValue(tool_name="Read")],
+                behavior="allow",
+            ),
+            PermissionUpdate(
+                type="replaceRules",
+                rules=[PermissionRuleValue(tool_name="Read")],
+                behavior="deny",
+            ),
+            PermissionUpdate(
+                type="removeRules",
+                rules=[PermissionRuleValue(tool_name="Read")],
+                behavior="allow",
+            ),
+            PermissionUpdate(type="setMode", mode="acceptEdits"),
+            PermissionUpdate(type="addDirectories", directories=["/tmp/a"]),
+            PermissionUpdate(type="removeDirectories", directories=["/tmp/a"]),
+        ],
+        ids=lambda update: update.type,
+    )
+    def test_missing_destination_is_sent_as_session(self, update):
+        assert update.to_dict()["destination"] == "session"
+
+    @pytest.mark.parametrize(
+        ("update", "missing"),
+        [
+            (PermissionUpdate(type="addRules", behavior="allow"), "rules"),
+            (PermissionUpdate(type="replaceRules", behavior="deny"), "rules"),
+            (PermissionUpdate(type="removeRules", behavior="ask"), "rules"),
+            (
+                PermissionUpdate(
+                    type="addRules", rules=[PermissionRuleValue(tool_name="Read")]
+                ),
+                "behavior",
+            ),
+            (
+                PermissionUpdate(
+                    type="replaceRules", rules=[PermissionRuleValue(tool_name="Read")]
+                ),
+                "behavior",
+            ),
+            (
+                PermissionUpdate(
+                    type="removeRules", rules=[PermissionRuleValue(tool_name="Read")]
+                ),
+                "behavior",
+            ),
+            (PermissionUpdate(type="setMode"), "mode"),
+            (PermissionUpdate(type="addDirectories"), "directories"),
+            (PermissionUpdate(type="removeDirectories"), "directories"),
+        ],
+    )
+    def test_missing_required_field_raises(self, update, missing):
+        with pytest.raises(ValueError, match=f"has no {missing}"):
+            update.to_dict()
+
+    def test_unknown_type_raises(self):
+        update = PermissionUpdate(type="addSomething", destination="session")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="type 'addSomething', which this version"):
+            update.to_dict()
+
+    @pytest.mark.parametrize(
+        "wire",
+        [
+            {
+                "type": "addRules",
+                "destination": "localSettings",
+                "behavior": "allow",
+                "rules": [{"toolName": "WebSearch"}],
+            },
+            {
+                "type": "replaceRules",
+                "destination": "projectSettings",
+                "behavior": "deny",
+                "rules": [{"toolName": "Bash", "ruleContent": "rm -rf *"}],
+            },
+            {
+                "type": "removeRules",
+                "destination": "userSettings",
+                "behavior": "ask",
+                "rules": [{"toolName": "mcp__server__tool"}],
+            },
+            {"type": "setMode", "mode": "plan", "destination": "session"},
+            {
+                "type": "removeDirectories",
+                "directories": ["/tmp/a"],
+                "destination": "localSettings",
+            },
+        ],
+        ids=lambda wire: wire["type"],
+    )
+    def test_cli_suggestion_round_trips_unchanged(self, wire):
+        """Echoing a suggestion from Claude Code sends back exactly what it sent."""
+        assert PermissionUpdate.from_dict(wire).to_dict() == wire
 
     def test_from_dict_set_mode(self):
         wire = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}

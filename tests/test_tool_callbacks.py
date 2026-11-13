@@ -150,6 +150,121 @@ class TestToolPermissionCallbacks:
         assert sent == [wire_suggestion]
 
     @pytest.mark.anyio
+    async def test_permission_callback_echoes_whole_tool_suggestion(self):
+        """A suggestion without ruleContent goes back without it, not as null.
+
+        Claude Code rejects a null ruleContent and then ignores every update in
+        the response.
+        """
+
+        async def accept_suggestions(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            return PermissionResultAllow(updated_permissions=context.suggestions)
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=accept_suggestions,
+            hooks=None,
+        )
+
+        wire_suggestions = [
+            {
+                "type": "addRules",
+                "destination": "localSettings",
+                "behavior": "allow",
+                "rules": [{"toolName": "WebSearch"}],
+            },
+            {
+                "type": "addRules",
+                "destination": "session",
+                "behavior": "allow",
+                "rules": [{"toolName": "Bash", "ruleContent": "git status"}],
+            },
+            {"type": "setMode", "mode": "acceptEdits", "destination": "session"},
+        ]
+        request = {
+            "type": "control_request",
+            "request_id": "test-whole-tool",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "WebSearch",
+                "input": {"query": "weather"},
+                "permission_suggestions": wire_suggestions,
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(transport.written_messages) == 1
+        response = json.loads(transport.written_messages[0])
+        assert response["response"]["subtype"] == "success"
+        sent = response["response"]["response"]["updatedPermissions"]
+        assert sent == wire_suggestions
+
+    @pytest.mark.anyio
+    async def test_permission_callback_sends_no_updates_if_one_is_malformed(
+        self, caplog
+    ):
+        """If one update lacks a required field, none are sent; the allow stands.
+
+        The malformed one may be a restriction the others depend on.
+        """
+        from claude_agent_sdk.types import PermissionRuleValue, PermissionUpdate
+
+        async def allow_with_updates(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            return PermissionResultAllow(
+                updated_permissions=[
+                    PermissionUpdate(
+                        type="addRules",
+                        rules=[PermissionRuleValue(tool_name="Read")],
+                        behavior="allow",
+                        destination="session",
+                    ),
+                    PermissionUpdate(
+                        type="addRules",
+                        rules=[
+                            PermissionRuleValue(tool_name="Bash", rule_content="ls")
+                        ],
+                    ),
+                    PermissionUpdate(type="setMode", mode="acceptEdits"),
+                ]
+            )
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=allow_with_updates,
+            hooks=None,
+        )
+        request = {
+            "type": "control_request",
+            "request_id": "test-malformed-update",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Read",
+                "input": {"file_path": "/tmp/x"},
+                "permission_suggestions": [],
+            },
+        }
+
+        with caplog.at_level("WARNING", logger="claude_agent_sdk._internal.query"):
+            await query._handle_control_request(request)
+
+        assert len(transport.written_messages) == 1
+        response = json.loads(transport.written_messages[0])
+        assert response["response"]["subtype"] == "success"
+        assert response["response"]["response"]["behavior"] == "allow"
+        assert "updatedPermissions" not in response["response"]["response"]
+        assert "updated_permissions[1] cannot be sent" in caplog.text
+        assert "has no behavior" in caplog.text
+
+    @pytest.mark.anyio
     async def test_permission_callback_deny(self):
         """Test callback that denies tool execution."""
 

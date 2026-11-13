@@ -363,3 +363,54 @@ class TestKeyParity:
 
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == [_entry(0)]
+
+
+# ---------------------------------------------------------------------------
+# env= override (config dir of a subprocess isolated via options.env)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvOverride:
+    """``env=`` targets the config dir a subprocess was given via ``options.env``.
+
+    Same contract as ``list_sessions(env=...)``: the mapping is consulted
+    before ``os.environ`` for ``CLAUDE_CONFIG_DIR``, so a host that runs several
+    agents with one config dir each can import the right agent's transcript.
+    """
+
+    @pytest.mark.anyio
+    async def test_imports_from_the_env_config_dir(
+        self, claude_dir: Path, cwd: Path, project_key: str, tmp_path: Path
+    ) -> None:
+        # The session exists only in a config dir os.environ does NOT point at.
+        other_config = tmp_path / "other-claude"
+        other_project_dir = other_config / "projects" / project_key
+        entries = [_entry(0), _entry(1)]
+        sub_entries = [_entry(10)]
+        _write_jsonl(other_project_dir / f"{SESSION_ID}.jsonl", entries)
+        _write_jsonl(
+            other_project_dir / SESSION_ID / "subagents" / "agent-abc.jsonl",
+            sub_entries,
+        )
+        env = {"CLAUDE_CONFIG_DIR": str(other_config)}
+
+        # Default path resolves os.environ's dir (claude_dir), where it is absent.
+        with pytest.raises(FileNotFoundError, match="not found"):
+            await import_session_to_store(
+                SESSION_ID, InMemorySessionStore(), directory=str(cwd)
+            )
+
+        store = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd), env=env)
+
+        main_key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(main_key) == entries
+        # Subagents are found relative to the resolved file, so they follow env too.
+        assert store.get_entries({**main_key, "subpath": "subagents/agent-abc"}) == (
+            sub_entries
+        )
+
+        # directory=None searches every project dir under the env config root.
+        store2 = InMemorySessionStore()
+        await import_session_to_store(SESSION_ID, store2, env=env)
+        assert store2.get_entries(main_key) == entries

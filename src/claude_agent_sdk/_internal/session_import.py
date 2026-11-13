@@ -11,7 +11,7 @@ Mirrors the TypeScript SDK's ``importSessionToStore``.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -33,6 +33,7 @@ async def import_session_to_store(
     directory: str | None = None,
     include_subagents: bool = True,
     batch_size: int = MAX_PENDING_ENTRIES,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Replay a local session transcript into a :class:`SessionStore`.
 
@@ -61,6 +62,11 @@ async def import_session_to_store(
             transcripts under ``<sessionId>/subagents/**`` and their
             ``.meta.json`` sidecars.
         batch_size: Maximum entries per ``store.append()`` call. Default 500.
+        env: Optional environment mapping consulted before ``os.environ``
+            for ``CLAUDE_CONFIG_DIR`` (and for ``HOME``/``USERPROFILE``, which
+            move the default ``~/.claude``). Pass the same mapping given to
+            ``ClaudeAgentOptions.env`` so the lookup resolves the config
+            directory that subprocess writes to, instead of the caller's.
 
     Raises:
         ValueError: If ``session_id`` is not a valid UUID.
@@ -69,7 +75,7 @@ async def import_session_to_store(
     if not _validate_uuid(session_id):
         raise ValueError(f"Invalid session_id: {session_id}")
 
-    resolved = _resolve_session_file_path(session_id, directory)
+    resolved = _resolve_session_file_path(session_id, directory, env)
     if resolved is None:
         raise FileNotFoundError(f"Session {session_id} not found")
 

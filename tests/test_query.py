@@ -1410,6 +1410,13 @@ class TestRunEndCeilingFromEnv:
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "soon"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "-1"}, None, 600_000),
             ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": ""}, "1234", 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e6"}, None, 1_000_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e2"}, None, 100),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "2.5e2"}, None, 250),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1.5"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1e999"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "nan"}, None, 600_000),
+            ({"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "1" + "0" * 30}, None, 10**30),
         ],
         ids=[
             "default",
@@ -1420,6 +1427,13 @@ class TestRunEndCeilingFromEnv:
             "not_a_number",
             "negative",
             "empty_option_wins",
+            "scientific_notation",
+            "scientific_notation_small",
+            "scientific_notation_fractional_mantissa",
+            "fractional_falls_back",
+            "overflow_falls_back",
+            "nan_falls_back",
+            "huge_plain_integer_honored",
         ],
     )
     def test_parse(self, monkeypatch, options_env, ambient, expected):

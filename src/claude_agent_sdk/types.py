@@ -2476,7 +2476,8 @@ class ClaudeAgentOptions:
     """Path to an additional settings JSON file to load, or an inline JSON string.
 
     Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
-    flag. When ``sandbox`` is also set, the settings are merged with the sandbox
+    flag (a relative path that begins with "-" is passed as "./<path>", the
+    same file). When ``sandbox`` is also set, the settings are merged with the sandbox
     settings and passed as one JSON string: an inline string is parsed
     directly, and a path is read from disk, relative to ``cwd`` when ``cwd`` is
     set. Settings that cannot be loaded raise ``CLIConnectionError``.

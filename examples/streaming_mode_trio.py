@@ -46,7 +46,7 @@ def display_message(msg):
 async def multi_turn_conversation():
     """Example of a multi-turn conversation using trio."""
     async with ClaudeSDKClient(
-        options=ClaudeAgentOptions(model="claude-sonnet-4-5")
+        options=ClaudeAgentOptions(model="claude-sonnet-4-6")
     ) as client:
         print("=== Multi-turn Conversation with Trio ===\n")
 

@@ -125,6 +125,14 @@ class CLIJSONDecodeError(ClaudeSDKError):
         self.original_error = original_error
         super().__init__(f"Failed to decode JSON: {line[:100]}...")
 
+    def __reduce__(self) -> tuple[type["CLIJSONDecodeError"], tuple[str, Exception]]:
+        # The default reconstruction protocol (``type(e)(*e.args)``, used by
+        # pickle/copy and therefore by multiprocessing) only passes the
+        # formatted message, losing ``line`` and ``original_error`` — and a
+        # message-only rebuild would double-wrap the text. Pass the real
+        # constructor arguments so the round-trip is exact.
+        return (type(self), (self.line, self.original_error))
+
 
 class MessageParseError(ClaudeSDKError):
     """Raised when unable to parse a message from CLI output."""

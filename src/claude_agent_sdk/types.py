@@ -272,6 +272,7 @@ class PermissionResultDeny:
 
     behavior: Literal["deny"] = "deny"
     message: str = ""
+    """Why the call was denied. If blank, the SDK sends a sentence naming the tool."""
     interrupt: bool = False
 
 

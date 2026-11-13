@@ -815,3 +815,82 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+
+# ---------------------------------------------------------------------------
+# Long-path fallback — delete_session must resolve the right project directory
+# ---------------------------------------------------------------------------
+
+# Resolved as the SDK resolves directory= (adds the drive on Windows).
+_LONG_BASE = os.path.realpath("/" + "x" * 210)
+
+
+def _make_cli_long_path_dir(
+    config_dir: Path, project_path: str, hash_suffix: str
+) -> Path:
+    """Creates a project dir as the CLI would for a long path (foreign hash)."""
+    sanitized = _sanitize_path(project_path)
+    assert len(sanitized) > 200, "fixture path must exceed MAX_SANITIZED_LENGTH"
+    name = f"{sanitized[:200]}-{hash_suffix}"
+    assert name != sanitized, "fixture suffix must differ from simpleHash"
+    project_dir = config_dir / "projects" / name
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir
+
+
+def _make_session_file_with_cwd(project_dir: Path, cwd: str) -> tuple[str, Path]:
+    """Creates a session file whose entries carry the CLI's cwd field."""
+    sid = str(uuid.uuid4())
+    file_path = project_dir / f"{sid}.jsonl"
+    lines = [
+        json.dumps(
+            {
+                "type": "user",
+                "cwd": cwd,
+                "message": {"role": "user", "content": "hello"},
+            }
+        ),
+        json.dumps(
+            {"type": "assistant", "message": {"role": "assistant", "content": "hi"}}
+        ),
+    ]
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return sid, file_path
+
+
+class TestDeleteSessionLongPathFallback:
+    """delete_session resolves project dirs through the long-path prefix
+    fallback; a wrong-directory prefix match there would unlink another
+    project's session file (and rmtree its subagent transcripts)."""
+
+    def test_delete_does_not_resolve_other_project_sharing_prefix(
+        self, claude_config_dir: Path
+    ):
+        """Deleting with a directory= that merely shares the prefix must
+        raise, not delete the other project's session."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        assert _sanitize_path(project_a)[:200] == _sanitize_path(project_b)[:200]
+
+        dir_a = _make_cli_long_path_dir(claude_config_dir, project_a, "bunh4sh")
+        sid, file_a = _make_session_file_with_cwd(dir_a, project_a)
+        # Subagent transcripts dir that a wrong-directory rmtree would remove
+        subagents = dir_a / sid
+        subagents.mkdir()
+        (subagents / "agent.jsonl").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(FileNotFoundError):
+            delete_session(sid, directory=project_b)
+
+        assert file_a.exists(), "the other project's session file was deleted"
+        assert (subagents / "agent.jsonl").exists()
+
+    def test_delete_own_session_with_hash_mismatch(self, claude_config_dir: Path):
+        """Compat: deleting one's own session in a CLI-created (foreign hash)
+        dir still works."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        dir_a = _make_cli_long_path_dir(claude_config_dir, project_a, "bunh4sh")
+        sid, file_a = _make_session_file_with_cwd(dir_a, project_a)
+
+        delete_session(sid, directory=project_a)
+        assert not file_a.exists()

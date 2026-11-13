@@ -636,8 +636,9 @@ class Query:
                     description=permission_request.get("description"),
                 )
 
+                tool_name = permission_request["tool_name"]
                 response = await self.can_use_tool(
-                    permission_request["tool_name"],
+                    tool_name,
                     permission_request["input"],
                     context,
                 )
@@ -658,7 +659,12 @@ class Query:
                             for permission in response.updated_permissions
                         ]
                 elif isinstance(response, PermissionResultDeny):
-                    response_data = {"behavior": "deny", "message": response.message}
+                    # Claude Code can put this message in an error tool result, and the
+                    # API refuses one with empty content.
+                    deny_message = response.message
+                    if not deny_message or deny_message.isspace():
+                        deny_message = f"Permission to use {tool_name} has been denied."
+                    response_data = {"behavior": "deny", "message": deny_message}
                     if response.interrupt:
                         response_data["interrupt"] = response.interrupt
                 else:

@@ -186,6 +186,89 @@ class TestToolPermissionCallbacks:
         assert '"message": "Security policy violation"' in response
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            pytest.param(
+                PermissionResultDeny(),
+                {
+                    "behavior": "deny",
+                    "message": "Permission to use DangerousTool has been denied.",
+                },
+                id="no-message",
+            ),
+            pytest.param(
+                PermissionResultDeny(message=""),
+                {
+                    "behavior": "deny",
+                    "message": "Permission to use DangerousTool has been denied.",
+                },
+                id="empty-message",
+            ),
+            pytest.param(
+                PermissionResultDeny(message=" \n"),
+                {
+                    "behavior": "deny",
+                    "message": "Permission to use DangerousTool has been denied.",
+                },
+                id="whitespace-message",
+            ),
+            pytest.param(
+                PermissionResultDeny(message="Not on this branch"),
+                {"behavior": "deny", "message": "Not on this branch"},
+                id="own-message",
+            ),
+            pytest.param(
+                PermissionResultDeny(interrupt=True),
+                {
+                    "behavior": "deny",
+                    "message": "Permission to use DangerousTool has been denied.",
+                    "interrupt": True,
+                },
+                id="interrupt-no-message",
+            ),
+            pytest.param(
+                PermissionResultDeny(message="Stop here", interrupt=True),
+                {"behavior": "deny", "message": "Stop here", "interrupt": True},
+                id="interrupt-own-message",
+            ),
+        ],
+    )
+    async def test_permission_callback_deny_never_sends_empty_message(
+        self, result: PermissionResultDeny, expected: dict[str, Any]
+    ):
+        async def deny_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultDeny:
+            return result
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=deny_callback,
+            hooks=None,
+        )
+
+        request = {
+            "type": "control_request",
+            "request_id": "test-deny-message",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "DangerousTool",
+                "input": {"command": "rm -rf /"},
+                "permission_suggestions": [],
+            },
+        }
+
+        await query._handle_control_request(request)
+
+        assert len(transport.written_messages) == 1
+        sent = json.loads(transport.written_messages[0])
+        assert sent["response"]["subtype"] == "success"
+        assert sent["response"]["response"] == expected
+
+    @pytest.mark.anyio
     async def test_permission_callback_input_modification(self):
         """Test callback that modifies tool input."""
 

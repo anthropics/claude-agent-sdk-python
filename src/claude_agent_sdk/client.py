@@ -12,6 +12,7 @@ from ._errors import CLIConnectionError
 if TYPE_CHECKING:
     from ._internal.session_resume import MaterializedResume
 from .types import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ContextUsageResponse,
     McpStatusResponse,
@@ -598,11 +599,29 @@ class ClaudeSDKClient:
         Note:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
+
+        A non-error, empty ``ResultMessage`` with ``num_turns == 0`` that
+        arrives before any assistant output of the turn is a stale result for
+        an orphaned background-task cycle on resume (see issue #1463). It is
+        skipped so the iterator continues to the result of the turn just
+        requested. Error results are always accepted, since a turn can fail
+        before producing any output.
         """
+        turn_has_activity = False
         async for message in self.receive_messages():
-            yield message
-            if isinstance(message, ResultMessage):
+            if isinstance(message, AssistantMessage):
+                turn_has_activity = True
+            elif isinstance(message, ResultMessage):
+                if (
+                    not message.is_error
+                    and message.num_turns == 0
+                    and not message.result
+                    and not turn_has_activity
+                ):
+                    continue
+                yield message
                 return
+            yield message
 
     async def disconnect(self) -> None:
         """Disconnect from Claude.

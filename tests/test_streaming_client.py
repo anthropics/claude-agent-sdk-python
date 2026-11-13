@@ -489,6 +489,140 @@ class TestClaudeSDKClientStreaming:
                 assert isinstance(messages[1], ResultMessage)
 
     @pytest.mark.anyio
+    async def test_receive_response_skips_stale_empty_result(self):
+        """A stale num_turns=0 result for an orphaned background task on resume
+        must not close receive_response() before the turn is produced (#1463)."""
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            async def mock_receive():
+                await anyio.sleep(0.01)
+                for call in mock_transport.write.call_args_list:
+                    try:
+                        msg = json.loads(call[0][0].strip())
+                    except (json.JSONDecodeError, IndexError, TypeError):
+                        continue
+                    if (
+                        msg.get("type") == "control_request"
+                        and msg.get("request", {}).get("subtype") == "initialize"
+                    ):
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg.get("request_id"),
+                                "subtype": "success",
+                                "commands": [],
+                                "output_style": "default",
+                            },
+                        }
+                        break
+
+                # Stale, empty result emitted for the dead background task
+                # before the model produces anything for the new prompt.
+                yield {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 46,
+                    "duration_api_ms": 0,
+                    "is_error": False,
+                    "num_turns": 0,
+                    "session_id": "test",
+                    "total_cost_usd": 0.0,
+                }
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "pong"}],
+                        "model": "claude-opus-4-1-20250805",
+                    },
+                }
+                yield {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1400,
+                    "duration_api_ms": 800,
+                    "is_error": False,
+                    "num_turns": 1,
+                    "session_id": "test",
+                    "total_cost_usd": 0.001,
+                }
+
+            mock_transport.read_messages = mock_receive
+
+            async with ClaudeSDKClient() as client:
+                messages = [msg async for msg in client.receive_response()]
+
+            results = [m for m in messages if isinstance(m, ResultMessage)]
+            assert len(results) == 1
+            assert results[0].num_turns == 1
+            assert isinstance(messages[-1], ResultMessage)
+            assert isinstance(messages[-2], AssistantMessage)
+
+    @pytest.mark.anyio
+    async def test_receive_response_accepts_error_result_before_turn(self):
+        """A turn can fail before producing output, so an error result is
+        accepted even when it precedes any AssistantMessage (#1463)."""
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = create_mock_transport()
+            mock_transport_class.return_value = mock_transport
+
+            async def mock_receive():
+                await anyio.sleep(0.01)
+                for call in mock_transport.write.call_args_list:
+                    try:
+                        msg = json.loads(call[0][0].strip())
+                    except (json.JSONDecodeError, IndexError, TypeError):
+                        continue
+                    if (
+                        msg.get("type") == "control_request"
+                        and msg.get("request", {}).get("subtype") == "initialize"
+                    ):
+                        yield {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": msg.get("request_id"),
+                                "subtype": "success",
+                                "commands": [],
+                                "output_style": "default",
+                            },
+                        }
+                        break
+
+                yield {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "duration_ms": 10,
+                    "duration_api_ms": 0,
+                    "is_error": True,
+                    "num_turns": 0,
+                    "session_id": "test",
+                    "total_cost_usd": 0.0,
+                }
+                yield {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "unreachable"}],
+                        "model": "claude-opus-4-1-20250805",
+                    },
+                }
+
+            mock_transport.read_messages = mock_receive
+
+            async with ClaudeSDKClient() as client:
+                messages = [msg async for msg in client.receive_response()]
+
+            assert len(messages) == 1
+            assert isinstance(messages[0], ResultMessage)
+            assert messages[0].is_error is True
+
+    @pytest.mark.anyio
     async def test_interrupt(self):
         """Test interrupt functionality."""
 

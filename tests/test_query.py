@@ -2713,3 +2713,53 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+def _make_blocking_transport():
+    """Mock transport that yields one assistant message, then blocks forever.
+
+    Models a CLI that is still running: the stream never reaches EOF, so
+    the only way transport.close() runs is via an explicit aclose().
+    """
+    mock_transport = AsyncMock()
+    mock_transport.is_ready = Mock(return_value=True)
+    mock_transport.connect = AsyncMock()
+    mock_transport.write = AsyncMock()
+    mock_transport.end_input = AsyncMock()
+    mock_transport.close = AsyncMock()
+
+    async def mock_receive():
+        yield dict(_ASSISTANT_AND_RESULT[0])
+        await anyio.sleep_forever()
+
+    mock_transport.read_messages = mock_receive
+    return mock_transport
+
+
+class TestQueryAclose:
+    """An explicit aclose() on query() must close the transport at once (#1377).
+
+    The fix holds the process_query() generator in a local and acloses it
+    in a ``finally``, so Query.close() — and therefore transport.close() —
+    runs before aclose() returns. The assertion below runs immediately
+    after aclose() with no sleep: on main it fails, because the inner
+    generator is only finalized later by the event loop's asyncgen hooks.
+    """
+
+    def test_aclose_closes_transport_before_returning(self):
+        """transport.close() has run by the time aclose() returns."""
+
+        async def _test():
+            transport = _make_blocking_transport()
+            with patch(
+                "claude_agent_sdk._internal.query.Query.initialize",
+                new_callable=AsyncMock,
+            ):
+                gen = query(prompt="hi", transport=transport)
+                first = await gen.__anext__()
+                assert isinstance(first, AssistantMessage)
+                await gen.aclose()
+            # No sleep: the close must already have happened.
+            assert transport.close.await_count == 1
+
+        anyio.run(_test)

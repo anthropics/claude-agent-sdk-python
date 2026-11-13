@@ -41,6 +41,10 @@ async def query(
     - When you need interrupt capabilities
     - Long-running sessions with state
 
+    Note: a bare ``break`` out of ``async for`` does not deterministically
+    terminate the CLI subprocess; for cleanup on early exit, iterate with
+    ``async with contextlib.aclosing(query(...))`` instead.
+
     Args:
         prompt: The prompt to send to Claude. Can be a string for single-shot queries
                 or an AsyncIterable[dict] for streaming mode with continuous interaction.
@@ -126,7 +130,15 @@ async def query(
 
     client = InternalClient()
 
-    async for message in client.process_query(
-        prompt=prompt, options=options, transport=transport
-    ):
-        yield message
+    gen = client.process_query(prompt=prompt, options=options, transport=transport)
+    try:
+        async for message in gen:
+            yield message
+    finally:
+        # An explicit ``aclose()`` on this generator must deterministically
+        # run the inner generator's ``finally`` (``Query.close()``, which
+        # terminates the CLI subprocess). A bare ``break`` — or an exception
+        # in the loop body — does not trigger this: the stream is then only
+        # finalized later by the event loop's asyncgen hooks, so callers who
+        # need cleanup on early exit should use ``contextlib.aclosing``.
+        await gen.aclose()

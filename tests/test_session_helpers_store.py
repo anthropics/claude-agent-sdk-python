@@ -922,3 +922,81 @@ class TestForkSessionViaStore:
         assert cr_out["sessionId"] == result.session_id
         assert isinstance(cr_out["uuid"], str) and cr_out["uuid"]
         assert isinstance(cr_out["timestamp"], str)
+
+    async def test_fork_session_via_store_remaps_attachment_references(self) -> None:
+        """nameOnlyAnnouncements and queued_command.source_uuid are remapped
+        like parentUuid; an id sliced away by up_to_message_id is dropped."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        u1 = _user("one", str(uuid_mod.uuid4()), None, sid)
+        a1 = _assistant("two", str(uuid_mod.uuid4()), u1["uuid"], sid)
+        delta = {
+            "type": "attachment",
+            "uuid": str(uuid_mod.uuid4()),
+            "parentUuid": a1["uuid"],
+            "sessionId": sid,
+            "timestamp": "2024-01-01T00:00:02.000Z",
+            "attachment": {"type": "deferred_tools_delta", "surfacedNames": ["t"]},
+        }
+        late_delta = str(uuid_mod.uuid4())
+        record = {
+            "type": "attachment",
+            "uuid": str(uuid_mod.uuid4()),
+            "parentUuid": delta["uuid"],
+            "sessionId": sid,
+            "timestamp": "2024-01-01T00:00:03.000Z",
+            "attachment": {
+                "type": "deferred_tools_record",
+                "entries": [],
+                "nameOnlyAnnouncements": [delta["uuid"], late_delta],
+            },
+        }
+        queued = {
+            "type": "attachment",
+            "uuid": str(uuid_mod.uuid4()),
+            "parentUuid": record["uuid"],
+            "sessionId": sid,
+            "timestamp": "2024-01-01T00:00:04.000Z",
+            "attachment": {
+                "type": "queued_command",
+                "prompt": "next",
+                "source_uuid": u1["uuid"],
+            },
+        }
+        tail = {
+            "type": "attachment",
+            "uuid": late_delta,
+            "parentUuid": queued["uuid"],
+            "sessionId": sid,
+            "timestamp": "2024-01-01T00:00:05.000Z",
+            "attachment": {"type": "deferred_tools_delta", "surfacedNames": ["u"]},
+        }
+        rows = [u1, a1, delta, record, queued, tail]
+        await store.append(
+            {"project_key": PROJECT_KEY, "session_id": sid},
+            rows,  # type: ignore[arg-type]
+        )
+
+        result = await fork_session_via_store(
+            store, sid, directory=DIR, up_to_message_id=queued["uuid"]
+        )
+        forked = store.get_entries(
+            {"project_key": PROJECT_KEY, "session_id": result.session_id}
+        )
+        by_source = {
+            e["forkedFrom"]["messageUuid"]: e for e in forked if "forkedFrom" in e
+        }
+        assert set(by_source) == {r["uuid"] for r in rows[:-1]}
+
+        rec = by_source[record["uuid"]]["attachment"]
+        assert rec["nameOnlyAnnouncements"] == [by_source[delta["uuid"]]["uuid"]]
+
+        q = by_source[queued["uuid"]]["attachment"]
+        assert q["source_uuid"] == by_source[u1["uuid"]]["uuid"]
+
+        # Source rows are unchanged.
+        assert record["attachment"]["nameOnlyAnnouncements"] == [
+            delta["uuid"],
+            late_delta,
+        ]
+        assert queued["attachment"]["source_uuid"] == u1["uuid"]

@@ -345,6 +345,47 @@ def fork_session(
     return ForkSessionResult(session_id=forked_session_id)
 
 
+def _remap_attachment_references(
+    entry: dict[str, Any], uuid_mapping: dict[str, str]
+) -> dict[str, Any] | None:
+    """Remap the entry uuids an attachment payload refers to.
+
+    Returns a copy of the attachment with its references pointing at fork
+    uuids, or None when the entry carries nothing to remap. The source dict
+    is never modified.
+
+    - ``deferred_tools_record.nameOnlyAnnouncements`` lists the uuids of
+      earlier ``deferred_tools_delta`` entries. Ids that are not in the fork
+      (cut off by ``up_to_message_id``) are dropped rather than left dangling.
+    - ``queued_command.source_uuid`` names the user entry the command was
+      rotated out of. It follows that entry when it is in the fork, and is
+      left as is otherwise.
+    """
+    if entry.get("type") != "attachment":
+        return None
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict):
+        return None
+    kind = attachment.get("type")
+    if kind == "deferred_tools_record":
+        announcements = attachment.get("nameOnlyAnnouncements")
+        if not isinstance(announcements, list):
+            return None
+        return {
+            **attachment,
+            "nameOnlyAnnouncements": [
+                uuid_mapping[u]
+                for u in announcements
+                if isinstance(u, str) and u in uuid_mapping
+            ],
+        }
+    if kind == "queued_command":
+        source_uuid = attachment.get("source_uuid")
+        if isinstance(source_uuid, str) and source_uuid in uuid_mapping:
+            return {**attachment, "source_uuid": uuid_mapping[source_uuid]}
+    return None
+
+
 def _build_fork_lines(
     transcript: list[dict[str, Any]],
     content_replacements: list[Any],
@@ -441,8 +482,22 @@ def _build_fork_lines(
             },
         }
         # Remove fields that would leak state from the source session
-        for key in ("teamName", "agentName", "slug", "sourceToolAssistantUUID"):
+        for key in (
+            "teamName",
+            "agentName",
+            "slug",
+            "sourceToolAssistantUUID",
+            "sessionKind",
+            "summarizedTurnPromptUuids",
+            "droppedPromptUuids",
+        ):
             forked.pop(key, None)
+
+        # Attachment payloads can point at other entries by uuid; those
+        # references must follow the remapping like parentUuid does.
+        remapped_attachment = _remap_attachment_references(original, uuid_mapping)
+        if remapped_attachment is not None:
+            forked["attachment"] = remapped_attachment
 
         lines.append(json.dumps(forked, separators=(",", ":")))
 

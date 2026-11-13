@@ -598,7 +598,12 @@ def _parse_fork_transcript(
     transcript: list[dict[str, Any]] = []
     content_replacements: list[Any] = []
 
-    for line in content.decode("utf-8", errors="replace").splitlines():
+    # Split on "\n" only: str.splitlines() also breaks on U+2028/U+2029/U+0085,
+    # which JS JSON.stringify leaves unescaped inside strings in Claude Code's
+    # transcripts — splitting on them cuts a single record into pieces that
+    # all fail json.loads, silently dropping entries and orphaning the next
+    # one's parentUuid chain.
+    for line in content.decode("utf-8", errors="replace").split("\n"):
         line = line.strip()
         if not line:
             continue

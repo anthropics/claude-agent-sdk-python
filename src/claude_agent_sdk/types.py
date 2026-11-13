@@ -1110,12 +1110,27 @@ class SdkPluginConfig(TypedDict):
 
 
 # Sandbox configuration types
+class SandboxTlsTerminateConfig(TypedDict, total=False):
+    """TLS termination settings for the sandbox's network proxy.
+
+    Attributes:
+        caCertPath: Path to the CA certificate. Omit both paths to have the
+            sandbox generate a certificate for the session.
+        caKeyPath: Path to the CA private key.
+    """
+
+    caCertPath: str
+    caKeyPath: str
+
+
 class SandboxNetworkConfig(TypedDict, total=False):
     """Network configuration for sandbox.
 
     Attributes:
         allowedDomains: Domain names that sandboxed processes can access.
         deniedDomains: Domains that are always blocked, even if matched by allowedDomains.
+        strictAllowlist: When true, hosts not in allowedDomains are denied instead
+            of prompting. Applies to sandboxed commands only.
         allowManagedDomainsOnly: When true in managed settings, only managed-settings allowedDomains are respected.
         allowUnixSockets: Unix socket paths accessible in sandbox (e.g., SSH agents).
         allowAllUnixSockets: Allow all Unix sockets (less secure).
@@ -1123,10 +1138,13 @@ class SandboxNetworkConfig(TypedDict, total=False):
         allowMachLookup: macOS only: XPC/Mach service names to allow (supports trailing wildcard).
         httpProxyPort: HTTP proxy port if bringing your own proxy.
         socksProxyPort: SOCKS5 proxy port if bringing your own proxy.
+        tlsTerminate: Experimental. Lets the sandbox's proxy see HTTPS request
+            bodies, using the given CA certificate and key.
     """
 
     allowedDomains: list[str]
     deniedDomains: list[str]
+    strictAllowlist: bool
     allowManagedDomainsOnly: bool
     allowUnixSockets: list[str]
     allowAllUnixSockets: bool
@@ -1134,6 +1152,154 @@ class SandboxNetworkConfig(TypedDict, total=False):
     allowMachLookup: list[str]
     httpProxyPort: int
     socksProxyPort: int
+    tlsTerminate: SandboxTlsTerminateConfig
+
+
+class SandboxFilesystemConfig(TypedDict, total=False):
+    """Filesystem access for sandboxed commands.
+
+    Attributes:
+        allowWrite: Extra paths sandboxed commands may write. Combined with
+            paths from Edit allow rules.
+        denyWrite: Paths sandboxed commands may not write. Combined with paths
+            from Edit deny rules.
+        denyRead: Paths sandboxed commands may not read. Combined with paths
+            from Read deny rules.
+        allowRead: Paths inside denyRead that may be read again.
+        allowManagedReadPathsOnly: When true in managed settings, only
+            managed-settings allowRead paths are used.
+        disabled: macOS and Linux only: turn off filesystem isolation while
+            keeping network isolation, which also drops denyRead and
+            credentials.files deny entries. Default: False
+    """
+
+    allowWrite: list[str]
+    denyWrite: list[str]
+    denyRead: list[str]
+    allowRead: list[str]
+    allowManagedReadPathsOnly: bool
+    disabled: bool
+
+
+class SandboxCredentialFileEntry(TypedDict, total=False):
+    """A credential file or directory to protect from sandboxed commands.
+
+    Attributes:
+        path: Path to the file or directory.
+        mode: "deny" blocks reads; "mask" shows sandboxed commands a
+            placeholder that the proxy swaps for the real value on the way out.
+            On macOS and Windows, "mask" works like "deny".
+        extract: Regex whose first group marks each value to mask, instead
+            of masking the whole file. "mask" only.
+        onExtractNoMatch: What to do when nothing matches: "warn" (default)
+            leaves the file readable as it is, "deny" blocks reading it, and
+            "error" stops at sandbox setup. "mask" only.
+        decode: Set to "jwt" to mask JSON Web Tokens. "mask" only.
+        maskClaims: Token claims to mask instead of the whole token. Requires
+            decode. "mask" only.
+        maskDuplicates: Also mask copies of each value found elsewhere in the
+            file. "mask" only.
+        injectHosts: Hosts the real value is sent to. "mask" only.
+    """
+
+    path: Required[str]
+    mode: Required[Literal["deny", "mask"]]
+    extract: str
+    onExtractNoMatch: Literal["warn", "deny", "error"]
+    decode: Literal["jwt"]
+    maskClaims: list[str]
+    maskDuplicates: bool
+    injectHosts: list[str]
+
+
+class SandboxCredentialEnvVarEntry(TypedDict, total=False):
+    """An environment variable to protect from sandboxed commands.
+
+    Attributes:
+        name: Variable name.
+        mode: "deny" unsets the variable; "mask" shows sandboxed commands a
+            placeholder that the proxy swaps for the real value on the way out.
+        extract: Regex whose first group marks each value to mask, instead
+            of masking the whole value. "mask" only.
+        onExtractNoMatch: What to do when nothing matches: "warn" (default)
+            leaves the variable unmasked, "deny" unsets it, and "error" stops
+            at sandbox setup. With decode, only "warn" is accepted. "mask" only.
+        decode: Set to "jwt" to mask a JSON Web Token. Cannot be combined with
+            extract. "mask" only.
+        maskClaims: Token claims to mask instead of the whole token. Requires
+            decode. "mask" only.
+        injectHosts: Hosts the real value is sent to. "mask" only.
+    """
+
+    name: Required[str]
+    mode: Required[Literal["deny", "mask"]]
+    extract: str
+    onExtractNoMatch: Literal["warn", "deny", "error"]
+    decode: Literal["jwt"]
+    maskClaims: list[str]
+    injectHosts: list[str]
+
+
+class SandboxAwsPair(TypedDict, total=False):
+    """Masked environment variables that together hold one AWS credential.
+
+    Attributes:
+        accessKeyIdVar: Variable holding the access key ID.
+        secretAccessKeyVar: Variable holding the secret access key.
+        sessionTokenVar: Variable holding the session token, if any.
+    """
+
+    accessKeyIdVar: Required[str]
+    secretAccessKeyVar: Required[str]
+    sessionTokenVar: str
+
+
+class SandboxSigv4Config(TypedDict, total=False):
+    """How to handle AWS requests the proxy cannot re-sign.
+
+    "deny" refuses the request; "passthrough" forwards it without re-signing.
+
+    Attributes:
+        streaming: Streaming uploads with per-chunk signatures. Default: "deny"
+        presigned: Presigned URLs. Default: "deny"
+        sigv4a: SigV4A asymmetric signatures. Default: "deny"
+    """
+
+    streaming: Literal["deny", "passthrough"]
+    presigned: Literal["deny", "passthrough"]
+    sigv4a: Literal["deny", "passthrough"]
+
+
+class SandboxCredentialsConfig(TypedDict, total=False):
+    """Credentials to hide from sandboxed commands.
+
+    Attributes:
+        files: Credential files or directories to protect.
+        envVars: Environment variables to protect.
+        allowPlaintextInject: Allow the real value to be sent over plain HTTP.
+            Default: False
+        awsPairs: Masked variables that form one AWS credential, for variable
+            names other than the standard AWS ones.
+        sigv4: How to handle AWS requests the proxy cannot re-sign.
+    """
+
+    files: list[SandboxCredentialFileEntry]
+    envVars: list[SandboxCredentialEnvVarEntry]
+    allowPlaintextInject: bool
+    awsPairs: list[SandboxAwsPair]
+    sigv4: SandboxSigv4Config
+
+
+class SandboxRipgrepConfig(TypedDict, total=False):
+    """A custom ripgrep command.
+
+    Attributes:
+        command: The ripgrep executable to run.
+        args: Arguments to pass to it.
+    """
+
+    command: Required[str]
+    args: list[str]
 
 
 SandboxIgnoreViolations: TypeAlias = dict[str, list[str]]
@@ -1154,30 +1320,40 @@ This only affects which violations are reported, not what the sandbox blocks.
 class SandboxSettings(TypedDict, total=False):
     """Sandbox settings configuration.
 
-    This controls how Claude Code sandboxes bash commands for filesystem
-    and network isolation.
+    This controls the sandbox Claude Code runs Bash commands in: whether it is
+    on, and what sandboxed commands may read, write and reach. These settings
+    apply to sandboxed commands only. Claude Code's own tools, such as Read,
+    Edit and WebFetch, follow permission rules, and Read and Edit rules also
+    add to the sandbox's filesystem lists.
 
-    **Important:** Tool-level filesystem and network restrictions are configured
-    via permission rules, not via these sandbox settings:
-    - Filesystem read restrictions: Use Read deny rules
-    - Filesystem write restrictions: Use Edit allow/deny rules
-    - Network restrictions for tools: Use WebFetch allow/deny rules
-
-    The ``network`` entry below is different: it configures the sandbox's own
-    network isolation for sandboxed bash commands.
+    When ``ClaudeAgentOptions.settings`` also has a ``sandbox`` block, the
+    two are combined; see ``ClaudeAgentOptions.sandbox``.
 
     Attributes:
         enabled: Enable bash sandboxing (macOS/Linux only). Default: False
+        failIfUnavailable: Exit with an error at startup when enabled is true
+            but the sandbox cannot start. When False, commands run unsandboxed
+            with a warning instead. Default: False
         autoAllowBashIfSandboxed: Auto-approve bash commands when sandboxed. Default: True
         excludedCommands: Commands that should run outside the sandbox (e.g., ["git", "docker"])
         allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
             When False, all commands must run sandboxed (or be in excludedCommands). Default: True
         network: Network configuration for sandbox.
+        filesystem: Filesystem access for sandboxed commands.
+        credentials: Credential files and environment variables to hide from
+            sandboxed commands.
         ignoreViolations: Violations to leave unreported, as a map of command
             pattern (``"*"`` for every command) to substrings of the violation
             text. See ``SandboxIgnoreViolations``.
         enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
             (Linux only). Reduces security. Default: False
+        enableWeakerNetworkIsolation: macOS only: allow access to the trustd
+            service, which some tools need to check TLS certificates through
+            a custom proxy. Reduces security. Default: False
+        allowAppleEvents: macOS only: allow sandboxed commands to send Apple
+            Events, which lets them launch other applications outside the
+            sandbox. Default: False
+        ripgrep: A custom ripgrep command.
 
     Example:
         ```python
@@ -1188,18 +1364,25 @@ class SandboxSettings(TypedDict, total=False):
             "network": {
                 "allowUnixSockets": ["/var/run/docker.sock"],
                 "allowLocalBinding": True
-            }
+            },
+            "filesystem": {"denyRead": ["~/.ssh"]},
         }
         ```
     """
 
     enabled: bool
+    failIfUnavailable: bool
     autoAllowBashIfSandboxed: bool
     excludedCommands: list[str]
     allowUnsandboxedCommands: bool
     network: SandboxNetworkConfig
+    filesystem: SandboxFilesystemConfig
+    credentials: SandboxCredentialsConfig
     ignoreViolations: SandboxIgnoreViolations
     enableWeakerNestedSandbox: bool
+    enableWeakerNetworkIsolation: bool
+    allowAppleEvents: bool
+    ripgrep: SandboxRipgrepConfig
 
 
 # Content block types
@@ -2705,11 +2888,31 @@ class ClaudeAgentOptions:
     sandbox: SandboxSettings | None = None
     """Sandbox settings for command execution isolation.
 
-    When enabled, commands execute in a sandboxed environment that restricts
-    filesystem and network access. Tool-level filesystem and network
-    restrictions are configured via permission rules (Read/Edit for
-    filesystem, WebFetch for network); the ``network`` key here configures
-    the sandbox's own network isolation. See :class:`SandboxSettings`.
+    When enabled, Bash commands run in a sandbox that limits what they can
+    read, write and reach; the ``filesystem``, ``network`` and
+    ``credentials`` keys set those limits. Claude Code's own tools, such as
+    Read, Edit and WebFetch, follow permission rules instead. See
+    :class:`SandboxSettings`.
+
+    When ``settings`` also has a ``sandbox`` block, this option is merged
+    over it key by key: a key set here replaces the value from ``settings``,
+    and keys left out or set to ``None`` keep it. The lists
+    ``filesystem.denyRead``, ``filesystem.denyWrite``,
+    ``network.deniedDomains``, ``credentials.files`` and
+    ``credentials.envVars`` are combined instead, and ``ripgrep`` and
+    ``network.tlsTerminate`` are replaced whole. Some values from
+    ``settings`` are dropped when this option would otherwise lose its
+    effect: ``filesystem.disabled: true``, when this option sets
+    ``filesystem`` or a ``credentials.files`` entry with mode "deny" but
+    not ``filesystem.disabled``; and ``network.httpProxyPort`` or
+    ``network.socksProxyPort``, when this option sets
+    ``network.allowedDomains`` (even an empty list), a non-empty
+    ``network.deniedDomains`` or ``network.strictAllowlist: true``, but
+    not that port.
+
+    With this option set, ``extra_args["settings"]`` is used in place of
+    ``settings`` when ``settings`` is unset, and is never sent as a second
+    ``--settings`` flag, which would replace the merged value.
 
     See https://docs.anthropic.com/en/docs/claude-code/settings#sandbox-settings.
     """

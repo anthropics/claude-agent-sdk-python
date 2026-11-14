@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -121,6 +123,93 @@ def _make_project_dir(config_dir: Path, project_path: str) -> Path:
     project_dir = config_dir / "projects" / sanitized
     project_dir.mkdir(parents=True, exist_ok=True)
     return project_dir
+
+
+# ---------------------------------------------------------------------------
+# Git worktree integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def git_repository(tmp_path: Path) -> Path:
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path / "main"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Session Test",
+            "-c",
+            "user.email=session@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+class TestGitWorktrees:
+    @pytest.mark.parametrize(
+        "path_kind",
+        [
+            "spaces",
+            pytest.param(
+                "newline",
+                marks=pytest.mark.skipif(os.name == "nt", reason="POSIX path name"),
+            ),
+            pytest.param(
+                "record_like",
+                marks=pytest.mark.skipif(os.name == "nt", reason="POSIX path name"),
+            ),
+        ],
+    )
+    def test_sessions_stay_with_their_worktrees(
+        self, claude_config_dir: Path, git_repository: Path, path_kind: str
+    ):
+        repo = git_repository.resolve()
+        unrelated = repo.parent / "unrelated"
+        names = {
+            "spaces": "feature branch",
+            "newline": "feature\nbranch",
+            "record_like": f"feature\nworktree {unrelated}",
+        }
+        worktree = repo.parent / names[path_kind]
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        main_id, _ = _make_session_file(
+            _make_project_dir(claude_config_dir, str(repo)), cwd=str(repo)
+        )
+        linked_id, _ = _make_session_file(
+            _make_project_dir(claude_config_dir, str(worktree)), cwd=str(worktree)
+        )
+        unrelated_id, _ = _make_session_file(
+            _make_project_dir(claude_config_dir, str(unrelated)), cwd=str(unrelated)
+        )
+
+        sessions = list_sessions(directory=str(repo))
+        assert unrelated_id not in {s.session_id for s in sessions}
+        assert {s.session_id for s in sessions} == {main_id, linked_id}
+        linked = get_session_info(linked_id, directory=str(repo))
+        assert linked is not None
+        assert linked.cwd == str(worktree)
+        assert get_session_info(unrelated_id, directory=str(repo)) is None
+        assert {
+            s.session_id
+            for s in list_sessions(directory=str(repo), include_worktrees=False)
+        } == {main_id}
 
 
 # ---------------------------------------------------------------------------

@@ -179,6 +179,55 @@ async def test_mixed_servers():
     assert options.mcp_servers["external"]["type"] == "stdio"
 
 
+def test_duplicate_tool_names_rejected():
+    """create_sdk_mcp_server raises ValueError when two tools share a name."""
+
+    @tool("dup", "First description", {"a": str})
+    async def first(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "first"}]}
+
+    @tool("dup", "Second description", {"b": int})
+    async def second(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "second"}]}
+
+    with pytest.raises(ValueError, match="Duplicate tool name.*'dup'"):
+        create_sdk_mcp_server(name="dup-server", tools=[first, second])
+
+    with pytest.raises(ValueError, match="Duplicate tool name.*'dup'"):
+        create_sdk_mcp_server(name="same-instance", tools=[first, first])
+
+
+@pytest.mark.anyio
+async def test_same_tool_name_allowed_across_separate_servers():
+    """Tool name uniqueness is per-server; separate servers may reuse a name."""
+
+    @tool("ping", "First server ping", {"msg": str})
+    async def ping_one(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": f"one:{args['msg']}"}]}
+
+    @tool("ping", "Second server ping", {"count": int})
+    async def ping_two(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": f"two:{args['count']}"}]}
+
+    srv_one = create_sdk_mcp_server(name="one", tools=[ping_one])
+    srv_two = create_sdk_mcp_server(name="two", tools=[ping_two])
+
+    client = SdkMcpClient({"one": srv_one, "two": srv_two})
+    try:
+        await client.initialize("one")
+        await client.initialize("two")
+        [tool_one] = await client.list_tools("one")
+        [tool_two] = await client.list_tools("two")
+        assert tool_one["description"] == "First server ping"
+        assert tool_two["description"] == "Second server ping"
+        res_one = await client.call_tool("one", "ping", {"msg": "hi"})
+        res_two = await client.call_tool("two", "ping", {"count": 3})
+        assert texts(res_one) == ["one:hi"]
+        assert texts(res_two) == ["two:3"]
+    finally:
+        await client.aclose()
+
+
 # --- Handshake -----------------------------------------------------------------
 
 

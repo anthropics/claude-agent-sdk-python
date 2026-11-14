@@ -2713,3 +2713,77 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestControlRequestPendingCleanup:
+    """Regression tests for #1516: a control request that never gets a
+    response — because the write failed or the wait was cancelled — must not
+    leave its waiter registered in ``pending_control_responses`` forever, and
+    must not let a late response become a permanent ``pending_control_results``
+    entry."""
+
+    def _make_transport(self, write=None):
+        transport = AsyncMock()
+        mock_write = write or AsyncMock()
+
+        async def mock_receive():
+            return
+            yield  # pragma: no cover - empty async generator
+
+        transport.read_messages = mock_receive
+        transport.connect = AsyncMock()
+        transport.close = AsyncMock()
+        transport.end_input = AsyncMock()
+        transport.write = mock_write
+        transport.is_ready = Mock(return_value=True)
+        return transport
+
+    def test_cancelled_wait_does_not_leak_pending_response(self):
+        async def _test():
+            transport = self._make_transport()
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            for _ in range(5):
+                with anyio.move_on_after(0.01) as scope:
+                    await q._send_control_request({"subtype": "mcp_status"})
+                assert scope.cancelled_caught
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_cancelled_wait_after_write_error_does_not_leak(self):
+        async def _test():
+            async def failing_write(_data):
+                raise CLIConnectionError("write failed")
+
+            transport = self._make_transport(write=failing_write)
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(CLIConnectionError):
+                await q._send_control_request({"subtype": "mcp_status"})
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+            await q.close()
+
+        anyio.run(_test)
+
+    def test_timeout_still_unregisters_pending(self):
+        async def _test():
+            transport = self._make_transport()
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(Exception, match="Control request timeout"):
+                await q._send_control_request({"subtype": "mcp_status"}, timeout=0.01)
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+            await q.close()
+
+        anyio.run(_test)

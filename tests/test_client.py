@@ -38,6 +38,76 @@ class TestQueryFunction:
 
         anyio.run(_test)
 
+    @pytest.mark.parametrize("backend", ["asyncio", "trio"])
+    def test_query_aclose_closes_transport_before_returning(self, backend):
+        """Closing the public iterator waits for the query transport to close."""
+        import json
+
+        from claude_agent_sdk._internal.transport import Transport
+
+        class StubTransport(Transport):
+            def __init__(self):
+                self._send, self._receive = anyio.create_memory_object_stream[dict](10)
+                self.close_calls = 0
+
+            async def connect(self):
+                pass
+
+            async def write(self, data):
+                message = json.loads(data)
+                if message.get("type") == "control_request":
+                    await self._send.send(
+                        {
+                            "type": "control_response",
+                            "response": {
+                                "request_id": message["request_id"],
+                                "subtype": "success",
+                                "response": {},
+                            },
+                        }
+                    )
+                elif message.get("type") == "user":
+                    await self._send.send(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": "ready"}],
+                                "model": "claude-opus-4-1-20250805",
+                            },
+                        }
+                    )
+
+            async def read_messages(self):
+                async with self._receive:
+                    async for message in self._receive:
+                        yield message
+
+            async def close(self):
+                self.close_calls += 1
+                await self._send.aclose()
+
+            def is_ready(self):
+                return True
+
+            async def end_input(self):
+                pass
+
+        async def _test():
+            transport = StubTransport()
+            iterator = query(prompt="test", transport=transport)
+
+            message = await anext(iterator)
+            assert isinstance(message, AssistantMessage)
+            assert message.content[0].text == "ready"
+
+            # aclose() is a deterministic cleanup boundary: once it returns,
+            # the public query's underlying Query and transport are closed.
+            await iterator.aclose()
+            assert transport.close_calls == 1
+
+        anyio.run(_test, backend=backend)
+
     def test_query_with_options(self):
         """Test query with various options."""
 

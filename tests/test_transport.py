@@ -2,17 +2,23 @@
 
 import json
 import os
+import sys
+import textwrap
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
 
-from claude_agent_sdk._errors import CLIConnectionError, CLINotFoundError
-from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from claude_agent_sdk._errors import CLIConnectionError, CLINotFoundError, ProcessError
+from claude_agent_sdk._internal.transport.subprocess_cli import (
+    _ACTIVE_CHILDREN,
+    SubprocessCLITransport,
+)
 from claude_agent_sdk.types import ClaudeAgentOptions
 
 DEFAULT_CLI_PATH = "/usr/bin/claude"
@@ -2898,3 +2904,203 @@ class TestWindowsCmdMetacharacterRejection:
             cmd = transport._build_command()
         assert "--resume=title & % | notes" in cmd
         assert "--session-id=a>b" in cmd
+
+
+def _make_reapable_mock_process() -> tuple[MagicMock, MagicMock]:
+    """Build a mock process that marks itself exited when waited on."""
+    mock_process = MagicMock()
+    mock_process.stdout = MagicMock()
+    mock_process.stderr = None
+    mock_stdin = MagicMock()
+    mock_stdin.send = AsyncMock()
+    mock_stdin.aclose = AsyncMock()
+    mock_process.stdin = mock_stdin
+    mock_process.returncode = None
+
+    async def _wait() -> int:
+        mock_process.returncode = 0
+        return 0
+
+    mock_process.wait = AsyncMock(side_effect=_wait)
+    return mock_process, mock_stdin
+
+
+class TestReconnectClearsStaleExitError:
+    """Regression tests for issue #1517: stale _exit_error across reconnects."""
+
+    @pytest.mark.parametrize(
+        ("scenario", "spawn_error", "expected_exc", "expected_match"),
+        [
+            (
+                "missing_cwd",
+                FileNotFoundError(2, "No such file or directory"),
+                CLIConnectionError,
+                "Working directory does not exist",
+            ),
+            (
+                "missing_cli",
+                FileNotFoundError(2, "No such file or directory"),
+                CLINotFoundError,
+                "Claude Code not found at",
+            ),
+            (
+                "spawn_error",
+                PermissionError("permission denied"),
+                CLIConnectionError,
+                "Failed to start Claude Code",
+            ),
+        ],
+    )
+    def test_successful_reconnect_clears_stale_exit_error(
+        self,
+        tmp_path: Path,
+        scenario: str,
+        spawn_error: Exception,
+        expected_exc: type[Exception],
+        expected_match: str,
+    ) -> None:
+        """A successful retry of connect() clears _exit_error so write() works."""
+
+        async def _test() -> None:
+            missing_cwd: Path | None = None
+            if scenario == "missing_cwd":
+                missing_cwd = tmp_path / "missing_cwd"
+                options = make_options(cwd=missing_cwd)
+            else:
+                options = make_options()
+
+            transport = SubprocessCLITransport(prompt="hi", options=options)
+            mock_process, mock_stdin = _make_reapable_mock_process()
+
+            with patch(
+                "anyio.open_process",
+                new_callable=AsyncMock,
+                side_effect=[spawn_error, mock_process],
+            ):
+                with pytest.raises(expected_exc, match=expected_match):
+                    await transport.connect()
+
+                assert transport._exit_error is not None
+                assert not transport.is_ready()
+
+                if missing_cwd is not None:
+                    missing_cwd.mkdir()
+
+                try:
+                    await transport.connect()
+                    assert transport.is_ready() is True
+                    assert transport._exit_error is None
+
+                    await transport.write('{"type":"user"}\n')
+                    mock_stdin.send.assert_awaited_once_with(b'{"type":"user"}\n')
+                finally:
+                    await transport.close()
+                    _ACTIVE_CHILDREN.discard(mock_process)
+
+        anyio.run(_test)
+
+    def test_close_after_failed_connect_clears_exit_error(self) -> None:
+        """close() clears _exit_error even when no subprocess was created."""
+
+        async def _test() -> None:
+            transport = SubprocessCLITransport(prompt="hi", options=make_options())
+
+            with (
+                patch(
+                    "anyio.open_process",
+                    new_callable=AsyncMock,
+                    side_effect=PermissionError("permission denied"),
+                ),
+                pytest.raises(CLIConnectionError, match="Failed to start Claude Code"),
+            ):
+                await transport.connect()
+
+            assert transport._process is None
+            assert transport._exit_error is not None
+
+            await transport.close()
+            assert transport._exit_error is None
+            assert not transport.is_ready()
+
+        anyio.run(_test)
+
+    def test_connect_noop_when_already_connected_preserves_exit_error(self) -> None:
+        """connect() is a no-op if _process is set and keeps any _exit_error."""
+
+        async def _test() -> None:
+            mock_process, _ = _make_reapable_mock_process()
+            transport = SubprocessCLITransport(prompt="hi", options=make_options())
+
+            with patch(
+                "anyio.open_process",
+                new_callable=AsyncMock,
+                return_value=mock_process,
+            ) as mock_open:
+                await transport.connect()
+                try:
+                    err = ProcessError("Command failed", exit_code=1, stderr="")
+                    transport._exit_error = err
+
+                    await transport.connect()
+                    assert mock_open.call_count == 1
+                    assert transport._exit_error is err
+
+                    with pytest.raises(
+                        CLIConnectionError,
+                        match="Cannot write to process that exited with error",
+                    ):
+                        await transport.write('{"type":"user"}\n')
+                finally:
+                    await transport.close()
+                    _ACTIVE_CHILDREN.discard(mock_process)
+
+        anyio.run(_test)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="spawns a shebang script")
+    def test_reconnect_after_missing_cwd_real_subprocess(self, tmp_path: Path) -> None:
+        """End-to-end repro: failed connect() -> mkdir -> connect() -> write()."""
+        fake_cli = tmp_path / "fake_claude"
+        fake_cli.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import json
+                import sys
+
+                for line in sys.stdin:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    print(json.dumps(json.loads(line)), flush=True)
+                """
+            )
+        )
+        fake_cli.chmod(0o755)
+        missing_dir = tmp_path / "retry_dir"
+
+        async def _test() -> None:
+            transport = SubprocessCLITransport(
+                prompt="hi",
+                options=ClaudeAgentOptions(
+                    cli_path=str(fake_cli), cwd=str(missing_dir)
+                ),
+            )
+            try:
+                with pytest.raises(
+                    CLIConnectionError, match="Working directory does not exist"
+                ):
+                    await transport.connect()
+
+                missing_dir.mkdir()
+                await transport.connect()
+                assert transport.is_ready() is True
+
+                await transport.write('{"type": "ping"}\n')
+                await transport.end_input()
+
+                messages = [m async for m in transport.read_messages()]
+                assert messages == [{"type": "ping"}]
+            finally:
+                await transport.close()
+
+        anyio.run(_test)

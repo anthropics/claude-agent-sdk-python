@@ -851,6 +851,7 @@ class SubprocessCLITransport(Transport):
             if self._process.stdin:
                 self._stdin_stream = TextSendStream(self._process.stdin)
 
+            self._exit_error = None
             self._ready = True
 
         except FileNotFoundError as e:
@@ -944,6 +945,7 @@ class SubprocessCLITransport(Transport):
         """
         if not self._process:
             self._ready = False
+            self._exit_error = None
             return
 
         with anyio.CancelScope(shield=True):

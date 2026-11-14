@@ -957,6 +957,20 @@ async def test_handler_exception_is_an_error_result():
 
 
 @pytest.mark.anyio
+async def test_handler_exception_with_empty_message_names_the_type():
+    @tool("fail", "Always fails", {})
+    async def fail_tool(args: dict[str, Any]) -> dict[str, Any]:
+        raise TimeoutError()
+
+    config = create_sdk_mcp_server(name="srv", tools=[fail_tool])
+    async with connected(config) as client:
+        result = await client.call_tool("srv", "fail", {})
+
+    assert result["isError"] is True
+    assert texts(result) == ["TimeoutError"]
+
+
+@pytest.mark.anyio
 async def test_malformed_handler_payload_is_an_error_result():
     @tool("sloppy", "Forgets the text key", {})
     async def sloppy(args: dict[str, Any]) -> dict[str, Any]:

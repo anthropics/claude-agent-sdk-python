@@ -8,6 +8,7 @@ Exercises the SessionStore-backed code paths in
 from __future__ import annotations
 
 import uuid as uuid_mod
+from copy import deepcopy
 from typing import Any
 
 import anyio
@@ -344,6 +345,35 @@ class TestGetSessionInfoFromStore:
 
 
 class TestGetSessionMessagesFromStore:
+    @pytest.mark.parametrize("parent", [["bad"], {"bad": 1}, 1, True, [], {}, None])
+    @pytest.mark.parametrize("subagent", [False, True])
+    async def test_invalid_parent_uuid(self, parent: Any, subagent: bool) -> None:
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        key: SessionKey = {"project_key": PROJECT_KEY, "session_id": sid}
+        if subagent:
+            key["subpath"] = "subagents/agent-abc"
+        entries = [
+            _user("hello", "u", None, sid),
+            _assistant("hi", "a", "u", sid),
+            {"type": "progress", "uuid": "p", "parentUuid": parent},
+        ]
+        entries[0]["parentUuid"] = parent
+        original = deepcopy(entries)
+        await store.append(key, entries)  # type: ignore[arg-type]
+
+        if subagent:
+            messages = await get_subagent_messages_from_store(
+                store, sid, "abc", directory=DIR
+            )
+        else:
+            messages = await get_session_messages_from_store(store, sid, directory=DIR)
+
+        assert [m.uuid for m in messages] == ["u", "a"]
+        assert messages[0].message["content"] == "hello"
+        assert messages[1].message["content"] == [{"type": "text", "text": "hi"}]
+        assert await store.load(key) == original
+
     async def test_returns_chain_in_order(self) -> None:
         store = InMemorySessionStore()
         sid = str(uuid_mod.uuid4())

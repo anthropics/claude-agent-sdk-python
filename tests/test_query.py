@@ -9,6 +9,7 @@ closing stdin until the CLI's run is over.
 """
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -27,6 +28,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk._errors import CLIConnectionError, ProcessError, ResultError
 from claude_agent_sdk._internal.query import Query, run_end_ceiling_ms
+from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
 from claude_agent_sdk.types import HookMatcher, _hooks_to_internal_format
 
 
@@ -2713,3 +2715,195 @@ class TestProcessExitAfterErrorResult:
             assert isinstance(q.pending_control_results["req_1"], ProcessError)
 
         anyio.run(_test)
+
+
+class TestMalformedFrames:
+    """Tests that malformed inbound frames do not kill the read loop."""
+
+    _MARKER: dict[str, Any] = {
+        "type": "user",
+        "message": {"role": "user", "content": "ok"},
+    }
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"type": "control_request"},
+            {"type": "control_request", "request_id": None},
+            {"type": "control_request", "request_id": ["x"]},
+            {"type": "control_response"},
+            {"type": "control_response", "response": "oops"},
+            {"type": "control_response", "response": {"request_id": ["x"]}},
+            "not-a-dict",
+        ],
+    )
+    async def test_malformed_dropped_frames_keep_read_loop_alive(
+        self, frame: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = _make_mock_transport([frame, self._MARKER])
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        with caplog.at_level(logging.WARNING):
+            await q.start()
+            received = [msg async for msg in q.receive_messages()]
+            await q.close()
+
+        assert received == [self._MARKER]
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {
+                "type": "system",
+                "subtype": "task_started",
+                "task_type": "local_agent",
+                "task_id": ["x"],
+            },
+            {
+                "type": "system",
+                "subtype": "task_started",
+                "task_type": ["local_agent"],
+                "task_id": "task-1",
+            },
+            {
+                "type": "system",
+                "subtype": "task_updated",
+                "task_id": "task-1",
+                "patch": {"status": ["completed"]},
+            },
+        ],
+    )
+    async def test_malformed_system_task_frames_keep_read_loop_alive(
+        self, frame: dict[str, Any]
+    ) -> None:
+        transport = _make_mock_transport([frame, self._MARKER])
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        await q.start()
+        received = [msg async for msg in q.receive_messages()]
+        await q.close()
+
+        assert self._MARKER in received
+        assert q._inflight_tasks == set()
+
+    @pytest.mark.anyio
+    async def test_control_cancel_request_with_unhashable_id_and_inflight(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        inflight_handle = Mock()
+        transport = _make_mock_transport(
+            [
+                {"type": "control_cancel_request", "request_id": ["x"]},
+                self._MARKER,
+            ]
+        )
+        q = Query(transport=transport, is_streaming_mode=True)
+        q._inflight_requests["req-1"] = inflight_handle
+
+        with caplog.at_level(logging.WARNING):
+            await q.start()
+            received = [msg async for msg in q.receive_messages()]
+            await q.close()
+
+        assert received == [self._MARKER]
+        assert "req-1" in q._inflight_requests
+        inflight_handle.cancel.assert_not_called()
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"type": "transcript_mirror"},
+            {"type": "transcript_mirror", "filePath": "/tmp/s.jsonl"},
+            {"type": "transcript_mirror", "filePath": 123, "entries": []},
+            {
+                "type": "transcript_mirror",
+                "filePath": "/tmp/s.jsonl",
+                "entries": "oops",
+            },
+        ],
+    )
+    async def test_malformed_transcript_mirror_keeps_read_loop_alive(
+        self, frame: dict[str, Any], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = _make_mock_transport([frame, self._MARKER])
+        q = Query(transport=transport, is_streaming_mode=True)
+        batcher = TranscriptMirrorBatcher(
+            store=AsyncMock(),
+            projects_dir="/tmp",
+            on_error=AsyncMock(),
+        )
+        q.set_transcript_mirror_batcher(batcher)
+
+        with caplog.at_level(logging.WARNING):
+            await q.start()
+            received = [msg async for msg in q.receive_messages()]
+            await q.close()
+
+        assert received == [self._MARKER]
+        assert batcher._pending == []
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "bad_request",
+        [
+            {"type": "control_request", "request_id": "req-bad"},
+            {"type": "control_request", "request_id": "req-bad", "request": "oops"},
+            {"type": "control_request", "request_id": "req-bad", "request": {}},
+            {
+                "type": "control_request",
+                "request_id": "req-bad",
+                "request": {"subtype": 123},
+            },
+        ],
+    )
+    async def test_malformed_control_request_sends_error_response(
+        self, bad_request: dict[str, Any]
+    ) -> None:
+        written = anyio.Event()
+        writes: list[str] = []
+
+        async def _write(payload: str) -> None:
+            writes.append(payload)
+            written.set()
+
+        async def _read():
+            yield bad_request
+            with anyio.fail_after(2):
+                await written.wait()
+            yield self._MARKER
+
+        transport = _make_mock_transport([])
+        transport.write = AsyncMock(side_effect=_write)
+        transport.read_messages = _read
+
+        q = Query(transport=transport, is_streaming_mode=True)
+        await q.start()
+        received = [msg async for msg in q.receive_messages()]
+        await q.close()
+
+        assert received == [self._MARKER]
+        assert len(writes) == 1
+        resp = json.loads(writes[0])
+        assert resp["type"] == "control_response"
+        assert resp["response"]["subtype"] == "error"
+        assert resp["response"]["request_id"] == "req-bad"
+        assert resp["response"]["error"]
+
+    @pytest.mark.anyio
+    async def test_handle_control_request_direct_invalid_request_id(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = _make_mock_transport([])
+        q = Query(transport=transport, is_streaming_mode=True)
+
+        with caplog.at_level(logging.WARNING):
+            await q._handle_control_request({"type": "control_request"})  # type: ignore[arg-type]
+
+        transport.write.assert_not_called()
+        assert any(r.levelno == logging.WARNING for r in caplog.records)

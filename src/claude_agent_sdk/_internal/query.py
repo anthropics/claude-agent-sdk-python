@@ -421,12 +421,32 @@ class Query:
                 if self._closed:
                     break
 
+                raw_message: Any = message
+                if not isinstance(raw_message, dict):
+                    logger.warning(
+                        "Dropping non-dict frame of type %s",
+                        type(raw_message).__name__,
+                    )
+                    continue
+
                 msg_type = message.get("type")
 
                 # Route control messages
                 if msg_type == "control_response":
-                    response = message.get("response", {})
+                    response = message.get("response")
+                    if not isinstance(response, dict):
+                        logger.warning(
+                            "Dropping control_response with non-dict response: %s",
+                            type(response).__name__,
+                        )
+                        continue
                     request_id = response.get("request_id")
+                    if not isinstance(request_id, str) or not request_id:
+                        logger.warning(
+                            "Dropping control_response with invalid request_id: %r",
+                            request_id,
+                        )
+                        continue
                     if request_id in self.pending_control_responses:
                         event = self.pending_control_responses[request_id]
                         if response.get("subtype") == "error":
@@ -440,6 +460,13 @@ class Query:
 
                 elif msg_type == "control_request":
                     # Handle incoming control requests from CLI
+                    req_id = message.get("request_id")
+                    if not isinstance(req_id, str) or not req_id:
+                        logger.warning(
+                            "Dropping control_request with invalid request_id: %r",
+                            req_id,
+                        )
+                        continue
                     # Cast message to SDKControlRequest for type safety
                     request: SDKControlRequest = message  # type: ignore[assignment]
                     if not self._closed:
@@ -448,19 +475,35 @@ class Query:
 
                 elif msg_type == "control_cancel_request":
                     cancel_id = message.get("request_id")
-                    if cancel_id:
+                    if isinstance(cancel_id, str) and cancel_id:
                         inflight = self._inflight_requests.pop(cancel_id, None)
                         if inflight:
                             inflight.cancel()
+                    elif cancel_id is not None:
+                        logger.warning(
+                            "Dropping control_cancel_request with invalid request_id: %r",
+                            cancel_id,
+                        )
                     continue
 
                 elif msg_type == "transcript_mirror":
                     # SessionStore write path: peel mirror frames off stdout
                     # and hand to the batcher; do NOT yield to consumers.
                     if self._transcript_mirror_batcher is not None:
-                        self._transcript_mirror_batcher.enqueue(
-                            message["filePath"], message["entries"]
-                        )
+                        file_path = message.get("filePath")
+                        entries = message.get("entries")
+                        if (
+                            not isinstance(file_path, str)
+                            or not file_path
+                            or not isinstance(entries, list)
+                        ):
+                            logger.warning(
+                                "Dropping malformed transcript_mirror frame (filePath=%r, entries=%s)",
+                                file_path,
+                                type(entries).__name__,
+                            )
+                            continue
+                        self._transcript_mirror_batcher.enqueue(file_path, entries)
                     continue
 
                 # Track task lifecycle frames so results can tell "one turn
@@ -605,11 +648,28 @@ class Query:
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
-        request_id = request["request_id"]
-        request_data = request["request"]
-        subtype = request_data["subtype"]
+        raw_request: Any = request
+        request_id = (
+            raw_request.get("request_id") if isinstance(raw_request, dict) else None
+        )
+        if not isinstance(request_id, str) or not request_id:
+            logger.warning(
+                "Dropping control_request with invalid request_id: %r",
+                request_id,
+            )
+            return
 
         try:
+            raw_data = raw_request.get("request")
+            if not isinstance(raw_data, dict):
+                raise ValueError(
+                    "Missing or invalid 'request' payload in control_request"
+                )
+            request_data: dict[str, Any] = raw_data
+            subtype = request_data.get("subtype")
+            if not isinstance(subtype, str) or not subtype:
+                raise ValueError("Missing or invalid 'subtype' in control_request")
+
             response_data: dict[str, Any] = {}
 
             if subtype == "can_use_tool":
@@ -937,17 +997,24 @@ class Query:
         """
         subtype = message.get("subtype")
         task_id = message.get("task_id")
-        if not task_id:
+        if not isinstance(task_id, str) or not task_id:
+            if task_id is not None and not isinstance(task_id, str):
+                logger.warning(
+                    "Ignoring %s frame with non-string task_id: %s",
+                    subtype,
+                    type(task_id).__name__,
+                )
             return
         if subtype == "task_started":
-            if message.get("task_type") in DEFERRING_TASK_TYPES:
+            task_type = message.get("task_type")
+            if isinstance(task_type, str) and task_type in DEFERRING_TASK_TYPES:
                 self._inflight_tasks.add(task_id)
         elif subtype == "task_notification":
             self._inflight_tasks.discard(task_id)
         elif subtype == "task_updated":
             patch = message.get("patch")
             status = patch.get("status") if isinstance(patch, dict) else None
-            if status in TERMINAL_TASK_STATUSES:
+            if isinstance(status, str) and status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
 
     def _on_session_state(self, state: Any) -> None:

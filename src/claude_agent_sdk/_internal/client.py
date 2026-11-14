@@ -97,80 +97,82 @@ class InternalClient:
         # Connect transport
         await chosen_transport.connect()
 
-        # Extract SDK MCP servers from configured options
-        sdk_mcp_servers = {}
-        if configured_options.mcp_servers and isinstance(
-            configured_options.mcp_servers, dict
-        ):
-            for name, config in configured_options.mcp_servers.items():
-                if isinstance(config, dict) and config.get("type") == "sdk":
-                    sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
+        query: Query | None = None
+        try:
+            # Extract SDK MCP servers from configured options
+            sdk_mcp_servers = {}
+            if configured_options.mcp_servers and isinstance(
+                configured_options.mcp_servers, dict
+            ):
+                for name, config in configured_options.mcp_servers.items():
+                    if isinstance(config, dict) and config.get("type") == "sdk":
+                        sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Extract exclude_dynamic_sections and snapshot from the system prompt
-        # for the initialize request (older CLIs ignore unknown initialize fields).
-        exclude_dynamic_sections: bool | None = None
-        system_prompt_snapshot: bool | None = None
-        sp = configured_options.system_prompt
-        if isinstance(sp, dict) and sp.get("type") == "preset":
-            eds = sp.get("exclude_dynamic_sections")
-            if isinstance(eds, bool):
-                exclude_dynamic_sections = eds
-        if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
-            snapshot = sp.get("snapshot")
-            if isinstance(snapshot, bool):
-                system_prompt_snapshot = snapshot
+            # Extract exclude_dynamic_sections and snapshot from the system prompt
+            # for the initialize request (older CLIs ignore unknown initialize fields).
+            exclude_dynamic_sections: bool | None = None
+            system_prompt_snapshot: bool | None = None
+            sp = configured_options.system_prompt
+            if isinstance(sp, dict) and sp.get("type") == "preset":
+                eds = sp.get("exclude_dynamic_sections")
+                if isinstance(eds, bool):
+                    exclude_dynamic_sections = eds
+            if isinstance(sp, dict) and sp.get("type") in ("preset", "custom"):
+                snapshot = sp.get("snapshot")
+                if isinstance(snapshot, bool):
+                    system_prompt_snapshot = snapshot
 
-        # Convert agents to dict format for initialize request
-        agents_dict = None
-        if configured_options.agents:
-            agents_dict = {
-                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
-                for name, agent_def in configured_options.agents.items()
-            }
+            # Convert agents to dict format for initialize request
+            agents_dict = None
+            if configured_options.agents:
+                agents_dict = {
+                    name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                    for name, agent_def in configured_options.agents.items()
+                }
 
-        # Match ClaudeSDKClient.connect() — without this, query() ignores the env var
-        initialize_timeout_ms = int(
-            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
-        )
-        initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+            # Match ClaudeSDKClient.connect() — without this, query() ignores the env var
+            initialize_timeout_ms = int(
+                os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
+            )
+            initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
 
-        # Create Query to handle control protocol
-        # Always use streaming mode internally (matching TypeScript SDK)
-        # This ensures agents are always sent via initialize request
-        query = Query(
-            transport=chosen_transport,
-            is_streaming_mode=True,  # Always streaming internally
-            can_use_tool=configured_options.can_use_tool,
-            hooks=_hooks_to_internal_format(configured_options.hooks)
-            if configured_options.hooks
-            else None,
-            sdk_mcp_servers=sdk_mcp_servers,
-            initialize_timeout=initialize_timeout,
-            agents=agents_dict,
-            exclude_dynamic_sections=exclude_dynamic_sections,
-            system_prompt_snapshot=system_prompt_snapshot,
-            skills=configured_options.skills,
-            forward_subagent_text=configured_options.forward_subagent_text,
-            verbatim_prompts=configured_options.verbatim_prompts,
-            run_end_ceiling_ms=run_end_ceiling_ms(configured_options.env),
-        )
-
-        if configured_options.session_store is not None:
-
-            async def _on_mirror_error(key: Any, error: str) -> None:
-                query.report_mirror_error(key, error)
-
-            query.set_transcript_mirror_batcher(
-                build_mirror_batcher(
-                    store=configured_options.session_store,
-                    materialized=materialized,
-                    env=configured_options.env,
-                    on_error=_on_mirror_error,
-                    flush_mode=configured_options.session_store_flush,
-                )
+            # Create Query to handle control protocol
+            # Always use streaming mode internally (matching TypeScript SDK)
+            # This ensures agents are always sent via initialize request
+            query = Query(
+                transport=chosen_transport,
+                is_streaming_mode=True,  # Always streaming internally
+                can_use_tool=configured_options.can_use_tool,
+                hooks=_hooks_to_internal_format(configured_options.hooks)
+                if configured_options.hooks
+                else None,
+                sdk_mcp_servers=sdk_mcp_servers,
+                initialize_timeout=initialize_timeout,
+                agents=agents_dict,
+                exclude_dynamic_sections=exclude_dynamic_sections,
+                system_prompt_snapshot=system_prompt_snapshot,
+                skills=configured_options.skills,
+                forward_subagent_text=configured_options.forward_subagent_text,
+                verbatim_prompts=configured_options.verbatim_prompts,
+                run_end_ceiling_ms=run_end_ceiling_ms(configured_options.env),
             )
 
-        try:
+            if configured_options.session_store is not None:
+
+                async def _on_mirror_error(key: Any, error: str) -> None:
+                    if query is not None:
+                        query.report_mirror_error(key, error)
+
+                query.set_transcript_mirror_batcher(
+                    build_mirror_batcher(
+                        store=configured_options.session_store,
+                        materialized=materialized,
+                        env=configured_options.env,
+                        on_error=_on_mirror_error,
+                        flush_mode=configured_options.session_store_flush,
+                    )
+                )
+
             # Start reading messages
             await query.start()
 
@@ -207,5 +209,8 @@ class InternalClient:
                     yield message
 
         finally:
-            await query.close()
-            query.close_receive_stream()
+            if query is not None:
+                await query.close()
+                query.close_receive_stream()
+            else:
+                await chosen_transport.close()

@@ -38,6 +38,7 @@ from .session_store_validation import _store_implements
 from .sessions import (
     _agent_metadata_sidecar_path,
     _get_projects_dir,
+    _resolve_store_session,
     _split_agent_metadata,
     _validate_uuid,
     project_key_for_directory,
@@ -67,11 +68,16 @@ class MaterializedResume:
             session resolved via :meth:`SessionStore.list_sessions`.
         cleanup: Coroutine that removes ``config_dir`` (best-effort).
             Call it after the subprocess exits.
+        materialized_project_key: Requested cwd's key in the temporary layout.
+        store_project_key: Canonical source key for the resumed session. When
+            different, subsequent mirror frames must write back to this key.
     """
 
     config_dir: Path
     resume_session_id: str
     cleanup: Callable[[], Awaitable[None]]
+    materialized_project_key: str | None = None
+    store_project_key: str | None = None
 
 
 def apply_materialized_options(
@@ -118,12 +124,23 @@ def build_mirror_batcher(
         else str(_get_projects_dir(env))
     )
     eager = flush_mode == "eager"
+    aliases = {}
+    if (
+        materialized is not None
+        and materialized.materialized_project_key is not None
+        and materialized.store_project_key is not None
+        and materialized.materialized_project_key != materialized.store_project_key
+    ):
+        aliases[
+            (materialized.materialized_project_key, materialized.resume_session_id)
+        ] = materialized.store_project_key
     return TranscriptMirrorBatcher(
         store=store,
         projects_dir=projects_dir,
         on_error=on_error,
         max_pending_entries=0 if eager else MAX_PENDING_ENTRIES,
         max_pending_bytes=0 if eager else MAX_PENDING_BYTES,
+        project_key_aliases=aliases,
     )
 
 
@@ -148,6 +165,7 @@ async def materialize_resume_session(
 
     timeout_s = options.load_timeout_ms / 1000
     project_key = project_key_for_directory(options.cwd)
+    store_project_key = project_key
 
     # Resolve the session ID — explicit resume wins; otherwise pick the
     # most-recently-modified non-sidechain session from the store. Empty
@@ -157,7 +175,13 @@ async def materialize_resume_session(
         # isn't a UUID to prevent traversal and match every other resume path.
         if _validate_uuid(options.resume) is None:
             return None
-        resolved = await _load_candidate(store, project_key, options.resume, timeout_s)
+        key, entries = await _with_timeout(
+            _resolve_store_session(store, options.resume, options.cwd),
+            timeout_s,
+            f"SessionStore.load() for session {options.resume}",
+        )
+        store_project_key = key["project_key"]
+        resolved = (options.resume, entries) if entries else None
     else:
         resolved = await _resolve_continue_candidate(store, project_key, timeout_s)
     if resolved is None:
@@ -178,7 +202,7 @@ async def materialize_resume_session(
         # Materialize subagent transcripts if the store can enumerate them.
         if _store_implements(store, "list_subkeys"):
             await _materialize_subkeys(
-                store, tmp_base, project_dir, project_key, session_id, timeout_s
+                store, tmp_base, project_dir, store_project_key, session_id, timeout_s
             )
     except BaseException:
         # Any failure after mkdtemp leaves tmp_base (which may already
@@ -197,6 +221,8 @@ async def materialize_resume_session(
         config_dir=tmp_base,
         resume_session_id=session_id,
         cleanup=cleanup,
+        materialized_project_key=project_key,
+        store_project_key=store_project_key,
     )
 
 

@@ -1,7 +1,6 @@
 """Internal client implementation."""
 
 import json
-import os
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
 from dataclasses import asdict
 from typing import Any
@@ -13,7 +12,12 @@ from ..types import (
     _hooks_to_internal_format,
 )
 from .message_parser import parse_message
-from .query import Query, run_end_ceiling_ms, stamp_user_message
+from .query import (
+    Query,
+    initialize_timeout_s,
+    run_end_ceiling_ms,
+    stamp_user_message,
+)
 from .session_resume import (
     MaterializedResume,
     apply_materialized_options,
@@ -129,10 +133,7 @@ class InternalClient:
             }
 
         # Match ClaudeSDKClient.connect() — without this, query() ignores the env var
-        initialize_timeout_ms = int(
-            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
-        )
-        initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+        initialize_timeout = initialize_timeout_s()
 
         # Create Query to handle control protocol
         # Always use streaming mode internally (matching TypeScript SDK)

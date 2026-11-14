@@ -87,6 +87,32 @@ def run_end_ceiling_ms(options_env: Mapping[str, str]) -> int:
     return value if value >= 0 else DEFAULT_RUN_END_CEILING_MS
 
 
+_STREAM_CLOSE_TIMEOUT_ENV = "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"
+_MIN_INITIALIZE_TIMEOUT_S = 60.0
+
+
+def initialize_timeout_s() -> float:
+    """Seconds to wait for the CLI to answer ``initialize``.
+
+    Read from ``CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`` (milliseconds), and never
+    less than 60 seconds. A value that is not an integer, such as an empty
+    string, is ignored with a warning instead of failing the connection.
+    """
+    raw = os.environ.get(_STREAM_CLOSE_TIMEOUT_ENV)
+    if raw is None:
+        return _MIN_INITIALIZE_TIMEOUT_S
+    try:
+        timeout_ms = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring %s=%r: expected an integer number of milliseconds",
+            _STREAM_CLOSE_TIMEOUT_ENV,
+            raw,
+        )
+        return _MIN_INITIALIZE_TIMEOUT_S
+    return max(timeout_ms / 1000.0, _MIN_INITIALIZE_TIMEOUT_S)
+
+
 def _error_result_text(message: dict[str, Any]) -> str:
     """Pick the most informative text from a ``result`` frame with ``is_error``.
 

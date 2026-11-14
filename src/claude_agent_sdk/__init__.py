@@ -541,6 +541,9 @@ def create_sdk_mcp_server(
         ``mcp.server.Server`` that the SDK connects to Claude Code over an
         in-memory MCP transport.
 
+    Raises:
+        ValueError: If two or more tools in ``tools`` share the same name.
+
     Example:
         Simple calculator server:
         >>> @tool("add", "Add numbers", {"a": float, "b": float})
@@ -602,20 +605,26 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     tools = tools or []
-    tools_by_name = {tool_def.name: tool_def for tool_def in tools}
-    schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
-    wire_tools = [
-        Tool.model_validate(
-            {
-                "name": tool_def.name,
-                "description": tool_def.description,
-                "inputSchema": schemas[tool_def.name],
-                "annotations": tool_def.annotations,
-                "_meta": _build_meta(tool_def),
-            }
+    tools_by_name: dict[str, SdkMcpTool[Any]] = {}
+    schemas: dict[str, dict[str, Any]] = {}
+    wire_tools: list[Tool] = []
+    for tool_def in tools:
+        if tool_def.name in tools_by_name:
+            raise ValueError(f"Duplicate tool name: {tool_def.name!r}")
+        tools_by_name[tool_def.name] = tool_def
+        schema = _build_input_schema(tool_def)
+        schemas[tool_def.name] = schema
+        wire_tools.append(
+            Tool.model_validate(
+                {
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "inputSchema": schema,
+                    "annotations": tool_def.annotations,
+                    "_meta": _build_meta(tool_def),
+                }
+            )
         )
-        for tool_def in tools
-    ]
 
     async def run_tool(tool_name: str, arguments: dict[str, Any]) -> CallToolResult:
         # The SDK owns these semantics so a tool behaves the same on every

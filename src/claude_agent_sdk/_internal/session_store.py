@@ -62,6 +62,13 @@ class InMemorySessionStore(SessionStore):
         return now_ms
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
+        # Conformance contract 4: append([]) is a no-op. Without this guard the
+        # bookkeeping below materializes a phantom session — load() returns []
+        # instead of "never written", and list_sessions(), list_session_summaries()
+        # and size all report a session that was never written. The example
+        # adapters under examples/session_stores/ guard here for the same reason.
+        if not entries:
+            return
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
         now_ms = self._next_mtime()

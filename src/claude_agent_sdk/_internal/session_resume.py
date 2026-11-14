@@ -341,8 +341,17 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
         Path(caller_config_dir) if caller_config_dir else Path.home() / ".claude"
     )
 
-    creds_bytes = _read_if_present(source_config_dir / ".credentials.json")
-    creds_json = creds_bytes.decode("utf-8") if creds_bytes is not None else None
+    creds_path = source_config_dir / ".credentials.json"
+    creds_bytes = _read_if_present(creds_path)
+    creds_json: str | None = None
+    if creds_bytes is not None:
+        try:
+            creds_json = creds_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            # An undecodable file is treated like a missing one (API-key
+            # auth, etc.): skip it with a warning instead of aborting the
+            # resume before the CLI is even spawned.
+            logger.warning("[SessionStore] resume: skipping %s (%s)", creds_path, e)
 
     # macOS default setup keeps OAuth tokens in the Keychain, not a file.
     # Redirecting CLAUDE_CONFIG_DIR changes the Keychain service-name suffix,

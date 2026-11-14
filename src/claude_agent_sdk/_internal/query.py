@@ -1,5 +1,6 @@
 """Query class for handling bidirectional control protocol."""
 
+import copy
 import json
 import logging
 import os
@@ -240,6 +241,10 @@ class Query:
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
+        # Latest slash-command list: seeded from the initialize response and
+        # replaced by each system/commands_changed push the CLI sends when the
+        # list changes mid-session (e.g. skills found in a subdirectory).
+        self._commands: list[dict[str, Any]] = []
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
         # _read_messages and _inflight_tasks below (#1088, #1190). Work the CLI
@@ -389,6 +394,9 @@ class Query:
                 )
         self._initialized = True
         self._initialization_result = response  # Store for later access
+        commands = response.get("commands") if response else None
+        if isinstance(commands, list):
+            self._commands = copy.deepcopy(commands)
         return response
 
     async def start(self) -> None:
@@ -472,6 +480,10 @@ class Query:
                         # The ceiling left the last tracked agent alone; the
                         # wait between turns starts over now that it settled.
                         self._rearm_run_end_ceiling_between_turns()
+                    if message.get("subtype") == "commands_changed":
+                        commands = message.get("commands")
+                        if isinstance(commands, list):
+                            self._commands = copy.deepcopy(commands)
                     if message.get("subtype") == "session_state_changed":
                         self._on_session_state(message.get("state"))
                         # Frames the CLI sent only because the transport asked
@@ -809,6 +821,11 @@ class Query:
                 "id": message.get("id"),
                 "error": {"code": -32603, "message": str(e) or type(e).__name__},
             }
+
+    @property
+    def commands(self) -> list[dict[str, Any]]:
+        """The latest slash-command list the CLI reported (a copy)."""
+        return copy.deepcopy(self._commands)
 
     async def get_mcp_status(self) -> dict[str, Any]:
         """Get current MCP server connection status."""

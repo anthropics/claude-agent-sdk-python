@@ -1025,6 +1025,27 @@ class McpStatusResponse(TypedDict):
     mcpServers: list[McpServerStatus]
 
 
+class SlashCommand(TypedDict):
+    """A slash command the Claude Code CLI accepts in this session.
+
+    Returned by `ClaudeSDKClient.supported_commands()`. This covers built-in
+    commands that work in non-interactive sessions (such as ``/compact``) and
+    custom commands and skills loaded from ``.claude/commands/``,
+    ``.claude/skills/`` and plugins. Run one by sending its name with a
+    leading ``/`` through `ClaudeSDKClient.query()`. Mirrors the TypeScript
+    SDK's ``SlashCommand`` type.
+    """
+
+    name: str
+    """Command name without the leading slash, e.g. ``"compact"``."""
+    description: str
+    """What the command does."""
+    argumentHint: str
+    """Hint for the command's arguments, e.g. ``"<file>"``; empty if none."""
+    aliases: NotRequired[list[str]]
+    """Other names that resolve to this command."""
+
+
 class ContextUsageCategory(TypedDict):
     """A single context usage category (system prompt, tools, messages, etc.)."""
 

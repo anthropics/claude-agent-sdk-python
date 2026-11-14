@@ -62,6 +62,10 @@ class InMemorySessionStore(SessionStore):
         return now_ms
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
+        # Contract #4: append([]) is a no-op. Return before key creation and
+        # mtime stamping so an empty append on a fresh store leaves no trace.
+        if not entries:
+            return
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
         now_ms = self._next_mtime()

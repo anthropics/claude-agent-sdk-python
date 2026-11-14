@@ -42,6 +42,16 @@ class TestInMemorySessionStore:
         await run_session_store_conformance(make)
 
     @pytest.mark.anyio
+    async def test_append_empty_on_fresh_store_creates_nothing(self) -> None:
+        """Contract #4 holds for a fresh store: append([]) leaves no session."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [])
+        assert await store.load(_KEY) is None
+        assert await store.list_sessions("proj") == []
+        assert await store.list_session_summaries("proj") == []
+        assert store.size == 0
+
+    @pytest.mark.anyio
     async def test_skip_optional_suppresses_contracts(self) -> None:
         """A store implementing only required methods passes when optionals are skipped."""
 

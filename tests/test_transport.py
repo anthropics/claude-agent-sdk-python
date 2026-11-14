@@ -548,6 +548,45 @@ class TestSubprocessCLITransport:
 
         anyio.run(_test)
 
+    def test_connect_clears_stale_exit_error_after_reconnect(self):
+        """A successful reconnect clears the error from a failed attempt.
+
+        Regression test for #1517: connect() recorded _exit_error on failure but
+        the success path never cleared it, so after a failed connect followed by a
+        successful retry write() kept rejecting writes with the stale error.
+        """
+        from claude_agent_sdk._errors import CLIConnectionError
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test",
+                options=make_options(),
+            )
+
+            with patch("anyio.open_process", side_effect=RuntimeError("spawn failed")):
+                with pytest.raises(CLIConnectionError):
+                    await transport.connect()
+            assert transport._exit_error is not None
+
+            mock_process = MagicMock()
+            mock_process.returncode = None
+            mock_process.terminate = MagicMock()
+            mock_process.wait = AsyncMock()
+            mock_process.stdout = MagicMock()
+            mock_process.stderr = MagicMock()
+            mock_stdin = MagicMock()
+            mock_stdin.aclose = AsyncMock()
+            mock_process.stdin = mock_stdin
+
+            with patch("anyio.open_process") as mock_exec:
+                mock_exec.return_value = mock_process
+                await transport.connect()
+
+            assert transport.is_ready()
+            assert transport._exit_error is None
+
+        anyio.run(_test)
+
     def test_read_messages(self):
         """Test reading messages from CLI output."""
         # This test is simplified to just test the transport creation

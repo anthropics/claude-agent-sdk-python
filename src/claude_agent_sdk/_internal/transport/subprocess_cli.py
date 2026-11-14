@@ -852,6 +852,11 @@ class SubprocessCLITransport(Transport):
                 self._stdin_stream = TextSendStream(self._process.stdin)
 
             self._ready = True
+            # A successful connect clears any error recorded by an earlier failed
+            # attempt. Otherwise write() keeps raising that stale error after a
+            # successful reconnect, since the error is only otherwise reset in
+            # close().
+            self._exit_error = None
 
         except FileNotFoundError as e:
             # Check if the error comes from the working directory or the CLI

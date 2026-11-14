@@ -1,5 +1,6 @@
 """Tests for ClaudeSDKClient streaming functionality and query() with async iterables."""
 
+import copy
 import json
 import sys
 import tempfile
@@ -981,14 +982,16 @@ class TestClaudeSDKClientStreaming:
                                     "response": {
                                         "request_id": msg.get("request_id"),
                                         "subtype": "success",
-                                        "response": {"commands": initial_commands},
+                                        "response": {
+                                            "commands": copy.deepcopy(initial_commands)
+                                        },
                                     },
                                 }
                         elif msg.get("type") == "user":
                             yield {
                                 "type": "system",
                                 "subtype": "commands_changed",
-                                "commands": pushed_commands,
+                                "commands": copy.deepcopy(pushed_commands),
                                 "uuid": "u1",
                                 "session_id": "test",
                             }
@@ -1010,9 +1013,15 @@ class TestClaudeSDKClientStreaming:
                 assert commands == initial_commands
                 assert commands[1]["aliases"] == ["stats"]
 
-                # Mutating the returned list must not touch the client's copy.
+                # Mutating the returned list or its entries must not touch the
+                # client's copy.
+                commands[0]["name"] = "mutated"
+                commands[1]["aliases"].append("extra")
                 commands.clear()
-                assert await client.supported_commands() == initial_commands
+                fresh = await client.supported_commands()
+                assert fresh == initial_commands
+                assert fresh[0]["name"] == "compact"
+                assert fresh[1]["aliases"] == ["stats"]
 
                 await client.query("hi")
                 async for _ in client.receive_response():
@@ -1020,6 +1029,12 @@ class TestClaudeSDKClientStreaming:
 
                 commands = await client.supported_commands()
                 assert [c["name"] for c in commands] == ["compact", "cost", "deploy"]
+                commands[2]["name"] = "mutated"
+                assert [c["name"] for c in await client.supported_commands()] == [
+                    "compact",
+                    "cost",
+                    "deploy",
+                ]
 
     @pytest.mark.anyio
     async def test_supported_commands_not_connected(self):

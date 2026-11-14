@@ -1,5 +1,6 @@
 """Query class for handling bidirectional control protocol."""
 
+import copy
 import json
 import logging
 import os
@@ -395,7 +396,7 @@ class Query:
         self._initialization_result = response  # Store for later access
         commands = response.get("commands") if response else None
         if isinstance(commands, list):
-            self._commands = commands
+            self._commands = copy.deepcopy(commands)
         return response
 
     async def start(self) -> None:
@@ -482,7 +483,7 @@ class Query:
                     if message.get("subtype") == "commands_changed":
                         commands = message.get("commands")
                         if isinstance(commands, list):
-                            self._commands = commands
+                            self._commands = copy.deepcopy(commands)
                     if message.get("subtype") == "session_state_changed":
                         self._on_session_state(message.get("state"))
                         # Frames the CLI sent only because the transport asked
@@ -824,7 +825,7 @@ class Query:
     @property
     def commands(self) -> list[dict[str, Any]]:
         """The latest slash-command list the CLI reported (a copy)."""
-        return list(self._commands)
+        return copy.deepcopy(self._commands)
 
     async def get_mcp_status(self) -> dict[str, Any]:
         """Get current MCP server connection status."""

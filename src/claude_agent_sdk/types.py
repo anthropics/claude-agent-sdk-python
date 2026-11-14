@@ -1356,11 +1356,21 @@ the message that triggered that turn.
 In streaming-input mode a single connection interleaves the turns you send
 with turns the session injects on its own (background-task notifications,
 scheduled-task prompts, MCP channel messages, messages relayed from peer
-sessions, ...). ``origin`` tells them apart, e.g. to decide whether a
-:class:`ResultMessage` answers *your* prompt::
+sessions, ...). ``origin`` tells you what started a turn. It does not tell
+you whether a :class:`ResultMessage` covers *your* prompt: a prompt sent while
+an injected turn is running can be answered inside that turn, and the result
+then carries the injected turn's origin. To match a result to your prompts,
+send each one with a ``uuid`` and look for it in the result::
 
-    if result.origin is None or result.origin["kind"] == "human":
-        ...  # a turn this application submitted
+    uuids = result.user_message_uuids or []
+    if my_uuid == result.user_message_uuid or my_uuid in uuids:
+        ...  # this turn took in the prompt sent with my_uuid
+
+Read with ``receive_messages()``: ``receive_response()`` stops at the first
+result, which can be an injected turn's. See
+:attr:`ResultMessage.user_message_uuid` for how to send the ``uuid``. Prompts
+sent as a plain string have none; for those, ``origin`` being ``None`` or of
+kind ``human`` is only a best effort.
 
 Only ``kind`` is always present; the remaining keys depend on ``kind`` as
 noted on each field. ``None``/absent means the CLI did not attribute the
@@ -1400,6 +1410,16 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message this turn is answering — see
+    :attr:`ResultMessage.user_message_uuid`. Set on the first top-level
+    assistant message after that value is set or changes, which can be partway
+    through a turn; ``None`` on all others."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn has taken in so far. Set on the
+    same messages as ``user_message_uuid``, except on older CLIs. A message
+    taken in later may be listed only on the result — see
+    :attr:`ResultMessage.user_message_uuids`."""
 
 
 @dataclass
@@ -1739,10 +1759,31 @@ class ResultMessage:
     ``SDKResultMessage.terminal_reason``."""
     origin: MessageOrigin | None = None
     """Origin of the user message that triggered this turn — see
-    :class:`MessageOrigin`. Lets a streaming-input consumer distinguish the
-    result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
-    that) from results of injected turns such as background-task
-    notifications (``{"kind": "task-notification"}``)."""
+    :class:`MessageOrigin`. Describes only what *started* the turn, such as a
+    background-task notification (``{"kind": "task-notification"}``). A prompt
+    sent while an injected turn is running can be answered inside that turn,
+    and the result then carries the injected turn's origin, so match
+    ``user_message_uuids`` to find the result for a given prompt."""
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message that started this turn (the last one, if
+    several were merged to start it). On an injected turn, the last user
+    message taken in while it was running.
+
+    Covers only messages sent as dicts with a top-level ``uuid`` string; prompts
+    passed as a plain string have none. Use a new uuid for every message, as the
+    CLI can skip one whose uuid it has already seen. ``None`` when the turn took
+    in no such message, or on older CLIs. Set on error results too, so check
+    ``terminal_reason`` and ``is_error`` before treating the message as
+    answered. Mirrors the TypeScript SDK's
+    ``SDKResultMessage.user_message_uuid``."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn took in, in order: those that
+    started it, then any sent while it was running. The CLI lists at most 64,
+    so a uuid missing from a full list may still have been taken in. Can be
+    empty on an interrupted turn. ``None`` when ``user_message_uuid`` is
+    ``None`` for any other reason, and also on some error results and older
+    CLIs that report only ``user_message_uuid``. Mirrors the TypeScript SDK's
+    ``SDKResultMessage.user_message_uuids``."""
 
 
 @dataclass
@@ -1753,6 +1794,16 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message this turn is answering — see
+    :attr:`ResultMessage.user_message_uuid`. Set on the first top-level non-ping
+    event after that value is set or changes, which can be partway through a
+    turn; ``None`` on all others."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn has taken in so far. Set on the
+    same events as ``user_message_uuid``, except on older CLIs. A message taken
+    in later may be listed only on the result — see
+    :attr:`ResultMessage.user_message_uuids`."""
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits

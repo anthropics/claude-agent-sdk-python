@@ -795,6 +795,47 @@ class TestGetSessionMessages:
         # All SessionMessage instances
         assert all(isinstance(m, SessionMessage) for m in messages)
 
+    def test_include_compacted_reads_pre_boundary_messages(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry("user", "before", None, sid, content="before"),
+            _make_transcript_entry(
+                "assistant", "reply", "before", sid, content="reply"
+            ),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "boundary",
+                "parentUuid": None,
+                "logicalParentUuid": "reply",
+            },
+            _make_transcript_entry(
+                "user", "summary", "boundary", sid, content="summary"
+            ),
+            _make_transcript_entry(
+                "assistant", "after", "summary", sid, content="after"
+            ),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        assert [m.uuid for m in get_session_messages(sid, directory=project_path)] == [
+            "summary",
+            "after",
+        ]
+        assert [
+            m.uuid
+            for m in get_session_messages(
+                sid, directory=project_path, include_compacted=True
+            )
+        ] == ["before", "reply", "summary", "after"]
+
     def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
         """isMeta entries in the chain are filtered from output."""
         project_path = str(tmp_path / "proj")
@@ -1251,6 +1292,74 @@ class TestBuildConversationChain:
         ]
         result = _build_conversation_chain(entries)
         assert [e["uuid"] for e in result] == ["a", "b", "c"]
+
+    def test_compaction_history_is_opt_in_and_cycle_safe(self):
+        entries = [
+            {"type": "user", "uuid": "before", "parentUuid": None},
+            {"type": "assistant", "uuid": "reply", "parentUuid": "before"},
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "boundary",
+                "parentUuid": None,
+                "logicalParentUuid": "reply",
+            },
+            {"type": "user", "uuid": "summary", "parentUuid": "boundary"},
+            {"type": "assistant", "uuid": "after", "parentUuid": "summary"},
+        ]
+        assert [e["uuid"] for e in _build_conversation_chain(entries)] == [
+            "boundary",
+            "summary",
+            "after",
+        ]
+        assert [e["uuid"] for e in _build_conversation_chain(entries, True)] == [
+            "before",
+            "reply",
+            "boundary",
+            "summary",
+            "after",
+        ]
+
+        entries[2]["logicalParentUuid"] = "after"
+        assert [e["uuid"] for e in _build_conversation_chain(entries, True)] == [
+            "boundary",
+            "summary",
+            "after",
+        ]
+        entries[2]["logicalParentUuid"] = "missing"
+        assert [e["uuid"] for e in _build_conversation_chain(entries, True)] == [
+            "boundary",
+            "summary",
+            "after",
+        ]
+
+    def test_follows_multiple_compaction_boundaries(self):
+        entries = [
+            {"type": "user", "uuid": "first", "parentUuid": None},
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "boundary-1",
+                "parentUuid": None,
+                "logicalParentUuid": "first",
+            },
+            {"type": "user", "uuid": "middle", "parentUuid": "boundary-1"},
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "boundary-2",
+                "parentUuid": None,
+                "logicalParentUuid": "middle",
+            },
+            {"type": "user", "uuid": "last", "parentUuid": "boundary-2"},
+        ]
+        assert [e["uuid"] for e in _build_conversation_chain(entries, True)] == [
+            "first",
+            "boundary-1",
+            "middle",
+            "boundary-2",
+            "last",
+        ]
 
     def test_only_progress_entries_returns_empty(self):
         """If no user/assistant entries, no leaves found → empty."""

@@ -1352,10 +1352,10 @@ def _entries_to_session_messages(
     messages = [_to_session_message(e) for e in visible]
 
     # Apply offset and limit
-    if limit is not None and limit > 0:
-        return messages[offset : offset + limit]
     if offset > 0:
-        return messages[offset:]
+        messages = messages[offset:]
+    if limit is not None and limit > 0:
+        messages = messages[:limit]
     return messages
 
 
@@ -1726,10 +1726,10 @@ def _entries_to_subagent_messages(
         if e.get("type") in ("user", "assistant")
     ]
 
-    if limit is not None and limit > 0:
-        return messages[offset : offset + limit]
     if offset > 0:
-        return messages[offset:]
+        messages = messages[offset:]
+    if limit is not None and limit > 0:
+        messages = messages[:limit]
     return messages
 
 

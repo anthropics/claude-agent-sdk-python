@@ -931,6 +931,31 @@ class TestGetSessionMessages:
         page = get_session_messages(sid, directory=project_path, offset=100)
         assert page == []
 
+    def test_negative_offset_with_limit(self, claude_config_dir: Path, tmp_path: Path):
+        """A negative offset is ignored when a limit is set, as without one."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        uuids = [str(uuid.uuid4()) for _ in range(6)]
+        entries = []
+        for i, uid in enumerate(uuids):
+            parent = uuids[i - 1] if i > 0 else None
+            entry_type = "user" if i % 2 == 0 else "assistant"
+            entries.append(
+                _make_transcript_entry(entry_type, uid, parent, sid, content=f"m{i}")
+            )
+        _write_transcript(project_dir, sid, entries)
+
+        page = get_session_messages(sid, directory=project_path, offset=-1)
+        assert [m.uuid for m in page] == uuids
+
+        page = get_session_messages(sid, directory=project_path, limit=2, offset=-1)
+        assert [m.uuid for m in page] == uuids[:2]
+
     def test_picks_main_chain_over_sidechain(
         self, claude_config_dir: Path, tmp_path: Path
     ):
@@ -2380,6 +2405,34 @@ class TestGetSubagentMessages:
 
         page = get_subagent_messages(sid, "p", directory=project_path, limit=0)
         assert len(page) == 6
+
+    def test_negative_offset_with_limit(self, claude_config_dir: Path, tmp_path: Path):
+        """A negative offset is ignored when a limit is set, as without one."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        uuids = [str(uuid.uuid4()) for _ in range(6)]
+        entries = []
+        for i, uid in enumerate(uuids):
+            parent = uuids[i - 1] if i > 0 else None
+            entry_type = "user" if i % 2 == 0 else "assistant"
+            entries.append(
+                _make_transcript_entry(entry_type, uid, parent, sid, content=f"m{i}")
+            )
+        (subagents_dir / "agent-p.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n"
+        )
+
+        page = get_subagent_messages(sid, "p", directory=project_path, offset=-1)
+        assert [m.uuid for m in page] == uuids
+
+        page = get_subagent_messages(
+            sid, "p", directory=project_path, limit=2, offset=-1
+        )
+        assert [m.uuid for m in page] == uuids[:2]
 
     def test_empty_agent_file(self, claude_config_dir: Path, tmp_path: Path):
         """Empty agent transcript file returns empty list."""

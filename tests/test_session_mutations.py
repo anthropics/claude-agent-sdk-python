@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import uuid
@@ -815,3 +816,84 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+
+class TestCompleteMetadataWrites:
+    """Metadata mutations finish their encoded output after short OS writes."""
+
+    @pytest.mark.parametrize("limit", [1, 7, 31])
+    @pytest.mark.parametrize("operation", ["rename", "tag"])
+    def test_short_writes_preserve_complete_jsonl(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        limit: int,
+        operation: str,
+    ):
+        project = tmp_path / "project"
+        project.mkdir()
+        directory = _make_project_dir(claude_config_dir, os.path.realpath(project))
+        sid, original, _ = _make_transcript_session(directory, num_turns=3)
+        before = original.read_bytes()
+        write = os.write
+        calls = []
+
+        def short_write(fd, data):
+            calls.append(fd)
+            return write(fd, data[:limit])
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "write", short_write)
+            if operation == "rename":
+                rename_session(sid, "Résumé ☃ complete", directory=str(project))
+            else:
+                tag_session(sid, "résumé-complete", directory=str(project))
+        data = original.read_bytes()
+        assert data.endswith(b"\n")
+        entries = [json.loads(line) for line in data.decode("utf-8").splitlines()]
+        assert len(calls) > 1
+        assert data.startswith(before)
+        if operation == "rename":
+            assert entries[-1]["customTitle"] == "Résumé ☃ complete"
+            info = next(
+                item
+                for item in list_sessions(directory=str(project))
+                if item.session_id == sid
+            )
+            assert info.custom_title == "Résumé ☃ complete"
+        else:
+            assert entries[-1]["tag"] == "résumé-complete"
+        assert len(get_session_messages(sid, directory=str(project))) == 6
+        for fd in set(calls):
+            with pytest.raises(OSError) as error:
+                os.fstat(fd)
+            assert error.value.errno == errno.EBADF
+
+    @pytest.mark.parametrize("zero_progress", [False, True])
+    def test_incomplete_writes_raise_and_close_the_owned_descriptor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, zero_progress: bool
+    ):
+        path = tmp_path / "metadata.jsonl"
+        path.write_bytes(b"original\n")
+        write = os.write
+        calls = []
+
+        def fail_after_prefix(fd, data):
+            calls.append(fd)
+            if len(calls) == 1:
+                return write(fd, data[:3])
+            if zero_progress:
+                return 0
+            raise OSError(errno.ENOSPC, "disk full")
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "write", fail_after_prefix)
+            with pytest.raises(OSError) as error:
+                _try_append(path, "a complete line\n")
+        assert error.value.errno == (errno.EIO if zero_progress else errno.ENOSPC)
+        assert len(calls) == 2
+        assert path.read_bytes() == b"original\na c"
+        with pytest.raises(OSError) as closed:
+            os.fstat(calls[0])
+        assert closed.value.errno == errno.EBADF

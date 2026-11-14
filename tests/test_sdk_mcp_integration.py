@@ -2185,6 +2185,34 @@ class TestTypedDictMcpIntegration:
         assert listed["inputSchema"] == json_schema
 
     @pytest.mark.anyio
+    async def test_properties_less_json_schema_dict_passthrough(self) -> None:
+        json_schema = {"type": "object"}
+
+        @tool("no-args", "Accept no arguments", json_schema)
+        async def no_args(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "OK"}]}
+
+        config = create_sdk_mcp_server(name="properties-less-schema-test", tools=[no_args])
+        async with connected(config) as client:
+            [listed] = await client.list_tools("srv")
+            result = await client.call_tool("srv", "no-args", {})
+        assert listed["inputSchema"] == json_schema
+        assert texts(result) == ["OK"]
+
+    @pytest.mark.anyio
+    async def test_composition_json_schema_dict_passthrough(self) -> None:
+        json_schema = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+
+        @tool("optional-text", "Accept optional text", json_schema)
+        async def optional_text(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "OK"}]}
+
+        config = create_sdk_mcp_server(name="composition-schema-test", tools=[optional_text])
+        async with connected(config) as client:
+            [listed] = await client.list_tools("srv")
+        assert listed["inputSchema"] == json_schema
+
+    @pytest.mark.anyio
     async def test_tool_list_is_stable(self) -> None:
         @tool("cached", "Test caching", {"x": str})
         async def cached(args: dict[str, Any]) -> dict[str, Any]:

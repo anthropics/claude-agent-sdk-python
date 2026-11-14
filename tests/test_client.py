@@ -462,3 +462,63 @@ class TestClaudeSDKClientResourceCleanup:
                 receive_stream.receive_nowait()
 
         anyio.run(_test)
+
+
+class TestQuerySetupFailureCleanup:
+    """Regression for #1514: query() must close transport if post-connect setup fails."""
+
+    def test_query_closes_transport_when_timeout_env_invalid(self, monkeypatch):
+        mock_transport = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        monkeypatch.setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "invalid_60s")
+
+        async def _test():
+            with pytest.raises(ValueError):
+                async for _ in query(prompt="test", transport=mock_transport):
+                    pass
+
+            mock_transport.connect.assert_called_once()
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_query_closes_transport_when_mcp_config_invalid(self):
+        mock_transport = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        options = ClaudeAgentOptions(
+            mcp_servers={"broken": {"type": "sdk"}}  # type: ignore[dict-item]
+        )
+
+        async def _test():
+            with pytest.raises(KeyError):
+                async for _ in query(
+                    prompt="test", options=options, transport=mock_transport
+                ):
+                    pass
+
+            mock_transport.connect.assert_called_once()
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test)
+
+    def test_query_closes_transport_when_start_fails(self):
+        mock_transport = AsyncMock()
+        mock_transport.is_ready = Mock(return_value=True)
+
+        async def _test():
+            with (
+                patch(
+                    "claude_agent_sdk._internal.query.Query.start",
+                    side_effect=RuntimeError("start failed"),
+                ),
+                pytest.raises(RuntimeError, match="start failed"),
+            ):
+                async for _ in query(prompt="test", transport=mock_transport):
+                    pass
+
+            mock_transport.connect.assert_called_once()
+            mock_transport.close.assert_called_once()
+
+        anyio.run(_test)

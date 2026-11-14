@@ -1,5 +1,7 @@
 """Tests for message parser error handling."""
 
+from typing import Any
+
 import pytest
 
 from claude_agent_sdk._errors import MessageParseError
@@ -1005,6 +1007,42 @@ class TestMessageParser:
             parse_message(
                 {"type": "assistant", "message": {"model": "m", "content": "hi"}}
             )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"type": "user", "message": value}
+            for value in ("oops", [], None)
+        ]
+        + [
+            {"type": "assistant", "message": value}
+            for value in ([], "oops")
+        ]
+        + [
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "session-1",
+                "deferred_tool_use": value,
+            }
+            for value in ("x", [1], True)
+        ]
+        + [
+            {"type": "rate_limit_event", "rate_limit_info": value}
+            for value in ("x", [], None)
+        ],
+    )
+    def test_non_dict_nested_payload_raises_message_parse_error(
+        self, data: dict[str, Any]
+    ) -> None:
+        """Malformed nested payloads use the documented parser exception."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert exc_info.value.data == data
 
     @pytest.mark.parametrize("role", ["assistant", "user"])
     def test_non_dict_content_block_raises_documented_error(self, role: str) -> None:

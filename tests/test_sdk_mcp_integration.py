@@ -33,6 +33,9 @@ from claude_agent_sdk import (
     tool,
 )
 from claude_agent_sdk import (
+    _build_input_schema as build_input_schema,
+)
+from claude_agent_sdk import (
     _python_type_to_json_schema as python_type_to_json_schema,
 )
 from claude_agent_sdk import (
@@ -1018,6 +1021,124 @@ async def test_json_schema_constraints_are_enforced():
 
 
 @pytest.mark.anyio
+async def test_object_type_schema_is_a_no_arg_tool():
+    """``{"type": "object"}`` is a raw JSON Schema for a tool with no arguments.
+
+    It must be advertised unchanged, and a call with ``{}`` must run the
+    handler. Rebuilding it as a param map makes ``type`` a required string.
+    """
+    calls: list[dict[str, Any]] = []
+
+    @tool("t", "intended no-arg tool", {"type": "object"})
+    async def t(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(args)
+        return {"content": [{"type": "text", "text": "t-ran"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[t])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        result = await client.call_tool("srv", "t", {})
+
+    assert listed["inputSchema"] == {"type": "object"}
+    assert texts(result) == ["t-ran"]
+    assert calls == [{}]
+
+
+@pytest.mark.anyio
+async def test_closed_object_schema_without_properties_rejects_extras():
+    """A properties-less object schema with additionalProperties false is raw."""
+    schema = {"type": "object", "additionalProperties": False}
+
+    @tool("t", "No arguments and no extras", schema)
+    async def t(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[t])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        ok = await client.call_tool("srv", "t", {})
+        extra = await client.call_tool("srv", "t", {"extra": 1})
+
+    assert listed["inputSchema"] == schema
+    assert texts(ok) == ["ok"]
+    assert extra["isError"] is True
+    assert texts(extra)[0].startswith("Input validation error: ")
+
+
+@pytest.mark.anyio
+async def test_anyof_schema_validates_as_a_schema_not_a_parameter():
+    """An object schema with anyOf and no properties is still a raw schema.
+
+    MCP tool inputs require ``type: object`` at the root, so this is the
+    properties-less shape that can actually be listed and called. A bare
+    ``anyOf`` document is covered by ``TestBuildInputSchema``.
+    """
+    schema = {
+        "type": "object",
+        "anyOf": [
+            {
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+                "additionalProperties": False,
+            },
+            {
+                "properties": {"b": {"type": "integer"}},
+                "required": ["b"],
+                "additionalProperties": False,
+            },
+        ],
+    }
+
+    @tool("t", "Either a or b", schema)
+    async def t(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[t])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        by_a = await client.call_tool("srv", "t", {"a": "x"})
+        by_b = await client.call_tool("srv", "t", {"b": 1})
+        neither = await client.call_tool("srv", "t", {})
+
+    assert listed["inputSchema"] == schema
+    assert texts(by_a) == ["ok"]
+    assert texts(by_b) == ["ok"]
+    assert neither["isError"] is True
+    assert texts(neither)[0].startswith("Input validation error: ")
+
+
+@pytest.mark.anyio
+async def test_dict_style_parameter_named_type_stays_a_parameter():
+    """A param literally named ``type`` is not the JSON Schema keyword.
+
+    ``{"type": str}`` must keep building a required string parameter. Only a
+    string (or list of strings) under ``type`` is a raw schema.
+    """
+    calls: list[dict[str, Any]] = []
+
+    @tool("label", "Takes a type name", {"type": str})
+    async def label(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(args)
+        return {"content": [{"type": "text", "text": args["type"]}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[label])
+    async with connected(config) as client:
+        [listed] = await client.list_tools("srv")
+        missing = await client.call_tool("srv", "label", {})
+        ok = await client.call_tool("srv", "label", {"type": "widget"})
+
+    assert listed["inputSchema"] == {
+        "type": "object",
+        "properties": {"type": {"type": "string"}},
+        "required": ["type"],
+    }
+    assert missing["isError"] is True
+    assert texts(missing) == ["Input validation error: 'type' is a required property"]
+    assert texts(ok) == ["widget"]
+    assert calls == [{"type": "widget"}]
+
+
+@pytest.mark.anyio
 async def test_invalid_tool_schema_is_an_error_result():
     """A schema jsonschema cannot use fails the call the same way on every mcp
     version: as an error result, not a protocol error."""
@@ -1838,6 +1959,108 @@ async def test_session_cancelled_before_it_starts_still_closes():
     with anyio.fail_after(2):
         await session.aclose()
     assert session.finished
+
+
+def _tool_with_input_schema(schema: Any) -> SdkMcpTool[Any]:
+    @tool("t", "schema classification fixture", schema)
+    async def t(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    return t
+
+
+class TestBuildInputSchema:
+    """``_build_input_schema`` must not rebuild a raw JSON Schema as params."""
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "object"},
+            {"type": "object", "additionalProperties": False},
+            {"type": "object", "description": "no arguments"},
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string", "minLength": 1}},
+                "required": ["name"],
+            },
+            {"type": ["object", "null"]},
+            {"additionalProperties": False},
+            {
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            {
+                "anyOf": [
+                    {"type": "object"},
+                    {"type": "object", "properties": {"a": {"type": "string"}}},
+                ]
+            },
+            {
+                "allOf": [
+                    {"type": "object"},
+                    {"additionalProperties": False},
+                ]
+            },
+            {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {"a": {"type": "string"}},
+                        "required": ["a"],
+                    }
+                ]
+            },
+            {"$ref": "#/$defs/Empty"},
+        ],
+    )
+    def test_raw_json_schema_is_returned_verbatim(self, schema: dict[str, Any]) -> None:
+        assert build_input_schema(_tool_with_input_schema(schema)) == schema
+
+    def test_empty_dict_is_still_a_no_arg_param_map(self) -> None:
+        assert build_input_schema(_tool_with_input_schema({})) == {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+
+    def test_dict_style_types_are_still_a_param_map(self) -> None:
+        assert build_input_schema(_tool_with_input_schema({"name": str, "n": int})) == {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "n": {"type": "integer"}},
+            "required": ["name", "n"],
+        }
+
+    def test_parameter_literally_named_type_is_not_a_schema_keyword(self) -> None:
+        schema = build_input_schema(_tool_with_input_schema({"type": str, "name": str}))
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["type", "name"],
+        }
+
+    @pytest.mark.parametrize(
+        ("schema", "expected_properties"),
+        [
+            (
+                {"additionalProperties": bool},
+                {"additionalProperties": {"type": "boolean"}},
+            ),
+            ({"anyOf": list}, {"anyOf": {"type": "array"}}),
+            ({"$ref": str}, {"$ref": {"type": "string"}}),
+            ({"properties": dict}, {"properties": {"type": "object"}}),
+        ],
+    )
+    def test_keyword_names_with_python_types_stay_param_maps(
+        self, schema: dict[str, Any], expected_properties: dict[str, Any]
+    ) -> None:
+        assert build_input_schema(_tool_with_input_schema(schema)) == {
+            "type": "object",
+            "properties": expected_properties,
+            "required": list(schema.keys()),
+        }
 
 
 # --- Tests for _python_type_to_json_schema and TypedDict schema conversion ---

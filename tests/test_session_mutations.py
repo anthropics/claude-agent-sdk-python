@@ -17,6 +17,7 @@ from claude_agent_sdk import (
     tag_session,
 )
 from claude_agent_sdk._internal.session_mutations import (
+    _build_fork_lines,
     _sanitize_unicode,
     _try_append,
 )
@@ -599,6 +600,48 @@ def _make_transcript_session(
 # ---------------------------------------------------------------------------
 # fork_session() tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cycle", ["self", "two-progress"])
+def test_fork_skips_cyclic_progress_ancestors(cycle: str):
+    progress = {
+        "type": "progress",
+        "uuid": "A",
+        "parentUuid": "A" if cycle == "self" else "B",
+    }
+    transcript = [progress]
+    if cycle == "two-progress":
+        transcript.append({"type": "progress", "uuid": "B", "parentUuid": "A"})
+    transcript.append(
+        {
+            "type": "user",
+            "uuid": "U",
+            "parentUuid": "A",
+            "message": {"role": "user", "content": "hi"},
+        }
+    )
+
+    _, lines = _build_fork_lines(transcript, [], "session", None, None, lambda: None)
+
+    forked_users = [json.loads(line) for line in lines]
+    forked_users = [entry for entry in forked_users if entry.get("type") == "user"]
+    assert len(forked_users) == 1
+    assert forked_users[0]["parentUuid"] is None
+
+
+def test_fork_keeps_parent_after_acyclic_progress_ancestor():
+    transcript = [
+        {"type": "user", "uuid": "root", "parentUuid": None},
+        {"type": "progress", "uuid": "progress", "parentUuid": "root"},
+        {"type": "user", "uuid": "leaf", "parentUuid": "progress"},
+    ]
+
+    _, lines = _build_fork_lines(transcript, [], "session", None, None, lambda: None)
+    forked = [json.loads(line) for line in lines]
+    forked = [entry for entry in forked if entry.get("type") == "user"]
+
+    assert len(forked) == 2
+    assert forked[1]["parentUuid"] == forked[0]["uuid"]
 
 
 class TestForkSession:

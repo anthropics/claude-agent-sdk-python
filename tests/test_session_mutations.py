@@ -815,3 +815,57 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    @pytest.mark.parametrize("cycle", ["mutual", "self"])
+    def test_fork_terminates_on_cyclic_progress_chain(
+        self, claude_config_dir: Path, tmp_path: Path, cycle: str
+    ):
+        """A cyclic progress parentUuid chain must not hang the fork walk."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        user_uuid = str(uuid.uuid4())
+        progress_a = str(uuid.uuid4())
+        progress_b = str(uuid.uuid4())
+        entries = [
+            {
+                "type": "user",
+                "uuid": user_uuid,
+                "parentUuid": progress_a,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "progress",
+                "uuid": progress_a,
+                "parentUuid": progress_a if cycle == "self" else progress_b,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+            },
+            {
+                "type": "progress",
+                "uuid": progress_b,
+                "parentUuid": progress_a,
+                "sessionId": sid,
+                "timestamp": "2026-03-01T00:00:00Z",
+            },
+        ]
+        (project_dir / f"{sid}.jsonl").write_text(
+            "\n".join(json.dumps(entry) for entry in entries) + "\n",
+            encoding="utf-8",
+        )
+
+        result = fork_session(sid, directory=project_path)
+
+        fork_entries = [
+            json.loads(line)
+            for line in (project_dir / f"{result.session_id}.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        forked_user = next(e for e in fork_entries if e.get("type") == "user")
+        assert forked_user["parentUuid"] is None

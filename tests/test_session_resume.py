@@ -186,6 +186,30 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.anyio
+    async def test_undecodable_credentials_does_not_abort_resume(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        # Regression test for #1521: an undecodable ~/.claude/.credentials.json
+        # must be treated like a missing file (API-key / OAuth-env auth) rather
+        # than aborting the resume with UnicodeDecodeError.
+        config = isolated_home / ".claude"
+        config.mkdir()
+        (config / ".credentials.json").write_bytes(b"\xff\xfe{ not valid utf-8")
+
+        store = InMemorySessionStore()
+        await store.append(
+            {"project_key": project_key, "session_id": SESSION_ID},
+            [{"type": "user", "uuid": "u1"}],
+        )
+
+        opts = ClaudeAgentOptions(cwd=cwd, session_store=store, resume=SESSION_ID)
+        m = await materialize_resume_session(opts)
+        assert m is not None
+        assert m.config_dir.is_dir()
+
+        await m.cleanup()
+
+    @pytest.mark.anyio
     async def test_credentials_from_caller_config_dir_env(
         self, cwd: Path, project_key: str, tmp_path: Path
     ) -> None:

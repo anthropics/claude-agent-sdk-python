@@ -959,7 +959,7 @@ def _build_conversation_chain(
     parent_uuids: set[str] = set()
     for entry in entries:
         parent = entry.get("parentUuid")
-        if parent:
+        if isinstance(parent, str) and parent:
             parent_uuids.add(parent)
 
     terminals = [e for e in entries if e["uuid"] not in parent_uuids]
@@ -978,7 +978,9 @@ def _build_conversation_chain(
                 leaves.append(walk_cur)
                 break
             parent = walk_cur.get("parentUuid")
-            walk_cur = by_uuid.get(parent) if parent else None
+            walk_cur = (
+                by_uuid.get(parent) if isinstance(parent, str) and parent else None
+            )
 
     if not leaves:
         return []
@@ -1016,7 +1018,7 @@ def _build_conversation_chain(
         chain_seen.add(uid)
         chain.append(chain_cur)
         parent = chain_cur.get("parentUuid")
-        chain_cur = by_uuid.get(parent) if parent else None
+        chain_cur = by_uuid.get(parent) if isinstance(parent, str) and parent else None
 
     chain.reverse()
     return _recover_orphaned_parallel_tool_results(by_uuid, chain, chain_seen)
@@ -1505,7 +1507,7 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
         seen.add(uid)
         chain.append(current)
         parent = current.get("parentUuid")
-        current = by_uuid.get(parent) if parent else None
+        current = by_uuid.get(parent) if isinstance(parent, str) and parent else None
 
     chain.reverse()
     return chain

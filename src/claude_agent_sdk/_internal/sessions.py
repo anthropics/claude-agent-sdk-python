@@ -834,9 +834,15 @@ _TranscriptEntry = dict[str, Any]
 
 
 def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
-    """Tries to read a session JSONL file from a project directory."""
+    """Tries to read a session JSONL file from a project directory.
+
+    Decodes with ``errors="replace"`` like ``_read_session_lite`` does: a
+    stray invalid byte in one transcript line must not take the whole
+    session down. The affected line fails ``json.loads`` and is skipped by
+    the parser like any other malformed line.
+    """
     try:
-        return (project_dir / file_name).read_text(encoding="utf-8")
+        return (project_dir / file_name).read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return None
 
@@ -1617,7 +1623,7 @@ def get_subagent_messages(
         return []
 
     try:
-        content = match.read_text(encoding="utf-8")
+        content = match.read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return []
     if not content:

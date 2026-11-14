@@ -1015,6 +1015,58 @@ class TestMessageParser:
         with pytest.raises(MessageParseError):
             parse_message({"type": role, "message": message})
 
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"type": "user", "message": None},
+            {"type": "user", "message": "oops"},
+            {"type": "user", "message": []},
+            {"type": "assistant", "message": None},
+            {"type": "assistant", "message": "oops"},
+            {"type": "assistant", "message": []},
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": "x",
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": [1],
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": True,
+            },
+            {"type": "rate_limit_event", "rate_limit_info": "x"},
+            {"type": "rate_limit_event", "rate_limit_info": []},
+            {"type": "rate_limit_event", "rate_limit_info": None},
+        ],
+    )
+    def test_non_dict_nested_payloads_raise_message_parse_error(self, frame):
+        """Non-dict nested payloads (message, deferred_tool_use, rate_limit_info)
+        raise MessageParseError rather than a raw TypeError.
+        """
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(frame)
+        assert exc_info.value.data == frame
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

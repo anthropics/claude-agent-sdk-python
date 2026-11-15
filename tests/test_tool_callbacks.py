@@ -636,6 +636,47 @@ class TestHookCallbacks:
         assert result.get("stopReason") == "Testing field conversion"
         assert result.get("systemMessage") == "Fields should be converted"
 
+    @pytest.mark.parametrize(
+        "outcome",
+        [RuntimeError("policy service down"), None, "deny", ["deny"]],
+        ids=["raises", "returns_none", "returns_str", "returns_list"],
+    )
+    @pytest.mark.anyio
+    async def test_failed_hook_sends_error_response(self, outcome):
+        """A hook that fails must answer with an error frame, never success.
+
+        HookMatcher(on_failure="block") relies on this: the CLI only blocks on
+        an error reply, so a success here would let the action run.
+        """
+
+        async def failing_hook(input_data, tool_use_id, context):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        transport = MockTransport()
+        query = Query(
+            transport=transport, is_streaming_mode=True, can_use_tool=None, hooks=None
+        )
+        query.hook_callbacks["failing"] = failing_hook
+
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "test-failed-hook",
+                "request": {
+                    "subtype": "hook_callback",
+                    "callback_id": "failing",
+                    "input": {"test": "data"},
+                    "tool_use_id": None,
+                },
+            }
+        )
+
+        response = json.loads(transport.written_messages[-1])["response"]
+        assert response["subtype"] == "error"
+        assert response["request_id"] == "test-failed-hook"
+
 
 class TestClaudeAgentOptionsIntegration:
     """Test that callbacks work through ClaudeAgentOptions."""

@@ -1,3 +1,4 @@
 # Ignore bundled CLI binaries (downloaded during build)
 claude
 claude.exe
+claude.version

@@ -10,7 +10,7 @@ class Transport(ABC):
 
     WARNING: This internal API is exposed for custom transport implementations
     (e.g., remote Claude Code connections). The Claude Code team may change or
-    or remove this abstract class in any future release. Custom implementations
+    remove this abstract class in any future release. Custom implementations
     must be updated to match interface changes.
 
     This is a low-level transport interface that handles raw I/O with the Claude

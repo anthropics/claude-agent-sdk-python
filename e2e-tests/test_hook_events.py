@@ -13,6 +13,11 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 
+# On Windows the model can run a shell command with PowerShell instead of Bash, so
+# these tests accept either tool.
+SHELL_TOOLS = ["Bash", "PowerShell"]
+SHELL_MATCHER = "|".join(SHELL_TOOLS)
+
 
 @pytest.mark.e2e
 @pytest.mark.anyio
@@ -39,10 +44,10 @@ async def test_pre_tool_use_hook_with_additional_context():
         }
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash"],
+        allowed_tools=SHELL_TOOLS,
         hooks={
             "PreToolUse": [
-                HookMatcher(matcher="Bash", hooks=[pre_tool_hook]),
+                HookMatcher(matcher=SHELL_MATCHER, hooks=[pre_tool_hook]),
             ],
         },
     )
@@ -87,10 +92,10 @@ async def test_post_tool_use_hook_with_tool_use_id():
         }
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash"],
+        allowed_tools=SHELL_TOOLS,
         hooks={
             "PostToolUse": [
-                HookMatcher(matcher="Bash", hooks=[post_tool_hook]),
+                HookMatcher(matcher=SHELL_MATCHER, hooks=[post_tool_hook]),
             ],
         },
     )
@@ -174,11 +179,11 @@ async def test_multiple_hooks_together():
         return {}
 
     options = ClaudeAgentOptions(
-        allowed_tools=["Bash"],
+        allowed_tools=SHELL_TOOLS,
         hooks={
             "Notification": [HookMatcher(hooks=[track_hook])],
-            "PreToolUse": [HookMatcher(matcher="Bash", hooks=[track_hook])],
-            "PostToolUse": [HookMatcher(matcher="Bash", hooks=[track_hook])],
+            "PreToolUse": [HookMatcher(matcher=SHELL_MATCHER, hooks=[track_hook])],
+            "PostToolUse": [HookMatcher(matcher=SHELL_MATCHER, hooks=[track_hook])],
         },
     )
 
@@ -191,6 +196,6 @@ async def test_multiple_hooks_together():
     print(f"All hook invocations: {all_invocations}")
     event_names = [inv["hook_event_name"] for inv in all_invocations]
 
-    # At minimum, PreToolUse and PostToolUse should fire for the Bash command
+    # At minimum, PreToolUse and PostToolUse should fire for the shell command
     assert "PreToolUse" in event_names, "PreToolUse hook should have fired"
     assert "PostToolUse" in event_names, "PostToolUse hook should have fired"

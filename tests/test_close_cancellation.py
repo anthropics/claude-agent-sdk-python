@@ -148,12 +148,6 @@ async def test_still_running_child_stays_tracked_for_atexit_reaper(
     atexit reaper still gets a chance to signal it, rather than being silently
     forgotten."""
     with patch("anyio.open_process") as mock_exec:
-        version_process = MagicMock()
-        version_process.stdout = MagicMock()
-        version_process.stdout.receive = AsyncMock(return_value=b"2.0.0 (Claude Code)")
-        version_process.terminate = MagicMock()
-        version_process.wait = AsyncMock()
-
         process = MagicMock()
         process.returncode = None  # never exits, even after SIGKILL
         process.terminate = MagicMock()
@@ -163,7 +157,7 @@ async def test_still_running_child_stays_tracked_for_atexit_reaper(
         process.stdin = MagicMock(aclose=AsyncMock())
         process.wait = AsyncMock()
 
-        mock_exec.side_effect = [version_process, process]
+        mock_exec.return_value = process
 
         transport = SubprocessCLITransport(
             prompt="hi", options=ClaudeAgentOptions(cli_path="/usr/bin/claude")

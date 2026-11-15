@@ -3,6 +3,7 @@
 These tests verify end-to-end functionality with mocked CLI responses.
 """
 
+import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import anyio
@@ -166,7 +167,7 @@ class TestIntegration:
 
         async def _test():
             with (
-                patch("shutil.which", return_value=None),
+                patch.dict(os.environ, {"PATH": ""}),
                 patch("pathlib.Path.exists", return_value=False),
                 pytest.raises(CLINotFoundError) as exc_info,
             ):

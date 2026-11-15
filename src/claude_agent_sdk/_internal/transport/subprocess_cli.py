@@ -748,6 +748,8 @@ class SubprocessCLITransport(Transport):
         if self._process:
             return
 
+        self._exit_error = None
+
         if self._cli_path is None:
             self._cli_path = await anyio.to_thread.run_sync(self._find_cli)
 
@@ -851,7 +853,6 @@ class SubprocessCLITransport(Transport):
             if self._process.stdin:
                 self._stdin_stream = TextSendStream(self._process.stdin)
 
-            self._exit_error = None
             self._ready = True
 
         except FileNotFoundError as e:

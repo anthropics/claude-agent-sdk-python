@@ -3104,3 +3104,143 @@ class TestReconnectClearsStaleExitError:
                 await transport.close()
 
         anyio.run(_test)
+
+    def test_consecutive_failed_connects_replace_exit_error_then_recover(
+        self, tmp_path: Path
+    ) -> None:
+        """Consecutive failed connect() attempts replace _exit_error until recovery."""
+
+        async def _test() -> None:
+            missing_cwd = tmp_path / "missing_cwd"
+            transport = SubprocessCLITransport(
+                prompt="hi", options=make_options(cwd=missing_cwd)
+            )
+            mock_process, mock_stdin = _make_reapable_mock_process()
+
+            with patch(
+                "anyio.open_process",
+                new_callable=AsyncMock,
+                side_effect=[
+                    FileNotFoundError(2, "No such file or directory"),
+                    FileNotFoundError(2, "No such file or directory"),
+                    PermissionError("permission denied"),
+                    mock_process,
+                ],
+            ):
+                with pytest.raises(
+                    CLIConnectionError, match="Working directory does not exist"
+                ):
+                    await transport.connect()
+
+                assert isinstance(transport._exit_error, CLIConnectionError)
+                assert "Working directory does not exist" in str(transport._exit_error)
+                assert not transport.is_ready()
+                first_err = transport._exit_error
+
+                missing_cwd.mkdir()
+
+                with pytest.raises(CLINotFoundError, match="Claude Code not found at"):
+                    await transport.connect()
+
+                assert isinstance(transport._exit_error, CLINotFoundError)
+                assert transport._exit_error is not first_err
+                assert not transport.is_ready()
+                second_err = transport._exit_error
+
+                with pytest.raises(
+                    CLIConnectionError, match="Failed to start Claude Code"
+                ):
+                    await transport.connect()
+
+                assert isinstance(transport._exit_error, CLIConnectionError)
+                assert "permission denied" in str(transport._exit_error)
+                assert transport._exit_error is not second_err
+                assert not transport.is_ready()
+
+                try:
+                    await transport.connect()
+                    assert transport.is_ready() is True
+                    assert transport._exit_error is None
+
+                    await transport.write('{"type":"user"}\n')
+                    mock_stdin.send.assert_awaited_once_with(b'{"type":"user"}\n')
+                finally:
+                    await transport.close()
+                    _ACTIVE_CHILDREN.discard(mock_process)
+
+        anyio.run(_test)
+
+    def test_retry_failing_pre_spawn_clears_prior_exit_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A retry that fails before open_process() does not retain an older _exit_error."""
+
+        async def _test() -> None:
+            settings_file = tmp_path / "settings.json"
+            settings_file.write_text('{"verbose": true}')
+            transport = SubprocessCLITransport(
+                prompt="hi",
+                options=make_options(
+                    cwd=tmp_path,
+                    settings="settings.json",
+                    sandbox={"enabled": True},
+                ),
+            )
+
+            with patch(
+                "anyio.open_process",
+                new_callable=AsyncMock,
+                side_effect=FileNotFoundError(2, "No such file or directory"),
+            ) as mock_open:
+                with pytest.raises(CLINotFoundError, match="Claude Code not found at"):
+                    await transport.connect()
+
+                assert isinstance(transport._exit_error, CLINotFoundError)
+
+                settings_file.unlink()
+
+                with pytest.raises(CLIConnectionError, match="Failed to load settings"):
+                    await transport.connect()
+
+                assert mock_open.call_count == 1
+                assert transport._exit_error is None
+                assert not transport.is_ready()
+
+        anyio.run(_test)
+
+    def test_cancelled_retry_clears_prior_exit_error(self) -> None:
+        """A retry cancelled mid-spawn does not leave an earlier _exit_error behind."""
+
+        async def _test() -> None:
+            transport = SubprocessCLITransport(prompt="hi", options=make_options())
+            scope = anyio.CancelScope()
+            calls = 0
+
+            async def _fail_then_cancel(*_args: object, **_kwargs: object) -> Any:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError("permission denied")
+                scope.cancel()
+                await anyio.sleep_forever()
+
+            with patch(
+                "anyio.open_process",
+                new_callable=AsyncMock,
+                side_effect=_fail_then_cancel,
+            ):
+                with pytest.raises(
+                    CLIConnectionError, match="Failed to start Claude Code"
+                ):
+                    await transport.connect()
+
+                assert isinstance(transport._exit_error, CLIConnectionError)
+
+                with scope:
+                    await transport.connect()
+
+                assert scope.cancelled_caught is True
+                assert transport._exit_error is None
+                assert not transport.is_ready()
+
+        anyio.run(_test)

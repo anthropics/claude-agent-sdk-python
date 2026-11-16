@@ -2376,6 +2376,15 @@ def _hooks_to_internal_format(
     for event, matchers in hooks.items():
         internal_hooks[event] = []
         for matcher in matchers:
+            # Reading fields with hasattr() turned any other shape, such as the
+            # dict {"matcher": "Bash", "hooks": [...]}, into a match-all
+            # matcher with no callbacks: the hook silently never ran.
+            if not isinstance(matcher, HookMatcher):
+                raise TypeError(
+                    f"hooks[{event!r}] entries must be HookMatcher instances, "
+                    f"got {type(matcher).__name__}: "
+                    f"use HookMatcher(matcher=..., hooks=[...])"
+                )
             internal_matcher: dict[str, Any] = {
                 "matcher": matcher.matcher if hasattr(matcher, "matcher") else None,
                 "hooks": matcher.hooks if hasattr(matcher, "hooks") else [],

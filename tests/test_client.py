@@ -479,7 +479,7 @@ class TestQuerySetupFailureCleanup:
                     pass
 
             mock_transport.connect.assert_called_once()
-            mock_transport.close.assert_called_once()
+            mock_transport.close.assert_awaited_once()
 
         anyio.run(_test)
 
@@ -499,7 +499,7 @@ class TestQuerySetupFailureCleanup:
                     pass
 
             mock_transport.connect.assert_called_once()
-            mock_transport.close.assert_called_once()
+            mock_transport.close.assert_awaited_once()
 
         anyio.run(_test)
 
@@ -519,6 +519,6 @@ class TestQuerySetupFailureCleanup:
                     pass
 
             mock_transport.connect.assert_called_once()
-            mock_transport.close.assert_called_once()
+            mock_transport.close.assert_awaited_once()
 
         anyio.run(_test)

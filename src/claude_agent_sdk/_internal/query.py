@@ -115,6 +115,31 @@ def _error_result_text(message: dict[str, Any]) -> str:
     return "unknown error"
 
 
+def _permission_updates_to_wire(
+    updates: list[PermissionUpdate],
+) -> list[dict[str, Any]] | None:
+    """Convert the permission updates of a ``can_use_tool`` allow result.
+
+    Returns ``None``, and logs a warning, if any update cannot be converted.
+    The updates are sent all together or not at all, because the one that
+    failed may be a restriction the others were meant to come with.
+    """
+    wire: list[dict[str, Any]] = []
+    for index, update in enumerate(updates):
+        try:
+            wire.append(update.to_dict())
+        except ValueError as e:
+            logger.warning(
+                "The can_use_tool callback allowed the tool call, but none of its "
+                "permission updates were applied, because updated_permissions[%d] "
+                "cannot be sent: %s",
+                index,
+                e,
+            )
+            return None
+    return wire
+
+
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
     """Convert Python-safe field names to CLI-expected field names.
 
@@ -653,10 +678,11 @@ class Query:
                         ),
                     }
                     if response.updated_permissions is not None:
-                        response_data["updatedPermissions"] = [
-                            permission.to_dict()
-                            for permission in response.updated_permissions
-                        ]
+                        updates = _permission_updates_to_wire(
+                            response.updated_permissions
+                        )
+                        if updates is not None:
+                            response_data["updatedPermissions"] = updates
                 elif isinstance(response, PermissionResultDeny):
                     response_data = {"behavior": "deny", "message": response.message}
                     if response.interrupt:

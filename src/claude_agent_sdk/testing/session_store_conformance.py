@@ -106,11 +106,21 @@ async def run_session_store_conformance(
         _e({"uuid": "b", "n": 4}),
     ]
 
-    # 4. append([]) is a no-op
+    # 4. append([]) is a no-op — on an existing key, and on a fresh one,
+    # where it must leave the key indistinguishable from never-written
+    # rather than creating an empty session.
     store = await fresh()
     await store.append(_KEY, [_e({"uuid": "a", "n": 1})])
     await store.append(_KEY, [])
     assert await store.load(_KEY) == [_e({"uuid": "a", "n": 1})]
+
+    store = await fresh()
+    await store.append(_KEY, [])
+    assert await store.load(_KEY) is None
+    if has_list_sessions:
+        assert await store.list_sessions(_KEY["project_key"]) == []
+    if has_list_summaries:
+        assert await store.list_session_summaries(_KEY["project_key"]) == []
 
     # 5. subpath keys are stored independently of main
     store = await fresh()

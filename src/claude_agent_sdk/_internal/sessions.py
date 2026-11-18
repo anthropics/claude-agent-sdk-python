@@ -1019,6 +1019,10 @@ def _build_conversation_chain(
         chain_cur = by_uuid.get(parent) if parent else None
 
     chain.reverse()
+    if len(chain_seen) == len(by_uuid):
+        # Every indexed entry is already on the chain, so there is no
+        # parallel call or result to recover.
+        return chain
     return _recover_orphaned_parallel_tool_results(by_uuid, chain, chain_seen)
 
 

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 MAX_PENDING_ENTRIES = 500
 MAX_PENDING_BYTES = 1 << 20  # 1 MiB
 SEND_TIMEOUT_SECONDS = 60.0
+CANCELLATION_REPORT_TIMEOUT_SECONDS = 1.0
 
 # Bounded retry for transient adapter failures. Backoff list length must be
 # MAX_ATTEMPTS - 1 (one delay between each pair of attempts).
@@ -54,9 +55,13 @@ class TranscriptMirrorBatcher:
     Adapter failures are retried (``MIRROR_APPEND_MAX_ATTEMPTS`` attempts
     total) with short backoff; timeouts are not retried since the in-flight
     call may still land. Only after the final attempt fails is the batch
-    dropped and reported via ``on_error``. Failures never raise — the
-    local-disk transcript is already durable so the session must continue
-    unaffected. Adapters should dedupe by ``entry["uuid"]`` when present
+    dropped and reported via ``on_error``. Ordinary failures never raise —
+    the local-disk transcript is already durable so the session can continue.
+    Cancellation during an append leaves its write outcome unknown and is
+    not retried. After releasing the lock, a best-effort error notification
+    runs under a one-second deadline before the original cancellation propagates.
+    Unattempted paths in that drain are also reported and are not retried.
+    Adapters should dedupe by ``entry["uuid"]`` when present
     (some entry types lack a uuid) since a retried batch may partially
     overlap a prior partial write.
     """
@@ -88,9 +93,8 @@ class TranscriptMirrorBatcher:
         ):
             # Fire-and-forget on the current backend via the SDK's sniffio-
             # dispatched spawner; the lock in _drain() serializes against any
-            # in-flight flush so append ordering holds. _drain() is contracted
-            # never to raise; spawn_detached logs if that contract is ever
-            # violated (parity with asyncio's unretrieved-exception warning).
+            # in-flight flush so append ordering holds. Ordinary failures
+            # are reported without raising; cancellation still propagates.
             self._flush_task = spawn_detached(self._drain())
 
     async def flush(self) -> None:
@@ -115,28 +119,47 @@ class TranscriptMirrorBatcher:
 
         Detaching happens before acquiring the lock so ``enqueue`` can keep
         accumulating into a fresh buffer while a prior flush is in flight.
-        Never raises — adapter and ``on_error`` callback errors are caught
-        and logged.
+        Ordinary adapter and ``on_error`` errors are caught and logged.
+        Cancellation propagates after a bounded, shielded error notification.
         """
         items = self._pending
         self._pending = []
         self._pending_entries = 0
         self._pending_bytes = 0
         errors: list[tuple[SessionKey, str]] = []
-        async with self._lock:
-            if not items:
-                return
-            try:
-                await self._do_flush(items, errors)
-            except Exception as e:  # pragma: no cover - defensive
-                # _do_flush already wraps store.append; this guards any
-                # remaining unguarded path so the "Never raises" contract
-                # holds against future regressions.
-                logger.error("[TranscriptMirrorBatcher] _do_flush raised: %s", e)
-                return
-        # Report errors after releasing the lock so a slow on_error callback
-        # cannot block subsequent drains (which only need the lock for
-        # append-ordering).
+        cancelled = False
+        try:
+            async with self._lock:
+                if not items:
+                    return
+                try:
+                    await self._do_flush(items, errors)
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.error("[TranscriptMirrorBatcher] _do_flush raised: %s", e)
+                    return
+        except anyio.get_cancelled_exc_class():
+            cancelled = True
+            raise
+        finally:
+            if cancelled:
+                try:
+                    with anyio.move_on_after(
+                        CANCELLATION_REPORT_TIMEOUT_SECONDS, shield=True
+                    ) as scope:
+                        await self._report_errors(errors)
+                    if scope.cancelled_caught:
+                        logger.error(
+                            "[TranscriptMirrorBatcher] cancellation notification timed out"
+                        )
+                except anyio.get_cancelled_exc_class():
+                    logger.error(
+                        "[TranscriptMirrorBatcher] cancellation notification was cancelled"
+                    )
+            else:
+                await self._report_errors(errors)
+
+    async def _report_errors(self, errors: list[tuple[SessionKey, str]]) -> None:
+        # Report after releasing the lock so callbacks cannot block later appends.
         for key, msg in errors:
             try:
                 await self.on_error(key, msg)
@@ -160,7 +183,8 @@ class TranscriptMirrorBatcher:
             else:
                 by_path[item.file_path] = list(item.entries)
 
-        for file_path, entries in by_path.items():
+        paths = iter(by_path.items())
+        for file_path, entries in paths:
             if not entries:
                 # Avoid creating phantom keys in adapters that touch storage
                 # on append([]) — nothing to write.
@@ -200,6 +224,35 @@ class TranscriptMirrorBatcher:
                         file_path,
                     )
                     break
+                except anyio.get_cancelled_exc_class():
+                    msg = (
+                        "SessionStore.append() was cancelled; write outcome is unknown"
+                    )
+                    logger.error(
+                        "[TranscriptMirrorBatcher] flush cancelled for %s: %s",
+                        file_path,
+                        msg,
+                    )
+                    errors.append((key, msg))
+                    for pending_path, pending_entries in paths:
+                        if not pending_entries:
+                            continue
+                        pending_key = file_path_to_session_key(
+                            pending_path, self.projects_dir
+                        )
+                        if pending_key is None:
+                            continue
+                        pending_msg = (
+                            "SessionStore.append() was not attempted because "
+                            "mirroring was cancelled"
+                        )
+                        logger.error(
+                            "[TranscriptMirrorBatcher] flush cancelled for %s: %s",
+                            pending_path,
+                            pending_msg,
+                        )
+                        errors.append((pending_key, pending_msg))
+                    raise
                 except Exception as e:  # noqa: BLE001 - adapter is user code
                     last_err = e
                     logger.debug(

@@ -318,7 +318,7 @@ class Query:
         """Surface a :meth:`SessionStore.append` failure as a system message.
 
         Called from the batcher's ``on_error`` once a batch has been dropped
-        (after its retries, or after a single timed-out attempt), so this is
+        (after its retries, timeout, or cancellation), so this is
         the consumer's only signal.
         Non-blocking — if the message buffer is full the error is logged and
         dropped rather than back-pressuring the read loop.
@@ -609,8 +609,8 @@ class Query:
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
-            # batched this turn. flush() never raises. Shielded so the await
-            # still runs when this finally is reached via cancellation.
+            # batched this turn. Ordinary adapter failures do not raise. Shielded
+            # so the await runs when this finally is reached via cancellation.
             if self._transcript_mirror_batcher is not None:
                 with anyio.CancelScope(shield=True):
                     await self._transcript_mirror_batcher.flush()

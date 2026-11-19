@@ -1009,6 +1009,13 @@ class SubprocessCLITransport(Transport):
                 if self._process.returncode is not None:
                     _ACTIVE_CHILDREN.discard(self._process)
 
+            # Close stdout explicitly so its FD is deregistered from the event
+            # loop. Dropping the reference alone can leave it registered and
+            # the loop busy-spinning after the session ends (see #665).
+            if self._stdout_stream:
+                with suppress(Exception):
+                    await self._stdout_stream.aclose()
+
             self._process = None
             self._stdout_stream = None
             self._stdin_stream = None

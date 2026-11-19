@@ -331,6 +331,56 @@ class TestHappyPath:
         await m.cleanup()
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("via", ["home", "options_env", "os_environ"])
+    async def test_legacy_global_config_materialized(
+        self,
+        cwd: Path,
+        project_key: str,
+        tmp_path: Path,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        via: str,
+    ) -> None:
+        """The CLI reads its global config from <config dir>/.config.json when
+        that file exists (the legacy location, still preferred over
+        .claude.json), so it is seeded verbatim alongside .claude.json."""
+        legacy = json.dumps(
+            {"primaryApiKey": "sk-test", "mcpServers": {"n": {"command": "x"}}}
+        ).encode()
+        if via == "home":
+            config = isolated_home / ".claude"
+            config.mkdir()
+            kw: dict[str, Any] = {}
+        else:
+            config = tmp_path / "custom-config"
+            config.mkdir()
+            # The ~/.claude copy must NOT win over CLAUDE_CONFIG_DIR.
+            (isolated_home / ".claude").mkdir()
+            (isolated_home / ".claude" / ".config.json").write_text('{"x":1}')
+            kw = {}
+            if via == "options_env":
+                kw["env"] = {"CLAUDE_CONFIG_DIR": str(config)}
+            else:
+                monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+        (config / ".config.json").write_bytes(legacy)
+
+        m = await self._materialize(cwd, project_key, **kw)
+
+        assert (m.config_dir / ".config.json").read_bytes() == legacy
+        if os.name != "nt":
+            assert ((m.config_dir / ".config.json").stat().st_mode & 0o777) == 0o600
+        await m.cleanup()
+
+    @pytest.mark.anyio
+    async def test_absent_legacy_global_config_writes_nothing(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        (isolated_home / ".claude").mkdir()
+        m = await self._materialize(cwd, project_key)
+        assert not (m.config_dir / ".config.json").exists()
+        await m.cleanup()
+
+    @pytest.mark.anyio
     async def test_absent_user_settings_writes_nothing(
         self, cwd: Path, project_key: str, isolated_home: Path
     ) -> None:

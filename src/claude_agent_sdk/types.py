@@ -1247,6 +1247,11 @@ class TextBlock:
 
     text: str
 
+    def __repr__(self) -> str:
+        preview = self.text[:60].replace("\n", "\\n")
+        suffix = "..." if len(self.text) > 60 else ""
+        return f"TextBlock(text={preview!r}{suffix})"
+
 
 @dataclass
 class ThinkingBlock:
@@ -1254,6 +1259,11 @@ class ThinkingBlock:
 
     thinking: str
     signature: str
+
+    def __repr__(self) -> str:
+        preview = self.thinking[:60].replace("\n", "\\n")
+        suffix = "..." if len(self.thinking) > 60 else ""
+        return f"ThinkingBlock(thinking={preview!r}{suffix})"
 
 
 @dataclass
@@ -1264,6 +1274,10 @@ class ToolUseBlock:
     name: str
     input: dict[str, Any]
 
+    def __repr__(self) -> str:
+        keys = list(self.input.keys())
+        return f"ToolUseBlock(name={self.name!r}, input_keys={keys})"
+
 
 @dataclass
 class ToolResultBlock:
@@ -1272,6 +1286,18 @@ class ToolResultBlock:
     tool_use_id: str
     content: str | list[dict[str, Any]] | None = None
     is_error: bool | None = None
+
+    def __repr__(self) -> str:
+        if isinstance(self.content, str):
+            preview = self.content[:60].replace("\n", "\\n")
+            suffix = "..." if len(self.content) > 60 else ""
+            content_repr = f"{preview!r}{suffix}"
+        elif isinstance(self.content, list):
+            content_repr = f"[{len(self.content)} block(s)]"
+        else:
+            content_repr = "None"
+        error_suffix = ", is_error=True" if self.is_error else ""
+        return f"ToolResultBlock(tool_use_id={self.tool_use_id!r}, content={content_repr}{error_suffix})"
 
 
 ServerToolName = Literal[
@@ -1434,6 +1460,15 @@ class UserMessage:
     notifications, channel/peer messages, ...) and on user messages the CLI
     replays; tool-result messages never carry it."""
 
+    def __repr__(self) -> str:
+        if isinstance(self.content, str):
+            preview = self.content[:80].replace("\n", "\\n")
+            suffix = "..." if len(self.content) > 80 else ""
+            content_repr = f"{preview!r}{suffix}"
+        else:
+            content_repr = f"[{len(self.content)} block(s)]"
+        return f"UserMessage(content={content_repr})"
+
 
 @dataclass
 class AssistantMessage:
@@ -1459,6 +1494,26 @@ class AssistantMessage:
     taken in later may be listed only on the result — see
     :attr:`ResultMessage.user_message_uuids`."""
 
+    def __repr__(self) -> str:
+        text_preview = next(
+            (b.text[:60].replace("\n", "\\n") for b in self.content if isinstance(b, TextBlock)),
+            None,
+        )
+        if text_preview is not None:
+            has_more_text = any(
+                isinstance(b, TextBlock) and len(b.text) > 60 for b in self.content
+            )
+            content_repr = f"'{text_preview}{'...' if has_more_text else ''}'"
+        else:
+            content_repr = f"[{len(self.content)} block(s)]"
+        extras = []
+        if self.stop_reason:
+            extras.append(f"stop_reason={self.stop_reason!r}")
+        if self.error:
+            extras.append(f"error={self.error!r}")
+        extra_str = (", " + ", ".join(extras)) if extras else ""
+        return f"AssistantMessage(model={self.model!r}, content={content_repr}{extra_str})"
+
 
 @dataclass
 class SystemMessage:
@@ -1470,6 +1525,9 @@ class SystemMessage:
 
     subtype: str
     data: dict[str, Any]
+
+    def __repr__(self) -> str:
+        return f"SystemMessage(subtype={self.subtype!r})"
 
 
 class SystemInitMcpServer(TypedDict):
@@ -1822,6 +1880,11 @@ class ResultMessage:
     ``None`` for any other reason, and also on some error results and older
     CLIs that report only ``user_message_uuid``. Mirrors the TypeScript SDK's
     ``SDKResultMessage.user_message_uuids``."""
+
+    def __repr__(self) -> str:
+        status = "error" if self.is_error else "ok"
+        cost = f", cost=${self.total_cost_usd:.4f}" if self.total_cost_usd is not None else ""
+        return f"ResultMessage(status={status!r}, turns={self.num_turns}{cost})"
 
 
 @dataclass

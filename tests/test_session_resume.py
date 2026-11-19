@@ -552,6 +552,8 @@ class TestHappyPath:
             "\n".join(json.dumps(e, separators=(",", ":")) for e in entries) + "\n"
         )
         assert written == reference
+        # read_text() folds CRLF into LF; the bytes must be LF too (Windows).
+        assert out.read_bytes() == reference.encode("utf-8")
 
         lines = written.split("\n")
         assert lines[-1] == ""  # trailing newline

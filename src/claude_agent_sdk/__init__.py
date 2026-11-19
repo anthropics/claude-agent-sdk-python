@@ -34,6 +34,7 @@ from ._errors import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    MessageParseError,
     ProcessError,
     ResultError,
 )
@@ -113,6 +114,7 @@ from .types import (
     ModelUsage,
     NotificationHookInput,
     NotificationHookSpecificOutput,
+    PermissionBehavior,
     PermissionDeniedHookSpecificOutput,
     PermissionMode,
     PermissionRequestHookInput,
@@ -120,7 +122,9 @@ from .types import (
     PermissionResult,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionRuleValue,
     PermissionUpdate,
+    PermissionUpdateDestination,
     PostModelSwitchHookSpecificOutput,
     PostToolBatchHookSpecificOutput,
     PostToolUseFailureHookInput,
@@ -718,6 +722,9 @@ __all__ = [
     "PermissionResultAllow",
     "PermissionResultDeny",
     "PermissionUpdate",
+    "PermissionRuleValue",
+    "PermissionBehavior",
+    "PermissionUpdateDestination",
     # Hook support
     "HookCallback",
     "HookContext",
@@ -821,4 +828,5 @@ __all__ = [
     "ProcessError",
     "ResultError",
     "CLIJSONDecodeError",
+    "MessageParseError",
 ]

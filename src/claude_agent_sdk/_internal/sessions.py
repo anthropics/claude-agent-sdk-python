@@ -333,6 +333,59 @@ def _extract_first_prompt_from_head(head: str) -> str:
     return ""
 
 
+def _extract_first_media_label_from_head(head: str) -> str | None:
+    """Returns 'Image' or 'Document' for the first user message in head carrying that block type.
+
+    Skips tool_result, isMeta, and isCompactSummary lines, matching the
+    TypeScript SDK and CLI fallback when a session's prompt has no text blocks.
+    """
+    start = 0
+    head_len = len(head)
+
+    while start < head_len:
+        newline_idx = head.find("\n", start)
+        if newline_idx >= 0:
+            line = head[start:newline_idx]
+            start = newline_idx + 1
+        else:
+            line = head[start:]
+            start = head_len
+
+        if '"user"' not in line:
+            continue
+
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        if not isinstance(entry, dict) or entry.get("type") != "user":
+            continue
+        if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:
+            continue
+
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "image":
+                return "Image"
+            if btype == "document":
+                return "Document"
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # File I/O — read head and tail of a file
 # ---------------------------------------------------------------------------
@@ -454,6 +507,7 @@ def _parse_session_info_from_lite(
         or _extract_last_json_string_field(tail, "lastPrompt")
         or _extract_last_json_string_field(tail, "summary")
         or first_prompt
+        or _extract_first_media_label_from_head(head)
     )
 
     # Skip metadata-only sessions (no title, no summary, no prompt)

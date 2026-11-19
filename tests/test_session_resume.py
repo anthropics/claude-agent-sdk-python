@@ -441,12 +441,12 @@ class TestHappyPath:
             {"project_key": project_key, "session_id": SESSION_ID},
             [{"type": "user", "uuid": "old"}],
         )
-        store._mtimes[f"{project_key}/{SESSION_ID}"] = 1000
+        store._mtimes[(project_key, SESSION_ID, None)] = 1000
         await store.append(
             {"project_key": project_key, "session_id": SESSION_ID_2},
             [{"type": "user", "uuid": "new"}],
         )
-        store._mtimes[f"{project_key}/{SESSION_ID_2}"] = 2000
+        store._mtimes[(project_key, SESSION_ID_2, None)] = 2000
 
         opts = ClaudeAgentOptions(
             cwd=cwd, session_store=store, continue_conversation=True
@@ -470,12 +470,12 @@ class TestHappyPath:
             {"project_key": project_key, "session_id": SESSION_ID},
             [{"type": "user", "uuid": "main"}],
         )
-        store._mtimes[f"{project_key}/{SESSION_ID}"] = 1000
+        store._mtimes[(project_key, SESSION_ID, None)] = 1000
         await store.append(
             {"project_key": project_key, "session_id": sidechain_sid},
             [{"type": "user", "uuid": "sc", "isSidechain": True}],
         )
-        store._mtimes[f"{project_key}/{sidechain_sid}"] = 2000  # newer
+        store._mtimes[(project_key, sidechain_sid, None)] = 2000  # newer
 
         opts = ClaudeAgentOptions(
             cwd=cwd, session_store=store, continue_conversation=True
@@ -513,7 +513,7 @@ class TestHappyPath:
                 {"project_key": project_key, "session_id": sid},
                 [{"type": "user", "uuid": f"u-{sid}"}],
             )
-            store._mtimes[f"{project_key}/{sid}"] = 5000  # identical mtimes
+            store._mtimes[(project_key, sid, None)] = 5000  # identical mtimes
 
         opts = ClaudeAgentOptions(
             cwd=cwd, session_store=store, continue_conversation=True

@@ -110,3 +110,22 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_json_decode_error_survives_pickle_and_copy(self):
+        """CLIJSONDecodeError takes two required arguments, so it must not rely
+        on the default ``type(e)(*e.args)`` reconstruction."""
+        import copy
+        import json
+        import pickle
+
+        try:
+            json.loads("{invalid json}")
+        except json.JSONDecodeError as e:
+            error = CLIJSONDecodeError("{invalid json}", e)
+
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+            assert type(clone) is CLIJSONDecodeError
+            assert str(clone) == str(error)
+            assert clone.line == "{invalid json}"
+            assert isinstance(clone.original_error, json.JSONDecodeError)
+            assert str(clone.original_error) == str(error.original_error)

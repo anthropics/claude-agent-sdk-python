@@ -57,6 +57,10 @@ jobs:
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           github_token: ${{ github.token }}
+          # Releases start from the CLI-bump commit, which ant-atlantis-github
+          # pushes, so this workflow runs as that bot. claude-code-action refuses
+          # non-human actors unless they are listed here.
+          allowed_bots: "ant-atlantis-github"
           # --permission-mode auto: a tool call that needs permission and is outside the allowed tools runs
           # only if Claude Code's safety review passes it. --model is set because Claude Code's default model
           # changes between releases.

@@ -94,6 +94,30 @@ class TestMainTranscript:
         assert store.get_entries(key) == entries
 
     @pytest.mark.anyio
+    async def test_import_batches_by_utf8_bytes(
+        self, claude_dir: Path, cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entries = [{**_entry(i), "content": "界" * 100} for i in range(4)]
+        lines = [json.dumps(entry, ensure_ascii=False) for entry in entries]
+        (claude_dir / f"{SESSION_ID}.jsonl").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.session_import.MAX_PENDING_BYTES",
+            len(lines[0].encode("utf-8")) * 2,
+        )
+        store = InMemorySessionStore()
+        spy = AsyncMock(wraps=store.append)
+        store.append = spy  # type: ignore[method-assign]
+
+        await import_session_to_store(SESSION_ID, store, directory=str(cwd))
+
+        assert [call.args[1] for call in spy.await_args_list] == [
+            entries[:2],
+            entries[2:],
+        ]
+
+    @pytest.mark.anyio
     async def test_skips_blank_lines(
         self, claude_dir: Path, cwd: Path, project_key: str
     ) -> None:

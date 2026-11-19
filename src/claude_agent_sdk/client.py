@@ -615,13 +615,16 @@ class ClaudeSDKClient:
             if self._query:
                 await self._query.close()
         finally:
-            if self._query:
-                self._query.close_receive_stream()
-                self._query = None
-            self._transport = None
-            if self._materialized is not None:
-                await self._materialized.cleanup()
-                self._materialized = None
+            # Mirror cancellation can propagate after transport cleanup succeeds.
+            # If transport.close() itself failed, retain its state for a retry.
+            if self._query is None or self._query._transport_closed:
+                if self._query:
+                    self._query.close_receive_stream()
+                    self._query = None
+                self._transport = None
+                if self._materialized is not None:
+                    await self._materialized.cleanup()
+                    self._materialized = None
 
     async def __aenter__(self) -> "ClaudeSDKClient":
         """Enter async context - automatically connects with empty stream for interactive use."""

@@ -1243,6 +1243,64 @@ class TestReceiveLoopFramePeeling:
 
         anyio.run(run)
 
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_disconnect_retries_failed_transport_close(self, cancelled: bool) -> None:
+        async def run() -> None:
+            close_error = (
+                asyncio.CancelledError("close cancelled")
+                if cancelled
+                else OSError("close failed")
+            )
+
+            class RetryCloseTransport(_ScriptedTransport):
+                close_calls = 0
+
+                async def close(self) -> None:
+                    self.close_calls += 1
+                    if self.close_calls == 1:
+                        raise close_error
+                    await super().close()
+
+            transport = RetryCloseTransport([])
+            client = ClaudeSDKClient(transport=transport)
+            materialized = Mock()
+            materialized.cleanup = AsyncMock()
+            with anyio.fail_after(2):
+                await client.connect()
+                original_query = client._query
+                assert original_query is not None
+                client._materialized = materialized
+                try:
+                    with pytest.raises(type(close_error), match="close "):
+                        await client.disconnect()
+                    assert not transport.closed
+                    assert client._query is original_query
+                    assert client._transport is transport
+                    assert (
+                        original_query._message_receive.statistics().open_receive_streams
+                        == 1
+                    )
+                    assert client._materialized is materialized
+                    materialized.cleanup.assert_not_awaited()
+
+                    await client.disconnect()
+                    assert transport.closed
+                    assert transport.close_calls == 2
+                    assert client._query is None
+                    assert client._transport is None
+                    assert (
+                        original_query._message_receive.statistics().open_receive_streams
+                        == 0
+                    )
+                    assert client._materialized is None
+                    materialized.cleanup.assert_awaited_once()
+                finally:
+                    if not transport.closed:
+                        await transport.close()
+                    await client.disconnect()
+
+        anyio.run(run)
+
     def test_disconnect_cleans_up_after_mirror_cancellation(
         self, tmp_path: Path
     ) -> None:

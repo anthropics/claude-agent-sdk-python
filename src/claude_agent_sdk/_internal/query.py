@@ -264,6 +264,7 @@ class Query:
         self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
+        self._transport_closed = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
@@ -1264,6 +1265,7 @@ class Query:
             # close_receive_stream() once it's done iterating (#859).
             self._message_send.close()
             await self.transport.close()
+            self._transport_closed = True
 
     def close_receive_stream(self) -> None:
         """Close the receive side of the message stream.

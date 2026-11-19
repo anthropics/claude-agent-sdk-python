@@ -10,6 +10,7 @@ import base64
 import gc
 import json
 import logging
+import sys
 import threading
 import warnings
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import anyio
+import jsonschema
 import mcp.types
 import pytest
 import sniffio
@@ -41,6 +43,11 @@ from claude_agent_sdk import (
 from claude_agent_sdk._internal import sdk_mcp_bridge
 from claude_agent_sdk._internal._mcp_compat import MCP_MAJOR
 from claude_agent_sdk._internal.query import Query
+
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    from typing_extensions import NotRequired, TypedDict
 
 INITIALIZE_PARAMS = {
     "protocolVersion": "2025-06-18",
@@ -1843,6 +1850,23 @@ async def test_session_cancelled_before_it_starts_still_closes():
 # --- Tests for _python_type_to_json_schema and TypedDict schema conversion ---
 
 
+# Recursive TypedDicts live at module level so their string forward
+# references resolve in get_type_hints.
+class _TreeNode(TypedDict):
+    name: str
+    children: list["_TreeNode"]
+
+
+class _Department(TypedDict):
+    title: str
+    staff: list["_Employee"]
+
+
+class _Employee(TypedDict):
+    name: str
+    manages: NotRequired["_Department"]
+
+
 class TestPythonTypeToJsonSchema:
     """Tests for the _python_type_to_json_schema helper."""
 
@@ -2103,6 +2127,56 @@ class TestTypedDictToJsonSchema:
             "properties": {},
         }
 
+    def test_self_referencing_typeddict(self) -> None:
+        node = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "children": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/_TreeNode"},
+                },
+            },
+            "required": ["children", "name"],
+        }
+        assert typeddict_to_json_schema(_TreeNode) == {
+            **node,
+            "$defs": {"_TreeNode": node},
+        }
+
+    def test_mutually_recursive_typeddicts(self) -> None:
+        result = typeddict_to_json_schema(_Department)
+
+        employee = result["properties"]["staff"]["items"]
+        assert employee["properties"]["manages"] == {"$ref": "#/$defs/_Department"}
+        assert set(result["$defs"]) == {"_Department"}
+        jsonschema.validate(
+            {
+                "title": "Eng",
+                "staff": [
+                    {"name": "a", "manages": {"title": "Infra", "staff": []}},
+                    {"name": "b"},
+                ],
+            },
+            result,
+        )
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {"title": "Eng", "staff": [{"name": "a", "manages": {"title": 1}}]},
+                result,
+            )
+
+    def test_recursive_typeddict_inside_list_type(self) -> None:
+        result = python_type_to_json_schema(list[_TreeNode])
+        assert result["items"]["properties"]["children"]["items"] == {
+            "$ref": "#/$defs/_TreeNode"
+        }
+        assert "$defs" not in result["items"]
+        jsonschema.validate(
+            [{"name": "root", "children": [{"name": "leaf", "children": []}]}],
+            result,
+        )
+
 
 class TestTypedDictMcpIntegration:
     """Tests for TypedDict schemas flowing through create_sdk_mcp_server."""
@@ -2148,6 +2222,24 @@ class TestTypedDictMcpIntegration:
         async with connected(config) as client:
             result = await client.call_tool("srv", "multiply", {"a": 6, "b": 7})
         assert texts(result) == ["Product: 42"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("input_schema", [_TreeNode, {"root": _TreeNode}])
+    async def test_recursive_typeddict_tool(self, input_schema: Any) -> None:
+        @tool("walk", "Walk a tree", input_schema)
+        async def walk(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        config = create_sdk_mcp_server(name="tree", tools=[walk])
+        async with connected(config) as client:
+            [listed] = await client.list_tools("srv")
+
+        schema = listed["inputSchema"]
+        assert "_TreeNode" in schema["$defs"]
+        tree = {"name": "root", "children": [{"name": "leaf", "children": []}]}
+        jsonschema.validate(
+            tree if input_schema is _TreeNode else {"root": tree}, schema
+        )
 
     @pytest.mark.anyio
     async def test_dict_schema_still_works(self) -> None:

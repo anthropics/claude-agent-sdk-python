@@ -361,17 +361,28 @@ def tool(
     return decorator
 
 
-def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
-    """Convert a Python type annotation to a JSON Schema dict."""
+def _python_type_to_json_schema(
+    py_type: Any,
+    _defs: dict[str, Any] | None = None,
+    _stack: tuple[type, ...] = (),
+) -> dict[str, Any]:
+    """Convert a Python type annotation to a JSON Schema dict.
+
+    ``_defs`` collects the definitions of recursive TypedDicts and ``_stack``
+    holds the TypedDicts being expanded; the outermost call creates the first
+    and attaches it to its result as ``$defs``.
+    """
+    if _defs is None:
+        return _with_defs(lambda defs: _python_type_to_json_schema(py_type, defs))
     origin = get_origin(py_type)
 
     # NotRequired/Required/ReadOnly survive include_extras=True; unwrap them
     if getattr(origin, "_name", None) in ("NotRequired", "Required", "ReadOnly"):
-        return _python_type_to_json_schema(get_args(py_type)[0])
+        return _python_type_to_json_schema(get_args(py_type)[0], _defs, _stack)
 
     if origin is Annotated:
         args = get_args(py_type)
-        schema = _python_type_to_json_schema(args[0])
+        schema = _python_type_to_json_schema(args[0], _defs, _stack)
         for meta in args[1:]:
             if isinstance(meta, str):
                 schema["description"] = meta
@@ -393,13 +404,18 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
         args = py_type.__args__
         non_none = [a for a in args if a is not builtin_types.NoneType]
         if len(non_none) == 1:
-            return _python_type_to_json_schema(non_none[0])
-        return {"anyOf": [_python_type_to_json_schema(a) for a in non_none]}
+            return _python_type_to_json_schema(non_none[0], _defs, _stack)
+        return {
+            "anyOf": [_python_type_to_json_schema(a, _defs, _stack) for a in non_none]
+        }
 
     if origin is list:
         item_args = getattr(py_type, "__args__", None)
         if item_args:
-            return {"type": "array", "items": _python_type_to_json_schema(item_args[0])}
+            return {
+                "type": "array",
+                "items": _python_type_to_json_schema(item_args[0], _defs, _stack),
+            }
         return {"type": "array"}
     if origin is dict:
         return {"type": "object"}
@@ -410,18 +426,44 @@ def _python_type_to_json_schema(py_type: Any) -> dict[str, Any]:
         return {"type": "object"}
 
     if is_typeddict(py_type):
-        return _typeddict_to_json_schema(py_type)
+        return _typeddict_to_json_schema(py_type, _defs, _stack)
 
     return {"type": "string"}
 
 
-def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
-    """Convert a TypedDict class to a JSON Schema dict."""
+def _with_defs(build: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """Build a root schema, attaching any recursive TypedDict definitions."""
+    defs: dict[str, Any] = {}
+    schema = build(defs)
+    if defs:
+        schema["$defs"] = defs
+    return schema
+
+
+def _typeddict_to_json_schema(
+    td_class: type,
+    _defs: dict[str, Any] | None = None,
+    _stack: tuple[type, ...] = (),
+) -> dict[str, Any]:
+    """Convert a TypedDict class to a JSON Schema dict.
+
+    A TypedDict that contains itself, directly or through another TypedDict,
+    becomes a ``$ref`` into the root's ``$defs`` instead of recursing forever.
+    """
+    if _defs is None:
+        return _with_defs(lambda defs: _typeddict_to_json_schema(td_class, defs))
+    name = td_class.__qualname__
+    if td_class in _stack:
+        _defs.setdefault(name, {})
+        return {"$ref": f"#/$defs/{name}"}
+
     hints = _get_type_hints(td_class, include_extras=True)
 
     properties: dict[str, Any] = {}
     for field_name, field_type in hints.items():
-        properties[field_name] = _python_type_to_json_schema(field_type)
+        properties[field_name] = _python_type_to_json_schema(
+            field_type, _defs, (*_stack, td_class)
+        )
 
     required_keys = getattr(td_class, "__required_keys__", set(properties.keys()))
     schema: dict[str, Any] = {
@@ -430,6 +472,8 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     }
     if required_keys:
         schema["required"] = sorted(required_keys)
+    if name in _defs:
+        _defs[name] = dict(schema)
     return schema
 
 
@@ -442,15 +486,17 @@ def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
             and isinstance(tool_def.input_schema["type"], str)
         ):
             return tool_def.input_schema
-        properties = {
-            param_name: _python_type_to_json_schema(param_type)
-            for param_name, param_type in tool_def.input_schema.items()
-        }
-        return {
-            "type": "object",
-            "properties": properties,
-            "required": list(properties.keys()),
-        }
+        params = tool_def.input_schema
+        return _with_defs(
+            lambda defs: {
+                "type": "object",
+                "properties": {
+                    param_name: _python_type_to_json_schema(param_type, defs)
+                    for param_name, param_type in params.items()
+                },
+                "required": list(params.keys()),
+            }
+        )
     if is_typeddict(tool_def.input_schema):
         return _typeddict_to_json_schema(tool_def.input_schema)
     return {"type": "object", "properties": {}}

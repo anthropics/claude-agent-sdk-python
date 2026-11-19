@@ -156,6 +156,7 @@ from .types import (
     SessionStoreListEntry,
     SessionSummaryEntry,
     SettingSource,
+    SlashCommand,
     StopHookInput,
     StopHookSpecificOutput,
     StreamEvent,
@@ -710,6 +711,7 @@ __all__ = [
     "ContentBlock",
     "ContextUsageCategory",
     "ContextUsageResponse",
+    "SlashCommand",
     # Tool callbacks
     "CanUseTool",
     "CanUseToolShadowedWarning",

@@ -1,5 +1,6 @@
 """Tests for ClaudeSDKClient streaming functionality and query() with async iterables."""
 
+import copy
 import json
 import sys
 import tempfile
@@ -924,6 +925,124 @@ class TestClaudeSDKClientStreaming:
         client = ClaudeSDKClient()
         with pytest.raises(CLIConnectionError, match="Not connected"):
             await client.get_context_usage()
+
+    @pytest.mark.anyio
+    async def test_supported_commands_follows_commands_changed(self):
+        """supported_commands() starts from initialize and follows pushes."""
+
+        initial_commands = [
+            {
+                "name": "compact",
+                "description": "Clear history but keep a summary",
+                "argumentHint": "<optional custom summarization instructions>",
+            },
+            {
+                "name": "cost",
+                "description": "Show session cost",
+                "argumentHint": "",
+                "aliases": ["stats"],
+            },
+        ]
+        pushed_commands = [
+            *initial_commands,
+            {
+                "name": "deploy",
+                "description": "Deploy the app (project)",
+                "argumentHint": "<env>",
+            },
+        ]
+
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport"
+        ) as mock_transport_class:
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.close = AsyncMock()
+            mock_transport.end_input = AsyncMock()
+            mock_transport.is_ready = Mock(return_value=True)
+            mock_transport_class.return_value = mock_transport
+
+            written_messages: list[str] = []
+
+            async def mock_write(data):
+                written_messages.append(data)
+
+            mock_transport.write = AsyncMock(side_effect=mock_write)
+
+            async def control_protocol_generator():
+                last_check = 0
+                for _ in range(200):
+                    await anyio.sleep(0.01)
+                    for msg_str in written_messages[last_check:]:
+                        msg = json.loads(msg_str.strip())
+                        if msg.get("type") == "control_request":
+                            if msg["request"].get("subtype") == "initialize":
+                                yield {
+                                    "type": "control_response",
+                                    "response": {
+                                        "request_id": msg.get("request_id"),
+                                        "subtype": "success",
+                                        "response": {
+                                            "commands": copy.deepcopy(initial_commands)
+                                        },
+                                    },
+                                }
+                        elif msg.get("type") == "user":
+                            yield {
+                                "type": "system",
+                                "subtype": "commands_changed",
+                                "commands": copy.deepcopy(pushed_commands),
+                                "uuid": "u1",
+                                "session_id": "test",
+                            }
+                            yield {
+                                "type": "result",
+                                "subtype": "success",
+                                "duration_ms": 1,
+                                "duration_api_ms": 1,
+                                "is_error": False,
+                                "num_turns": 1,
+                                "session_id": "test",
+                            }
+                    last_check = len(written_messages)
+
+            mock_transport.read_messages = control_protocol_generator
+
+            async with ClaudeSDKClient() as client:
+                commands = await client.supported_commands()
+                assert commands == initial_commands
+                assert commands[1]["aliases"] == ["stats"]
+
+                # Mutating the returned list or its entries must not touch the
+                # client's copy.
+                commands[0]["name"] = "mutated"
+                commands[1]["aliases"].append("extra")
+                commands.clear()
+                fresh = await client.supported_commands()
+                assert fresh == initial_commands
+                assert fresh[0]["name"] == "compact"
+                assert fresh[1]["aliases"] == ["stats"]
+
+                await client.query("hi")
+                async for _ in client.receive_response():
+                    pass
+
+                commands = await client.supported_commands()
+                assert [c["name"] for c in commands] == ["compact", "cost", "deploy"]
+                commands[2]["name"] = "mutated"
+                assert [c["name"] for c in await client.supported_commands()] == [
+                    "compact",
+                    "cost",
+                    "deploy",
+                ]
+
+    @pytest.mark.anyio
+    async def test_supported_commands_not_connected(self):
+        """Test supported_commands when not connected raises error."""
+
+        client = ClaudeSDKClient()
+        with pytest.raises(CLIConnectionError, match="Not connected"):
+            await client.supported_commands()
 
     @pytest.mark.anyio
     async def test_client_with_options(self):

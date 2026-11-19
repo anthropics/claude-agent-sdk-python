@@ -57,8 +57,9 @@ class TranscriptMirrorBatcher:
     call may still land. Only after the final attempt fails is the batch
     dropped and reported via ``on_error``. Ordinary failures never raise —
     the local-disk transcript is already durable so the session can continue.
-    Cancellation during an append leaves its write outcome unknown and is
-    not retried. After releasing the lock, a best-effort error notification
+    Cancellation during an append leaves its write outcome unknown. Cancellation
+    during a retry delay also interrupts the batch. Neither is retried.
+    After releasing the lock, a best-effort error notification
     runs under a one-second deadline before the original cancellation propagates.
     Unattempted paths in that drain are also reported and are not retried.
     Adapters should dedupe by ``entry["uuid"]`` when present
@@ -202,9 +203,11 @@ class TranscriptMirrorBatcher:
             last_err: Exception | None = None
             succeeded = False
             for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):
-                if attempt > 0:
-                    await anyio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
+                appending = False
                 try:
+                    if attempt > 0:
+                        await anyio.sleep(MIRROR_APPEND_BACKOFF_S[attempt - 1])
+                    appending = True
                     with anyio.fail_after(self.send_timeout):
                         await self.store.append(key, entries)
                     succeeded = True
@@ -227,6 +230,9 @@ class TranscriptMirrorBatcher:
                 except anyio.get_cancelled_exc_class():
                     msg = (
                         "SessionStore.append() was cancelled; write outcome is unknown"
+                        if appending
+                        else "SessionStore.append() retries were cancelled; "
+                        "batch completion is unknown"
                     )
                     logger.error(
                         "[TranscriptMirrorBatcher] flush cancelled for %s: %s",

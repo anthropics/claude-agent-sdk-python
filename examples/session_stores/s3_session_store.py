@@ -253,7 +253,9 @@ class S3SessionStore(SessionStore):
                     continue
                 # Skip malformed lines.
                 with contextlib.suppress(json.JSONDecodeError, ValueError):
-                    all_entries.append(json.loads(trimmed))
+                    entry = json.loads(trimmed)
+                    if isinstance(entry, dict):
+                        all_entries.append(entry)
 
         return all_entries if all_entries else None
 

@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, Mock, patch
 import anyio
 import pytest
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    query,
+)
 from claude_agent_sdk.types import TextBlock
 
 
@@ -208,6 +213,39 @@ class TestQueryFunction:
                 env_patch={},
                 expected_timeout=60.0,
             )
+
+    @pytest.mark.parametrize("value", ["", "abc", "90000.5", "1e5"])
+    def test_query_ignores_non_integer_initialize_timeout(self, value):
+        """A non-integer CLAUDE_CODE_STREAM_CLOSE_TIMEOUT falls back to 60s
+        instead of raising ValueError out of query()."""
+        self._run_query_with_mocked_internals(
+            env_patch={"CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": value},
+            expected_timeout=60.0,
+        )
+
+    @pytest.mark.parametrize(
+        "value, expected", [("", 60.0), ("abc", 60.0), ("120000", 120.0)]
+    )
+    def test_client_connect_initialize_timeout_from_env(self, value, expected):
+        """ClaudeSDKClient.connect() parses the env var the same way as query()."""
+
+        async def _test():
+            with (
+                patch("claude_agent_sdk._internal.query.Query") as mock_query_class,
+                patch.dict(
+                    os.environ, {"CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": value}, clear=False
+                ),
+            ):
+                mock_query = AsyncMock()
+                mock_query_class.return_value = mock_query
+                mock_query.close_receive_stream = Mock()
+                client = ClaudeSDKClient(transport=AsyncMock())
+                await client.connect()
+                await client.disconnect()
+                kwargs = mock_query_class.call_args.kwargs
+                assert kwargs["initialize_timeout"] == expected
+
+        anyio.run(_test)
 
     @pytest.mark.parametrize(
         "system_prompt, expected",

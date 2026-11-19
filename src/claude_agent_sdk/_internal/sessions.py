@@ -78,10 +78,23 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _utf16_units(s: str) -> str:
+    """Returns ``s`` as a string whose code points are its UTF-16 code units.
+
+    The CLI's ``sanitizePath`` regex (no ``u`` flag) and ``simpleHash``
+    (``charCodeAt``) both iterate UTF-16 code units, so an astral character
+    such as an emoji is two units; iterating Python code points instead
+    makes the port disagree with the CLI's project directory naming for
+    any path containing a non-BMP character.
+    """
+    raw = s.encode("utf-16-le")
+    return "".join(chr(raw[i] | (raw[i + 1] << 8)) for i in range(0, len(raw), 2))
+
+
 def _simple_hash(s: str) -> str:
     """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
-    for ch in s:
+    for ch in _utf16_units(s):
         char = ord(ch)
         h = (h << 5) - h + char
         # Emulate JS `hash |= 0` (coerce to 32-bit signed int)
@@ -107,7 +120,7 @@ def _sanitize_path(name: str) -> str:
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
-    sanitized = _SANITIZE_RE.sub("-", name)
+    sanitized = _SANITIZE_RE.sub("-", _utf16_units(name))
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)

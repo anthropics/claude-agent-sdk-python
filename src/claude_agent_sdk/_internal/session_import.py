@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import cast
 
 from ..types import SessionKey, SessionStore, SessionStoreEntry
+from .session_plans import snapshot_plan_files
 from .sessions import (
     _read_agent_metadata_sidecar,
     _resolve_session_file_path,
@@ -82,7 +83,10 @@ async def import_session_to_store(
         batch_size = MAX_PENDING_ENTRIES
 
     main_key: SessionKey = {"project_key": project_key, "session_id": session_id}
-    await _append_jsonl_file_in_batches(resolved, main_key, store, batch_size)
+    config_dir = resolved.parents[2]
+    await _append_jsonl_file_in_batches(
+        resolved, main_key, store, batch_size, config_dir
+    )
 
     if not include_subagents:
         return
@@ -102,7 +106,9 @@ async def import_session_to_store(
             "session_id": session_id,
             "subpath": "/".join(rel_parts),
         }
-        await _append_jsonl_file_in_batches(file_path, sub_key, store, batch_size)
+        await _append_jsonl_file_in_batches(
+            file_path, sub_key, store, batch_size, config_dir
+        )
 
         # The on-disk .jsonl does NOT contain agent_metadata entries — those
         # are only sent to live mirrors and persisted in the .meta.json
@@ -123,6 +129,7 @@ async def _append_jsonl_file_in_batches(
     key: SessionKey,
     store: SessionStore,
     batch_size: int,
+    config_dir: Path,
 ) -> None:
     """Stream-read a JSONL file line-by-line, parsing each line and flushing to
     ``store.append()`` in batches of ``batch_size`` entries (or
@@ -138,11 +145,11 @@ async def _append_jsonl_file_in_batches(
             batch.append(json.loads(line))
             nbytes += len(line)
             if len(batch) >= batch_size or nbytes >= MAX_PENDING_BYTES:
-                await store.append(key, batch)
+                await store.append(key, snapshot_plan_files(batch, config_dir))
                 batch = []
                 nbytes = 0
     if batch:
-        await store.append(key, batch)
+        await store.append(key, snapshot_plan_files(batch, config_dir))
 
 
 def _collect_jsonl_files(base_dir: Path) -> Iterator[Path]:

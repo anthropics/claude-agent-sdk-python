@@ -2346,6 +2346,52 @@ class TestProcessExitAfterErrorResult:
 
         anyio.run(_test)
 
+    def test_auth_failure_result_error_carries_assistant_error_kind(self):
+        """A logged-out run has the same result shape as a stream timeout
+        (subtype=success, terminal_reason=api_error, no HTTP status); only the
+        assistant message's `error` tells them apart, so ResultError keeps it."""
+
+        async def _test():
+            transport = self._make_transport_then_raise(
+                messages=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "model": "<synthetic>",
+                            "content": [{"type": "text", "text": "Not logged in"}],
+                        },
+                        "parent_tool_use_id": None,
+                        "session_id": "s",
+                        "error": "authentication_failed",
+                    },
+                    self._error_result(
+                        subtype="success",
+                        errors=[],
+                        result="Not logged in · Please run /login",
+                        api_error_status=None,
+                        terminal_reason="api_error",
+                    ),
+                ],
+                exc=ProcessError(
+                    "Command failed with exit code 1", exit_code=1, stderr=""
+                ),
+            )
+            q = Query(transport=transport, is_streaming_mode=True)
+            await q.start()
+
+            with pytest.raises(ResultError) as exc_info:
+                async for _ in q.receive_messages():
+                    pass
+            await q.close()
+
+            err = exc_info.value
+            assert err.terminal_reason == "api_error"
+            assert err.api_error_status is None
+            assert err.error == "authentication_failed"
+
+        anyio.run(_test)
+
     def test_api_error_result_without_text_uses_http_status(self):
         """If neither errors[] nor result carry text, fall back to the HTTP
         status rather than the meaningless "success" subtype."""

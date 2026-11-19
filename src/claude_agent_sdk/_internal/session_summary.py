@@ -161,8 +161,10 @@ def fold_session_summary(
 
         ms = _iso_to_epoch_ms(entry.get("timestamp"))
 
-        if "is_sidechain" not in data:
-            data["is_sidechain"] = entry.get("isSidechain") is True
+        # The first explicit boolean in record order classifies the session.
+        # Leave it unset until a record supplies one.
+        if "is_sidechain" not in data and isinstance(entry.get("isSidechain"), bool):
+            data["is_sidechain"] = entry["isSidechain"]
         if "created_at" not in data and ms is not None:
             data["created_at"] = ms
 

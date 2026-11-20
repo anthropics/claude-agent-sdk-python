@@ -734,6 +734,28 @@ def _block_ids(messages: list[SessionMessage], block_type: str, field: str) -> l
 class TestGetSessionMessages:
     """Tests for get_session_messages()."""
 
+    @pytest.mark.parametrize("parent", [["bad"], {"bad": 1}, 1, True, [], {}, None])
+    def test_invalid_parent_uuid(self, claude_config_dir: Path, parent):
+        project_dir = claude_config_dir / "projects" / "test-project"
+        project_dir.mkdir()
+        sid = str(uuid.uuid4())
+        entries = [
+            _make_transcript_entry("user", "u", None, sid, content="hello"),
+            _make_transcript_entry("assistant", "a", "u", sid, content="hi"),
+            _make_transcript_entry("progress", "p", None, sid),
+        ]
+        entries[0]["parentUuid"] = parent
+        entries[2]["parentUuid"] = parent
+        transcript = _write_transcript(project_dir, sid, entries)
+        original = transcript.read_text(encoding="utf-8")
+
+        messages = get_session_messages(sid)
+
+        assert [m.uuid for m in messages] == ["u", "a"]
+        assert messages[0].message["content"] == "hello"
+        assert messages[1].message["content"] == "hi"
+        assert transcript.read_text(encoding="utf-8") == original
+
     def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns empty list."""
         assert get_session_messages("not-a-uuid") == []
@@ -2131,6 +2153,29 @@ class TestListSubagents:
 
 class TestGetSubagentMessages:
     """Tests for get_subagent_messages()."""
+
+    @pytest.mark.parametrize("parent", [["bad"], {"bad": 1}, 1, True, [], {}, None])
+    def test_invalid_parent_uuid(self, claude_config_dir: Path, tmp_path: Path, parent):
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir()
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        entries = [
+            _make_transcript_entry("user", "u", None, sid, content="task"),
+            _make_transcript_entry("assistant", "a", "u", sid, content="done"),
+        ]
+        entries[0]["parentUuid"] = parent
+        transcript = subagents_dir / "agent-abc.jsonl"
+        original = "\n".join(json.dumps(e) for e in entries) + "\n"
+        transcript.write_text(original, encoding="utf-8")
+
+        messages = get_subagent_messages(sid, "abc", directory=project_path)
+
+        assert [m.uuid for m in messages] == ["u", "a"]
+        assert messages[0].message["content"] == "task"
+        assert messages[1].message["content"] == "done"
+        assert transcript.read_text(encoding="utf-8") == original
 
     def test_invalid_session_id(self, claude_config_dir: Path):
         """Non-UUID session_id returns empty list."""

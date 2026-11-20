@@ -2215,6 +2215,116 @@ class TestGetSubagentMessages:
         assert messages[0].uuid == u1
         assert messages[1].uuid == a1
 
+    def _write_parallel_agent(self, subagents_dir: Path, entries: list[dict]) -> None:
+        for entry in entries:
+            entry.update(isSidechain=True, agentId="abc")
+        (subagents_dir / "agent-abc.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize(
+        "result_order",
+        [[0, 1, 2], [2, 1, 0], [1, 2, 0], [0, 2, 1]],
+    )
+    def test_parallel_tool_calls_keep_every_call_and_result(
+        self, claude_config_dir: Path, tmp_path: Path, result_order: list[int]
+    ):
+        """A subagent turn with parallel tool calls returns all calls and
+        results, whichever result the next turn continued from."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 3, result_order)
+        self._write_parallel_agent(
+            subagents_dir,
+            [
+                _make_transcript_entry("user", "prompt", None, sid, content="go"),
+                *calls,
+                *results,
+                # The next response continues from the last result written.
+                _make_transcript_entry(
+                    "assistant", "answer", results[-1]["uuid"], sid, content="done"
+                ),
+            ],
+        )
+        (subagents_dir / "agent-abc.meta.json").write_text(
+            json.dumps({"toolUseId": "toolu_parent"}), encoding="utf-8"
+        )
+
+        messages = get_subagent_messages(sid, "abc", directory=project_path)
+
+        call_ids = _block_ids(messages, "tool_use", "id")
+        result_ids = _block_ids(messages, "tool_result", "tool_use_id")
+        assert call_ids == ["toolu_0", "toolu_1", "toolu_2"]
+        assert sorted(result_ids) == ["toolu_0", "toolu_1", "toolu_2"]
+        assert len({m.uuid for m in messages}) == len(messages) == 8
+        # The turn stays in one piece: prompt, calls, results, answer.
+        assert messages[0].uuid == "prompt"
+        assert [m.type for m in messages[1:7]] == ["assistant"] * 3 + ["user"] * 3
+        assert messages[-1].uuid == "answer"
+        # Recovered messages carry the parent ids like every other message.
+        assert {m.parent_tool_use_id for m in messages} == {"toolu_parent"}
+
+    def test_parallel_tool_calls_as_last_turn(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Results are recovered when the parallel turn ends the transcript."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 2, [1, 0])
+        self._write_parallel_agent(
+            subagents_dir,
+            [
+                _make_transcript_entry("user", "prompt", None, sid, content="go"),
+                *calls,
+                *results,
+            ],
+        )
+
+        messages = get_subagent_messages(sid, "abc", directory=project_path)
+        assert [m.uuid for m in messages] == [
+            "prompt",
+            "call-0",
+            "call-1",
+            "result-1",
+            "result-0",
+        ]
+
+    def test_parallel_tool_calls_limit_offset(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Paging counts the recovered calls and results."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+
+        calls, results = _parallel_tool_turn(sid, "prompt", 3, [0, 1, 2])
+        self._write_parallel_agent(
+            subagents_dir,
+            [
+                _make_transcript_entry("user", "prompt", None, sid, content="go"),
+                *calls,
+                *results,
+                _make_transcript_entry(
+                    "assistant", "answer", "result-2", sid, content="k"
+                ),
+            ],
+        )
+
+        page = get_subagent_messages(
+            sid, "abc", directory=project_path, limit=3, offset=4
+        )
+        assert [m.uuid for m in page] == ["result-0", "result-1", "result-2"]
+
     def _write_agent(
         self,
         subagents_dir: Path,

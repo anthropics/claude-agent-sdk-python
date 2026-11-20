@@ -1840,6 +1840,625 @@ async def test_session_cancelled_before_it_starts_still_closes():
     assert session.finished
 
 
+@pytest.mark.anyio
+async def test_cancel_before_mcp_delivery_releases_request_id():
+    entered, release = anyio.Event(), anyio.Event()
+    cancelled_done = anyio.Event()
+
+    @asynccontextmanager
+    async def lifespan(_server: Server) -> AsyncIterator[dict[str, Any]]:
+        entered.set()
+        await release.wait()
+        yield {}
+
+    bridge = sdk_mcp_bridge.SdkMcpBridge(
+        "slow-start", Server("slow-start", lifespan=lifespan)
+    )
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": INITIALIZE_PARAMS,
+    }
+    retry = {**initialize, "id": 1}
+    first_response: list[dict[str, Any] | None] = []
+    cancel: anyio.CancelScope | None = None
+
+    async def first() -> None:
+        first_response.append(await bridge.handle(initialize))
+
+    async def second() -> None:
+        nonlocal cancel
+        with anyio.CancelScope() as cancel:
+            await bridge.handle(retry)
+        cancelled_done.set()
+
+    try:
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(first)
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                tg.start_soon(second)
+                await anyio.wait_all_tasks_blocked()
+                # Real MCP memory stream capacity is one: first request queued;
+                # second send waits and cannot have reached the server yet.
+                assert bridge._session is not None
+                assert len(bridge._session._pending) == 2
+                assert cancel is not None
+                cancel.cancel()
+                await cancelled_done.wait()
+                release.set()
+                await anyio.wait_all_tasks_blocked()
+            assert first_response[0] is not None and first_response[0]["id"] == 0
+            # The cancelled, unsent request is not in flight. Reusing its id is safe.
+            response = await bridge.handle(retry)
+            assert response is not None and response["id"] == 1
+            assert "result" in response
+            assert bridge._session._inbound_state.in_transit == {}
+    finally:
+        release.set()
+        await bridge.aclose()
+
+
+@pytest.mark.anyio
+async def test_cancel_after_mcp_delivery_keeps_request_id_reserved():
+    entered, release = anyio.Event(), anyio.Event()
+
+    @tool("slow", "Blocks until released", {})
+    async def slow(args: dict[str, Any]) -> dict[str, Any]:
+        entered.set()
+        await release.wait()
+        return {"content": [{"type": "text", "text": "done"}]}
+
+    config = create_sdk_mcp_server(name="srv", tools=[slow])
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "slow", "arguments": {}},
+    }
+    async with connected(config) as client:
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(client.send, "srv", call)
+                await entered.wait()
+                tg.cancel_scope.cancel()
+            reused = await client.send("srv", call)
+            assert reused is not None and reused["id"] == 1
+            assert "already in flight" in reused["error"]["message"]
+            release.set()
+            await anyio.wait_all_tasks_blocked()
+            again = await client.send("srv", call)
+    assert again is not None and "error" not in again
+    assert texts(again["result"]) == ["done"]
+
+
+def test_raw_asyncio_cancel_racing_with_buffer_handoff_drops_aborted_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Raw asyncio task cancellation after receive_nowait() moves an item into
+    the buffer still raises CancelledError out of send(); the aborted item
+    must be dropped before the server reads it so reusing its id is safe."""
+    import asyncio
+
+    async def _run() -> None:
+        entered, release = anyio.Event(), anyio.Event()
+        cancelled_done = anyio.Event()
+        tool_calls = 0
+
+        @asynccontextmanager
+        async def lifespan(_server: Server) -> AsyncIterator[dict[str, Any]]:
+            entered.set()
+            await release.wait()
+            yield {}
+
+        async def on_call(_name: str) -> mcp.types.CallToolResult:
+            nonlocal tool_calls
+            tool_calls += 1
+            return mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(type="text", text=f"call:{tool_calls}")]
+            )
+
+        tool_def = mcp.types.Tool.model_validate(
+            {"name": "inc", "inputSchema": {"type": "object", "properties": {}}}
+        )
+        if MCP_MAJOR >= 2:
+
+            async def on_list_tools(ctx: Any, params: Any) -> mcp.types.ListToolsResult:
+                return mcp.types.ListToolsResult(tools=[tool_def])
+
+            async def on_call_tool(ctx: Any, params: Any) -> mcp.types.CallToolResult:
+                return await on_call(params.name)
+
+            server = Server(
+                "race-start",
+                lifespan=lifespan,
+                on_list_tools=on_list_tools,
+                on_call_tool=on_call_tool,
+            )
+        else:
+            server = Server("race-start", lifespan=lifespan)
+
+            @server.list_tools()
+            async def list_tools() -> list[mcp.types.Tool]:
+                return [tool_def]
+
+            @server.call_tool()
+            async def call_tool(
+                name: str, _arguments: dict[str, Any]
+            ) -> mcp.types.CallToolResult:
+                return await on_call(name)
+
+        bridge = sdk_mcp_bridge.SdkMcpBridge("race-start", server)
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": INITIALIZE_PARAMS,
+        }
+        call_one = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "inc", "arguments": {}},
+        }
+        second_task: asyncio.Task[dict[str, Any] | None] | None = None
+        orig_receive = sdk_mcp_bridge._InboundReceiveStream.receive
+        receive_calls = 0
+        saw_cancelled = False
+
+        async def cancel_after_first_handoff(self: Any) -> Any:
+            nonlocal receive_calls
+            receive_calls += 1
+            if receive_calls == 1:
+                # Pops initialize from buffer, moves call_one into buffer,
+                # and sets send_event before second_task resumes.
+                item = await orig_receive(self)
+                assert second_task is not None
+                second_task.cancel()
+                return item
+            if receive_calls == 2:
+                await cancelled_done.wait()
+            return await orig_receive(self)
+
+        monkeypatch.setattr(
+            sdk_mcp_bridge._InboundReceiveStream,
+            "receive",
+            cancel_after_first_handoff,
+        )
+
+        async def second() -> dict[str, Any] | None:
+            nonlocal saw_cancelled
+            try:
+                return await bridge.handle(call_one)
+            except asyncio.CancelledError:
+                saw_cancelled = True
+                return None
+            finally:
+                cancelled_done.set()
+
+        first_task: asyncio.Task[dict[str, Any] | None] | None = None
+        try:
+            with anyio.fail_after(5):
+                first_task = asyncio.create_task(bridge.handle(initialize))
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                second_task = asyncio.create_task(second())
+                await anyio.wait_all_tasks_blocked()
+                release.set()
+                first_resp = await first_task
+                await second_task
+                assert saw_cancelled
+                assert first_resp is not None and first_resp["id"] == 0
+                await bridge.handle(
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"}
+                )
+                response = await bridge.handle(call_one)
+                assert response is not None and response["id"] == 1
+                assert tool_calls == 1
+                assert response["result"]["content"][0]["text"] == "call:1"
+                assert bridge._session is not None
+                assert bridge._session._inbound_state.in_transit == {}
+                assert not bridge._session._inbound_state.aborted
+        finally:
+            release.set()
+            if first_task is not None and not first_task.done():
+                first_task.cancel()
+            if second_task is not None and not second_task.done():
+                second_task.cancel()
+            await bridge.aclose()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.anyio
+async def test_repeated_cancelled_unsent_requests_do_not_leak_in_transit():
+    entered, release = anyio.Event(), anyio.Event()
+
+    @asynccontextmanager
+    async def lifespan(_server: Server) -> AsyncIterator[dict[str, Any]]:
+        entered.set()
+        await release.wait()
+        yield {}
+
+    bridge = sdk_mcp_bridge.SdkMcpBridge(
+        "slow-start", Server("slow-start", lifespan=lifespan)
+    )
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": INITIALIZE_PARAMS,
+    }
+    first_response: list[dict[str, Any] | None] = []
+
+    async def first() -> None:
+        first_response.append(await bridge.handle(initialize))
+
+    async def cancelled_submit(req_id: int) -> None:
+        with anyio.CancelScope() as scope:
+
+            async def _inner() -> None:
+                await bridge.handle({**initialize, "id": req_id})
+
+            async with anyio.create_task_group() as inner_tg:
+                inner_tg.start_soon(_inner)
+                await anyio.wait_all_tasks_blocked()
+                scope.cancel()
+
+    try:
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(first)
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                for req_id in range(1, 6):
+                    await cancelled_submit(req_id)
+                assert bridge._session is not None
+                assert len(bridge._session._pending) == 1
+                assert len(bridge._session._inbound_state.in_transit) == 1
+                release.set()
+            assert first_response[0] is not None and first_response[0]["id"] == 0
+            assert bridge._session is not None
+            assert bridge._session._inbound_state.in_transit == {}
+    finally:
+        release.set()
+        await bridge.aclose()
+
+
+@pytest.mark.anyio
+async def test_batch_cancel_after_receive_with_idle_session_clears_in_transit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Cancelling a wave of waiting sends right as one queued message is read
+    must leave neither _pending nor in_transit entries when the session goes idle."""
+    entered, proceed, drain = anyio.Event(), anyio.Event(), anyio.Event()
+    scopes: list[anyio.CancelScope] = []
+    orig_receive = sdk_mcp_bridge._InboundReceiveStream.receive
+
+    @asynccontextmanager
+    async def lifespan(_server: Server) -> AsyncIterator[dict[str, Any]]:
+        entered.set()
+        await proceed.wait()
+        yield {}
+
+    async def cancel_wave_on_first_receive(self: Any) -> Any:
+        if self._state.recv_count == 0:
+            item = await orig_receive(self)
+            for scope in scopes:
+                scope.cancel()
+            return item
+        await drain.wait()
+        return await orig_receive(self)
+
+    monkeypatch.setattr(
+        sdk_mcp_bridge._InboundReceiveStream,
+        "receive",
+        cancel_wave_on_first_receive,
+    )
+    bridge = sdk_mcp_bridge.SdkMcpBridge("batch", Server("batch", lifespan=lifespan))
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": INITIALIZE_PARAMS,
+    }
+
+    async def send(req_id: int) -> None:
+        with anyio.CancelScope() as scope:
+            if req_id:
+                scopes.append(scope)
+            await bridge.handle({**initialize, "id": req_id})
+
+    try:
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(send, 0)
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                for req_id in range(1, 7):
+                    tg.start_soon(send, req_id)
+                await anyio.wait_all_tasks_blocked()
+                assert bridge._session is not None
+                assert len(bridge._session._pending) == 7
+                proceed.set()
+                await anyio.wait_all_tasks_blocked()
+                drain.set()
+            await anyio.wait_all_tasks_blocked()
+            assert bridge._session is not None
+            assert bridge._session._pending == {}
+            assert bridge._session._inbound_state.in_transit == {}
+            assert not bridge._session._inbound_state.aborted
+    finally:
+        proceed.set()
+        drain.set()
+        await bridge.aclose()
+
+
+def test_batch_raw_asyncio_cancel_after_receive_with_idle_session_clears_in_transit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Raw asyncio cancellation of a waiting send wave after a receive drops at
+    most the moved request and leaves an idle session with zero in-transit state."""
+    import asyncio
+
+    async def _run() -> None:
+        entered, proceed, drain = anyio.Event(), anyio.Event(), anyio.Event()
+        tasks: list[asyncio.Task[Any]] = []
+        orig_receive = sdk_mcp_bridge._InboundReceiveStream.receive
+
+        @asynccontextmanager
+        async def lifespan(_server: Server) -> AsyncIterator[dict[str, Any]]:
+            entered.set()
+            await proceed.wait()
+            yield {}
+
+        async def cancel_wave_on_first_receive(self: Any) -> Any:
+            if self._state.recv_count == 0:
+                item = await orig_receive(self)
+                for t in tasks:
+                    t.cancel()
+                return item
+            await drain.wait()
+            return await orig_receive(self)
+
+        monkeypatch.setattr(
+            sdk_mcp_bridge._InboundReceiveStream,
+            "receive",
+            cancel_wave_on_first_receive,
+        )
+        bridge = sdk_mcp_bridge.SdkMcpBridge(
+            "batch-raw", Server("batch-raw", lifespan=lifespan)
+        )
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": INITIALIZE_PARAMS,
+        }
+        first_task: asyncio.Task[dict[str, Any] | None] | None = None
+        try:
+            with anyio.fail_after(5):
+                first_task = asyncio.create_task(bridge.handle(initialize))
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                for req_id in range(1, 7):
+                    tasks.append(
+                        asyncio.create_task(bridge.handle({**initialize, "id": req_id}))
+                    )
+                await anyio.wait_all_tasks_blocked()
+                assert bridge._session is not None
+                assert len(bridge._session._pending) == 7
+                proceed.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                drain.set()
+                await first_task
+                await anyio.wait_all_tasks_blocked()
+                assert bridge._session._pending == {}
+                assert bridge._session._inbound_state.in_transit == {}
+                assert not bridge._session._inbound_state.aborted
+        finally:
+            proceed.set()
+            drain.set()
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            if first_task is not None and not first_task.done():
+                first_task.cancel()
+            await bridge.aclose()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.anyio
+async def test_cancelled_submit_interleaved_with_server_pings_sweeps_tombstones(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If a client request is cancelled at pre-enqueue checkpoint while an
+    earlier server-ping reply advances recv_count, a subsequent server ping
+    reply still sweeps the aborted tombstone so in_transit stays bounded."""
+    gate_next_ping = anyio.Event()
+    proceed_to_second_ping = anyio.Event()
+
+    async def ping_twice(session: Any) -> mcp.types.CallToolResult:
+        await session.send_ping()
+        await proceed_to_second_ping.wait()
+        await session.send_ping()
+        return mcp.types.CallToolResult(
+            content=[mcp.types.TextContent(type="text", text="ponged")]
+        )
+
+    tool_def = mcp.types.Tool.model_validate(
+        {"name": "ping_twice", "inputSchema": {"type": "object", "properties": {}}}
+    )
+    if MCP_MAJOR >= 2:
+
+        async def on_list_tools(ctx: Any, params: Any) -> mcp.types.ListToolsResult:
+            return mcp.types.ListToolsResult(tools=[tool_def])
+
+        async def on_call_tool(ctx: Any, params: Any) -> mcp.types.CallToolResult:
+            return await ping_twice(ctx.session)
+
+        server = Server(
+            "pinger",
+            on_list_tools=on_list_tools,
+            on_call_tool=on_call_tool,
+        )
+    else:
+        server = Server("pinger")
+
+        @server.list_tools()
+        async def list_tools() -> list[mcp.types.Tool]:
+            return [tool_def]
+
+        @server.call_tool()
+        async def call_tool(
+            _name: str, _arguments: dict[str, Any]
+        ) -> mcp.types.CallToolResult:
+            return await ping_twice(server.request_context.session)
+
+    bridge = sdk_mcp_bridge.SdkMcpBridge("pinger", server)
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": INITIALIZE_PARAMS,
+    }
+    try:
+        with anyio.fail_after(5):
+            await bridge.handle(initialize)
+            await bridge.handle(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            )
+            session = bridge._session
+            assert session is not None and session._to_server is not None
+
+            # Hold the first ping reply before the server consumes it so a
+            # cancelled submit observes recv_count advancing before send_nowait.
+            ping1_enqueued = anyio.Event()
+            release_ping1_read = anyio.Event()
+            checkpoint_entered = anyio.Event()
+            checkpoint_release = anyio.Event()
+            orig_receive = sdk_mcp_bridge._InboundReceiveStream.receive
+            orig_stream = session._to_server
+            intercepted_send = False
+
+            async def wrapped_receive(self: Any) -> Any:
+                if ping1_enqueued.is_set() and not release_ping1_read.is_set():
+                    await release_ping1_read.wait()
+                return await orig_receive(self)
+
+            class _WrappedSend:
+                async def send(self, item: Any) -> None:
+                    nonlocal intercepted_send
+                    dump = sdk_mcp_bridge.dump_jsonrpc(item)
+                    if "result" in dump and not ping1_enqueued.is_set():
+                        await orig_stream.send(item)
+                        ping1_enqueued.set()
+                        return
+                    if dump.get("id") == 99 and not intercepted_send:
+                        intercepted_send = True
+                        checkpoint_entered.set()
+                        await checkpoint_release.wait()
+                    await orig_stream.send(item)
+
+                async def aclose(self) -> None:
+                    await orig_stream.aclose()
+
+            monkeypatch.setattr(
+                sdk_mcp_bridge._InboundReceiveStream, "receive", wrapped_receive
+            )
+            monkeypatch.setattr(session, "_to_server", _WrappedSend())
+
+            ping_result: list[dict[str, Any] | None] = []
+
+            async def run_tool() -> None:
+                ping_result.append(
+                    await bridge.handle(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": {"name": "ping_twice", "arguments": {}},
+                        }
+                    )
+                )
+                gate_next_ping.set()
+
+            cancel_submit: anyio.CancelScope | None = None
+
+            async def run_cancelled_submit() -> None:
+                nonlocal cancel_submit
+                with anyio.CancelScope() as cancel_submit:
+                    await bridge.handle(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 99,
+                            "method": "tools/list",
+                            "params": {},
+                        }
+                    )
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(run_tool)
+                await ping1_enqueued.wait()
+                tg.start_soon(run_cancelled_submit)
+                await checkpoint_entered.wait()
+                release_ping1_read.set()
+                await anyio.wait_all_tasks_blocked()
+                assert cancel_submit is not None
+                cancel_submit.cancel()
+                checkpoint_release.set()
+                await anyio.wait_all_tasks_blocked()
+                proceed_to_second_ping.set()
+                await gate_next_ping.wait()
+
+            assert ping_result[0] is not None
+            assert ping_result[0]["result"]["content"][0]["text"] == "ponged"
+            assert session._pending == {}
+            assert session._inbound_state.in_transit == {}
+            assert not session._inbound_state.aborted
+    finally:
+        proceed_to_second_ping.set()
+        await bridge.aclose()
+
+
+@pytest.mark.anyio
+async def test_inbound_receive_stream_preserves_memory_stream_interface():
+    """Custom MCP 1.x servers receive a MemoryObjectReceiveStream-compatible
+    proxy supporting receive_nowait(), statistics(), and sync context manager."""
+    send_stream, receive_stream = anyio.create_memory_object_stream[Any](3)
+    state = sdk_mcp_bridge._InboundState()
+    inbound = sdk_mcp_bridge._InboundReceiveStream(receive_stream, state)
+
+    aborted_msg = {"id": "aborted"}
+    real_msg = {"id": "real"}
+    aborted_attempt = sdk_mcp_bridge._SendAttempt(
+        message=aborted_msg, seq=0, aborted=True
+    )
+    real_attempt = sdk_mcp_bridge._SendAttempt(message=real_msg, seq=1)
+    state.in_transit[id(aborted_msg)] = aborted_attempt
+    state.aborted.append((1, id(aborted_msg)))
+    state.in_transit[id(real_msg)] = real_attempt
+
+    with inbound as entered:
+        assert entered is inbound
+        assert not hasattr(inbound, "last_context")
+        send_stream.send_nowait(aborted_msg)
+        send_stream.send_nowait(real_msg)
+        assert inbound.statistics().current_buffer_used == 2
+
+        got = inbound.receive_nowait()
+        assert got is real_msg
+        assert real_attempt.delivered is True
+        assert state.in_transit == {}
+        assert not state.aborted
+        with pytest.raises(anyio.WouldBlock):
+            inbound.receive_nowait()
+    await send_stream.aclose()
+
+
 # --- Tests for _python_type_to_json_schema and TypedDict schema conversion ---
 
 

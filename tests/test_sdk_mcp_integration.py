@@ -140,6 +140,67 @@ async def test_server_creation():
         assert await client.list_tools("srv") == []
 
 
+@pytest.mark.parametrize("reuse_instance", [False, True])
+def test_duplicate_tool_names_are_rejected(reuse_instance: bool):
+    calls: list[str] = []
+
+    @tool("review_change", "Preview a change", {"diff": str})
+    async def preview(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append("preview")
+        return {"content": []}
+
+    @tool("review_change", "Apply a change", {"confirmed": bool})
+    async def apply(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append("apply")
+        return {"content": []}
+
+    with pytest.raises(ValueError, match="Duplicate tool name 'review_change'"):
+        create_sdk_mcp_server(
+            name="srv", tools=[preview, preview if reuse_instance else apply]
+        )
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_tool_names_are_case_sensitive_and_scoped_to_each_server():
+    @tool("review", "Preview a change", {"diff": str})
+    async def preview(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": args["diff"]}]}
+
+    @tool("Review", "Check confirmation", {"confirmed": bool})
+    async def check(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": str(args["confirmed"])}]}
+
+    client = SdkMcpClient(
+        {
+            "one": create_sdk_mcp_server(name="one", tools=[preview, check]),
+            "two": create_sdk_mcp_server(name="two", tools=[preview]),
+        }
+    )
+    try:
+        with anyio.fail_after(5):
+            await client.initialize("one")
+            await client.initialize("two")
+            listed = await client.list_tools("one")
+            assert [(item["name"], item["description"]) for item in listed] == [
+                ("review", "Preview a change"),
+                ("Review", "Check confirmation"),
+            ]
+            assert listed[0]["inputSchema"]["required"] == ["diff"]
+            assert listed[1]["inputSchema"]["required"] == ["confirmed"]
+            assert texts(
+                await client.call_tool("one", "review", {"diff": "preview"})
+            ) == ["preview"]
+            assert texts(
+                await client.call_tool("one", "Review", {"confirmed": True})
+            ) == ["True"]
+            assert texts(
+                await client.call_tool("two", "review", {"diff": "second"})
+            ) == ["second"]
+    finally:
+        await client.aclose()
+
+
 @pytest.mark.anyio
 async def test_tool_creation():
     """Test that tools can be created with proper schemas."""

@@ -17,7 +17,6 @@ from claude_agent_sdk.types import (
     StreamEvent,
     SystemMessage,
     TextBlock,
-    ThinkingBlock,
 )
 
 
@@ -29,15 +28,12 @@ async def test_include_partial_messages_stream_events():
     options = ClaudeAgentOptions(
         include_partial_messages=True,
         max_turns=2,
-        env={
-            "MAX_THINKING_TOKENS": "8000",
-        },
     )
 
     collected_messages: list[Any] = []
 
     async with ClaudeSDKClient(options) as client:
-        # Send a simple prompt that will generate streaming response with thinking
+        # Send a simple prompt that will generate a streaming response
         await client.query("Think of three jokes, then tell one")
 
         async for message in client.receive_response():
@@ -64,18 +60,11 @@ async def test_include_partial_messages_stream_events():
     assert "content_block_stop" in event_types, "No content_block_stop StreamEvent"
     assert "message_stop" in event_types, "No message_stop StreamEvent"
 
-    # Should have AssistantMessage messages with thinking and text
+    # Should have AssistantMessage messages with text
     assistant_messages = [
         msg for msg in collected_messages if isinstance(msg, AssistantMessage)
     ]
     assert len(assistant_messages) >= 1, "No AssistantMessage received"
-
-    # Check for thinking block in at least one AssistantMessage
-    has_thinking = any(
-        any(isinstance(block, ThinkingBlock) for block in msg.content)
-        for msg in assistant_messages
-    )
-    assert has_thinking, "No ThinkingBlock found in AssistantMessages"
 
     # Check for text block (the joke) in at least one AssistantMessage
     has_text = any(
@@ -97,17 +86,21 @@ async def test_include_partial_messages_thinking_deltas():
     # Ask for summarized thinking explicitly. Since CLI 2.1.287 thinking text is
     # omitted unless requested: the thinking_delta events still arrive, but with
     # empty text.
+    #
+    # With adaptive thinking the model decides whether to think, so pin one that
+    # does on this prompt instead of following the suite's default.
     options = ClaudeAgentOptions(
         include_partial_messages=True,
+        model="claude-sonnet-5",
         max_turns=2,
-        thinking={"type": "enabled", "budget_tokens": 8000, "display": "summarized"},
+        thinking={"type": "adaptive", "display": "summarized"},
     )
 
     thinking_deltas = []
 
     async with ClaudeSDKClient(options) as client:
-        # Thinking is adaptive on the default model and can be skipped on easy
-        # prompts, so ask for something that needs working out.
+        # Adaptive thinking can be skipped on easy prompts, so ask for something
+        # that needs working out.
         await client.query(
             "Without using any tools, work out step by step what 4827 * 3916 equals"
         )

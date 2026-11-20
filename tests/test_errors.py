@@ -5,6 +5,7 @@ from claude_agent_sdk import (
     CLIConnectionError,
     CLIJSONDecodeError,
     CLINotFoundError,
+    MessageParseError,
     ProcessError,
     ResultError,
 )
@@ -90,7 +91,7 @@ class TestErrorTypes:
 
         data = {"subtype": "error_max_turns", "errors": ["too many"], "session_id": "s"}
         error = ResultError("Claude Code returned an error result: too many", data, 1)
-        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error)):
             assert type(clone) is ResultError
             assert str(clone) == str(error)
             assert clone.exit_code == 1
@@ -124,10 +125,32 @@ class TestErrorTypes:
         else:
             raise AssertionError("Invalid JSON should raise JSONDecodeError")
 
-        clones = (pickle.loads(pickle.dumps(error)), copy.copy(error))
+        clones = (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error))
         for clone in clones:
             assert type(clone) is CLIJSONDecodeError
             assert clone.line == error.line
             assert str(clone) == str(error)
             assert type(clone.original_error) is json.JSONDecodeError
             assert str(clone.original_error) == str(error.original_error)
+
+    def test_process_error_survives_pickle_and_copy(self):
+        import copy
+        import pickle
+
+        error = ProcessError("process failed", exit_code=2, stderr="bad input")
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error)):
+            assert type(clone) is ProcessError
+            assert str(clone) == str(error)
+            assert clone.exit_code == 2
+            assert clone.stderr == "bad input"
+
+    def test_message_parse_error_survives_pickle_and_copy(self):
+        import copy
+        import pickle
+
+        data = {"type": "unknown"}
+        error = MessageParseError("Unsupported message type", data)
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error)):
+            assert type(clone) is MessageParseError
+            assert str(clone) == str(error)
+            assert clone.data == data

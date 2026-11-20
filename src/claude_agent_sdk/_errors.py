@@ -28,6 +28,7 @@ class ProcessError(ClaudeSDKError):
     def __init__(
         self, message: str, exit_code: int | None = None, stderr: str | None = None
     ):
+        self._message = message
         self.exit_code = exit_code
         self.stderr = stderr
 
@@ -37,6 +38,10 @@ class ProcessError(ClaudeSDKError):
             message = f"{message}\nError output: {stderr}"
 
         super().__init__(message)
+
+    def __reduce__(self) -> tuple[Any, tuple[str, int | None, str | None]]:
+        """Preserve constructor arguments when copying or pickling."""
+        return type(self), (self._message, self.exit_code, self.stderr)
 
 
 def _normalize_result_errors(raw: Any) -> list[str]:
@@ -116,6 +121,10 @@ class ResultError(ProcessError):
         )
         super().__init__(message, exit_code=exit_code)
 
+    def __reduce__(self) -> tuple[Any, tuple[str, dict[str, Any], int | None]]:
+        """Preserve the result payload and original message when copying."""
+        return type(self), (self._message, self.data, self.exit_code)
+
 
 class CLIJSONDecodeError(ClaudeSDKError):
     """Raised when unable to decode JSON from CLI output."""
@@ -136,3 +145,7 @@ class MessageParseError(ClaudeSDKError):
     def __init__(self, message: str, data: dict[str, Any] | None = None):
         self.data = data
         super().__init__(message)
+
+    def __reduce__(self) -> tuple[Any, tuple[str, dict[str, Any] | None]]:
+        """Preserve parser context when copying or pickling."""
+        return type(self), (str(self), self.data)

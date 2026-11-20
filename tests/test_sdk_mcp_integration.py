@@ -2195,3 +2195,154 @@ class TestTypedDictMcpIntegration:
             first = await client.list_tools("srv")
             second = await client.list_tools("srv")
         assert first == second
+
+
+# --- Loom memory example: actual SDK MCP dispatch, fake backend only ---------
+
+
+@pytest.fixture
+def loom_memory_example() -> Any:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "examples" / "loom_memory.py"
+    spec = importlib.util.spec_from_file_location("_loom_memory_example", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def loom_memory_agent() -> Mock:
+    agent = Mock()
+    agent.namespace = "example-memory"
+    agent.tools.return_value.execute = AsyncMock()
+    return agent
+
+
+@pytest.mark.anyio
+async def test_loom_memory_lists_only_bounded_identity_free_tools(
+    loom_memory_example: Any, loom_memory_agent: Mock
+) -> None:
+    options = loom_memory_example.loom_memory_options(
+        loom_memory_agent, user_id="example-user"
+    )
+    assert options.tools == []
+    assert options.setting_sources == []
+    assert options.strict_mcp_config is True
+    assert options.allowed_tools == ["mcp__loom__remember", "mcp__loom__recall"]
+    async with connected(options.mcp_servers["loom"]) as client:
+        tools = {t["name"]: t for t in await client.list_tools("srv")}
+    assert set(tools) == {"remember", "recall"}
+    assert set(tools["remember"]["inputSchema"]["properties"]) == {
+        "memory_key",
+        "value",
+    }
+    assert set(tools["recall"]["inputSchema"]["properties"]) == {"query", "top_k"}
+    assert tools["remember"]["inputSchema"]["additionalProperties"] is False
+    assert tools["recall"]["inputSchema"]["additionalProperties"] is False
+    loom_memory_agent.tools.assert_called_once_with(
+        user_id="example-user",
+        session_id="-",
+        only=["loom_remember", "loom_recall"],
+        max_result_chars=8_000,
+    )
+
+
+@pytest.mark.anyio
+async def test_loom_memory_returns_write_receipt_without_claiming_storage(
+    loom_memory_example: Any, loom_memory_agent: Mock
+) -> None:
+    receipt = '{"stored":false,"noop":true,"memory_key":"style"}'
+    execute = loom_memory_agent.tools.return_value.execute
+    execute.return_value = receipt
+    config = loom_memory_example.create_loom_memory_server(
+        loom_memory_agent, user_id="example-user"
+    )
+    args = {"memory_key": "style", "value": "The user prefers concise answers."}
+    async with connected(config) as client:
+        result = await client.call_tool("srv", "remember", args)
+    assert texts(result) == [receipt]
+    assert not result.get("isError")
+    execute.assert_awaited_once_with("loom_remember", args)
+
+
+@pytest.mark.anyio
+async def test_loom_memory_preserves_recall_abstention_and_evidence(
+    loom_memory_example: Any, loom_memory_agent: Mock
+) -> None:
+    payload = '{"abstain":true,"pending_extraction":true,"memories":[]}'
+    execute = loom_memory_agent.tools.return_value.execute
+    execute.return_value = payload
+    config = loom_memory_example.create_loom_memory_server(
+        loom_memory_agent, user_id="example-user"
+    )
+    args = {"query": "answer style", "top_k": 2}
+    async with connected(config) as client:
+        result = await client.call_tool("srv", "recall", args)
+    assert texts(result) == [payload]
+    execute.assert_awaited_once_with("loom_recall", args)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("remember", {"memory_key": "", "value": "fact"}),
+        ("remember", {"memory_key": "key", "value": ""}),
+        ("remember", {"memory_key": "key", "value": "x" * 4_001}),
+        ("remember", {"memory_key": "key", "value": "fact", "user_id": "other"}),
+        ("recall", {"query": "fact", "namespace": "other"}),
+        ("recall", {"query": "fact", "top_k": 6}),
+        ("recall", {"query": ""}),
+    ],
+)
+async def test_loom_memory_invalid_arguments_do_not_reach_backend(
+    loom_memory_example: Any,
+    loom_memory_agent: Mock,
+    name: str,
+    arguments: dict[str, Any],
+) -> None:
+    config = loom_memory_example.create_loom_memory_server(
+        loom_memory_agent, user_id="example-user"
+    )
+    async with connected(config) as client:
+        result = await client.call_tool("srv", name, arguments)
+    assert result["isError"] is True
+    loom_memory_agent.tools.return_value.execute.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_loom_memory_backend_failure_is_not_a_success_receipt(
+    loom_memory_example: Any, loom_memory_agent: Mock
+) -> None:
+    execute = loom_memory_agent.tools.return_value.execute
+    execute.side_effect = RuntimeError("backend refused")
+    config = loom_memory_example.create_loom_memory_server(
+        loom_memory_agent, user_id="example-user"
+    )
+    async with connected(config) as client:
+        result = await client.call_tool(
+            "srv", "remember", {"memory_key": "key", "value": "fact"}
+        )
+    assert result["isError"] is True
+    assert all('"stored":true' not in text for text in texts(result))
+    execute.assert_awaited_once()
+
+
+@pytest.mark.parametrize("scope", ["", "*", "-", " padded "])
+@pytest.mark.parametrize("field", ["namespace", "user_id"])
+def test_loom_memory_requires_application_bound_named_scope(
+    loom_memory_example: Any, loom_memory_agent: Mock, scope: str, field: str
+) -> None:
+    user_id = "example-user"
+    if field == "namespace":
+        loom_memory_agent.namespace = scope
+    else:
+        user_id = scope
+    with pytest.raises(ValueError, match="named scope"):
+        loom_memory_example.create_loom_memory_server(
+            loom_memory_agent, user_id=user_id
+        )
+    loom_memory_agent.tools.assert_not_called()

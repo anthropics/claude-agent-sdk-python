@@ -24,7 +24,9 @@ the rest of the query, as with the TypeScript SDK.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
@@ -36,6 +38,8 @@ from ._mcp_compat import can_cancel_requests, dump_jsonrpc, parse_jsonrpc
 from ._task_compat import TaskHandle, spawn_detached
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from mcp.server import Server as McpServer
 
 logger = logging.getLogger(__name__)
@@ -100,6 +104,122 @@ class _PendingResponse:
         return self._outcome
 
 
+@dataclass(slots=True)
+class _SendAttempt:
+    """Tracks one client-to-server send across async cancellation."""
+
+    message: SessionMessage
+    seq: int
+    delivered: bool = False
+    aborted: bool = False
+
+
+@dataclass(slots=True)
+class _InboundState:
+    """Shared delivery tracking between ``_Session.submit`` and ``_InboundReceiveStream``."""
+
+    in_transit: dict[int, _SendAttempt] = field(default_factory=dict)
+    aborted: deque[tuple[int, int]] = field(default_factory=deque)
+    recv_count: int = 0
+
+
+class _InboundReceiveStream:
+    """Wraps the server's inbound stream to observe real consumption.
+
+    ``anyio`` moves a blocked item from waiting senders into the stream buffer
+    right before waking the waiting sender task. If that sender is cancelled in
+    the gap before resuming, ``send()`` still raises cancellation even though
+    the item entered the buffer. Wrapping ``receive()`` records actual
+    consumption and skips any item aborted before the server read it.
+    """
+
+    def __init__(self, inner: Any, state: _InboundState) -> None:
+        self._inner = inner
+        self._state = state
+
+    def _sweep_stale_aborted(self, received_seq: int) -> None:
+        while self._state.aborted:
+            sweep_at_seq, msg_id = self._state.aborted[0]
+            if received_seq < sweep_at_seq:
+                break
+            self._state.aborted.popleft()
+            self._state.in_transit.pop(msg_id, None)
+
+    def _consume(self, item: Any) -> bool:
+        """Record consumption and return True if an aborted item must be skipped."""
+        self._state.recv_count += 1
+        entry = self._state.in_transit.pop(id(item), None)
+        if entry is None:
+            return False
+        if self._state.aborted:
+            self._sweep_stale_aborted(entry.seq)
+        if entry.aborted:
+            if self._state.aborted and self._state.aborted[0][1] == id(item):
+                self._state.aborted.popleft()
+            return True
+        entry.delivered = True
+        return False
+
+    async def receive(self) -> Any:
+        while True:
+            item = await self._inner.receive()
+            if not self._consume(item):
+                return item
+
+    def receive_nowait(self) -> Any:
+        while True:
+            item = self._inner.receive_nowait()
+            if not self._consume(item):
+                return item
+
+    def statistics(self) -> Any:
+        return self._inner.statistics()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    def clone(self) -> _InboundReceiveStream:
+        return _InboundReceiveStream(self._inner.clone(), self._state)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def __enter__(self) -> _InboundReceiveStream:
+        self._inner.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> Any:
+        return self._inner.__exit__(exc_type, exc_val, exc_tb)
+
+    def __aiter__(self) -> _InboundReceiveStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return await self.receive()
+        except anyio.EndOfStream:
+            raise StopAsyncIteration from None
+
+    async def __aenter__(self) -> _InboundReceiveStream:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+
+
 class _Session:
     """One ``Server.run`` over one in-memory stream pair.
 
@@ -116,6 +236,9 @@ class _Session:
         self._server = server
         self.failure: BaseException | None = None
         self._pending: dict[Any, _PendingResponse] = {}
+        self._inbound_state = _InboundState()
+        self._send_lock = anyio.Lock()
+        self._next_send_seq = 0
         self._to_server: _SendStream | None = None
         self._tasks: anyio.abc.TaskGroup | None = None
         self._ready = anyio.Event()
@@ -141,10 +264,11 @@ class _Session:
             async with create_client_server_memory_streams() as (client, server):
                 from_server, self._to_server = client
                 server_read, server_write = server
+                inbound = _InboundReceiveStream(server_read, self._inbound_state)
                 served = anyio.Event()
                 async with anyio.create_task_group() as tg:
                     self._tasks = tg
-                    tg.start_soon(self._serve, server_read, server_write, served)
+                    tg.start_soon(self._serve, inbound, server_write, served)
                     self._ready.set()
                     async for item in from_server:
                         await self._deliver(item)
@@ -172,6 +296,8 @@ class _Session:
         finally:
             self._ready.set()
             self._fail_pending("session closed")
+            self._inbound_state.in_transit.clear()
+            self._inbound_state.aborted.clear()
 
     def _fail_pending(self, reason: str) -> None:
         failure = Exception(f"SDK MCP server {self._name!r} {reason}")
@@ -242,7 +368,7 @@ class _Session:
         # A closed stream means the session is shutting down and the server's
         # caller is being cancelled anyway.
         with suppress(anyio.ClosedResourceError, anyio.BrokenResourceError):
-            await self._to_server.send(message)
+            await self._send_tracked(message, None)
 
     def _respond(self, payload: dict[str, Any]) -> None:
         pending = self._pending.get(payload.get("id"))
@@ -254,6 +380,55 @@ class _Session:
             )
             return
         pending.resolve(payload)
+
+    def _abort_unsent(
+        self,
+        attempt: _SendAttempt | None,
+        recv_before: int,
+        pending: _PendingResponse | None,
+    ) -> None:
+        if attempt is not None and attempt.delivered:
+            # The server already pulled this request off the stream, so its
+            # id must stay reserved until the server responds.
+            return
+        if pending is not None:
+            pending.resolve(Exception("unsent"))
+        if attempt is None:
+            return
+        if self._inbound_state.recv_count == recv_before:
+            self._inbound_state.in_transit.pop(id(attempt.message), None)
+        else:
+            # A receive happened while send() was blocked: the message may have
+            # entered the buffer just as send() was cancelled, so keep a
+            # tombstone to drop it if receive() sees it next.
+            attempt.aborted = True
+            self._inbound_state.aborted.append(
+                (self._next_send_seq, id(attempt.message))
+            )
+
+    async def _send_tracked(
+        self,
+        parsed: SessionMessage,
+        pending: _PendingResponse | None,
+    ) -> None:
+        # Serialize sends to the 1-slot stream so extra callers wait before
+        # entering in_transit and cannot leave tombstones after a batch cancel,
+        # and so every message sent to the server carries a monotonic seq that
+        # sweeps any prior checkpoint-aborted tombstone on next receive.
+        attempt: _SendAttempt | None = None
+        recv_before = 0
+        try:
+            async with self._send_lock:
+                seq = self._next_send_seq
+                self._next_send_seq += 1
+                attempt = _SendAttempt(message=parsed, seq=seq)
+                self._inbound_state.in_transit[id(parsed)] = attempt
+                recv_before = self._inbound_state.recv_count
+                assert self._to_server is not None
+                await self._to_server.send(parsed)
+        except BaseException:
+            self._abort_unsent(attempt, recv_before, pending)
+            raise
 
     async def submit(self, message: dict[str, Any]) -> _PendingResponse | None:
         """Forward one JSON-RPC message to the server.
@@ -278,11 +453,9 @@ class _Session:
         if request_id is not None:
             pending = _PendingResponse(self._pending, request_id, message.get("method"))
         try:
-            await self._to_server.send(parsed)
+            await self._send_tracked(parsed, pending)
         except (anyio.ClosedResourceError, anyio.BrokenResourceError):
             # The session went away between being chosen and this send.
-            if pending is not None:
-                pending.resolve(Exception("unsent"))
             raise Exception(f"SDK MCP server {self._name!r} session closed") from None
         return pending
 

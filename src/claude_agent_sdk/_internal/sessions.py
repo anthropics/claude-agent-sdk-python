@@ -392,7 +392,7 @@ def _get_worktree_paths(cwd: str) -> list[str]:
     """
     try:
         result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
+            ["git", "worktree", "list", "--porcelain", "-z"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -406,7 +406,8 @@ def _get_worktree_paths(cwd: str) -> list[str]:
         return []
 
     paths = []
-    for line in result.stdout.split("\n"):
+    # Worktree paths can contain newlines; only NUL separates porcelain fields.
+    for line in result.stdout.split("\0"):
         if line.startswith("worktree "):
             path = unicodedata.normalize("NFC", line[len("worktree ") :])
             paths.append(path)

@@ -251,6 +251,88 @@ def _extract_last_json_string_field(text: str, key: str) -> str | None:
     return last_value
 
 
+def _net_bracket_balance(text: str) -> int:
+    """Net bracket balance of text, ignoring brackets inside JSON strings."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+    return depth
+
+
+def _extract_top_level_field_from_cut_line(fragment: str, key: str) -> str | None:
+    """Extract a top-level string field from a line cut by a read window.
+
+    The tail window opens mid-entry for files larger than its buffer, so the
+    first tail line is usually the back of a JSON object whose opening bytes
+    were cut off and cannot be parsed whole. An occurrence of ``key`` is
+    accepted only when the rest of the line closes exactly one more bracket
+    than it opens — the entry's own final brace. A nested value (e.g. inside
+    a tool_use input) is followed by the closers of every enclosing object
+    as well, so it is rejected.
+    """
+    last_value: str | None = None
+    for pattern in (f'"{key}":"', f'"{key}": "'):
+        search_from = 0
+        while True:
+            idx = fragment.find(pattern, search_from)
+            if idx < 0:
+                break
+
+            value_start = idx + len(pattern)
+            i = value_start
+            while i < len(fragment):
+                if fragment[i] == "\\":
+                    i += 2
+                    continue
+                if fragment[i] == '"':
+                    if _net_bracket_balance(fragment[i + 1 :]) == -1:
+                        last_value = _unescape_json_string(fragment[value_start:i])
+                    break
+                i += 1
+            search_from = i + 1
+    return last_value
+
+
+def _extract_last_top_level_json_string_field(text: str, key: str) -> str | None:
+    """Extract the last top-level string field from JSONL text.
+
+    The first line may be an entry cut by the start of a read window (the
+    tail buffer opens mid-entry); if it does not parse, its top-level value
+    is recovered heuristically. Every other line must parse whole, so
+    nested values (tool_use inputs) never win.
+    """
+    lines = text.split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i]
+        if f'"{key}"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            if i == 0:
+                return _extract_top_level_field_from_cut_line(line, key)
+            continue
+        if isinstance(entry, dict):
+            value = entry.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # First prompt extraction from head chunk
 # ---------------------------------------------------------------------------
@@ -441,10 +523,10 @@ def _parse_session_info_from_lite(
     # User-set title (customTitle) wins over AI-generated title (aiTitle).
     # Head fallback covers short sessions where the title entry may not be in tail.
     custom_title = (
-        _extract_last_json_string_field(tail, "customTitle")
-        or _extract_last_json_string_field(head, "customTitle")
-        or _extract_last_json_string_field(tail, "aiTitle")
-        or _extract_last_json_string_field(head, "aiTitle")
+        _extract_last_top_level_json_string_field(tail, "customTitle")
+        or _extract_last_top_level_json_string_field(head, "customTitle")
+        or _extract_last_top_level_json_string_field(tail, "aiTitle")
+        or _extract_last_top_level_json_string_field(head, "aiTitle")
         or None
     )
     first_prompt = _extract_first_prompt_from_head(head) or None

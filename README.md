@@ -302,7 +302,7 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 
 - `ClaudeCodeOptions` → `ClaudeAgentOptions` rename
 - Merged system prompt configuration
-- Settings isolation and explicit control
+- Explicit settings control
 - New programmatic subagents and session forking features
 
 ## Development

@@ -47,10 +47,6 @@ Keep them when you add or edit a workflow.
    or a newer model: on an older one Claude Code falls back to its default
    permission mode.
 
-`claude.yml` answers `@claude` mentions. The Claude Code action sets
-`--permission-mode acceptEdits` for those, and the `--permission-mode auto` in
-the workflow's `claude_args`, which comes after it, replaces it.
-
 `build-and-publish.yml`'s `publish` and `release` jobs hold the publishing
 credentials (PyPI upload rights and the deploy key) and do not call Claude.
 PyPI upload rights come from trusted publishing, which PyPI grants only to jobs

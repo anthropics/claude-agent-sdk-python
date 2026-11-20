@@ -4,8 +4,7 @@
 mode: enforce
 allow:
   # Claude API: model requests, trading the workflow's GitHub identity token for a
-  # short-lived API token, and fetching the Claude GitHub App's token in claude.yml and
-  # claude-code-review.yml
+  # short-lived API token, and fetching the Claude GitHub App's token in claude-code-review.yml
   - api.anthropic.com
   # GitHub API: calls made by the Claude Code action, and by gh in scripts/gh.sh and
   # scripts/edit-issue-labels.sh
@@ -16,11 +15,11 @@ allow:
   # Claude Code binary, downloaded by the install script
   - downloads.claude.ai
   # Bun and Python release downloads (oven-sh/setup-bun inside the Claude Code action,
-  # actions/setup-python in claude.yml and test.yml)
+  # actions/setup-python in test.yml)
   - release-assets.githubusercontent.com
   # npm packages for the Claude Code action (bun install)
   - registry.npmjs.org
-  # Python packages (pip install in claude.yml, test.yml and Dockerfile.test)
+  # Python packages (pip install in test.yml and Dockerfile.test)
   - pypi.org
   - files.pythonhosted.org
   # apt packages bubblewrap and socat, which the Claude Code action installs when a

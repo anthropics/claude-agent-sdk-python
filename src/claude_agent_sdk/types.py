@@ -140,6 +140,8 @@ class PermissionRuleValue:
 
     tool_name: str
     rule_content: str | None = None
+    """What the rule matches within the tool, e.g. ``"npm test"`` for Bash.
+    ``None`` (or an empty string) makes a rule that covers every use of the tool."""
 
 
 @dataclass
@@ -159,40 +161,75 @@ class PermissionUpdate:
     mode: PermissionMode | None = None
     directories: list[str] | None = None
     destination: PermissionUpdateDestination | None = None
+    """Where the update applies and is kept: ``"session"`` (in memory until
+    the session ends), ``"localSettings"``, ``"projectSettings"`` or
+    ``"userSettings"``. ``None`` is sent as ``"session"``."""
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert PermissionUpdate to dictionary format matching TypeScript control protocol."""
+        """Convert PermissionUpdate to the control protocol dict format.
+
+        Claude Code rejects an update that lacks a field its type needs, or
+        whose ``ruleContent`` is ``null``, and then ignores every update in
+        the same response. So this method:
+
+        - leaves ``ruleContent`` out when ``rule_content`` is ``None``, which
+          is how Claude Code expects a rule for the whole tool;
+        - sends ``"session"`` when ``destination`` is ``None``, so the update
+          changes only the current session;
+        - raises ``ValueError`` when a field the type needs is ``None``:
+          ``rules`` and ``behavior`` for ``addRules``, ``replaceRules`` and
+          ``removeRules``, ``mode`` for ``setMode``, and ``directories`` for
+          ``addDirectories`` and ``removeDirectories``;
+        - raises ``ValueError`` when ``type`` is none of those six.
+        """
         result: dict[str, Any] = {
             "type": self.type,
+            "destination": self.destination or "session",
         }
 
-        # Add destination for all variants
-        if self.destination is not None:
-            result["destination"] = self.destination
-
-        # Handle different type variants
-        if self.type in ["addRules", "replaceRules", "removeRules"]:
-            # Rules-based variants require rules and behavior
-            if self.rules is not None:
-                result["rules"] = [
-                    {
-                        "toolName": rule.tool_name,
-                        "ruleContent": rule.rule_content,
-                    }
-                    for rule in self.rules
-                ]
-            if self.behavior is not None:
-                result["behavior"] = self.behavior
+        if self.type in ("addRules", "replaceRules", "removeRules"):
+            if self.rules is None:
+                raise ValueError(
+                    f"PermissionUpdate(type={self.type!r}) has no rules. "
+                    "Set rules to a list of PermissionRuleValue."
+                )
+            if self.behavior is None:
+                raise ValueError(
+                    f"PermissionUpdate(type={self.type!r}) has no behavior. "
+                    "Set behavior to 'allow', 'deny' or 'ask'."
+                )
+            rules: list[dict[str, Any]] = []
+            for rule in self.rules:
+                wire_rule: dict[str, Any] = {"toolName": rule.tool_name}
+                if rule.rule_content is not None:
+                    wire_rule["ruleContent"] = rule.rule_content
+                rules.append(wire_rule)
+            result["rules"] = rules
+            result["behavior"] = self.behavior
 
         elif self.type == "setMode":
-            # Mode variant requires mode
-            if self.mode is not None:
-                result["mode"] = self.mode
+            if self.mode is None:
+                raise ValueError(
+                    "PermissionUpdate(type='setMode') has no mode. "
+                    "Set mode to a permission mode such as 'acceptEdits'."
+                )
+            result["mode"] = self.mode
 
-        elif self.type in ["addDirectories", "removeDirectories"]:
-            # Directory variants require directories
-            if self.directories is not None:
-                result["directories"] = self.directories
+        elif self.type in ("addDirectories", "removeDirectories"):
+            if self.directories is None:
+                raise ValueError(
+                    f"PermissionUpdate(type={self.type!r}) has no directories. "
+                    "Set directories to a list of paths."
+                )
+            result["directories"] = self.directories
+
+        else:
+            raise ValueError(
+                f"PermissionUpdate has type {self.type!r}, which this version "
+                "of the SDK cannot send. Use one of addRules, replaceRules, "
+                "removeRules, setMode, addDirectories or removeDirectories, or "
+                "upgrade the SDK if this update came from Claude Code."
+            )
 
         return result
 
@@ -262,6 +299,9 @@ class PermissionResultAllow:
     behavior: Literal["allow"] = "allow"
     updated_input: dict[str, Any] | None = None
     updated_permissions: list[PermissionUpdate] | None = None
+    """Permission updates to apply along with this allow. If any of them cannot
+    be sent (``PermissionUpdate.to_dict`` raises ``ValueError``), none are
+    sent and a warning is logged; the tool call is still allowed."""
 
 
 @dataclass
@@ -852,6 +892,17 @@ class HookMatcher:
     # Timeout in seconds for all hooks in this matcher (default: 60)
     timeout: float | None = None
 
+    # What happens when a callback in this matcher fails. With "block", a
+    # callback that raises, returns None (a path with no return), or returns a
+    # value the CLI rejects, such as permissionDecision "Deny", blocks the
+    # action, so a callback with no opinion must return {}. Unrecognized keys
+    # are not a failure. Stop, SubagentStop, TaskCompleted and TeammateIdle
+    # ignore this option. A PermissionRequest block counts only if it lands
+    # before can_use_tool answers. Unset or "continue" counts a failure as no
+    # decision. With "block", connecting to a CLI too old to honor it raises
+    # CLIConnectionError.
+    on_failure: Literal["continue", "block"] | None = None
+
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):
@@ -1343,11 +1394,21 @@ the message that triggered that turn.
 In streaming-input mode a single connection interleaves the turns you send
 with turns the session injects on its own (background-task notifications,
 scheduled-task prompts, MCP channel messages, messages relayed from peer
-sessions, ...). ``origin`` tells them apart, e.g. to decide whether a
-:class:`ResultMessage` answers *your* prompt::
+sessions, ...). ``origin`` tells you what started a turn. It does not tell
+you whether a :class:`ResultMessage` covers *your* prompt: a prompt sent while
+an injected turn is running can be answered inside that turn, and the result
+then carries the injected turn's origin. To match a result to your prompts,
+send each one with a ``uuid`` and look for it in the result::
 
-    if result.origin is None or result.origin["kind"] == "human":
-        ...  # a turn this application submitted
+    uuids = result.user_message_uuids or []
+    if my_uuid == result.user_message_uuid or my_uuid in uuids:
+        ...  # this turn took in the prompt sent with my_uuid
+
+Read with ``receive_messages()``: ``receive_response()`` stops at the first
+result, which can be an injected turn's. See
+:attr:`ResultMessage.user_message_uuid` for how to send the ``uuid``. Prompts
+sent as a plain string have none; for those, ``origin`` being ``None`` or of
+kind ``human`` is only a best effort.
 
 Only ``kind`` is always present; the remaining keys depend on ``kind`` as
 noted on each field. ``None``/absent means the CLI did not attribute the
@@ -1387,6 +1448,16 @@ class AssistantMessage:
     stop_reason: str | None = None
     session_id: str | None = None
     uuid: str | None = None
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message this turn is answering — see
+    :attr:`ResultMessage.user_message_uuid`. Set on the first top-level
+    assistant message after that value is set or changes, which can be partway
+    through a turn; ``None`` on all others."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn has taken in so far. Set on the
+    same messages as ``user_message_uuid``, except on older CLIs. A message
+    taken in later may be listed only on the result — see
+    :attr:`ResultMessage.user_message_uuids`."""
 
 
 @dataclass
@@ -1726,10 +1797,31 @@ class ResultMessage:
     ``SDKResultMessage.terminal_reason``."""
     origin: MessageOrigin | None = None
     """Origin of the user message that triggered this turn — see
-    :class:`MessageOrigin`. Lets a streaming-input consumer distinguish the
-    result of its own prompt (``None``, or ``{"kind": "human"}`` if it stamped
-    that) from results of injected turns such as background-task
-    notifications (``{"kind": "task-notification"}``)."""
+    :class:`MessageOrigin`. Describes only what *started* the turn, such as a
+    background-task notification (``{"kind": "task-notification"}``). A prompt
+    sent while an injected turn is running can be answered inside that turn,
+    and the result then carries the injected turn's origin, so match
+    ``user_message_uuids`` to find the result for a given prompt."""
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message that started this turn (the last one, if
+    several were merged to start it). On an injected turn, the last user
+    message taken in while it was running.
+
+    Covers only messages sent as dicts with a top-level ``uuid`` string; prompts
+    passed as a plain string have none. Use a new uuid for every message, as the
+    CLI can skip one whose uuid it has already seen. ``None`` when the turn took
+    in no such message, or on older CLIs. Set on error results too, so check
+    ``terminal_reason`` and ``is_error`` before treating the message as
+    answered. Mirrors the TypeScript SDK's
+    ``SDKResultMessage.user_message_uuid``."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn took in, in order: those that
+    started it, then any sent while it was running. The CLI lists at most 64,
+    so a uuid missing from a full list may still have been taken in. Can be
+    empty on an interrupted turn. ``None`` when ``user_message_uuid`` is
+    ``None`` for any other reason, and also on some error results and older
+    CLIs that report only ``user_message_uuid``. Mirrors the TypeScript SDK's
+    ``SDKResultMessage.user_message_uuids``."""
 
 
 @dataclass
@@ -1740,6 +1832,16 @@ class StreamEvent:
     session_id: str
     event: dict[str, Any]  # The raw Anthropic API stream event
     parent_tool_use_id: str | None = None
+    user_message_uuid: str | None = None
+    """``uuid`` of the user message this turn is answering — see
+    :attr:`ResultMessage.user_message_uuid`. Set on the first top-level non-ping
+    event after that value is set or changes, which can be partway through a
+    turn; ``None`` on all others."""
+    user_message_uuids: list[str] | None = None
+    """``uuid`` of every user message this turn has taken in so far. Set on the
+    same events as ``user_message_uuid``, except on older CLIs. A message taken
+    in later may be listed only on the result — see
+    :attr:`ResultMessage.user_message_uuids`."""
 
 
 # Rate limit types — see https://docs.claude.com/en/docs/claude-code/rate-limits
@@ -2318,6 +2420,8 @@ def _hooks_to_internal_format(
             }
             if hasattr(matcher, "timeout") and matcher.timeout is not None:
                 internal_matcher["timeout"] = matcher.timeout
+            if hasattr(matcher, "on_failure") and matcher.on_failure is not None:
+                internal_matcher["on_failure"] = matcher.on_failure
             internal_hooks[event].append(internal_matcher)
     return internal_hooks
 
@@ -2463,8 +2567,8 @@ class ClaudeAgentOptions:
     Without ``sandbox``, the value is passed as-is to the ``--settings`` CLI
     flag. When ``sandbox`` is also set, the settings are merged with the sandbox
     settings and passed as one JSON string: an inline string is parsed
-    directly, and a path is read from disk (a missing file is logged and only
-    the sandbox settings are passed).
+    directly, and a path is read from disk, relative to ``cwd`` when ``cwd`` is
+    set. Settings that cannot be loaded raise ``CLIConnectionError``.
 
     These are loaded into the "flag settings" layer, which has the highest
     priority among user-controlled settings.
@@ -2484,11 +2588,13 @@ class ClaudeAgentOptions:
     The transport sets ``CLAUDE_CODE_ENTRYPOINT`` (overridable here) and
     ``CLAUDE_AGENT_SDK_VERSION`` (not overridable), plus ``PWD`` when ``cwd``
     is set, ``CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`` when
-    ``enable_file_checkpointing`` is set, and W3C trace context from an active
-    OpenTelemetry span.
+    ``enable_file_checkpointing`` is set, W3C trace context from an active
+    OpenTelemetry span, and ``CLAUDE_AGENT_SDK_DERIVED_CLIENT_APP`` (not
+    overridable; see ``client_app``).
 
     SDK consumers can identify their app/library in the User-Agent header by
-    setting ``CLAUDE_AGENT_SDK_CLIENT_APP`` (e.g. ``"my-app/1.0.0"``).
+    setting ``CLAUDE_AGENT_SDK_CLIENT_APP`` (e.g. ``"my-app/1.0.0"``). The
+    ``client_app`` option sets this variable for you and wins over a value here.
     """
 
     extra_args: dict[str, str | None] = field(default_factory=dict)
@@ -2658,7 +2764,8 @@ class ClaudeAgentOptions:
     - ``"local"`` — Local settings (``.claude/settings.local.json``).
 
     When ``None``, all sources are loaded (matches CLI defaults). Pass ``[]``
-    to disable filesystem settings (SDK isolation mode). Must include
+    to disable filesystem settings (SDK isolation mode), for example when
+    ``cwd`` may be untrusted: project settings can run hooks. Must include
     ``"project"`` to load CLAUDE.md files.
     """
 
@@ -2790,6 +2897,22 @@ class ClaudeAgentOptions:
     pace tool use and wrap up before the limit. Sent as
     ``output_config.task_budget`` with the ``task-budgets-2026-03-13`` beta
     header.
+    """
+
+    client_app: str | None = None
+    """Your app/library identifier (e.g. ``"my-app/1.0.0"``), sent on requests
+    to the API. Sets ``CLAUDE_AGENT_SDK_CLIENT_APP`` for the Claude Code
+    subprocess. The value must be valid in an HTTP header: a character above
+    U+00FF stops every request.
+
+    When neither this nor ``CLAUDE_AGENT_SDK_CLIENT_APP`` is set, sessions signed
+    in with a Claude subscription send the name and version of the installed
+    distribution behind ``python -m <package>``, if it depends on this SDK. API
+    key, Bedrock, Vertex and Foundry sessions do not, and neither does a session
+    with telemetry turned off. Pass an empty string to send no identifier. No
+    released Claude Code qualifies yet: nothing is derived for a version that does
+    not keep the value from shell commands, hooks and MCP and LSP servers, or for
+    a CLI other than the bundled one, whose version is unknown until it starts.
     """
 
 

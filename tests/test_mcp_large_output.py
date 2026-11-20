@@ -74,17 +74,11 @@ def _capture_env(transport: SubprocessCLITransport) -> dict[str, str]:
         mock_process.stderr = None
         mock_process.returncode = None
 
-        with (
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.anyio.open_process",
-                new_callable=AsyncMock,
-                return_value=mock_process,
-            ) as mock_open,
-            patch(
-                "claude_agent_sdk._internal.transport.subprocess_cli.SubprocessCLITransport._check_claude_version",
-                new_callable=AsyncMock,
-            ),
-        ):
+        with patch(
+            "claude_agent_sdk._internal.transport.subprocess_cli.anyio.open_process",
+            new_callable=AsyncMock,
+            return_value=mock_process,
+        ) as mock_open:
             await transport.connect()
             _, kwargs = mock_open.call_args
             captured.update(kwargs.get("env", {}))

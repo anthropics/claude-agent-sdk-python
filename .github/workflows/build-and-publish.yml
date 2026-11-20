@@ -106,11 +106,11 @@ jobs:
           import sys
           import urllib.request
 
-          QUOTA_BYTES = 50 * 1024**3        # PyPI project quota (increased from default 10 GiB)
-          # Temporary: fail above 49.9 GiB (0.1 GiB buffer). Safe only if QUOTA_BYTES is
-          # PyPI's real quota. When PyPI raises it, update QUOTA_BYTES and set this to
-          # 95% of it. Also update PYPI_PROJECT_LIMIT_BYTES in scripts/check_pypi_quota.py.
-          THRESHOLD_BYTES = 49.9 * 1024**3
+          # PyPI project quota (increased from 50 GiB, pypi/support#12262). If PyPI changes
+          # it for this project, update this and PYPI_PROJECT_LIMIT_BYTES in
+          # scripts/check_pypi_quota.py.
+          QUOTA_BYTES = 150 * 1024**3
+          THRESHOLD_BYTES = 0.95 * QUOTA_BYTES
           # PyPI per-file limit (increased from default 100 MiB, pypi/support#12263). If PyPI
           # changes it for this project, update this and PYPI_FILE_LIMIT_BYTES in
           # scripts/check_pypi_quota.py.

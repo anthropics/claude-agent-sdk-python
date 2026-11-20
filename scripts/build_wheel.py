@@ -82,6 +82,7 @@ def update_version(version: str) -> None:
 
 
 CLI_VERSION_FILE = Path("src/claude_agent_sdk/_cli_version.py")
+BUNDLED_VERSION_FILE = Path("src/claude_agent_sdk/_bundled/claude.version")
 
 # The assignment update_cli_version.py writes.
 CLI_VERSION_PATTERN = re.compile(r'__cli_version__ = "([^"]+)"')
@@ -654,6 +655,8 @@ def main() -> None:
         download_cli(args.cli_version)
     else:
         print("\nSkipping CLI download (using existing)")
+        # Nothing here reads the existing binary, so a record may not describe it.
+        BUNDLED_VERSION_FILE.unlink(missing_ok=True)
 
     # Build wheel
     build_wheel(args.recompress, args.no_isolation)

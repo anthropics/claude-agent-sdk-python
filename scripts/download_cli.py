@@ -92,6 +92,11 @@ def find_installed_cli() -> Path | None:
     return None
 
 
+# Read by SubprocessCLITransport, which holds the same name: change them together.
+BUNDLED_VERSION_FILE = "claude.version"
+VERSION_READ_TIMEOUT_SECONDS = 30
+
+
 def run_command(command: list[str], env: dict[str, str] | None = None) -> None:
     """Run one install command with no shell and no inherited stdin.
 
@@ -300,6 +305,32 @@ def download_cli() -> None:
         retry_install(attempt)
 
 
+def record_bundled_version(cli_path: Path, version_file: Path) -> None:
+    """Write the version the bundled CLI reports beside it.
+
+    _cli_version.py says what should be bundled; --cli-version builds do not keep
+    it in step with the binary. With no file the SDK treats the version as
+    unknown, so a failed read warns and the build goes on.
+    """
+    try:
+        result = subprocess.run(
+            [str(cli_path), "--version"],
+            check=True,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=VERSION_READ_TIMEOUT_SECONDS,
+        )
+        reported = _decode(result.stdout).strip()
+        if not version_validation.VERSION_PATTERN.match(reported):
+            print(f"Warning: unexpected CLI version: {reported!r}", file=sys.stderr)
+            return
+        version_file.write_text(reported + "\n")
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Warning: could not record the CLI version: {exc}", file=sys.stderr)
+        return
+    print(f"Recorded CLI version in: {version_file}")
+
+
 def copy_cli_to_bundle() -> None:
     """Copy the installed CLI to the package _bundled directory."""
     # Find project root (parent of scripts directory)
@@ -322,6 +353,10 @@ def copy_cli_to_bundle() -> None:
     system = platform.system()
     target_name = "claude.exe" if system == "Windows" else "claude"
     target_path = bundle_dir / target_name
+    version_file = bundle_dir / BUNDLED_VERSION_FILE
+
+    # A version left from an earlier binary must not outlive it
+    version_file.unlink(missing_ok=True)
 
     # Copy the binary
     print(f"Copying CLI to: {target_path}")
@@ -332,6 +367,7 @@ def copy_cli_to_bundle() -> None:
         target_path.chmod(0o755)
 
     print(f"Successfully bundled CLI binary: {target_path}")
+    record_bundled_version(target_path, version_file)
 
     # Print size info
     size_mb = target_path.stat().st_size / (1024 * 1024)

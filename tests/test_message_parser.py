@@ -14,6 +14,7 @@ from claude_agent_sdk.types import (
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskProgressMessage,
@@ -909,6 +910,84 @@ class TestMessageParser:
         assert isinstance(message, ResultMessage)
         assert message.origin is not None
         assert message.origin["kind"] == "unclassified"
+
+    @pytest.mark.parametrize(
+        ("frame", "expected_type"),
+        [
+            pytest.param(
+                {
+                    "type": "assistant",
+                    "message": {"content": [], "model": "claude-opus-4-6"},
+                },
+                AssistantMessage,
+                id="assistant",
+            ),
+            pytest.param(
+                {
+                    "type": "stream_event",
+                    "uuid": "event-1",
+                    "session_id": "session_123",
+                    "event": {"type": "message_start"},
+                },
+                StreamEvent,
+                id="stream_event",
+            ),
+            *(
+                pytest.param(
+                    {
+                        "type": "result",
+                        "subtype": subtype,
+                        "duration_ms": 1000,
+                        "duration_api_ms": 500,
+                        "is_error": subtype != "success",
+                        "num_turns": 2,
+                        "session_id": "session_123",
+                    },
+                    ResultMessage,
+                    id=f"result-{subtype}",
+                )
+                for subtype in ("success", "error_during_execution")
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("uuid", "uuids"),
+        [
+            pytest.param(None, None, id="absent"),
+            # Older CLIs report only the single uuid.
+            pytest.param("user-1", None, id="single-only"),
+            pytest.param("user-2", ["user-1", "user-2"], id="merged"),
+        ],
+    )
+    def test_parse_user_message_uuids(self, frame, expected_type, uuid, uuids):
+        """The uuids of the answered user messages are surfaced as sent."""
+        data = dict(frame)
+        if uuid is not None:
+            data["user_message_uuid"] = uuid
+        if uuids is not None:
+            data["user_message_uuids"] = uuids
+        message = parse_message(data)
+        assert isinstance(message, expected_type)
+        assert message.user_message_uuid == uuid
+        assert message.user_message_uuids == uuids
+
+    def test_parse_result_message_empty_user_message_uuids(self):
+        """An empty list stays distinguishable from an absent one."""
+        message = parse_message(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "duration_ms": 1000,
+                "duration_api_ms": 500,
+                "is_error": True,
+                "num_turns": 2,
+                "session_id": "session_123",
+                "user_message_uuids": [],
+            }
+        )
+        assert isinstance(message, ResultMessage)
+        assert message.user_message_uuid is None
+        assert message.user_message_uuids == []
 
     def test_parse_result_message_missing_terminal_reason_is_none(self):
         """A result message without terminal_reason parses to None."""

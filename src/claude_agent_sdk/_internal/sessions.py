@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 import unicodedata
 from datetime import datetime
@@ -101,13 +100,18 @@ def _simple_hash(s: str) -> str:
     return "".join(reversed(out))
 
 
+def _full_sanitize(name: str) -> str:
+    """The sanitized form of a path, before any truncation."""
+    return _SANITIZE_RE.sub("-", name)
+
+
 def _sanitize_path(name: str) -> str:
     """Makes a string safe for use as a directory name.
 
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
-    sanitized = _SANITIZE_RE.sub("-", name)
+    sanitized = _full_sanitize(name)
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)
@@ -154,14 +158,77 @@ def _canonicalize_path(d: str) -> str:
         return unicodedata.normalize("NFC", d)
 
 
+def _parse_entry(line: str | bytes) -> dict[str, Any]:
+    """Parses one transcript line, or returns {} if it is not a JSON object."""
+    try:
+        parsed = json.loads(line)
+    except (ValueError, RecursionError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _read_session_project_path(file_path: Path) -> str | None:
+    """Returns the project path a session file was stored under, if recorded.
+
+    That is the last "relocated" stamp (the CLI's /cd keeps the original cwd
+    on earlier entries), else the first entry's ``cwd``. Lines are parsed and
+    only top-level fields count, because tool inputs and results are nested
+    objects that can carry the same keys earlier in the line.
+    """
+    lite = _read_session_lite(file_path)
+    if lite is None:
+        return None
+    for line in reversed(lite.tail.split("\n")):
+        if '"relocatedCwd"' in line:
+            entry = _parse_entry(line)
+            cwd = entry.get("relocatedCwd")
+            if entry.get("type") == "relocated" and isinstance(cwd, str):
+                return cwd
+    # Line by line rather than from lite.head: a long first prompt can push the
+    # first complete entry with a cwd past the head window.
+    try:
+        with file_path.open("rb") as f:
+            for raw in f:
+                if b'"cwd"' in raw:
+                    cwd = _parse_entry(raw).get("cwd")
+                    if isinstance(cwd, str):
+                        return cwd
+    except OSError:
+        pass
+    return None
+
+
+def _dir_belongs_to_project(project_dir: Path, project_path: str) -> bool:
+    """Checks whether any session in project_dir was stored under project_path.
+
+    Paths are compared in their full sanitized form, as the TypeScript SDK
+    does. A directory with no recorded path does not match.
+    """
+    wanted = os.path.normcase(_full_sanitize(project_path))
+    try:
+        files = [
+            f for f in project_dir.iterdir() if f.suffix == ".jsonl" and f.is_file()
+        ]
+    except OSError:
+        return False
+    for file_path in files:
+        cwd = _read_session_project_path(file_path)
+        if not cwd:
+            continue
+        found = _full_sanitize(unicodedata.normalize("NFC", cwd))
+        if os.path.normcase(found) == wanted:
+            return True
+    return False
+
+
 def _find_project_dir(project_path: str) -> Path | None:
     """Finds the project directory for a given path.
 
-    Tolerates hash mismatches for long paths (>200 chars). The CLI uses
-    Bun.hash while the SDK under Node.js uses simpleHash — for paths that
-    exceed MAX_SANITIZED_LENGTH, these produce different directory suffixes.
-    This function falls back to prefix-based scanning when the exact match
-    doesn't exist.
+    Tolerates hash mismatches for long paths (>200 chars): older CLI builds
+    used Bun.hash for the directory suffix where this SDK uses simpleHash.
+    When the exact match doesn't exist, this falls back to directories with
+    the same 200-char prefix. Two long paths can share that prefix, so a
+    candidate is returned only if its sessions record this path.
     """
     exact = _get_project_dir(project_path)
     if exact.is_dir():
@@ -173,14 +240,18 @@ def _find_project_dir(project_path: str) -> Path | None:
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return None
 
-    prefix = sanitized[:MAX_SANITIZED_LENGTH]
-    projects_dir = _get_projects_dir()
+    prefix = os.path.normcase(sanitized[:MAX_SANITIZED_LENGTH] + "-")
     try:
-        for entry in projects_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith(prefix + "-"):
-                return entry
+        candidates = sorted(
+            entry
+            for entry in _get_projects_dir().iterdir()
+            if os.path.normcase(entry.name).startswith(prefix)
+        )
     except OSError:
-        pass
+        return None
+    for entry in candidates:
+        if _dir_belongs_to_project(entry, project_path):
+            return entry
     return None
 
 
@@ -602,59 +673,19 @@ def _list_sessions_for_project(
         sessions = _read_sessions_from_dir(project_dir, canonical_dir)
         return _apply_sort_limit_offset(sessions, limit, offset)
 
-    # Worktree-aware scanning: find all project dirs matching any worktree
-    projects_dir = _get_projects_dir()
-    case_insensitive = sys.platform == "win32"
-
-    # Sort worktree paths by sanitized prefix length (longest first) so
-    # more specific matches take priority over shorter ones
-    indexed = []
-    for wt in worktree_paths:
-        sanitized = _sanitize_path(wt)
-        prefix = sanitized.lower() if case_insensitive else sanitized
-        indexed.append((wt, prefix))
-    indexed.sort(key=lambda x: len(x[1]), reverse=True)
-
-    try:
-        all_dirents = [e for e in projects_dir.iterdir() if e.is_dir()]
-    except OSError:
-        # Fall back to single project dir
-        project_dir = _find_project_dir(canonical_dir)
-        if project_dir is None:
-            return _apply_sort_limit_offset([], limit, offset)
-        sessions = _read_sessions_from_dir(project_dir, canonical_dir)
-        return _apply_sort_limit_offset(sessions, limit, offset)
-
+    # The user's actual directory first (handles subdirectories like
+    # /repo/packages/my-app), then each worktree, resolved the same way as
+    # get_session_info and the mutation helpers resolve them.
     all_sessions: list[SDKSessionInfo] = []
     seen_dirs: set[str] = set()
-
-    # Always include the user's actual directory (handles subdirectories
-    # like /repo/packages/my-app that won't match worktree root prefixes)
-    canonical_project_dir = _find_project_dir(canonical_dir)
-    if canonical_project_dir is not None:
-        dir_base = canonical_project_dir.name
-        seen_dirs.add(dir_base.lower() if case_insensitive else dir_base)
-        sessions = _read_sessions_from_dir(canonical_project_dir, canonical_dir)
-        all_sessions.extend(sessions)
-
-    for entry in all_dirents:
-        dir_name = entry.name.lower() if case_insensitive else entry.name
-        if dir_name in seen_dirs:
+    for path in [canonical_dir, *worktree_paths]:
+        project_dir = _find_project_dir(path)
+        if project_dir is None:
             continue
-
-        for wt_path, prefix in indexed:
-            # Only use startswith for truncated paths (>MAX_SANITIZED_LENGTH)
-            # where a hash suffix follows. For short paths, require exact match
-            # to avoid /root/project matching /root/project-foo.
-            is_match = dir_name == prefix or (
-                len(prefix) >= MAX_SANITIZED_LENGTH
-                and dir_name.startswith(prefix + "-")
-            )
-            if is_match:
-                seen_dirs.add(dir_name)
-                sessions = _read_sessions_from_dir(entry, wt_path)
-                all_sessions.extend(sessions)
-                break
+        dir_name = os.path.normcase(project_dir.name)
+        if dir_name not in seen_dirs:
+            seen_dirs.add(dir_name)
+            all_sessions.extend(_read_sessions_from_dir(project_dir, path))
 
     deduped = _deduplicate_by_session_id(all_sessions)
     return _apply_sort_limit_offset(deduped, limit, offset)

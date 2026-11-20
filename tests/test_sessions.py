@@ -750,6 +750,33 @@ class TestGetSessionMessages:
         sid = str(uuid.uuid4())
         assert get_session_messages(sid) == []
 
+    def test_invalid_utf8_line_is_skipped(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A transcript line with invalid UTF-8 bytes must not raise; the
+        valid lines around it are still returned."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        good = [
+            _make_transcript_entry("user", u1, None, sid, content="hello"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hi!"),
+        ]
+        raw = (
+            b"\xff\xfe{not json\n"
+            + "\n".join(json.dumps(e) for e in good).encode("utf-8")
+            + b"\n"
+        )
+        (project_dir / f"{sid}.jsonl").write_bytes(raw)
+
+        messages = get_session_messages(sid, directory=project_path)
+        assert [m.uuid for m in messages] == [u1, a1]
+
     def test_simple_chain(self, claude_config_dir: Path, tmp_path: Path):
         """Basic user → assistant → user → assistant chain."""
         project_path = str(tmp_path / "proj")
@@ -2304,6 +2331,23 @@ class TestGetSubagentMessages:
         assert len(messages) == 2
         assert all(m.parent_tool_use_id is None for m in messages)
         assert all(m.parent_agent_id is None for m in messages)
+
+    def test_invalid_utf8_agent_file_is_tolerated(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """Invalid UTF-8 bytes in an agent transcript must not raise out of
+        get_subagent_messages(); the valid lines are still returned."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path
+        )
+        self._write_agent(subagents_dir, "x", sid, None)
+        agent_file = subagents_dir / "agent-x.jsonl"
+        agent_file.write_bytes(b"\xff\xfe{not json\n" + agent_file.read_bytes())
+
+        messages = get_subagent_messages(sid, "x", directory=project_path)
+        assert len(messages) == 2
 
     def test_unreadable_sidecar_degrades_to_none(
         self, claude_config_dir: Path, tmp_path: Path

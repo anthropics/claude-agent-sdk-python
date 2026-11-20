@@ -815,3 +815,51 @@ class TestForkSession:
                 assert "teamName" not in e
                 assert "agentName" not in e
                 assert "slug" not in e
+
+    @pytest.mark.parametrize("cycle", ["self", "two_node"])
+    def test_fork_handles_cyclic_progress_parents(
+        self, claude_config_dir: Path, tmp_path: Path, cycle: str
+    ):
+        """Cyclic progress parentUuid chain does not hang and breaks cleanly."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        entries = [
+            {
+                "type": "progress",
+                "uuid": "prog-a",
+                "parentUuid": "prog-a" if cycle == "self" else "prog-b",
+                "sessionId": sid,
+            },
+        ]
+        if cycle == "two_node":
+            entries.append(
+                {
+                    "type": "progress",
+                    "uuid": "prog-b",
+                    "parentUuid": "prog-a",
+                    "sessionId": sid,
+                }
+            )
+        entries.append(
+            {
+                "type": "user",
+                "uuid": "user-1",
+                "parentUuid": "prog-a",
+                "sessionId": sid,
+                "message": {"role": "user", "content": "Hello"},
+            }
+        )
+        file_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = fork_session(sid, directory=project_path)
+        fork_path = project_dir / f"{result.session_id}.jsonl"
+
+        for line in fork_path.read_text().strip().split("\n"):
+            e = json.loads(line)
+            if e.get("type") == "user":
+                assert e["parentUuid"] is None

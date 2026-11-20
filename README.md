@@ -108,6 +108,7 @@ A **custom tool** is a Python function that you can offer to Claude, for Claude 
 Custom tools are implemented in-process MCP servers that run directly within your Python application, eliminating the need for separate processes that regular MCP servers require.
 
 For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
+For application-scoped remember and recall tools, see [Loom memory](examples/loom_memory.md).
 
 #### Creating a Simple Tool
 

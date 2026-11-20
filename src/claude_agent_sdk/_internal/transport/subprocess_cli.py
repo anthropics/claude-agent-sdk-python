@@ -235,6 +235,45 @@ def _parse_stdout_line(line: str) -> dict[str, Any] | None:
     return data
 
 
+def _argument_text(flag: str, value: object) -> str:
+    """Return the text of flag's value, as it would be as an argument of its own.
+
+    A str subclass gives its own characters and a path or bytes its file-system
+    text, where str() or an f-string can give Class.NAME or a repr. None raises:
+    an option that reaches this point needs a value.
+    """
+    if value is None:
+        raise CLIConnectionError(
+            f"The value for {flag} is None. "
+            "Set it to a string or path, or remove the option."
+        )
+    if isinstance(value, (bytes, os.PathLike)):
+        value = os.fsdecode(value)
+    return str.__str__(value) if isinstance(value, str) else str(value)
+
+
+def _flag_with_value(flag: str, value: object) -> str:
+    """Return flag and value as one ``--flag=value`` argument.
+
+    For an option the CLI declares with a value, everything after the first
+    ``=`` is that value, even when it is empty, begins with dashes or looks
+    like another option.
+    """
+    return flag + "=" + _argument_text(flag, value)
+
+
+def _flag_and_value(flag: str, value: object) -> list[str]:
+    """Return an option and its value as one argument or two.
+
+    A value that begins with "-" goes out as one ``--flag=value`` argument,
+    so the CLI cannot read it as an option. Any other value goes out as two.
+    """
+    text = _argument_text(flag, value)
+    if text.startswith("-"):
+        return [_flag_with_value(flag, text)]
+    return [flag, text]
+
+
 class SubprocessCLITransport(Transport):
     """Subprocess transport using Claude Code CLI."""
 
@@ -426,7 +465,7 @@ class SubprocessCLITransport(Transport):
         )
 
     @staticmethod
-    def _reject_windows_cmd_metacharacters(option_name: str, value: str) -> None:
+    def _reject_windows_cmd_metacharacters(option_name: str, value: object) -> None:
         """Defense in depth for Windows: reject cmd.exe metacharacters.
 
         With batch-script spawning refused (_reject_windows_batch_cli),
@@ -441,7 +480,8 @@ class SubprocessCLITransport(Transport):
         """
         if platform.system() != "Windows":
             return
-        bad = sorted({c for c in value if c in _CMD_EXE_METACHARACTERS or c in "\r\n"})
+        text = _argument_text(option_name, value)
+        bad = sorted({c for c in text if c in _CMD_EXE_METACHARACTERS or c in "\r\n"})
         if bad:
             raise ValueError(
                 f"{option_name} value {value!r} contains characters that "
@@ -517,101 +557,135 @@ class SubprocessCLITransport(Transport):
         return allowed_tools, setting_sources
 
     def _build_command(self) -> list[str]:
-        """Build CLI command with arguments."""
+        """Build CLI command with arguments.
+
+        Option values go out as one ``--flag=value`` argument, except the
+        fixed ``stream-json`` values and where a comment below says why not.
+        """
         if self._cli_path is None:
             raise CLINotFoundError("CLI path not resolved. Call connect() first.")
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
 
         if self._options.system_prompt is None:
-            cmd.extend(["--system-prompt", ""])
+            cmd.append(_flag_with_value("--system-prompt", ""))
         elif isinstance(self._options.system_prompt, str):
-            cmd.extend(["--system-prompt", self._options.system_prompt])
+            cmd.append(_flag_with_value("--system-prompt", self._options.system_prompt))
         else:
             sp = self._options.system_prompt
             if sp.get("type") == "file":
-                cmd.extend(["--system-prompt-file", cast(SystemPromptFile, sp)["path"]])
+                cmd.append(
+                    _flag_with_value(
+                        "--system-prompt-file", cast(SystemPromptFile, sp)["path"]
+                    )
+                )
             elif sp.get("type") == "custom":
-                cmd.extend(["--system-prompt", cast(SystemPromptCustom, sp)["prompt"]])
+                cmd.append(
+                    _flag_with_value(
+                        "--system-prompt", cast(SystemPromptCustom, sp)["prompt"]
+                    )
+                )
             elif sp.get("type") == "preset" and "append" in sp:
-                cmd.extend(
-                    ["--append-system-prompt", cast(SystemPromptPreset, sp)["append"]]
+                cmd.append(
+                    _flag_with_value(
+                        "--append-system-prompt", cast(SystemPromptPreset, sp)["append"]
+                    )
                 )
 
         # Handle tools option (base set of tools)
         if self._options.tools is not None:
             tools = self._options.tools
             if isinstance(tools, list):
-                if len(tools) == 0:
-                    cmd.extend(["--tools", ""])
-                else:
-                    cmd.extend(["--tools", ",".join(tools)])
+                # An empty list gives "--tools=", which disables all tools
+                cmd.append(_flag_with_value("--tools", ",".join(tools)))
             else:
                 # Preset object - 'claude_code' preset maps to 'default'
-                cmd.extend(["--tools", "default"])
+                cmd.append(_flag_with_value("--tools", "default"))
 
         effective_allowed_tools, effective_setting_sources = (
             self._apply_skills_defaults()
         )
 
         if effective_allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(effective_allowed_tools)])
+            cmd.append(
+                _flag_with_value("--allowedTools", ",".join(effective_allowed_tools))
+            )
 
         if self._options.max_turns:
-            cmd.extend(["--max-turns", str(self._options.max_turns)])
+            cmd.append(_flag_with_value("--max-turns", str(self._options.max_turns)))
 
         if self._options.max_budget_usd is not None:
-            cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
+            cmd.append(
+                _flag_with_value("--max-budget-usd", str(self._options.max_budget_usd))
+            )
 
         if self._options.disallowed_tools:
-            cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
+            cmd.append(
+                _flag_with_value(
+                    "--disallowedTools", ",".join(self._options.disallowed_tools)
+                )
+            )
 
         if self._options.task_budget is not None:
-            cmd.extend(["--task-budget", str(self._options.task_budget["total"])])
+            cmd.append(
+                _flag_with_value(
+                    "--task-budget", str(self._options.task_budget["total"])
+                )
+            )
 
         if self._options.model:
-            cmd.extend(["--model", self._options.model])
+            cmd.append(_flag_with_value("--model", self._options.model))
 
         if self._options.fallback_model:
-            cmd.extend(["--fallback-model", self._options.fallback_model])
+            cmd.append(
+                _flag_with_value("--fallback-model", self._options.fallback_model)
+            )
 
         if self._options.betas:
-            cmd.extend(["--betas", ",".join(self._options.betas)])
+            cmd.append(_flag_with_value("--betas", ",".join(self._options.betas)))
 
         if self._options.permission_prompt_tool_name:
-            cmd.extend(
-                ["--permission-prompt-tool", self._options.permission_prompt_tool_name]
+            cmd.append(
+                _flag_with_value(
+                    "--permission-prompt-tool",
+                    self._options.permission_prompt_tool_name,
+                )
             )
 
         if self._options.permission_mode:
-            cmd.extend(["--permission-mode", self._options.permission_mode])
+            cmd.append(
+                _flag_with_value("--permission-mode", self._options.permission_mode)
+            )
 
         if self._options.continue_conversation:
             cmd.append("--continue")
 
-        # Pass these as --flag=value rather than as two argv tokens. The CLI
-        # declares --resume with an optional value, so in the two-token form a
-        # dash-leading value is not bound to the flag and is instead parsed as
-        # a separate CLI flag -- letting an untrusted value inject arbitrary
-        # flags. The equals form always binds the value to the flag.
+        # The CLI declares --resume with an optional value, so as two arguments
+        # a dash-leading value would not be bound to the flag at all; the
+        # --flag=value form always binds it.
         if self._options.resume:
             self._reject_windows_cmd_metacharacters("resume", self._options.resume)
-            cmd.append(f"--resume={self._options.resume}")
+            cmd.append(_flag_with_value("--resume", self._options.resume))
 
         if self._options.session_id:
             self._reject_windows_cmd_metacharacters(
                 "session_id", self._options.session_id
             )
-            cmd.append(f"--session-id={self._options.session_id}")
+            cmd.append(_flag_with_value("--session-id", self._options.session_id))
 
         # Handle settings and sandbox: merge sandbox into settings if both are provided
         settings_value = self._build_settings_value()
         if settings_value:
-            cmd.extend(["--settings", settings_value])
+            # Two arguments: Claude Code 2.0.69 and earlier ignore
+            # "--settings=<value>". A value starting with "-" can only be a file
+            # path, so "./" keeps the same file and stops it being read as an option.
+            settings_arg = _argument_text("--settings", settings_value)
+            if settings_arg.startswith("-"):
+                settings_arg = "./" + settings_arg
+            cmd.extend(["--settings", settings_arg])
 
         if self._options.add_dirs:
-            # Convert all paths to strings and add each directory
             for directory in self._options.add_dirs:
-                cmd.extend(["--add-dir", str(directory)])
+                cmd.append(_flag_with_value("--add-dir", directory))
 
         if self._options.mcp_servers:
             if isinstance(self._options.mcp_servers, dict):
@@ -628,7 +702,9 @@ class SubprocessCLITransport(Transport):
                         # For external servers, pass as-is
                         servers_for_cli[name] = config
 
-                # Pass all servers to CLI
+                # Two arguments, the flag and then the JSON, as the TypeScript
+                # SDK sends it. The JSON begins with "{", so the CLI cannot read
+                # it as an option.
                 if servers_for_cli:
                     cmd.extend(
                         [
@@ -637,8 +713,10 @@ class SubprocessCLITransport(Transport):
                         ]
                     )
             else:
-                # String or Path format: pass directly as file path or JSON string
-                cmd.extend(["--mcp-config", str(self._options.mcp_servers)])
+                # A file path or JSON string: two arguments like the dict form,
+                # except a value that begins with "-" (only a path can), which
+                # is attached so the CLI cannot read it as an option.
+                cmd.extend(_flag_and_value("--mcp-config", self._options.mcp_servers))
 
         if self._options.include_partial_messages:
             cmd.append("--include-partial-messages")
@@ -652,13 +730,13 @@ class SubprocessCLITransport(Transport):
         if self._options.fork_session:
             cmd.append("--fork-session")
 
-        # Equals form so the value can never be parsed as a separate flag, even
-        # if the CLI's declaration of these options ever changes.
         if self._options.resume_session_at:
             self._reject_windows_cmd_metacharacters(
                 "resume_session_at", self._options.resume_session_at
             )
-            cmd.append(f"--resume-session-at={self._options.resume_session_at}")
+            cmd.append(
+                _flag_with_value("--resume-session-at", self._options.resume_session_at)
+            )
 
         # `is not None`, not truthiness: an empty string is forwarded so the
         # CLI rejects it as a malformed declaration instead of the SDK silently
@@ -667,7 +745,9 @@ class SubprocessCLITransport(Transport):
             self._reject_windows_cmd_metacharacters(
                 "resume_drops_turn", self._options.resume_drops_turn
             )
-            cmd.append(f"--resume-drops-turn={self._options.resume_drops_turn}")
+            cmd.append(
+                _flag_with_value("--resume-drops-turn", self._options.resume_drops_turn)
+            )
 
         if self._options.session_store is not None:
             cmd.append("--session-mirror")
@@ -676,13 +756,17 @@ class SubprocessCLITransport(Transport):
         # No --agents CLI flag needed
 
         if effective_setting_sources is not None:
-            cmd.append(f"--setting-sources={','.join(effective_setting_sources)}")
+            cmd.append(
+                _flag_with_value(
+                    "--setting-sources", ",".join(effective_setting_sources)
+                )
+            )
 
         # Add plugin directories
         if self._options.plugins:
             for plugin in self._options.plugins:
                 if plugin["type"] == "local":
-                    cmd.extend(["--plugin-dir", plugin["path"]])
+                    cmd.append(_flag_with_value("--plugin-dir", plugin["path"]))
                 else:
                     raise ValueError(f"Unsupported plugin type: {plugin['type']}")
 
@@ -691,40 +775,38 @@ class SubprocessCLITransport(Transport):
             if value is None:
                 # Boolean flag without value
                 cmd.append(f"--{flag}")
-            elif str(value).startswith("-"):
-                # In the two-token form, a dash-leading value is not bound
-                # to its flag when the CLI declares the option with an
-                # optional value -- it parses as a separate flag instead
-                # (the same injection the --resume change above closes).
-                # The equals form always binds. Mirrors the equivalent
-                # guard in the TypeScript SDK.
-                cmd.append(f"--{flag}={value}")
             else:
-                # Flag with value
-                cmd.extend([f"--{flag}", str(value)])
+                # Two arguments unless dash-leading: extra_args may name a flag
+                # declared without a value, and the CLI rejects "--flag=value"
+                # for those.
+                cmd.extend(_flag_and_value(f"--{flag}", value))
 
         # Resolve thinking config -> --thinking / --max-thinking-tokens
         # `thinking` takes precedence over the deprecated `max_thinking_tokens`
         if self._options.thinking is not None:
             t = self._options.thinking
             if t["type"] == "adaptive":
-                cmd.extend(["--thinking", "adaptive"])
+                cmd.append(_flag_with_value("--thinking", "adaptive"))
             elif t["type"] == "enabled":
-                cmd.extend(["--max-thinking-tokens", str(t["budget_tokens"])])
+                cmd.append(
+                    _flag_with_value("--max-thinking-tokens", str(t["budget_tokens"]))
+                )
             elif t["type"] == "disabled":
-                cmd.extend(["--thinking", "disabled"])
+                cmd.append(_flag_with_value("--thinking", "disabled"))
 
             # Narrow off the Disabled variant first so mypy knows `t["display"]` is a str
             # rather than widening to `object` across the union.
             if t["type"] != "disabled" and "display" in t:
-                cmd.extend(["--thinking-display", t["display"]])
+                cmd.append(_flag_with_value("--thinking-display", t["display"]))
         elif self._options.max_thinking_tokens is not None:
-            cmd.extend(
-                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            cmd.append(
+                _flag_with_value(
+                    "--max-thinking-tokens", str(self._options.max_thinking_tokens)
+                )
             )
 
         if self._options.effort is not None:
-            cmd.extend(["--effort", self._options.effort])
+            cmd.append(_flag_with_value("--effort", self._options.effort))
 
         # Extract schema from output_format structure if provided
         # Expected: {"type": "json_schema", "schema": {...}}
@@ -735,7 +817,7 @@ class SubprocessCLITransport(Transport):
         ):
             schema = self._options.output_format.get("schema")
             if schema is not None:
-                cmd.extend(["--json-schema", json.dumps(schema)])
+                cmd.append(_flag_with_value("--json-schema", json.dumps(schema)))
 
         # Always use streaming mode with stdin (matching TypeScript SDK)
         # This allows agents and other large configs to be sent via initialize request

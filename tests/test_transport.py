@@ -5,6 +5,8 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from enum import Enum
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,6 +26,33 @@ def make_options(**kwargs: object) -> ClaudeAgentOptions:
 
     cli_path = kwargs.pop("cli_path", DEFAULT_CLI_PATH)
     return ClaudeAgentOptions(cli_path=cli_path, **kwargs)
+
+
+def flag_values(cmd: list[str], flag: str) -> list[str]:
+    """Values passed for flag, each expected as one "--flag=value" argument.
+
+    Fails if the flag appears on its own, which would mean its value was
+    passed as a separate argument.
+    """
+    assert flag not in cmd, f"{flag} was passed without its value attached"
+    prefix = f"{flag}="
+    return [arg[len(prefix) :] for arg in cmd if arg.startswith(prefix)]
+
+
+def flag_value(cmd: list[str], flag: str) -> str:
+    """The single value passed for flag as "--flag=value"."""
+    values = flag_values(cmd, flag)
+    assert len(values) == 1, f"expected one {flag}=..., got {values!r}"
+    return values[0]
+
+
+def two_argument_value(cmd: list[str], flag: str) -> str:
+    """The single value passed for flag as two arguments, "--flag" then the value."""
+    assert not any(arg.startswith(f"{flag}=") for arg in cmd), (
+        f"{flag} was passed as {flag}=..., expected two arguments"
+    )
+    assert cmd.count(flag) == 1, f"expected {flag} once, got {cmd.count(flag)}"
+    return cmd[cmd.index(flag) + 1]
 
 
 class TestSubprocessCLITransport:
@@ -74,8 +103,7 @@ class TestSubprocessCLITransport:
         assert "--input-format" in cmd
         assert "--print" not in cmd  # Never use --print anymore
         # Prompt is sent via stdin, not CLI args
-        assert "--system-prompt" in cmd
-        assert cmd[cmd.index("--system-prompt") + 1] == ""
+        assert flag_value(cmd, "--system-prompt") == ""
 
     def test_build_command_include_hook_events(self):
         """Test that include_hook_events emits the --include-hook-events flag."""
@@ -204,8 +232,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--effort" in cmd
-        assert cmd[cmd.index("--effort") + 1] == "xhigh"
+        assert flag_value(cmd, "--effort") == "xhigh"
 
     def test_build_command_with_system_prompt_string(self):
         """Test building CLI command with system prompt as string."""
@@ -217,8 +244,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--system-prompt" in cmd
-        assert "Be helpful" in cmd
+        assert flag_value(cmd, "--system-prompt") == "Be helpful"
 
     def test_build_command_with_system_prompt_preset(self):
         """Test building CLI command with system prompt preset."""
@@ -230,8 +256,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--system-prompt" not in cmd
-        assert "--append-system-prompt" not in cmd
+        assert flag_values(cmd, "--system-prompt") == []
+        assert flag_values(cmd, "--append-system-prompt") == []
 
     def test_build_command_with_system_prompt_preset_and_append(self):
         """Test building CLI command with system prompt preset and append."""
@@ -247,9 +273,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--system-prompt" not in cmd
-        assert "--append-system-prompt" in cmd
-        assert "Be concise." in cmd
+        assert flag_values(cmd, "--system-prompt") == []
+        assert flag_value(cmd, "--append-system-prompt") == "Be concise."
 
     def test_build_command_with_system_prompt_file(self):
         """Test building CLI command with system prompt file."""
@@ -261,10 +286,9 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--system-prompt" not in cmd
-        assert "--append-system-prompt" not in cmd
-        assert "--system-prompt-file" in cmd
-        assert "/path/to/prompt.md" in cmd
+        assert flag_values(cmd, "--system-prompt") == []
+        assert flag_values(cmd, "--append-system-prompt") == []
+        assert flag_value(cmd, "--system-prompt-file") == "/path/to/prompt.md"
 
     @pytest.mark.parametrize("prompt", ["Be helpful", "", "--help"])
     def test_build_command_with_system_prompt_custom(self, prompt):
@@ -277,8 +301,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert cmd[cmd.index("--system-prompt") + 1] == prompt
-        assert "--append-system-prompt" not in cmd
+        assert flag_value(cmd, "--system-prompt") == prompt
+        assert flag_values(cmd, "--append-system-prompt") == []
         assert "--system-prompt-snapshot" not in cmd
 
     def test_build_command_with_options(self):
@@ -295,16 +319,11 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--allowedTools" in cmd
-        assert "Read,Write" in cmd
-        assert "--disallowedTools" in cmd
-        assert "Bash" in cmd
-        assert "--model" in cmd
-        assert "claude-sonnet-4-5" in cmd
-        assert "--permission-mode" in cmd
-        assert "acceptEdits" in cmd
-        assert "--max-turns" in cmd
-        assert "5" in cmd
+        assert flag_value(cmd, "--allowedTools") == "Read,Write"
+        assert flag_value(cmd, "--disallowedTools") == "Bash"
+        assert flag_value(cmd, "--model") == "claude-sonnet-4-5"
+        assert flag_value(cmd, "--permission-mode") == "acceptEdits"
+        assert flag_value(cmd, "--max-turns") == "5"
 
     def test_build_command_with_dont_ask_permission_mode(self):
         """Test building CLI command with dontAsk permission mode."""
@@ -314,8 +333,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--permission-mode" in cmd
-        assert "dontAsk" in cmd
+        assert flag_value(cmd, "--permission-mode") == "dontAsk"
 
     def test_build_command_with_fallback_model(self):
         """Test building CLI command with fallback_model option."""
@@ -328,10 +346,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--model" in cmd
-        assert "opus" in cmd
-        assert "--fallback-model" in cmd
-        assert "sonnet" in cmd
+        assert flag_value(cmd, "--model") == "opus"
+        assert flag_value(cmd, "--fallback-model") == "sonnet"
 
     def test_build_command_with_task_budget(self):
         """Test building CLI command with task_budget option."""
@@ -341,8 +357,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--task-budget" in cmd
-        assert "100000" in cmd
+        assert flag_value(cmd, "--task-budget") == "100000"
 
     def test_build_command_without_task_budget(self):
         """Test that --task-budget is not included when task_budget is None."""
@@ -352,7 +367,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--task-budget" not in cmd
+        assert flag_values(cmd, "--task-budget") == []
 
     def test_build_command_with_max_thinking_tokens(self):
         """Test building CLI command with max_thinking_tokens option."""
@@ -362,19 +377,18 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--max-thinking-tokens" in cmd
-        assert "5000" in cmd
+        assert flag_value(cmd, "--max-thinking-tokens") == "5000"
 
     @pytest.mark.parametrize(
         ("thinking", "expected", "absent"),
         [
-            ({"type": "adaptive"}, ["--thinking", "adaptive"], "--max-thinking-tokens"),
+            ({"type": "adaptive"}, ("--thinking", "adaptive"), "--max-thinking-tokens"),
             (
                 {"type": "enabled", "budget_tokens": 5000},
-                ["--max-thinking-tokens", "5000"],
+                ("--max-thinking-tokens", "5000"),
                 "--thinking",
             ),
-            ({"type": "disabled"}, ["--thinking", "disabled"], "--max-thinking-tokens"),
+            ({"type": "disabled"}, ("--thinking", "disabled"), "--max-thinking-tokens"),
         ],
     )
     def test_build_command_with_thinking(self, thinking, expected, absent):
@@ -385,20 +399,20 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        idx = cmd.index(expected[0])
-        assert cmd[idx : idx + 2] == expected
-        assert absent not in cmd
+        flag, value = expected
+        assert flag_value(cmd, flag) == value
+        assert flag_values(cmd, absent) == []
 
     @pytest.mark.parametrize(
         ("thinking", "expected_display"),
         [
             (
                 {"type": "adaptive", "display": "summarized"},
-                ["--thinking-display", "summarized"],
+                "summarized",
             ),
             (
                 {"type": "enabled", "budget_tokens": 20000, "display": "omitted"},
-                ["--thinking-display", "omitted"],
+                "omitted",
             ),
         ],
     )
@@ -410,8 +424,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        idx = cmd.index(expected_display[0])
-        assert cmd[idx : idx + 2] == expected_display
+        assert flag_value(cmd, "--thinking-display") == expected_display
 
     def test_build_command_thinking_without_display(self):
         """Omitting `display` leaves --thinking-display off the command."""
@@ -421,7 +434,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--thinking-display" not in cmd
+        assert flag_values(cmd, "--thinking-display") == []
 
     def test_build_command_thinking_display_with_enabled_budget(self):
         """enabled + display emits both --max-thinking-tokens and --thinking-display."""
@@ -437,10 +450,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        budget_idx = cmd.index("--max-thinking-tokens")
-        assert cmd[budget_idx : budget_idx + 2] == ["--max-thinking-tokens", "20000"]
-        display_idx = cmd.index("--thinking-display")
-        assert cmd[display_idx : display_idx + 2] == ["--thinking-display", "omitted"]
+        assert flag_value(cmd, "--max-thinking-tokens") == "20000"
+        assert flag_value(cmd, "--thinking-display") == "omitted"
 
     def test_build_command_thinking_precedence_over_max_thinking_tokens(self):
         """thinking takes precedence over deprecated max_thinking_tokens."""
@@ -452,9 +463,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        idx = cmd.index("--thinking")
-        assert cmd[idx : idx + 2] == ["--thinking", "adaptive"]
-        assert "--max-thinking-tokens" not in cmd
+        assert flag_value(cmd, "--thinking") == "adaptive"
+        assert flag_values(cmd, "--max-thinking-tokens") == []
 
     def test_build_command_with_add_dirs(self):
         """Test building CLI command with add_dirs option."""
@@ -469,15 +479,8 @@ class TestSubprocessCLITransport:
 
         cmd = transport._build_command()
 
-        # Check that both directories are in the command
-        assert "--add-dir" in cmd
-        add_dir_indices = [i for i, x in enumerate(cmd) if x == "--add-dir"]
-        assert len(add_dir_indices) == 2
-
-        # The directories should appear after --add-dir flags
-        dirs_in_cmd = [cmd[i + 1] for i in add_dir_indices]
-        assert dir1 in dirs_in_cmd
-        assert str(dir2) in dirs_in_cmd
+        # One --add-dir=<dir> argument per directory, in order
+        assert flag_values(cmd, "--add-dir") == [dir1, str(dir2)]
 
     def test_session_continuation(self):
         """Test session continuation options."""
@@ -584,8 +587,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--settings" in cmd
-        assert "/path/to/settings.json" in cmd
+        assert two_argument_value(cmd, "--settings") == "/path/to/settings.json"
 
     def test_build_command_with_settings_json(self):
         """Test building CLI command with settings as JSON object."""
@@ -596,8 +598,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--settings" in cmd
-        assert settings_json in cmd
+        assert two_argument_value(cmd, "--settings") == settings_json
 
     def test_build_command_setting_sources_omitted_when_not_provided(self):
         """Test that --setting-sources is omitted when setting_sources is not provided."""
@@ -633,7 +634,7 @@ class TestSubprocessCLITransport:
             options=make_options(),
         )
         cmd = transport._build_command()
-        assert "--allowedTools" not in cmd
+        assert flag_values(cmd, "--allowedTools") == []
         assert not any(a.startswith("--setting-sources") for a in cmd)
 
     def test_build_command_skills_all_enables_skill_tool(self):
@@ -643,8 +644,7 @@ class TestSubprocessCLITransport:
             options=make_options(skills="all"),
         )
         cmd = transport._build_command()
-        assert "--allowedTools" in cmd
-        assert cmd[cmd.index("--allowedTools") + 1] == "Skill"
+        assert flag_value(cmd, "--allowedTools") == "Skill"
         assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_empty_list_adds_no_skill_entries(self):
@@ -654,7 +654,7 @@ class TestSubprocessCLITransport:
             options=make_options(skills=[]),
         )
         cmd = transport._build_command()
-        assert "--allowedTools" not in cmd
+        assert flag_values(cmd, "--allowedTools") == []
         assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_named_list_uses_skill_patterns(self):
@@ -664,8 +664,7 @@ class TestSubprocessCLITransport:
             options=make_options(skills=["pdf", "docx"]),
         )
         cmd = transport._build_command()
-        assert "--allowedTools" in cmd
-        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf),Skill(docx)"
+        assert flag_value(cmd, "--allowedTools") == "Skill(pdf),Skill(docx)"
         assert "--setting-sources=user,project" in cmd
 
     def test_build_command_skills_merges_with_existing_allowed_tools(self):
@@ -678,7 +677,7 @@ class TestSubprocessCLITransport:
             ),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Write,Skill(pdf)"
+        assert flag_value(cmd, "--allowedTools") == "Read,Write,Skill(pdf)"
 
     def test_build_command_skills_preserves_user_setting_sources(self):
         """When setting_sources is explicitly provided, skills should not override it."""
@@ -710,7 +709,7 @@ class TestSubprocessCLITransport:
             ),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--allowedTools") + 1] == "Skill(pdf)"
+        assert flag_value(cmd, "--allowedTools") == "Skill(pdf)"
 
     @pytest.mark.parametrize(
         "hostile_name",
@@ -913,7 +912,7 @@ class TestSubprocessCLITransport:
             options=make_options(skills=[benign_name]),
         )
         cmd = transport._build_command()
-        assert cmd[cmd.index("--allowedTools") + 1] == f"Skill({benign_name})"
+        assert flag_value(cmd, "--allowedTools") == f"Skill({benign_name})"
 
     @pytest.mark.parametrize(
         ("skills", "extra", "want_tools", "want_sources", "want_init_skills"),
@@ -986,9 +985,9 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
 
         if want_tools is None:
-            assert "--allowedTools" not in cmd
+            assert flag_values(cmd, "--allowedTools") == []
         else:
-            assert cmd[cmd.index("--allowedTools") + 1] == want_tools
+            assert flag_value(cmd, "--allowedTools") == want_tools
 
         if want_sources is None:
             assert not any(a.startswith("--setting-sources") for a in cmd)
@@ -1048,10 +1047,8 @@ class TestSubprocessCLITransport:
 
         cmd = transport._build_command()
 
-        # Find the --mcp-config flag and its value
-        assert "--mcp-config" in cmd
-        mcp_idx = cmd.index("--mcp-config")
-        mcp_config_value = cmd[mcp_idx + 1]
+        # Find the --mcp-config value
+        mcp_config_value = two_argument_value(cmd, "--mcp-config")
 
         # Parse the JSON and verify structure
         config = json.loads(mcp_config_value)
@@ -1070,9 +1067,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--mcp-config" in cmd
-        mcp_idx = cmd.index("--mcp-config")
-        assert cmd[mcp_idx + 1] == string_path
+        assert two_argument_value(cmd, "--mcp-config") == string_path
 
         # Test with Path object
         path_obj = Path("/path/to/mcp-config.json")
@@ -1082,10 +1077,8 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--mcp-config" in cmd
-        mcp_idx = cmd.index("--mcp-config")
         # Path object gets converted to string, compare with str(path_obj)
-        assert cmd[mcp_idx + 1] == str(path_obj)
+        assert two_argument_value(cmd, "--mcp-config") == str(path_obj)
 
     def test_build_command_with_mcp_servers_as_json_string(self):
         """Test building CLI command with mcp_servers as JSON string."""
@@ -1096,9 +1089,33 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--mcp-config" in cmd
-        mcp_idx = cmd.index("--mcp-config")
-        assert cmd[mcp_idx + 1] == json_config
+        assert two_argument_value(cmd, "--mcp-config") == json_config
+
+    def test_build_command_mcp_servers_dict_with_env_and_headers(self):
+        """A dict config goes out as two arguments, --mcp-config and then the
+        JSON, with env and headers values only inside the JSON, even when a
+        value begins with dashes."""
+        mcp_servers = {
+            "stdio-server": {
+                "type": "stdio",
+                "command": "/path/to/server",
+                "env": {"SERVER_MODE": "--verbose"},
+            },
+            "http-server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "headers": {"X-Server-Mode": "--verbose"},
+            },
+        }
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(mcp_servers=mcp_servers)
+        )._build_command()
+
+        value = two_argument_value(cmd, "--mcp-config")
+        assert value.startswith("{")
+        assert json.loads(value) == {"mcpServers": mcp_servers}
+        assert [arg for arg in cmd if "SERVER_MODE" in arg] == [value]
+        assert [arg for arg in cmd if "X-Server-Mode" in arg] == [value]
 
     def test_env_vars_passed_to_subprocess(self):
         """Test that custom environment variables are passed to the subprocess."""
@@ -1694,9 +1711,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
 
         # Should have --settings with sandbox merged in
-        assert "--settings" in cmd
-        settings_idx = cmd.index("--settings")
-        settings_value = cmd[settings_idx + 1]
+        settings_value = two_argument_value(cmd, "--settings")
 
         # Parse and verify
         parsed = json.loads(settings_value)
@@ -1732,9 +1747,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
 
         # Should have merged settings
-        assert "--settings" in cmd
-        settings_idx = cmd.index("--settings")
-        settings_value = cmd[settings_idx + 1]
+        settings_value = two_argument_value(cmd, "--settings")
 
         parsed = json.loads(settings_value)
 
@@ -1757,9 +1770,7 @@ class TestSubprocessCLITransport:
         cmd = transport._build_command()
 
         # Should pass path directly, not parse it
-        assert "--settings" in cmd
-        settings_idx = cmd.index("--settings")
-        assert cmd[settings_idx + 1] == "/path/to/settings.json"
+        assert two_argument_value(cmd, "--settings") == "/path/to/settings.json"
 
     def test_build_command_sandbox_reads_relative_settings_from_cwd(self, tmp_path):
         """A relative settings path resolves against options.cwd, not the process cwd."""
@@ -1883,9 +1894,7 @@ class TestSubprocessCLITransport:
 
         cmd = transport._build_command()
 
-        assert "--settings" in cmd
-        settings_idx = cmd.index("--settings")
-        settings_value = cmd[settings_idx + 1]
+        settings_value = two_argument_value(cmd, "--settings")
 
         parsed = json.loads(settings_value)
         assert parsed == {"sandbox": {"enabled": True}}
@@ -1913,8 +1922,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        settings_idx = cmd.index("--settings")
-        settings_value = cmd[settings_idx + 1]
+        settings_value = two_argument_value(cmd, "--settings")
 
         parsed = json.loads(settings_value)
         network = parsed["sandbox"]["network"]
@@ -1961,9 +1969,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--tools" in cmd
-        tools_idx = cmd.index("--tools")
-        assert cmd[tools_idx + 1] == "Read,Edit,Bash"
+        assert flag_value(cmd, "--tools") == "Read,Edit,Bash"
 
     def test_build_command_with_tools_empty_array(self):
         """Test building CLI command with tools as empty array (disables all tools)."""
@@ -1973,9 +1979,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--tools" in cmd
-        tools_idx = cmd.index("--tools")
-        assert cmd[tools_idx + 1] == ""
+        assert flag_value(cmd, "--tools") == ""
 
     def test_build_command_with_tools_preset(self):
         """Test building CLI command with tools preset."""
@@ -1985,9 +1989,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--tools" in cmd
-        tools_idx = cmd.index("--tools")
-        assert cmd[tools_idx + 1] == "default"
+        assert flag_value(cmd, "--tools") == "default"
 
     def test_build_command_without_tools(self):
         """Test building CLI command without tools option (default None)."""
@@ -1997,7 +1999,7 @@ class TestSubprocessCLITransport:
         )
 
         cmd = transport._build_command()
-        assert "--tools" not in cmd
+        assert flag_values(cmd, "--tools") == []
 
     def test_concurrent_writes_are_serialized(self):
         """Test that concurrent write() calls are serialized by the lock.
@@ -2827,6 +2829,344 @@ class TestExtraArgsValueBinding:
         assert "--bool-flag" in cmd
 
 
+# Values that begin with dashes and are spelled like real CLI flags.
+_DASH_LEADING_VALUES = ["--help", "-p", "--version", "--model=other-model"]
+
+# (option overrides for a given value, the flag that must carry the value)
+_VALUE_OPTIONS = [
+    (lambda v: {"system_prompt": v}, "--system-prompt"),
+    (lambda v: {"system_prompt": {"type": "custom", "prompt": v}}, "--system-prompt"),
+    (
+        lambda v: {
+            "system_prompt": {"type": "preset", "preset": "claude_code", "append": v}
+        },
+        "--append-system-prompt",
+    ),
+    (lambda v: {"system_prompt": {"type": "file", "path": v}}, "--system-prompt-file"),
+    (lambda v: {"tools": [v]}, "--tools"),
+    (lambda v: {"allowed_tools": [v]}, "--allowedTools"),
+    (lambda v: {"disallowed_tools": [v]}, "--disallowedTools"),
+    (lambda v: {"model": v}, "--model"),
+    (lambda v: {"fallback_model": v}, "--fallback-model"),
+    (lambda v: {"betas": [v]}, "--betas"),
+    (lambda v: {"permission_prompt_tool_name": v}, "--permission-prompt-tool"),
+    (lambda v: {"permission_mode": v}, "--permission-mode"),
+    (lambda v: {"add_dirs": [v]}, "--add-dir"),
+    (lambda v: {"mcp_servers": v}, "--mcp-config"),
+    (lambda v: {"plugins": [{"type": "local", "path": v}]}, "--plugin-dir"),
+    (
+        lambda v: {"thinking": {"type": "adaptive", "display": v}},
+        "--thinking-display",
+    ),
+    (lambda v: {"effort": v}, "--effort"),
+    (lambda v: {"resume": v}, "--resume"),
+    (lambda v: {"session_id": v}, "--session-id"),
+    (lambda v: {"resume": "abc", "resume_session_at": v}, "--resume-session-at"),
+    (lambda v: {"resume": "abc", "resume_drops_turn": v}, "--resume-drops-turn"),
+    (lambda v: {"setting_sources": [v]}, "--setting-sources"),
+    (lambda v: {"extra_args": {"future-flag": v}}, "--future-flag"),
+]
+
+
+class _TextEnum(str, Enum):
+    """Python 3.11 and later format a member of this as _TextEnum.DASHED."""
+
+    DASHED = "--some-text"
+    PLAIN = "some-text"
+
+
+class TestDashLeadingOptionValues:
+    """A value that begins with dashes reaches the CLI attached to its flag.
+
+    Such a value -- a system prompt, a model name or a path that happens to
+    look like a CLI flag -- must be read by the CLI as that option's value.
+    Passing it as part of one --flag=value argument guarantees this: the
+    value is never an argument of its own.
+    """
+
+    @pytest.mark.parametrize("value", _DASH_LEADING_VALUES)
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        _VALUE_OPTIONS,
+        ids=[f"{i:02d}{flag}" for i, (_, flag) in enumerate(_VALUE_OPTIONS)],
+    )
+    def test_value_is_attached_to_its_flag(self, overrides, flag, value):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(**overrides(value))
+        )
+        cmd = transport._build_command()
+        assert flag_value(cmd, flag) == value
+        assert value not in cmd
+
+    def test_every_value_is_attached_when_all_options_are_set(self):
+        """With every string-valued option set to a value that begins with
+        dashes, every argument after the executable begins with "--" except
+        the two fixed stream-json format values and the --settings path,
+        which gets a "./" prefix."""
+        value = "--help"
+        options = make_options(
+            system_prompt=value,
+            tools=[value],
+            allowed_tools=[value],
+            disallowed_tools=[value],
+            max_turns=3,
+            max_budget_usd=1.5,
+            task_budget={"total": 1000},
+            model=value,
+            fallback_model=value,
+            betas=[value],
+            permission_prompt_tool_name=value,
+            permission_mode=value,
+            resume=value,
+            session_id=value,
+            settings=value,
+            add_dirs=[value, value],
+            mcp_servers=value,
+            resume_session_at=value,
+            resume_drops_turn=value,
+            setting_sources=[value],
+            plugins=[{"type": "local", "path": value}],
+            extra_args={"future-flag": value, "bool-flag": None},
+            thinking={"type": "enabled", "budget_tokens": 2000, "display": value},
+            effort=value,
+            output_format={"type": "json_schema", "schema": {"type": "object"}},
+        )
+        cmd = SubprocessCLITransport(prompt="test", options=options)._build_command()
+
+        args = cmd[1:]
+        assert value not in args
+        standalone = [a for a in args if not a.startswith("--")]
+        assert standalone == ["stream-json", "./" + value, "stream-json"]
+        assert args[args.index("--output-format") + 1] == "stream-json"
+        assert args[args.index("--input-format") + 1] == "stream-json"
+        assert two_argument_value(args, "--settings") == "./" + value
+        # Every value-taking option above was actually passed.
+        assert sorted(a.split("=", 1)[0] for a in args if "=" in a) == sorted(
+            [
+                "--system-prompt",
+                "--tools",
+                "--allowedTools",
+                "--disallowedTools",
+                "--max-turns",
+                "--max-budget-usd",
+                "--task-budget",
+                "--model",
+                "--fallback-model",
+                "--betas",
+                "--permission-prompt-tool",
+                "--permission-mode",
+                "--resume",
+                "--session-id",
+                "--add-dir",
+                "--add-dir",
+                "--mcp-config",
+                "--resume-session-at",
+                "--resume-drops-turn",
+                "--setting-sources",
+                "--plugin-dir",
+                "--future-flag",
+                "--max-thinking-tokens",
+                "--thinking-display",
+                "--effort",
+                "--json-schema",
+            ]
+        )
+
+
+class TestValueTypes:
+    """A value reaches the CLI as the text it would have as its own argument."""
+
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        _VALUE_OPTIONS,
+        ids=[f"{i:02d}{flag}" for i, (_, flag) in enumerate(_VALUE_OPTIONS)],
+    )
+    def test_str_enum_member_keeps_its_text(self, overrides, flag):
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(**overrides(_TextEnum.DASHED))
+        )._build_command()
+        assert flag_value(cmd, flag) == "--some-text"
+
+    def test_str_enum_member_keeps_its_text_as_a_second_argument(self):
+        cmd = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                settings=_TextEnum.PLAIN,
+                mcp_servers=_TextEnum.PLAIN,
+                extra_args={"future-flag": _TextEnum.PLAIN},
+            ),
+        )._build_command()
+        sent = [os.fsencode(argument) for argument in cmd]
+        for flag in ("--settings", "--mcp-config", "--future-flag"):
+            assert sent[sent.index(flag.encode()) + 1] == b"some-text"
+
+    def test_path_and_uuid_values_are_converted(self):
+        session_id = uuid.UUID(int=1)
+        cmd = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                session_id=session_id,
+                add_dirs=[Path("some/dir")],
+                plugins=[{"type": "local", "path": Path("some/plugin")}],
+                mcp_servers=Path("some/mcp.json"),
+            ),
+        )._build_command()
+        assert flag_value(cmd, "--session-id") == str(session_id)
+        assert flag_value(cmd, "--add-dir") == str(Path("some/dir"))
+        assert flag_value(cmd, "--plugin-dir") == str(Path("some/plugin"))
+        assert two_argument_value(cmd, "--mcp-config") == str(Path("some/mcp.json"))
+
+    def test_bytes_and_path_like_values_give_their_file_system_text(self):
+        class PathLike:
+            def __fspath__(self):
+                return "file/system/text"
+
+            def __str__(self):
+                return "other text"
+
+        cmd = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                model=b"some-model",
+                plugins=[{"type": "local", "path": PathLike()}],
+                settings=PathLike(),
+            ),
+        )._build_command()
+        assert flag_value(cmd, "--model") == "some-model"
+        assert flag_value(cmd, "--plugin-dir") == "file/system/text"
+        assert two_argument_value(cmd, "--settings") == "file/system/text"
+
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        [
+            (
+                {"system_prompt": {"type": "preset", "append": None}},
+                "--append-system-prompt",
+            ),
+            ({"system_prompt": {"type": "custom", "prompt": None}}, "--system-prompt"),
+            ({"system_prompt": {"type": "file", "path": None}}, "--system-prompt-file"),
+            ({"plugins": [{"type": "local", "path": None}]}, "--plugin-dir"),
+            ({"add_dirs": [None]}, "--add-dir"),
+            (
+                {"thinking": {"type": "adaptive", "display": None}},
+                "--thinking-display",
+            ),
+        ],
+        ids=lambda value: value if isinstance(value, str) else "",
+    )
+    def test_none_as_a_value_raises_and_names_the_flag(self, overrides, flag):
+        transport = SubprocessCLITransport(
+            prompt="test", options=make_options(**overrides)
+        )
+        with pytest.raises(CLIConnectionError, match=flag):
+            transport._build_command()
+
+    def test_options_left_unset_send_no_value(self):
+        cmd = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                model=None,
+                fallback_model=None,
+                effort=None,
+                settings=None,
+                resume=None,
+                resume_drops_turn=None,
+                extra_args={"bool-flag": None},
+            ),
+        )._build_command()
+        assert "None" not in repr(cmd)
+        assert "--bool-flag" in cmd
+
+
+class TestSettingsArgumentForm:
+    """--settings is always two arguments.
+
+    Claude Code 2.0.69 and earlier read --settings before parsing options,
+    and only as "--settings <value>"; "--settings=<value>" would be ignored
+    there. A value that begins with "-" can only be a file path, and gets a
+    "./" prefix so that it cannot be read as an option of its own.
+    """
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            '{"permissions": {"deny": ["Bash"]}}',
+            "/path/to/settings.json",
+            "relative/settings.json",
+        ],
+    )
+    def test_value_follows_the_flag(self, settings):
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(settings=settings)
+        )._build_command()
+        assert two_argument_value(cmd, "--settings") == settings
+
+    def test_merged_sandbox_settings_follow_the_flag(self):
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(sandbox={"enabled": True})
+        )._build_command()
+        assert json.loads(two_argument_value(cmd, "--settings")) == {
+            "sandbox": {"enabled": True}
+        }
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            # str() of an absolute Path uses the platform's separators.
+            (Path("/path/to/settings.json"), str(Path("/path/to/settings.json"))),
+            (Path("-settings.json"), "./-settings.json"),
+        ],
+    )
+    def test_path_object_is_passed_as_a_string(self, path, expected):
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(settings=path)
+        )._build_command()
+        assert two_argument_value(cmd, "--settings") == expected
+
+    @pytest.mark.parametrize("path", ["-settings.json", *_DASH_LEADING_VALUES])
+    def test_dash_leading_path_gets_a_dot_slash_prefix(self, path):
+        cmd = SubprocessCLITransport(
+            prompt="test", options=make_options(settings=path)
+        )._build_command()
+        assert two_argument_value(cmd, "--settings") == "./" + path
+        assert path not in cmd
+
+
+def test_ordinary_values_are_attached_except_two_argument_options():
+    """With ordinary values, the only arguments that stand on their own are
+    the two fixed stream-json format values and the values of --settings,
+    --mcp-config and extra_args."""
+    settings = '{"permissions": {"deny": ["Bash"]}}'
+    mcp_servers = {"server": {"type": "stdio", "command": "/path/to/server"}}
+    mcp_config = json.dumps({"mcpServers": mcp_servers})
+    options = make_options(
+        system_prompt="You are helpful.",
+        tools=["Read", "Bash"],
+        allowed_tools=["Read"],
+        disallowed_tools=["Bash"],
+        max_turns=3,
+        model="claude-sonnet-4-5",
+        fallback_model="claude-haiku-4-5",
+        permission_mode="default",
+        settings=settings,
+        add_dirs=["/tmp/a", "/tmp/b"],
+        mcp_servers=mcp_servers,
+        setting_sources=["user", "project"],
+        extra_args={"future-flag": "plain", "bool-flag": None},
+        effort="high",
+    )
+    cmd = SubprocessCLITransport(prompt="test", options=options)._build_command()
+
+    standalone = [a for a in cmd[1:] if not a.startswith("--")]
+    assert standalone == ["stream-json", settings, mcp_config, "plain", "stream-json"]
+    assert cmd[cmd.index("--settings") + 1] == settings
+    assert two_argument_value(cmd, "--mcp-config") == mcp_config
+    assert cmd[cmd.index("--future-flag") + 1] == "plain"
+    assert flag_value(cmd, "--model") == "claude-sonnet-4-5"
+    assert flag_values(cmd, "--add-dir") == ["/tmp/a", "/tmp/b"]
+    assert flag_value(cmd, "--setting-sources") == "user,project"
+
+
 class TestWindowsCmdMetacharacterRejection:
     """Defense in depth: resume/session_id reject cmd.exe metacharacters on
     Windows so those values stay inert even if a cmd.exe hop reappears."""
@@ -2857,6 +3197,18 @@ class TestWindowsCmdMetacharacterRejection:
             pytest.raises(ValueError, match="unsafe"),
         ):
             transport._build_command()
+
+    def test_non_str_values_are_checked_as_text_on_windows(self):
+        session_id = uuid.UUID(int=1)
+        with patch(self._PLATFORM, return_value="Windows"):
+            cmd = SubprocessCLITransport(
+                prompt="test", options=make_options(session_id=session_id)
+            )._build_command()
+            assert flag_value(cmd, "--session-id") == str(session_id)
+            with pytest.raises(ValueError, match="unsafe"):
+                SubprocessCLITransport(
+                    prompt="test", options=make_options(resume=b"x&calc")
+                )._build_command()
 
     def test_bad_session_id_raises_on_windows(self):
         transport = SubprocessCLITransport(

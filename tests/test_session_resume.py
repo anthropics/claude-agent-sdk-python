@@ -244,6 +244,29 @@ class TestHappyPath:
         assert "refreshToken" not in creds["claudeAiOauth"]
         await m.cleanup()
 
+    @pytest.mark.anyio
+    async def test_undecodable_credentials_skipped_with_api_key(
+        self,
+        cwd: Path,
+        project_key: str,
+        isolated_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A corrupt (non-UTF-8) .credentials.json is treated like a missing
+    one: resume proceeds under API-key auth instead of aborting with
+    UnicodeDecodeError before the CLI is spawned."""
+    config = isolated_home / ".claude"
+    config.mkdir()
+    (config / ".credentials.json").write_bytes(b"\xff\xfe{not valid utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+            m = await self._materialize(cwd, project_key)
+assert not (m.config_dir / ".credentials.json").exists()
+assert "skipping" in caplog.text
+assert ".credentials.json" in caplog.text
+await m.cleanup()
+
     async def _materialize(
         self, cwd: Path, project_key: str, **kw: Any
     ) -> MaterializedResume:

@@ -207,5 +207,7 @@ class InternalClient:
                     yield message
 
         finally:
-            await query.close()
-            query.close_receive_stream()
+            try:
+                await query.close()
+            finally:
+                query.close_receive_stream()

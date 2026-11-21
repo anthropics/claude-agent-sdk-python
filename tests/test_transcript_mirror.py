@@ -5,9 +5,11 @@ in the receive loop.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -18,10 +20,13 @@ import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ClaudeSDKClient,
+    CLIConnectionError,
     InMemorySessionStore,
     MirrorErrorMessage,
     ResultMessage,
     SessionKey,
+    Transport,
     query,
 )
 from claude_agent_sdk._internal.query import Query
@@ -287,6 +292,208 @@ class TestTranscriptMirrorBatcher:
         assert len(errors) == 1
         assert errors[0][0] == {"project_key": "proj", "session_id": "sess"}
         assert "boom" in errors[0][1]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("write_before_cancel", [False, True])
+    async def test_append_cancellation_reports_unknown_outcome(
+        self, write_before_cancel: bool
+    ) -> None:
+        entered = anyio.Event()
+        calls = 0
+        append_cancellations: list[BaseException] = []
+        flush_cancellations: list[BaseException] = []
+        errors: list[tuple[SessionKey | None, str]] = []
+
+        class InterruptedStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                nonlocal calls
+                calls += 1
+                if write_before_cancel:
+                    await super().append(key, entries)
+                entered.set()
+                try:
+                    await anyio.sleep_forever()
+                except anyio.get_cancelled_exc_class() as exc:
+                    append_cancellations.append(exc)
+                    raise
+
+        async def on_error(key: SessionKey | None, error: str) -> None:
+            await anyio.sleep(0)
+            await batcher.flush()
+            errors.append((key, error))
+
+        store = InterruptedStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        entries = [{"type": "user", "uuid": "A"}]
+        batcher.enqueue(_main_path(), entries)
+
+        async def flush() -> None:
+            try:
+                await batcher.flush()
+            except anyio.get_cancelled_exc_class() as exc:
+                flush_cancellations.append(exc)
+                raise
+
+        with anyio.fail_after(1):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(flush)
+                await entered.wait()
+                tasks.cancel_scope.cancel()
+        await batcher.close()
+
+        assert len(errors) == 1
+        assert errors[0][0] == {"project_key": "proj", "session_id": "sess"}
+        assert "unknown" in errors[0][1].lower()
+        assert calls == 1
+        assert flush_cancellations[0] is append_cancellations[0]
+        stored = await store.load({"project_key": "proj", "session_id": "sess"})
+        assert stored == (entries if write_before_cancel else None)
+
+    @pytest.mark.anyio
+    async def test_append_cancellation_reports_all_unfinished_keys(self) -> None:
+        entered = anyio.Event()
+        calls: list[str] = []
+        errors: list[tuple[SessionKey | None, str]] = []
+
+        class InterruptedStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                calls.append(key["session_id"])
+                if key["session_id"] == "pending":
+                    entered.set()
+                    await anyio.sleep_forever()
+                await super().append(key, entries)
+
+        async def on_error(key: SessionKey | None, error: str) -> None:
+            await anyio.sleep(0)
+            errors.append((key, error))
+
+        store = InterruptedStore()
+        batcher = TranscriptMirrorBatcher(
+            store=store, projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        for session in ("done", "pending", "later"):
+            batcher.enqueue(
+                _main_path(session=session), [{"type": "user", "uuid": session}]
+            )
+
+        with anyio.fail_after(1):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(batcher.flush)
+                await entered.wait()
+                tasks.cancel_scope.cancel()
+        await batcher.close()
+
+        assert calls == ["done", "pending"]
+        assert [key["session_id"] for key, _ in errors if key] == ["pending", "later"]
+        assert "unknown" in errors[0][1].lower()
+        assert "not attempted" in errors[1][1].lower()
+        assert await store.load({"project_key": "proj", "session_id": "done"}) == [
+            {"type": "user", "uuid": "done"}
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("callback_behavior", ["raises", "blocks"])
+    async def test_append_cancellation_reporting_is_best_effort(
+        self,
+        callback_behavior: str,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        entered = anyio.Event()
+        callback_called = False
+        cancellations: list[BaseException] = []
+
+        class InterruptedStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                entered.set()
+                try:
+                    await anyio.sleep_forever()
+                except anyio.get_cancelled_exc_class() as exc:
+                    cancellations.append(exc)
+                    raise
+
+        async def on_error(_key: SessionKey | None, _error: str) -> None:
+            nonlocal callback_called
+            callback_called = True
+            if callback_behavior == "raises":
+                raise RuntimeError("callback failed")
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.transcript_mirror_batcher."
+            "CANCELLATION_REPORT_TIMEOUT_SECONDS",
+            0.02,
+        )
+        batcher = TranscriptMirrorBatcher(
+            store=InterruptedStore(), projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        batcher.enqueue(_main_path(), [{"type": "user", "uuid": "A"}])
+        propagated: list[BaseException] = []
+
+        async def flush() -> None:
+            try:
+                await batcher.flush()
+            except anyio.get_cancelled_exc_class() as exc:
+                propagated.append(exc)
+                raise
+
+        with anyio.fail_after(1):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(flush)
+                await entered.wait()
+                tasks.cancel_scope.cancel()
+
+        assert callback_called
+        assert propagated[0] is cancellations[0]
+        assert "write outcome is unknown" in caplog.text
+        if callback_behavior == "raises":
+            assert "callback failed" in caplog.text
+        else:
+            assert "cancellation notification timed out" in caplog.text
+
+    @pytest.mark.anyio
+    async def test_retry_cancellation_reports_unfinished_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entered = anyio.Event()
+        calls: list[str] = []
+        errors: list[tuple[SessionKey | None, str]] = []
+
+        class FailingStore(InMemorySessionStore):
+            async def append(self, key, entries):
+                calls.append(key["session_id"])
+                entered.set()
+                raise RuntimeError("transient")
+
+        async def on_error(key: SessionKey | None, error: str) -> None:
+            await anyio.sleep(0)
+            errors.append((key, error))
+
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.transcript_mirror_batcher."
+            "MIRROR_APPEND_BACKOFF_S",
+            (10, 10),
+        )
+        batcher = TranscriptMirrorBatcher(
+            store=FailingStore(), projects_dir=PROJECTS_DIR, on_error=on_error
+        )
+        for session in ("retrying", "later"):
+            batcher.enqueue(
+                _main_path(session=session), [{"type": "user", "uuid": session}]
+            )
+        with anyio.fail_after(1):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(batcher.flush)
+                await entered.wait()
+                tasks.cancel_scope.cancel()
+        await batcher.close()
+
+        assert calls == ["retrying"]
+        assert [key["session_id"] for key, _ in errors if key] == ["retrying", "later"]
+        assert "retries were cancelled" in errors[0][1]
+        assert "not attempted" in errors[1][1]
 
     @pytest.mark.anyio
     async def test_append_timeout_calls_on_error(self) -> None:
@@ -604,6 +811,51 @@ class TestSessionMirrorFlag:
 # ---------------------------------------------------------------------------
 # Receive-loop integration: frame peeling, flush-before-result, mirror_error
 # ---------------------------------------------------------------------------
+
+
+class _ScriptedTransport(Transport):
+    def __init__(self, frames: list[dict[str, Any]], *, eof: bool = False):
+        self.frames = frames
+        self.eof = eof
+        self.closed = False
+        self.send, self.receive = anyio.create_memory_object_stream[dict[str, Any]](10)
+
+    async def connect(self) -> None:
+        pass
+
+    async def write(self, data: str) -> None:
+        message = json.loads(data)
+        if message["type"] == "control_request":
+            await self.send.send(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": message["request_id"],
+                        "response": {"commands": []},
+                    },
+                }
+            )
+        elif message["type"] == "user":
+            for frame in self.frames:
+                await self.send.send(frame)
+            if self.eof:
+                await self.send.aclose()
+
+    async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        async with self.receive:
+            async for message in self.receive:
+                yield message
+
+    async def close(self) -> None:
+        self.closed = True
+        await self.send.aclose()
+
+    def is_ready(self) -> bool:
+        return not self.closed
+
+    async def end_input(self) -> None:
+        pass
 
 
 def _make_mock_transport(
@@ -936,6 +1188,170 @@ class TestReceiveLoopFramePeeling:
             assert any(isinstance(m, ResultMessage) for m in messages)
 
         anyio.run(_test)
+
+    @pytest.mark.parametrize("ending", ["result", "eof", "late"])
+    def test_query_cancellation_reports_inflight_mirror(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, ending: str
+    ) -> None:
+        async def run() -> None:
+            calls = 0
+            config_dir = tmp_path / "claude"
+            mirror = {
+                "type": "transcript_mirror",
+                "filePath": str(config_dir / "projects" / "proj" / "sess.jsonl"),
+                "entries": [{"type": "user", "uuid": "A"}],
+            }
+            frames = {
+                "result": [mirror, _RESULT_MSG],
+                "eof": [mirror],
+                "late": [_RESULT_MSG, mirror],
+            }[ending]
+            transport = _ScriptedTransport(frames, eof=ending != "result")
+
+            class InterruptedStore(InMemorySessionStore):
+                async def append(self, key, entries):
+                    nonlocal calls
+                    calls += 1
+                    cancelled_io = asyncio.create_task(anyio.sleep_forever())
+                    cancelled_io.cancel()
+                    await cancelled_io
+
+            with anyio.fail_after(2):
+                messages = [
+                    message
+                    async for message in query(
+                        prompt="Hello",
+                        options=ClaudeAgentOptions(
+                            session_store=InterruptedStore(),
+                            env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+                        ),
+                        transport=transport,
+                    )
+                ]
+
+            mirror_errors = [
+                message
+                for message in messages
+                if isinstance(message, MirrorErrorMessage)
+            ]
+            assert len(mirror_errors) == 1
+            assert mirror_errors[0].key == {"project_key": "proj", "session_id": "sess"}
+            assert "write outcome is unknown" in mirror_errors[0].error
+            assert calls == 1
+            assert transport.closed
+            assert "write outcome is unknown" in caplog.text
+
+        anyio.run(run)
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_disconnect_retries_failed_transport_close(self, cancelled: bool) -> None:
+        async def run() -> None:
+            close_error = (
+                asyncio.CancelledError("close cancelled")
+                if cancelled
+                else OSError("close failed")
+            )
+
+            class RetryCloseTransport(_ScriptedTransport):
+                close_calls = 0
+
+                async def close(self) -> None:
+                    self.close_calls += 1
+                    if self.close_calls == 1:
+                        raise close_error
+                    await super().close()
+
+            transport = RetryCloseTransport([])
+            client = ClaudeSDKClient(transport=transport)
+            materialized = Mock()
+            materialized.cleanup = AsyncMock()
+            with anyio.fail_after(2):
+                await client.connect()
+                original_query = client._query
+                assert original_query is not None
+                client._materialized = materialized
+                try:
+                    with pytest.raises(type(close_error), match="close "):
+                        await client.disconnect()
+                    assert not transport.closed
+                    assert client._query is original_query
+                    assert client._transport is transport
+                    assert (
+                        original_query._message_receive.statistics().open_receive_streams
+                        == 1
+                    )
+                    assert client._materialized is materialized
+                    materialized.cleanup.assert_not_awaited()
+
+                    await client.disconnect()
+                    assert transport.closed
+                    assert transport.close_calls == 2
+                    assert client._query is None
+                    assert client._transport is None
+                    assert (
+                        original_query._message_receive.statistics().open_receive_streams
+                        == 0
+                    )
+                    assert client._materialized is None
+                    materialized.cleanup.assert_awaited_once()
+                finally:
+                    if not transport.closed:
+                        await transport.close()
+                    await client.disconnect()
+
+        anyio.run(run)
+
+    def test_disconnect_cleans_up_after_mirror_cancellation(
+        self, tmp_path: Path
+    ) -> None:
+        async def run() -> None:
+            config_dir = tmp_path / "claude"
+            transport = _ScriptedTransport(
+                [
+                    {
+                        "type": "transcript_mirror",
+                        "filePath": str(
+                            config_dir / "projects" / "proj" / "sess.jsonl"
+                        ),
+                        "entries": [{"type": "user", "uuid": "A"}],
+                    },
+                    _ASSISTANT_MSG,
+                ]
+            )
+            calls = 0
+
+            class InterruptedStore(InMemorySessionStore):
+                async def append(self, key, entries):
+                    nonlocal calls
+                    calls += 1
+                    cancelled_io = asyncio.create_task(anyio.sleep_forever())
+                    cancelled_io.cancel()
+                    await cancelled_io
+
+            client = ClaudeSDKClient(
+                options=ClaudeAgentOptions(
+                    session_store=InterruptedStore(),
+                    env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+                ),
+                transport=transport,
+            )
+            with anyio.fail_after(2):
+                await client.connect()
+                await client.query("Hello")
+                messages = client.receive_messages()
+                assert isinstance(await anext(messages), AssistantMessage)
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await client.disconnect()
+                    assert transport.closed
+                    assert calls == 1
+                    with pytest.raises(CLIConnectionError, match="Not connected"):
+                        await anext(client.receive_messages())
+                finally:
+                    await client.disconnect()
+                    await messages.aclose()
+
+        anyio.run(run)
 
 
 class TestQueryReportMirrorError:

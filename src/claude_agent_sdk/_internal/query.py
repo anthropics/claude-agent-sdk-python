@@ -264,6 +264,7 @@ class Query:
         self._inflight_requests: dict[str, TaskHandle] = {}
         self._initialized = False
         self._closed = False
+        self._transport_closed = False
         self._initialization_result: dict[str, Any] | None = None
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
@@ -318,7 +319,7 @@ class Query:
         """Surface a :meth:`SessionStore.append` failure as a system message.
 
         Called from the batcher's ``on_error`` once a batch has been dropped
-        (after its retries, or after a single timed-out attempt), so this is
+        (after its retries, timeout, or cancellation), so this is
         the consumer's only signal.
         Non-blocking — if the message buffer is full the error is logged and
         dropped rather than back-pressuring the read loop.
@@ -609,24 +610,26 @@ class Query:
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
-            # batched this turn. flush() never raises. Shielded so the await
-            # still runs when this finally is reached via cancellation.
-            if self._transcript_mirror_batcher is not None:
-                with anyio.CancelScope(shield=True):
-                    await self._transcript_mirror_batcher.flush()
-            # Unblock any waiters (e.g. string-prompt path waiting for the end
-            # of the run) so they don't stall on early exit.
-            self._run_final = True
-            self._end_run()
-            # Always signal end of stream. send_nowait: trio's level-triggered
-            # cancellation would re-raise Cancelled at an await checkpoint
-            # here, dropping the sentinel and leaving receive_messages() hung.
-            # close() is the fallback for the buffer-full case where
-            # send_nowait raises WouldBlock — receivers then exit on
-            # EndOfStream after draining.
-            with suppress(anyio.WouldBlock):
-                self._message_send.send_nowait({"type": "end"})
-            self._message_send.close()
+            # batched this turn. Ordinary adapter failures do not raise. Shielded
+            # so the await runs when this finally is reached via cancellation.
+            try:
+                if self._transcript_mirror_batcher is not None:
+                    with anyio.CancelScope(shield=True):
+                        await self._transcript_mirror_batcher.flush()
+            finally:
+                # Unblock any waiters (e.g. string-prompt path waiting for the end
+                # of the run) so they don't stall on early exit.
+                self._run_final = True
+                self._end_run()
+                # Always signal end of stream. send_nowait: trio's level-triggered
+                # cancellation would re-raise Cancelled at an await checkpoint
+                # here, dropping the sentinel and leaving receive_messages() hung.
+                # close() is the fallback for the buffer-full case where
+                # send_nowait raises WouldBlock — receivers then exit on
+                # EndOfStream after draining.
+                with suppress(anyio.WouldBlock):
+                    self._message_send.send_nowait({"type": "end"})
+                self._message_send.close()
 
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
@@ -1240,26 +1243,29 @@ class Query:
         self._closed = True
         # Final-flush mirror entries before tearing down so .return()/break
         # don't drop the current turn when the process exits immediately.
-        if self._transcript_mirror_batcher is not None:
-            await self._transcript_mirror_batcher.close()
-        for task in list(self._child_tasks):
-            task.cancel()
-        for bridge in self._sdk_mcp_bridges.values():
-            await bridge.aclose()
-        if self._read_task is not None and not self._read_task.done():
-            self._read_task.cancel()
-            await self._read_task.wait()
-        self._read_task = None
-        # The read task's finally closed the send side; repeat here for the
-        # case where start() was never called. Do NOT close the receive
-        # side — it belongs to the consumer, and anyio's receive_nowait()
-        # checks _closed before the buffer, so closing it here would make a
-        # non-parked consumer drop buffered messages with
-        # ClosedResourceError. _message_send.close() alone yields
-        # EndOfStream after the buffer drains; the consumer calls
-        # close_receive_stream() once it's done iterating (#859).
-        self._message_send.close()
-        await self.transport.close()
+        try:
+            if self._transcript_mirror_batcher is not None:
+                await self._transcript_mirror_batcher.close()
+        finally:
+            for task in list(self._child_tasks):
+                task.cancel()
+            for bridge in self._sdk_mcp_bridges.values():
+                await bridge.aclose()
+            if self._read_task is not None and not self._read_task.done():
+                self._read_task.cancel()
+                await self._read_task.wait()
+            self._read_task = None
+            # The read task's finally closed the send side; repeat here for the
+            # case where start() was never called. Do NOT close the receive
+            # side — it belongs to the consumer, and anyio's receive_nowait()
+            # checks _closed before the buffer, so closing it here would make a
+            # non-parked consumer drop buffered messages with
+            # ClosedResourceError. _message_send.close() alone yields
+            # EndOfStream after the buffer drains; the consumer calls
+            # close_receive_stream() once it's done iterating (#859).
+            self._message_send.close()
+            await self.transport.close()
+            self._transport_closed = True
 
     def close_receive_stream(self) -> None:
         """Close the receive side of the message stream.

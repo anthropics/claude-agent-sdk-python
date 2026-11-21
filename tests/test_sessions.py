@@ -2391,3 +2391,48 @@ class TestGetSubagentMessages:
         (subagents_dir / "agent-empty.jsonl").write_text("")
 
         assert get_subagent_messages(sid, "empty", directory=project_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Invalid UTF-8 transcript degradation (regression for issue #1518)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidUtf8Transcripts:
+    """Corrupt (invalid UTF-8) transcript files degrade instead of raising."""
+
+    def test_get_session_messages_invalid_utf8(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A session file with invalid UTF-8 returns [] instead of raising."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        raw = (
+            b'{"type":"user","uuid":"u1","sessionId":"x"}\n'
+            b"\xff\xfe not utf-8 \x80\n"
+            b'{"type":"assistant","uuid":"a1","sessionId":"x"}\n'
+        )
+        (project_dir / f"{sid}.jsonl").write_bytes(raw)
+
+        assert get_session_messages(sid, directory=project_path) == []
+
+    def test_get_subagent_messages_invalid_utf8(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A subagent transcript with invalid UTF-8 returns [] instead of raising."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        sid, subagents_dir = _make_session_with_subagents(
+            claude_config_dir, project_path, agent_ids=[]
+        )
+        raw = (
+            b'{"type":"user","uuid":"u1"}\n'
+            b"\xff\xfe not utf-8 \x80\n"
+        )
+        (subagents_dir / "agent-badutf.jsonl").write_bytes(raw)
+
+        assert get_subagent_messages(sid, "badutf", directory=project_path) == []

@@ -276,6 +276,13 @@ class SubprocessCLITransport(Transport):
         if bundled_cli:
             return bundled_cli
 
+        def _safe_home() -> Path | None:
+            try:
+                home = Path.home()
+            except (RuntimeError, OSError):
+                return None
+            return home if home.is_absolute() else None
+
         # Fall back to system-wide search
         if platform.system() == "Windows":
             # Only a native claude.exe: CreateProcess can't run an extensionless
@@ -287,22 +294,29 @@ class SubprocessCLITransport(Transport):
                 # Path.is_file() raises on an unreadable directory
                 if directory.is_absolute() and os.path.isfile(exe):  # noqa: PTH113
                     return str(exe)
-            locations = [Path.home() / ".local/bin/claude.exe"]
+            home = _safe_home()
+            locations = [home / ".local/bin/claude.exe"] if home else []
         elif cli := shutil.which("claude"):
             return cli
         else:
-            locations = [
-                Path.home() / ".npm-global/bin/claude",
-                Path("/usr/local/bin/claude"),
-                Path.home() / ".local/bin/claude",
-                Path.home() / "node_modules/.bin/claude",
-                Path.home() / ".yarn/bin/claude",
-                Path.home() / ".claude/local/claude",
-            ]
+            home = _safe_home()
+            locations = (
+                [
+                    home / ".npm-global/bin/claude",
+                    Path("/usr/local/bin/claude"),
+                    home / ".local/bin/claude",
+                    home / "node_modules/.bin/claude",
+                    home / ".yarn/bin/claude",
+                    home / ".claude/local/claude",
+                ]
+                if home
+                else [Path("/usr/local/bin/claude")]
+            )
 
         for path in locations:
-            if path.exists() and path.is_file():
-                return str(path)
+            with suppress(OSError):
+                if path.exists() and path.is_file():
+                    return str(path)
 
         if platform.system() == "Windows":
             # npm's Windows install is a claude.cmd shim, which connect()

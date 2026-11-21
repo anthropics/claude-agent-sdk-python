@@ -110,3 +110,18 @@ class TestErrorTypes:
             assert error.line == "{invalid json}"
             assert error.original_error == e
             assert "Failed to decode JSON" in str(error)
+
+    def test_json_decode_error_survives_pickle_and_copy(self):
+        """Exceptions cross process boundaries via pickle (multiprocessing,
+        ProcessPoolExecutor); CLIJSONDecodeError must round-trip with `line`
+        and `original_error` intact, without double-wrapping the message."""
+        import copy
+        import pickle
+
+        error = CLIJSONDecodeError("{bad", ValueError("buffer exceeded"))
+        for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error)):
+            assert type(clone) is CLIJSONDecodeError
+            assert str(clone) == str(error)
+            assert clone.line == "{bad"
+            assert type(clone.original_error) is ValueError
+            assert clone.original_error.args == ("buffer exceeded",)

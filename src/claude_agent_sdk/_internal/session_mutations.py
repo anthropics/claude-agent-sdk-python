@@ -405,10 +405,15 @@ def _build_fork_lines(
     for i, original in enumerate(writable):
         new_uuid = uuid_mapping[original["uuid"]]
 
-        # Resolve parentUuid, skipping progress ancestors.
+        # Resolve parentUuid, skipping progress ancestors. Stop on a repeated
+        # id so a cyclic progress chain cannot loop forever.
         new_parent_uuid: str | None = None
         parent_id: str | None = original.get("parentUuid")
-        while parent_id:
+        seen_parents: set[str] = set()
+        while (
+            isinstance(parent_id, str) and parent_id and parent_id not in seen_parents
+        ):
+            seen_parents.add(parent_id)
             parent = by_uuid.get(parent_id)
             if not parent:
                 break

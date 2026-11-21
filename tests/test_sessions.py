@@ -1252,6 +1252,16 @@ class TestBuildConversationChain:
         result = _build_conversation_chain(entries)
         assert [e["uuid"] for e in result] == ["a", "b", "c"]
 
+    @pytest.mark.parametrize("bad_parent", [["parent"], {"uuid": "parent"}])
+    def test_non_string_parent_uuid_is_tolerated(self, bad_parent):
+        """A list/dict parentUuid is ignored instead of raising TypeError."""
+        entries = [
+            {"type": "user", "uuid": "a", "parentUuid": bad_parent},
+            {"type": "assistant", "uuid": "b", "parentUuid": "a"},
+        ]
+        result = _build_conversation_chain(entries)
+        assert [e["uuid"] for e in result] == ["a", "b"]
+
     def test_only_progress_entries_returns_empty(self):
         """If no user/assistant entries, no leaves found → empty."""
         entries = [

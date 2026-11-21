@@ -140,6 +140,13 @@ def test_initialize_allows_continue_when_cli_lacks_on_failure():
     assert sent["hooks"]["PreToolUse"][0]["onFailure"] == "continue"
 
 
+def test_hooks_to_internal_format_rejects_non_hookmatcher_entries():
+    """A dict entry must not become a match-all matcher with no callbacks."""
+    hooks = {"PreToolUse": [{"matcher": "Bash", "hooks": [_noop_hook]}]}
+    with pytest.raises(TypeError, match="HookMatcher"):
+        _hooks_to_internal_format(hooks)  # type: ignore[arg-type]
+
+
 def test_initialize_omits_hook_on_failure_when_unset():
     """A matcher without on_failure sends no onFailure, so the default stays."""
     hooks = {"PreToolUse": [HookMatcher(hooks=[_noop_hook])]}

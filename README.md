@@ -12,10 +12,12 @@ pip install claude-agent-sdk
 
 - Python 3.10+
 
-**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
+**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK uses the bundled CLI by default, and it is preferred over any `claude` already on your `PATH`. If you prefer a system-wide installation or a specific version, you can:
 
-- Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
 - Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
+- Set `CLAUDE_AGENT_SDK_NO_BUNDLE=1` to ignore the bundled CLI entirely, so discovery falls through to `claude` on your `PATH` and the usual install locations. Install Claude Code separately first, e.g. `curl -fsSL https://claude.ai/install.sh | bash`.
+
+  Useful when you already manage `claude` yourself (npm global, mise/asdf, a distro package, a container base image) and do not want the bundled copy used. Any non-empty value enables it, matching `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK`.
 
 ## Quick Start
 

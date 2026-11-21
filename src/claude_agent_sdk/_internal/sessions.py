@@ -78,11 +78,54 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _utf16_code_units(s: str) -> list[int]:
+    """The string as UTF-16 code units, matching JavaScript's charCodeAt.
+
+    The CLI's sanitizePath and simpleHash both iterate UTF-16 code units: a
+    character outside the Basic Multilingual Plane (e.g. an emoji) is a
+    surrogate pair — two units, two hash steps, two units toward the length
+    cap. Python strings iterate code points and count it as one, so the SDK's
+    project directory names drifted from the CLI's for non-BMP paths
+    (issue #1409).
+    """
+    units: list[int] = []
+    for ch in s:
+        cp = ord(ch)
+        if cp <= 0xFFFF:
+            units.append(cp)
+        else:
+            units.append(0xD800 + ((cp - 0x10000) >> 10))
+            units.append(0xDC00 + ((cp - 0x10000) & 0x3FF))
+    return units
+
+
+def _utf16_length(s: str) -> int:
+    """Length of ``s`` in UTF-16 code units (a non-BMP character counts as 2)."""
+    return len(_utf16_code_units(s))
+
+
+def _utf16_truncate(s: str, max_units: int) -> str:
+    """Truncate ``s`` to at most ``max_units`` UTF-16 code units.
+
+    Never splits a surrogate pair: if the cut would land between the two
+    halves of a non-BMP character, the whole character is dropped.
+    """
+    units = 0
+    for i, ch in enumerate(s):
+        w = 2 if ord(ch) > 0xFFFF else 1
+        if units + w > max_units:
+            return s[:i]
+        units += w
+    return s
+
+
 def _simple_hash(s: str) -> str:
     """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
-    for ch in s:
-        char = ord(ch)
+    # The CLI's simpleHash uses charCodeAt and therefore hashes UTF-16 code
+    # units: a non-BMP character contributes its two surrogate halves as
+    # separate steps (issue #1409).
+    for char in _utf16_code_units(s):
         h = (h << 5) - h + char
         # Emulate JS `hash |= 0` (coerce to 32-bit signed int)
         h = h & 0xFFFFFFFF
@@ -106,12 +149,27 @@ def _sanitize_path(name: str) -> str:
 
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
+
+    Mirrors the CLI's JavaScript semantics, which run on UTF-16 code units
+    without the ``u`` regex flag: a non-BMP character is two surrogate units,
+    each replaced by its own hyphen, and each counting one unit toward the
+    length cap. Python would otherwise replace it with a single hyphen and
+    count it once, so the SDK's directory names drifted from the CLI's
+    (issue #1409).
     """
-    sanitized = _SANITIZE_RE.sub("-", name)
-    if len(sanitized) <= MAX_SANITIZED_LENGTH:
+    parts: list[str] = []
+    for ch in name:
+        if _SANITIZE_RE.match(ch):
+            # One hyphen per UTF-16 code unit: a non-BMP character is two
+            # surrogate units in the CLI's JS regex, so two hyphens.
+            parts.append("--" if ord(ch) > 0xFFFF else "-")
+        else:
+            parts.append(ch)
+    sanitized = "".join(parts)
+    if _utf16_length(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)
-    return f"{sanitized[:MAX_SANITIZED_LENGTH]}-{h}"
+    return f"{_utf16_truncate(sanitized, MAX_SANITIZED_LENGTH)}-{h}"
 
 
 # ---------------------------------------------------------------------------

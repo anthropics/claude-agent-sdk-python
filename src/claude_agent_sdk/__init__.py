@@ -638,7 +638,7 @@ def create_sdk_mcp_server(
                 }
             )
         except Exception as e:
-            return _tool_error_result(str(e))
+            return _tool_error_result(str(e) or type(e).__name__)
 
     server = build_tool_server(name, version, wire_tools, run_tool)
 

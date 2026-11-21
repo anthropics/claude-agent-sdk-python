@@ -256,6 +256,59 @@ See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete 
 - `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
 - `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
 
+### Deferred tool calls
+
+`DeferredToolUse` describes a tool call deferred by a `PreToolUse` hook that
+returns `permissionDecision: "defer"`. Inspect `ResultMessage.deferred_tool_use`
+to decide how to handle the pending call and whether to resume the session.
+The field is `None` when no deferred call is reported. Receiving this object
+does not execute the tool.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | `str` | Identifier of the deferred tool call |
+| `name` | `str` | Name of the requested tool |
+| `input` | `dict[str, Any]` | Arguments supplied to the tool |
+
+```python
+from claude_agent_sdk import ResultMessage
+
+
+def describe_deferred_call(message: ResultMessage) -> str | None:
+    pending = message.deferred_tool_use
+    if pending is None:
+        return None
+    return f"Deferred {pending.name} ({pending.id}): {pending.input}"
+```
+
+### Hook lifecycle messages
+
+Set `ClaudeAgentOptions(include_hook_events=True)` to include hook lifecycle
+events in the message stream as `HookEventMessage` objects. These inherit
+from `SystemMessage`, so check for `HookEventMessage` first when using an
+`if`/`elif` chain that also handles general system messages.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `subtype` | `str` | Lifecycle phase, such as `hook_started` or `hook_response` |
+| `data` | `dict[str, Any]` | Complete raw event payload |
+| `hook_event_name` | `str` | Hook event name, such as `PreToolUse` or `Stop`; defaults to `""` |
+| `session_id` | `str \| None` | Session identifier when present; defaults to `None` |
+| `uuid` | `str \| None` | Event identifier when present; defaults to `None` |
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, HookEventMessage
+
+options = ClaudeAgentOptions(include_hook_events=True)
+
+
+def describe_hook_event(message: HookEventMessage) -> str:
+    return f"{message.hook_event_name}: {message.subtype}"
+```
+
+Hook lifecycle messages report hook execution. Configure callbacks separately
+with the `hooks` option; enabling these messages does not register a callback.
+
 ## Error Handling
 
 ```python

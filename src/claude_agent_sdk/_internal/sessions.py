@@ -207,8 +207,19 @@ def _extract_json_string_field(text: str, key: str) -> str | None:
 
     Looks for "key":"value" or "key": "value" patterns. Returns the first
     match, or None if not found.
+
+    The two patterns are scored against one another by where they start, so the
+    value returned is the one that appears first in ``text`` among the two
+    spellings listed above. Whitespace other than a single space after the colon
+    is not a pattern here, so a field written that way is not seen at all.
+    Draining the compact spelling before the spaced one instead would let a
+    later ``"key":"v"`` match beat an earlier ``"key": "v"`` one.
+    ``_extract_last_json_string_field`` still has that ordering flaw, mirrored,
+    at the other end of the file; #1208 proposes fixing it separately.
     """
     patterns = [f'"{key}":"', f'"{key}": "']
+    first_value: str | None = None
+    first_start = -1
     for pattern in patterns:
         idx = text.find(pattern)
         if idx < 0:
@@ -221,9 +232,12 @@ def _extract_json_string_field(text: str, key: str) -> str | None:
                 i += 2
                 continue
             if text[i] == '"':
-                return _unescape_json_string(text[value_start:i])
+                if first_start < 0 or idx < first_start:
+                    first_start = idx
+                    first_value = _unescape_json_string(text[value_start:i])
+                break
             i += 1
-    return None
+    return first_value
 
 
 def _extract_last_json_string_field(text: str, key: str) -> str | None:

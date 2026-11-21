@@ -433,14 +433,42 @@ def _typeddict_to_json_schema(td_class: type) -> dict[str, Any]:
     return schema
 
 
+# Dict-style params map names to Python types. These keywords are what make a
+# dict a JSON Schema instead, including schemas that have no ``properties``.
+_JSON_SCHEMA_COMBINATORS = ("anyOf", "allOf", "oneOf")
+
+
+def _is_raw_json_schema(schema: dict[str, Any]) -> bool:
+    """Whether ``schema`` is a JSON Schema document rather than a param map.
+
+    A parameter may literally be named ``type`` (``{"type": str}``). That value
+    is a type object, whereas the JSON Schema ``type`` keyword is a string or a
+    list of strings. The other keywords are recognized by the shape of their
+    values for the same reason, so a param named ``anyOf`` or
+    ``additionalProperties`` is still built as a parameter.
+    """
+    type_value = schema.get("type")
+    if isinstance(type_value, str):
+        return True
+    if (
+        isinstance(type_value, list)
+        and type_value
+        and all(isinstance(item, str) for item in type_value)
+    ):
+        return True
+    if any(isinstance(schema.get(key), list) for key in _JSON_SCHEMA_COMBINATORS):
+        return True
+    if isinstance(schema.get("$ref"), str):
+        return True
+    if isinstance(schema.get("additionalProperties"), bool | dict):
+        return True
+    return isinstance(schema.get("properties"), dict)
+
+
 def _build_input_schema(tool_def: SdkMcpTool[Any]) -> dict[str, Any]:
     """Turn a tool's declared input_schema into the JSON Schema sent on the wire."""
     if isinstance(tool_def.input_schema, dict):
-        if (
-            "type" in tool_def.input_schema
-            and "properties" in tool_def.input_schema
-            and isinstance(tool_def.input_schema["type"], str)
-        ):
+        if _is_raw_json_schema(tool_def.input_schema):
             return tool_def.input_schema
         properties = {
             param_name: _python_type_to_json_schema(param_type)

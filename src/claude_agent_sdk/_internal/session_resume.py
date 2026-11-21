@@ -342,7 +342,20 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
     )
 
     creds_bytes = _read_if_present(source_config_dir / ".credentials.json")
-    creds_json = creds_bytes.decode("utf-8") if creds_bytes is not None else None
+    # An undecodable file (e.g. a truncated write from an interrupted login) is
+    # treated like a missing one: auth seeding is best-effort, and failing here
+    # would abort resume before the CLI is even spawned — including for callers
+    # that authenticate via ANTHROPIC_API_KEY and never read this file.
+    creds_json: str | None = None
+    if creds_bytes is not None:
+        try:
+            creds_json = creds_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            logger.warning(
+                "[SessionStore] resume: skipping %s (%s)",
+                source_config_dir / ".credentials.json",
+                e,
+            )
 
     # macOS default setup keeps OAuth tokens in the Keychain, not a file.
     # Redirecting CLAUDE_CONFIG_DIR changes the Keychain service-name suffix,

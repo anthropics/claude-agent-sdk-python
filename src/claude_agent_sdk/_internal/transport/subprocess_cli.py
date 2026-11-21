@@ -109,6 +109,44 @@ def _reject_non_list_skills(skills: object) -> None:
     )
 
 
+def _reject_non_list_option(
+    option_name: str,
+    value: object,
+    *,
+    item_description: str,
+    suggest_types: tuple[type[Any], ...] = (str,),
+) -> None:
+    """Reject strings and non-list values for list-typed CLI options.
+
+    A string iterates as characters when joined with commas or looped over,
+    and other non-list values bypass the documented list contract.
+    """
+    if isinstance(value, list):
+        return
+    suggestion = (
+        f" Did you mean [{value!r}]?" if isinstance(value, suggest_types) else ""
+    )
+    raise TypeError(
+        f"ClaudeAgentOptions.{option_name} must be a list of"
+        f" {item_description}, got {value!r}.{suggestion}"
+    )
+
+
+def _reject_invalid_tools(tools: object) -> None:
+    """Reject invalid non-list, non-preset values for ``options.tools``.
+
+    Any non-list value previously fell into the preset branch and emitted
+    ``--tools default``, silently enabling every built-in tool.
+    """
+    if isinstance(tools, (list, dict)):
+        return
+    suggestion = f" Did you mean [{tools!r}]?" if isinstance(tools, str) else ""
+    raise TypeError(
+        "ClaudeAgentOptions.tools must be a list of tool names or a"
+        f" ToolsPreset dict, got {tools!r}.{suggestion}"
+    )
+
+
 def _validate_skill_name(name: str) -> None:
     """Reject skill names that cannot ride safely in a ``Skill(name)`` rule.
 
@@ -489,6 +527,11 @@ class SubprocessCLITransport(Transport):
 
         Does not mutate the original options object.
         """
+        _reject_non_list_option(
+            "allowed_tools",
+            self._options.allowed_tools,
+            item_description="tool names",
+        )
         allowed_tools: list[str] = list(self._options.allowed_tools)
         setting_sources: list[str] | None = (
             list(self._options.setting_sources)
@@ -540,6 +583,7 @@ class SubprocessCLITransport(Transport):
         # Handle tools option (base set of tools)
         if self._options.tools is not None:
             tools = self._options.tools
+            _reject_invalid_tools(tools)
             if isinstance(tools, list):
                 if len(tools) == 0:
                     cmd.extend(["--tools", ""])
@@ -562,6 +606,11 @@ class SubprocessCLITransport(Transport):
         if self._options.max_budget_usd is not None:
             cmd.extend(["--max-budget-usd", str(self._options.max_budget_usd)])
 
+        _reject_non_list_option(
+            "disallowed_tools",
+            self._options.disallowed_tools,
+            item_description="tool names",
+        )
         if self._options.disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(self._options.disallowed_tools)])
 
@@ -608,6 +657,12 @@ class SubprocessCLITransport(Transport):
         if settings_value:
             cmd.extend(["--settings", settings_value])
 
+        _reject_non_list_option(
+            "add_dirs",
+            self._options.add_dirs,
+            item_description="directory paths",
+            suggest_types=(str, Path),
+        )
         if self._options.add_dirs:
             # Convert all paths to strings and add each directory
             for directory in self._options.add_dirs:

@@ -198,7 +198,11 @@ class InternalClient:
                 query.spawn_task(query.wait_for_result_and_end_input())
             elif isinstance(prompt, AsyncIterable):
                 # Stream input in background for async iterables
-                query.spawn_task(query.stream_input(prompt))
+                query.spawn_task(
+                    query.stream_input(
+                        prompt, is_resuming=bool(configured_options.resume)
+                    )
+                )
 
             # Yield parsed messages, skipping unknown message types
             async for data in query.receive_messages():

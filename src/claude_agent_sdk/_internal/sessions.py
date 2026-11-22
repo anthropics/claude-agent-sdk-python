@@ -837,7 +837,9 @@ def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
     """Tries to read a session JSONL file from a project directory."""
     try:
         return (project_dir / file_name).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a corrupt transcript degrades
+        # to None like a missing or unreadable one instead of aborting reads.
         return None
 
 
@@ -1618,7 +1620,9 @@ def get_subagent_messages(
 
     try:
         content = match.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a corrupt subagent transcript
+        # degrades to [] like a missing or unreadable one.
         return []
     if not content:
         return []

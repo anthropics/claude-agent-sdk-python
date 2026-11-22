@@ -832,6 +832,41 @@ class TestGetSessionMessages:
         assert len(with_offset) == 2
         assert with_offset[0].uuid == u1
 
+    def test_undecodable_transcript_degrades_to_empty(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A corrupt (invalid UTF-8) transcript reads like a missing one.
+
+        Regression for #1518: strict UTF-8 decoding raised
+        UnicodeDecodeError (a ValueError, not OSError) out of
+        get_session_messages instead of degrading to [].
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        # Invalid UTF-8 bytes followed by a valid JSONL line.
+        (project_dir / f"{sid}.jsonl").write_bytes(
+            b"\xff\xfe\n"
+            + b'{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}\n'
+        )
+
+        assert get_session_messages(sid, directory=project_path) == []
+        # A corrupt subagent transcript degrades the same way. The parent
+        # session file must exist (and be non-empty) for the subagents
+        # directory to resolve, so give it one valid line.
+        (project_dir / f"{sid}.jsonl").write_bytes(
+            b'{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}\n'
+        )
+        subagents_dir = project_dir / f"{sid}" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        agent_id = str(uuid.uuid4())
+        (subagents_dir / f"{agent_id}.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+        assert get_subagent_messages(sid, agent_id, directory=project_path) == []
+
     def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
         """isMeta entries in the chain are filtered from output."""
         project_path = str(tmp_path / "proj")

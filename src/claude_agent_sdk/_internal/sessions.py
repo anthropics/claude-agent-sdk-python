@@ -1351,11 +1351,11 @@ def _entries_to_session_messages(
     visible = [e for e in chain if _is_visible_message(e)]
     messages = [_to_session_message(e) for e in visible]
 
-    # Apply offset and limit
+    # Mirror _apply_sort_limit_offset's guards so negative/zero offset and
+    # non-positive limit behave identically to the other read paths.
+    messages = messages[offset:] if offset > 0 else messages
     if limit is not None and limit > 0:
-        return messages[offset : offset + limit]
-    if offset > 0:
-        return messages[offset:]
+        return messages[:limit]
     return messages
 
 
@@ -1726,10 +1726,11 @@ def _entries_to_subagent_messages(
         if e.get("type") in ("user", "assistant")
     ]
 
+    # Mirror _apply_sort_limit_offset's guards so negative/zero offset and
+    # non-positive limit behave identically to the other read paths.
+    messages = messages[offset:] if offset > 0 else messages
     if limit is not None and limit > 0:
-        return messages[offset : offset + limit]
-    if offset > 0:
-        return messages[offset:]
+        return messages[:limit]
     return messages
 
 

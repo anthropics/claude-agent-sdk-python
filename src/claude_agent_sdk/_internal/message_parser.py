@@ -147,6 +147,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in user message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid nested payload in user message: {e}", data
+                ) from e
 
         case "assistant":
             try:
@@ -223,6 +227,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid nested payload in assistant message: {e}", data
                 ) from e
 
         case "system":
@@ -343,6 +351,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in result message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid nested payload in result message: {e}", data
+                ) from e
 
         case "stream_event":
             try:
@@ -379,6 +391,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid nested payload in rate_limit_event message: {e}", data
                 ) from e
 
         case "conversation_reset":

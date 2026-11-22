@@ -2,7 +2,7 @@
 
 import pytest
 
-from claude_agent_sdk._errors import MessageParseError
+from claude_agent_sdk._errors import ClaudeSDKError, MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import (
     TERMINAL_TASK_STATUSES,
@@ -1060,6 +1060,44 @@ class TestMessageParser:
         with pytest.raises(MessageParseError) as exc_info:
             parse_message({"message": {"content": []}})
         assert "Message missing 'type' field" in str(exc_info.value)
+
+    def test_non_dict_nested_payloads_raise_message_parse_error(self):
+        """A present-but-non-dict nested payload raises MessageParseError.
+
+        Regression for #1508: subscripting a non-dict ``message`` /
+        ``deferred_tool_use`` / ``rate_limit_info`` raised a raw TypeError
+        before any ``KeyError`` handler could translate it, killing the
+        message stream with an undocumented exception type.
+        """
+        base_result = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "sess-1",
+        }
+        frames = [
+            {"type": "user", "message": "oops"},
+            {"type": "user", "message": []},
+            {"type": "user", "message": None},
+            {"type": "assistant", "message": []},
+            {"type": "assistant", "message": "oops"},
+            {**base_result, "deferred_tool_use": "x"},
+            {**base_result, "deferred_tool_use": ["id"]},
+            {"type": "rate_limit_event", "rate_limit_info": "x", "uuid": "u",
+             "session_id": "s"},
+            {"type": "rate_limit_event", "rate_limit_info": None, "uuid": "u",
+             "session_id": "s"},
+        ]
+        for frame in frames:
+            with pytest.raises(MessageParseError) as exc_info:
+                parse_message(frame)
+            assert "Invalid nested payload" in str(exc_info.value)
+            # The error carries the frame for callers inspecting .data.
+            assert isinstance(exc_info.value, ClaudeSDKError)
+            assert exc_info.value.data == frame
 
     def test_parse_unknown_message_type(self):
         """Test that unknown message type returns None for forward compatibility."""

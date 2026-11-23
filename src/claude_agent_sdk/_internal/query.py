@@ -6,6 +6,7 @@ import os
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import anyio
@@ -30,6 +31,11 @@ from ..types import (
 )
 from ._task_compat import TaskHandle, spawn_detached
 from .sdk_mcp_bridge import SdkMcpBridge
+from .sessions import (
+    _parent_ids_from_agent_metadata,
+    _read_agent_metadata_sidecar,
+    _resolve_subagents_dir,
+)
 from .transport import Transport
 
 if TYPE_CHECKING:
@@ -265,6 +271,9 @@ class Query:
         self._initialized = False
         self._closed = False
         self._initialization_result: dict[str, Any] | None = None
+        self._session_id: str | None = None
+        self._session_cwd: str | None = None
+        self._parent_tool_use_ids: dict[str, str] = {}
 
         # Set when the run is over, so the stdin-closing waiter can wake; see
         # _read_messages and _inflight_tasks below (#1088, #1190). Work the CLI
@@ -491,6 +500,12 @@ class Query:
                 # Track task lifecycle frames so results can tell "one turn
                 # ended" apart from "the run is done" (see #1088).
                 if msg_type == "system":
+                    if (
+                        message.get("subtype") == "init"
+                        and message.get("parent_tool_use_id") is None
+                    ):
+                        self._session_id = message.get("session_id")
+                        self._session_cwd = message.get("cwd")
                     had_tasks_in_flight = bool(self._inflight_tasks)
                     self._track_task_lifecycle(message)
                     if had_tasks_in_flight and not self._inflight_tasks:
@@ -628,6 +643,72 @@ class Query:
                 self._message_send.send_nowait({"type": "end"})
             self._message_send.close()
 
+    def _parent_tool_use_id_for_agent(
+        self,
+        agent_id: str | None,
+        wire_id: Any,
+        transcript_path: str | None = None,
+        session_id: str | None = None,
+        cwd: str | None = None,
+    ) -> str | None:
+        """Resolve a sub-agent's spawning tool call from the wire or CLI sidecar.
+
+        Current CLI versions do not include this ID on control requests. The
+        sidecar is the same source used by get_subagent_messages(); a missing
+        or unreadable one leaves the value unknown rather than delaying hooks.
+        """
+        if not agent_id:
+            return None
+        if isinstance(wire_id, str) and wire_id:
+            self._parent_tool_use_ids[agent_id] = wire_id
+            return wire_id
+        if agent_id in self._parent_tool_use_ids:
+            return self._parent_tool_use_ids[agent_id]
+        if "/" in agent_id or "\\" in agent_id:
+            return None
+
+        paths: list[Path] = []
+        if transcript_path:
+            transcript = Path(transcript_path)
+            if transcript.name == f"agent-{agent_id}.jsonl":
+                paths.append(transcript)
+        resolved_session_id = session_id or self._session_id
+        base: Path | None = None
+        if resolved_session_id:
+            with suppress(OSError):
+                base = _resolve_subagents_dir(
+                    resolved_session_id, cwd or self._session_cwd or str(Path.cwd())
+                )
+            if base is not None:
+                paths.append(base / f"agent-{agent_id}.jsonl")
+        for path in paths:
+            try:
+                parent_id, _ = _parent_ids_from_agent_metadata(
+                    _read_agent_metadata_sidecar(path)
+                )
+            except OSError:
+                continue
+            if parent_id:
+                self._parent_tool_use_ids[agent_id] = parent_id
+                return parent_id
+        if base is not None:
+            # Nested workflows keep their sidecars below subagents/. Scan
+            # only if the direct path did not provide an ID.
+            with suppress(OSError):
+                for meta in base.rglob("agent-*.meta.json"):
+                    if meta.name != f"agent-{agent_id}.meta.json":
+                        continue
+                    transcript = meta.with_name(
+                        meta.name[: -len(".meta.json")] + ".jsonl"
+                    )
+                    parent_id, _ = _parent_ids_from_agent_metadata(
+                        _read_agent_metadata_sidecar(transcript)
+                    )
+                    if parent_id:
+                        self._parent_tool_use_ids[agent_id] = parent_id
+                        return parent_id
+        return None
+
     async def _handle_control_request(self, request: SDKControlRequest) -> None:
         """Handle incoming control request from CLI."""
         request_id = request["request_id"]
@@ -654,6 +735,11 @@ class Query:
                     ],
                     tool_use_id=permission_request.get("tool_use_id"),
                     agent_id=permission_request.get("agent_id"),
+                    parent_tool_use_id=await anyio.to_thread.run_sync(
+                        self._parent_tool_use_id_for_agent,
+                        permission_request.get("agent_id"),
+                        permission_request.get("parent_tool_use_id"),
+                    ),
                     blocked_path=permission_request.get("blocked_path"),
                     decision_reason=permission_request.get("decision_reason"),
                     title=permission_request.get("title"),
@@ -700,8 +786,20 @@ class Query:
                 if not callback:
                     raise Exception(f"No hook callback found for ID: {callback_id}")
 
+                hook_input = request_data.get("input")
+                if isinstance(hook_input, dict) and hook_input.get("agent_id"):
+                    parent_id = await anyio.to_thread.run_sync(
+                        self._parent_tool_use_id_for_agent,
+                        hook_input.get("agent_id"),
+                        hook_input.get("parent_tool_use_id"),
+                        hook_input.get("transcript_path"),
+                        hook_input.get("session_id"),
+                        hook_input.get("cwd"),
+                    )
+                    if parent_id and not hook_input.get("parent_tool_use_id"):
+                        hook_input = {**hook_input, "parent_tool_use_id": parent_id}
                 hook_output = await callback(
-                    request_data.get("input"),
+                    hook_input,
                     request_data.get("tool_use_id"),
                     {"signal": None},  # TODO: Add abort signal support
                 )

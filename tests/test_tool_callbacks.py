@@ -1,6 +1,7 @@
 """Tests for tool permission callbacks and hook callbacks."""
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -415,6 +416,86 @@ class TestToolPermissionCallbacks:
         assert received_context is not None
         assert received_context.tool_use_id == "toolu_01XYZ789"
         assert received_context.agent_id is None
+        assert received_context.parent_tool_use_id is None
+
+    @pytest.mark.anyio
+    async def test_permission_callback_receives_parent_tool_use_id(self):
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        query = Query(
+            transport=MockTransport(),
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+        )
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "parent-permission",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "input": {},
+                    "tool_use_id": "toolu_child",
+                    "agent_id": "agent-1",
+                    "parent_tool_use_id": "toolu_spawn",
+                },
+            }
+        )
+        assert received_context.parent_tool_use_id == "toolu_spawn"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_permission_callback_uses_subagent_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool
+    ):
+        subagents = tmp_path / "subagents"
+        subagents.mkdir()
+        sidecar_dir = subagents / "workflows" / "run-1" if nested else subagents
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        (sidecar_dir / "agent-agent-1.meta.json").write_text(
+            json.dumps({"toolUseId": "toolu_spawn"})
+        )
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.query._resolve_subagents_dir",
+            lambda session_id, cwd: subagents,
+        )
+        received_context = None
+
+        async def capture_callback(
+            tool_name: str, input_data: dict, context: ToolPermissionContext
+        ) -> PermissionResultAllow:
+            nonlocal received_context
+            received_context = context
+            return PermissionResultAllow()
+
+        query = Query(
+            transport=MockTransport(),
+            is_streaming_mode=True,
+            can_use_tool=capture_callback,
+        )
+        query._session_id = "550e8400-e29b-41d4-a716-446655440000"
+        query._session_cwd = str(tmp_path)
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "parent-sidecar-permission",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "input": {},
+                    "tool_use_id": "toolu_child",
+                    "agent_id": "agent-1",
+                },
+            }
+        )
+        assert received_context.parent_tool_use_id == "toolu_spawn"
 
     @pytest.mark.anyio
     async def test_permission_callback_receives_decision_reason(self):
@@ -976,6 +1057,60 @@ class TestHookEventCallbacks:
         result = response_data["response"]["response"]
         assert result["hookSpecificOutput"]["hookEventName"] == "SubagentStart"
         assert result["hookSpecificOutput"]["additionalContext"] == "Subagent approved"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "hook_event_name",
+        [
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionRequest",
+            "SubagentStart",
+            "SubagentStop",
+        ],
+    )
+    async def test_subagent_hook_receives_parent_from_sidecar(
+        self, tmp_path: Path, hook_event_name: str
+    ):
+        transcript = tmp_path / "agent-worker.jsonl"
+        transcript.write_text("")
+        (tmp_path / "agent-worker.meta.json").write_text(
+            json.dumps({"toolUseId": "toolu_spawn"})
+        )
+        received_input = None
+
+        async def capture_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            nonlocal received_input
+            received_input = input_data
+            return {}
+
+        query = Query(transport=MockTransport(), is_streaming_mode=True)
+        query.hook_callbacks["parent-hook"] = capture_hook
+        await query._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "parent-hook-request",
+                "request": {
+                    "subtype": "hook_callback",
+                    "callback_id": "parent-hook",
+                    "input": {
+                        "hook_event_name": hook_event_name,
+                        "agent_id": "worker",
+                        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "transcript_path": str(transcript),
+                        "cwd": str(tmp_path),
+                        "tool_name": "Bash",
+                        "tool_input": {},
+                        "tool_use_id": "toolu_child",
+                    },
+                    "tool_use_id": "toolu_child",
+                },
+            }
+        )
+        assert received_input["parent_tool_use_id"] == "toolu_spawn"
 
     @pytest.mark.anyio
     async def test_post_tool_use_hook_with_updated_mcp_output(self):

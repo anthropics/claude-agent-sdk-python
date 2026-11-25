@@ -1,7 +1,6 @@
 """Claude SDK Client for interacting with Claude Code."""
 
 import json
-import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
@@ -143,7 +142,12 @@ class ClaudeSDKClient:
         prompt: str | AsyncIterable[dict[str, Any]] | None,
         actual_prompt: AsyncIterable[dict[str, Any]],
     ) -> None:
-        from ._internal.query import Query, run_end_ceiling_ms, stamp_user_message
+        from ._internal.query import (
+            Query,
+            initialize_timeout_s,
+            run_end_ceiling_ms,
+            stamp_user_message,
+        )
         from ._internal.session_resume import (
             apply_materialized_options,
             build_mirror_batcher,
@@ -173,12 +177,8 @@ class ClaudeSDKClient:
                 if isinstance(config, dict) and config.get("type") == "sdk":
                     sdk_mcp_servers[name] = config["instance"]  # type: ignore[typeddict-item]
 
-        # Calculate initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT env var if set
-        # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT is in milliseconds, convert to seconds
-        initialize_timeout_ms = int(
-            os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "60000")
-        )
-        initialize_timeout = max(initialize_timeout_ms / 1000.0, 60.0)
+        # Initialize timeout from CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (milliseconds)
+        initialize_timeout = initialize_timeout_s()
 
         # Extract exclude_dynamic_sections and snapshot from the system prompt
         # for the initialize request (older CLIs ignore unknown initialize fields).

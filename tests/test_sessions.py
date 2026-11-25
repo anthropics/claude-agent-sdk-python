@@ -2005,6 +2005,66 @@ class TestGetSessionInfo:
         )
         assert info.tag is None
 
+    @pytest.mark.parametrize(
+        ("block_type", "expected_summary"),
+        [("image", "Image"), ("document", "Document")],
+    )
+    def test_media_only_first_prompt_session(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        block_type: str,
+        expected_summary: str,
+    ):
+        """Sessions whose first prompt is only an image or document are listed with 'Image'/'Document' summary (#1399)."""
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+        file_path = project_dir / f"{sid}.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": str(uuid.uuid4()),
+                    "parentUuid": None,
+                    "sessionId": sid,
+                    "timestamp": "2026-01-15T10:30:00Z",
+                    "cwd": project_path,
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": block_type, "source": {"type": "base64"}}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": str(uuid.uuid4()),
+                    "parentUuid": None,
+                    "sessionId": sid,
+                    "timestamp": "2026-01-15T10:30:05Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Here is what I see."}],
+                    },
+                }
+            ),
+        ]
+        file_path.write_text("\n".join(lines) + "\n")
+
+        info = get_session_info(sid, directory=project_path)
+        assert info is not None
+        assert info.session_id == sid
+        assert info.summary == expected_summary
+        assert info.first_prompt is None
+
+        sessions = list_sessions(directory=project_path)
+        assert [s.session_id for s in sessions] == [sid]
+        assert sessions[0].summary == expected_summary
+
 
 # ---------------------------------------------------------------------------
 # list_subagents() / get_subagent_messages() helpers

@@ -199,7 +199,15 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                                     input=block["input"],
                                 )
                             )
-                        case "advisor_tool_result":
+                        case (
+                            "advisor_tool_result"
+                            | "web_search_tool_result"
+                            | "web_fetch_tool_result"
+                            | "code_execution_tool_result"
+                            | "bash_code_execution_tool_result"
+                            | "text_editor_code_execution_tool_result"
+                            | "tool_search_tool_result"
+                        ):
                             content_blocks.append(
                                 ServerToolResultBlock(
                                     tool_use_id=block["tool_use_id"],

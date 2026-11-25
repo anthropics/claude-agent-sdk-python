@@ -533,6 +533,7 @@ def create_sdk_mcp_server(
             informational purposes and doesn't affect functionality.
         tools: List of SdkMcpTool instances created with the @tool decorator.
             These are the functions that Claude can call through this server.
+            Tool names must be unique within this server (case-sensitive).
             If None or empty, the server will have no tools (rarely useful).
 
     Returns:
@@ -540,6 +541,9 @@ def create_sdk_mcp_server(
         ClaudeAgentOptions.mcp_servers. Its ``instance`` is a regular
         ``mcp.server.Server`` that the SDK connects to Claude Code over an
         in-memory MCP transport.
+
+    Raises:
+        ValueError: If two tools have the same name.
 
     Example:
         Simple calculator server:
@@ -602,7 +606,11 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     tools = tools or []
-    tools_by_name = {tool_def.name: tool_def for tool_def in tools}
+    tools_by_name: dict[str, SdkMcpTool[Any]] = {}
+    for tool_def in tools:
+        if tool_def.name in tools_by_name:
+            raise ValueError(f"Duplicate tool name {tool_def.name!r}")
+        tools_by_name[tool_def.name] = tool_def
     schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
     wire_tools = [
         Tool.model_validate(

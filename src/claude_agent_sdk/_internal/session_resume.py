@@ -342,7 +342,18 @@ def _copy_auth_files(tmp_base: Path, opt_env: dict[str, str]) -> None:
     )
 
     creds_bytes = _read_if_present(source_config_dir / ".credentials.json")
-    creds_json = creds_bytes.decode("utf-8") if creds_bytes is not None else None
+    creds_json = None
+    if creds_bytes is not None:
+        try:
+            creds_json = creds_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            # Treat an undecodable .credentials.json like a missing one: this
+            # function already tolerates a missing file (API-key / OAuth-env
+            # auth), so a corrupt file must not abort a resume that does not
+            # need it.
+            logger.warning(
+                "Ignoring undecodable .credentials.json in %s", source_config_dir
+            )
 
     # macOS default setup keeps OAuth tokens in the Keychain, not a file.
     # Redirecting CLAUDE_CONFIG_DIR changes the Keychain service-name suffix,

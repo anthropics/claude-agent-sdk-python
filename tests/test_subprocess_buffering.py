@@ -281,6 +281,9 @@ class TestSubprocessBuffering:
                     pass
 
             assert f"maximum buffer size of {custom_limit} bytes" in str(exc_info.value)
+            # The error must name the option that fixes it, so users reach for
+            # max_buffer_size instead of editing the installed package.
+            assert "max_buffer_size" in str(exc_info.value)
 
         anyio.run(_test)
 

@@ -99,9 +99,15 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 tool_use_result = data.get("tool_use_result")
                 uuid = data.get("uuid")
                 origin = _parse_origin(data)
-                if isinstance(data["message"]["content"], list):
+                msg = data["message"]
+                if not isinstance(msg, dict):
+                    raise MessageParseError(
+                        f"Invalid user message field (expected dict, got {type(msg).__name__})",
+                        data,
+                    )
+                if isinstance(msg["content"], list):
                     user_content_blocks: list[ContentBlock] = []
-                    for block in data["message"]["content"]:
+                    for block in msg["content"]:
                         if not isinstance(block, dict):
                             raise MessageParseError(
                                 f"Invalid content block (expected dict, got "
@@ -137,7 +143,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         origin=origin,
                     )
                 return UserMessage(
-                    content=data["message"]["content"],
+                    content=msg["content"],
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,
@@ -147,10 +153,20 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in user message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in user message: {e}", data
+                ) from e
 
         case "assistant":
             try:
-                raw_content = data["message"]["content"]
+                msg = data["message"]
+                if not isinstance(msg, dict):
+                    raise MessageParseError(
+                        f"Invalid assistant message field (expected dict, got {type(msg).__name__})",
+                        data,
+                    )
+                raw_content = msg["content"]
                 if not isinstance(raw_content, list):
                     raise MessageParseError(
                         f"Invalid assistant content (expected list, got "
@@ -209,12 +225,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
 
                 return AssistantMessage(
                     content=content_blocks,
-                    model=data["message"]["model"],
+                    model=msg["model"],
                     parent_tool_use_id=data.get("parent_tool_use_id"),
                     error=data.get("error"),
-                    usage=data["message"].get("usage"),
-                    message_id=data["message"].get("id"),
-                    stop_reason=data["message"].get("stop_reason"),
+                    usage=msg.get("usage"),
+                    message_id=msg.get("id"),
+                    stop_reason=msg.get("stop_reason"),
                     session_id=data.get("session_id"),
                     uuid=data.get("uuid"),
                     user_message_uuid=data.get("user_message_uuid"),
@@ -223,6 +239,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in assistant message: {e}", data
                 ) from e
 
         case "system":
@@ -306,10 +326,26 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in system message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in system message: {e}", data
+                ) from e
 
         case "result":
             try:
                 deferred = data.get("deferred_tool_use")
+                deferred_tool_use = None
+                if deferred is not None:
+                    if not isinstance(deferred, dict):
+                        raise MessageParseError(
+                            f"Invalid deferred_tool_use (expected dict, got {type(deferred).__name__})",
+                            data,
+                        )
+                    deferred_tool_use = DeferredToolUse(
+                        id=deferred["id"],
+                        name=deferred["name"],
+                        input=deferred["input"],
+                    )
                 return ResultMessage(
                     subtype=data["subtype"],
                     duration_ms=data["duration_ms"],
@@ -324,13 +360,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     structured_output=data.get("structured_output"),
                     model_usage=data.get("modelUsage"),
                     permission_denials=data.get("permission_denials"),
-                    deferred_tool_use=DeferredToolUse(
-                        id=deferred["id"],
-                        name=deferred["name"],
-                        input=deferred["input"],
-                    )
-                    if deferred
-                    else None,
+                    deferred_tool_use=deferred_tool_use,
                     errors=data.get("errors"),
                     api_error_status=data.get("api_error_status"),
                     uuid=data.get("uuid"),
@@ -342,6 +372,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in result message: {e}", data
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in result message: {e}", data
                 ) from e
 
         case "stream_event":
@@ -358,10 +392,19 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in stream_event message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in stream_event message: {e}", data
+                ) from e
 
         case "rate_limit_event":
             try:
                 info = data["rate_limit_info"]
+                if not isinstance(info, dict):
+                    raise MessageParseError(
+                        f"Invalid rate_limit_info (expected dict, got {type(info).__name__})",
+                        data,
+                    )
                 return RateLimitEvent(
                     rate_limit_info=RateLimitInfo(
                         status=info["status"],
@@ -380,6 +423,10 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
                 ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in rate_limit_event message: {e}", data
+                ) from e
 
         case "conversation_reset":
             try:
@@ -391,6 +438,11 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             except KeyError as e:
                 raise MessageParseError(
                     f"Missing required field in conversation_reset message: {e}",
+                    data,
+                ) from e
+            except TypeError as e:
+                raise MessageParseError(
+                    f"Invalid field type in conversation_reset message: {e}",
                     data,
                 ) from e
 

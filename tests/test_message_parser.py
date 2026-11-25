@@ -1114,6 +1114,74 @@ class TestMessageParser:
             parse_message(data)
         assert exc_info.value.data == data
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "user", "message": "oops"},
+            {"type": "user", "message": []},
+            {"type": "user", "message": None},
+            {"type": "user", "message": 123},
+            {"type": "user", "message": True},
+            {"type": "assistant", "message": "oops"},
+            {"type": "assistant", "message": []},
+            {"type": "assistant", "message": None},
+            {"type": "assistant", "message": 123},
+            {"type": "assistant", "message": True},
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": "x",
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": [1],
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": True,
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "deferred_tool_use": 123,
+            },
+            {"type": "rate_limit_event", "rate_limit_info": "x"},
+            {"type": "rate_limit_event", "rate_limit_info": []},
+            {"type": "rate_limit_event", "rate_limit_info": None},
+            {"type": "rate_limit_event", "rate_limit_info": True},
+            {"type": "rate_limit_event", "rate_limit_info": 123},
+        ],
+    )
+    def test_non_dict_nested_payloads_raise_message_parse_error(
+        self, payload: dict
+    ) -> None:
+        """Non-dict nested payloads raise MessageParseError, not raw TypeError (#1508)."""
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(payload)
+        assert exc_info.value.data == payload
+
     def test_parse_assistant_message_without_error(self):
         """Test that assistant message without error has error=None."""
         data = {

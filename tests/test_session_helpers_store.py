@@ -375,6 +375,25 @@ class TestGetSessionMessagesFromStore:
         )
         assert len(msgs) == 2
 
+    async def test_negative_offset_with_limit_treated_as_absent(self) -> None:
+        """A negative offset must behave the same with and without a limit.
+
+        Regression for #1519: with ``limit`` set, the slice used the raw
+        negative offset and returned an empty/wrong page, while the no-limit
+        branch treated the same offset as absent.
+        """
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        await _seed_chain(store, sid, n=3)
+        page = await get_session_messages_from_store(
+            store, sid, directory=DIR, limit=2, offset=-1
+        )
+        expected = await get_session_messages_from_store(
+            store, sid, directory=DIR, limit=2
+        )
+        assert page == expected
+        assert len(page) == 2
+
     async def test_unknown_session_empty(self) -> None:
         store = InMemorySessionStore()
         msgs = await get_session_messages_from_store(

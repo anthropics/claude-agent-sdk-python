@@ -795,6 +795,78 @@ class TestGetSessionMessages:
         # All SessionMessage instances
         assert all(isinstance(m, SessionMessage) for m in messages)
 
+    def test_negative_offset_with_limit_treated_as_absent(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A negative offset behaves the same with and without a limit.
+
+        Regression for #1519: the limited slice used the raw negative offset
+        and returned an empty/wrong page, while the no-limit branch treated
+        the same offset as absent.
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        u1 = str(uuid.uuid4())
+        a1 = str(uuid.uuid4())
+        u2 = str(uuid.uuid4())
+        a2 = str(uuid.uuid4())
+
+        entries = [
+            _make_transcript_entry("user", u1, None, sid, content="hello"),
+            _make_transcript_entry("assistant", a1, u1, sid, content="hi!"),
+            _make_transcript_entry("user", u2, a1, sid, content="thanks"),
+            _make_transcript_entry("assistant", a2, u2, sid, content="welcome"),
+        ]
+        _write_transcript(project_dir, sid, entries)
+
+        with_offset = get_session_messages(
+            sid, directory=project_path, limit=2, offset=-1
+        )
+        without_offset = get_session_messages(sid, directory=project_path, limit=2)
+        assert with_offset == without_offset
+        assert len(with_offset) == 2
+        assert with_offset[0].uuid == u1
+
+    def test_undecodable_transcript_degrades_to_empty(
+        self, claude_config_dir: Path, tmp_path: Path
+    ):
+        """A corrupt (invalid UTF-8) transcript reads like a missing one.
+
+        Regression for #1518: strict UTF-8 decoding raised
+        UnicodeDecodeError (a ValueError, not OSError) out of
+        get_session_messages instead of degrading to [].
+        """
+        project_path = str(tmp_path / "proj")
+        Path(project_path).mkdir(parents=True)
+        project_dir = _make_project_dir(
+            claude_config_dir, os.path.realpath(project_path)
+        )
+        sid = str(uuid.uuid4())
+
+        # Invalid UTF-8 bytes followed by a valid JSONL line.
+        (project_dir / f"{sid}.jsonl").write_bytes(
+            b"\xff\xfe\n"
+            + b'{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}\n'
+        )
+
+        assert get_session_messages(sid, directory=project_path) == []
+        # A corrupt subagent transcript degrades the same way. The parent
+        # session file must exist (and be non-empty) for the subagents
+        # directory to resolve, so give it one valid line.
+        (project_dir / f"{sid}.jsonl").write_bytes(
+            b'{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}\n'
+        )
+        subagents_dir = project_dir / f"{sid}" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        agent_id = str(uuid.uuid4())
+        (subagents_dir / f"{agent_id}.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+        assert get_subagent_messages(sid, agent_id, directory=project_path) == []
+
     def test_filters_meta_messages(self, claude_config_dir: Path, tmp_path: Path):
         """isMeta entries in the chain are filtered from output."""
         project_path = str(tmp_path / "proj")

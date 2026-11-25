@@ -80,6 +80,12 @@ def parse_message(data: dict[str, Any]) -> Message | None:
             or data.get("hook_event_name")
             or ""
         )
+        if not isinstance(hook_event_name, str):
+            raise MessageParseError(
+                f"Invalid hook event name (expected str, got "
+                f"{type(hook_event_name).__name__})",
+                data,
+            )
         return HookEventMessage(
             subtype=data["subtype"],
             hook_event_name=hook_event_name,
@@ -136,8 +142,15 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                         tool_use_result=tool_use_result,
                         origin=origin,
                     )
+                    user_content = data["message"]["content"]
+                    if not isinstance(user_content, str):
+                        raise MessageParseError(
+                            f"Invalid user content (expected str, got "
+                            f"{type(user_content).__name__})",
+                            data,
+                        )
                 return UserMessage(
-                    content=data["message"]["content"],
+                    content=user_content,
                     uuid=uuid,
                     parent_tool_use_id=parent_tool_use_id,
                     tool_use_result=tool_use_result,

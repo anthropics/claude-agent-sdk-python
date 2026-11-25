@@ -1435,3 +1435,19 @@ class TestMessageParser:
         assert message.hook_event_name == "Stop"
         assert message.session_id is None
         assert message.uuid is None
+
+@pytest.mark.parametrize("bad_name", [{"a": 1}, ["PreToolUse"], 7, True])
+def test_parse_hook_event_message_non_string_name(self, bad_name):
+    """Hook event names that are not strings raise MessageParseError (issue #1522)."""
+    data = {"type": "system", "subtype": "hook_started", "hook_event": bad_name}
+    with pytest.raises(MessageParseError) as exc_info:
+        parse_message(data)
+    assert "expected str" in str(exc_info.value)
+
+    @pytest.mark.parametrize("bad_content", [123, True, None, {"text": "hi"}])
+    def test_parse_user_message_non_string_content(self, bad_content):
+        """Non-list user content that is not a string raises MessageParseError (issue #1522)."""
+        data = {"type": "user", "message": {"content": bad_content}}
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert "expected str" in str(exc_info.value)

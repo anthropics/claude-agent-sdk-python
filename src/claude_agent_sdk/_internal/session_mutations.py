@@ -598,11 +598,12 @@ def _parse_fork_transcript(
     transcript: list[dict[str, Any]] = []
     content_replacements: list[Any] = []
 
-    for line in content.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
+    for raw_line in content.split(b"\n"):
+        raw_line = raw_line.rstrip(b"\r")
+        if not raw_line.strip():
             continue
         try:
+            line = raw_line.decode("utf-8", errors="replace")
             entry = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue

@@ -922,3 +922,72 @@ class TestForkSessionViaStore:
         assert cr_out["sessionId"] == result.session_id
         assert isinstance(cr_out["uuid"], str) and cr_out["uuid"]
         assert isinstance(cr_out["timestamp"], str)
+
+    async def test_fork_session_via_store_remaps_compact_metadata(self) -> None:
+        """Fork via SessionStore remaps preserved message references in compactMetadata."""
+        store = InMemorySessionStore()
+        sid = str(uuid_mod.uuid4())
+        kept_uuid = str(uuid_mod.uuid4())
+        boundary_uuid = str(uuid_mod.uuid4())
+        anchor_uuid = str(uuid_mod.uuid4())
+
+        rows = [
+            {
+                "type": "user",
+                "uuid": kept_uuid,
+                "parentUuid": None,
+                "sessionId": sid,
+                "message": {"role": "user", "content": "Keep this"},
+            },
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": boundary_uuid,
+                "parentUuid": None,
+                "sessionId": sid,
+                "compactMetadata": {
+                    "trigger": "auto",
+                    "preTokens": 10000,
+                    "preservedSegment": {
+                        "headUuid": kept_uuid,
+                        "tailUuid": kept_uuid,
+                        "anchorUuid": anchor_uuid,
+                    },
+                    "preservedMessages": {
+                        "anchorUuid": anchor_uuid,
+                        "uuids": [kept_uuid],
+                    },
+                },
+            },
+            {
+                "type": "user",
+                "uuid": anchor_uuid,
+                "parentUuid": boundary_uuid,
+                "sessionId": sid,
+                "isCompactSummary": True,
+                "message": {"role": "user", "content": "Earlier conversation summary"},
+            },
+        ]
+        await store.append({"project_key": PROJECT_KEY, "session_id": sid}, rows)  # type: ignore[arg-type]
+
+        fork = await fork_session_via_store(store, sid, directory=DIR)
+        copied = await store.load(
+            {"project_key": PROJECT_KEY, "session_id": fork.session_id}
+        )
+        assert copied is not None
+        ids = {entry["uuid"] for entry in copied if "uuid" in entry}
+
+        boundary = next(
+            entry for entry in copied if entry.get("subtype") == "compact_boundary"
+        )
+        meta = boundary["compactMetadata"]
+        pres_msgs = meta["preservedMessages"]
+        pres_seg = meta["preservedSegment"]
+
+        assert pres_msgs["anchorUuid"] in ids
+        assert pres_msgs["anchorUuid"] != anchor_uuid
+        assert all(uid in ids for uid in pres_msgs["uuids"])
+        assert all(uid != kept_uuid for uid in pres_msgs["uuids"])
+        assert pres_seg["headUuid"] in ids
+        assert pres_seg["headUuid"] != kept_uuid
+        assert pres_seg["anchorUuid"] == pres_msgs["anchorUuid"]

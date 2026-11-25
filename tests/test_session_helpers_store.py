@@ -922,3 +922,20 @@ class TestForkSessionViaStore:
         assert cr_out["sessionId"] == result.session_id
         assert isinstance(cr_out["uuid"], str) and cr_out["uuid"]
         assert isinstance(cr_out["timestamp"], str)
+
+
+class TestInMemorySessionStoreAppend:
+    async def test_append_empty_entries_does_not_create_session(self):
+        store = InMemorySessionStore()
+
+        key: SessionKey = {
+            "project_key": PROJECT_KEY,
+            "session_id": "test-empty-session",
+        }
+
+        await store.append(key, [])
+
+        assert await store.list_sessions(PROJECT_KEY) == []
+        assert await store.load(key) is None
+        assert await store.list_session_summaries(PROJECT_KEY) == []
+        assert store.size == 0

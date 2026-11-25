@@ -62,6 +62,10 @@ class InMemorySessionStore(SessionStore):
         return now_ms
 
     async def append(self, key: SessionKey, entries: list[SessionStoreEntry]) -> None:
+        # Nothing to append: do not create or modify a session.
+        if not entries:
+            return
+
         k = _key_to_string(key)
         self._store.setdefault(k, []).extend(entries)
         now_ms = self._next_mtime()

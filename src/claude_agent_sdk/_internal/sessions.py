@@ -834,10 +834,14 @@ _TranscriptEntry = dict[str, Any]
 
 
 def _try_read_session_file(project_dir: Path, file_name: str) -> str | None:
-    """Tries to read a session JSONL file from a project directory."""
+    """Tries to read a session JSONL file from a project directory.
+
+    A corrupt (invalid UTF-8) transcript degrades to ``None`` like a missing
+    or unreadable file instead of raising out of this best-effort helper.
+    """
     try:
         return (project_dir / file_name).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -1618,7 +1622,7 @@ def get_subagent_messages(
 
     try:
         content = match.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     if not content:
         return []

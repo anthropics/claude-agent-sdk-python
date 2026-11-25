@@ -143,7 +143,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     tool_use_result=tool_use_result,
                     origin=origin,
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in user message: {e}", data
                 ) from e
@@ -220,7 +220,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     user_message_uuid=data.get("user_message_uuid"),
                     user_message_uuids=data.get("user_message_uuids"),
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in assistant message: {e}", data
                 ) from e
@@ -302,7 +302,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                             subtype=subtype,
                             data=data,
                         )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in system message: {e}", data
                 ) from e
@@ -339,7 +339,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     user_message_uuid=data.get("user_message_uuid"),
                     user_message_uuids=data.get("user_message_uuids"),
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in result message: {e}", data
                 ) from e
@@ -354,7 +354,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     user_message_uuid=data.get("user_message_uuid"),
                     user_message_uuids=data.get("user_message_uuids"),
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in stream_event message: {e}", data
                 ) from e
@@ -376,7 +376,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     uuid=data["uuid"],
                     session_id=data["session_id"],
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in rate_limit_event message: {e}", data
                 ) from e
@@ -388,7 +388,7 @@ def parse_message(data: dict[str, Any]) -> Message | None:
                     uuid=data["uuid"],
                     session_id=data["session_id"],
                 )
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
                 raise MessageParseError(
                     f"Missing required field in conversation_reset message: {e}",
                     data,

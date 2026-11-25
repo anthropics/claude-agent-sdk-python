@@ -81,8 +81,11 @@ def _validate_uuid(maybe_uuid: str) -> str | None:
 def _simple_hash(s: str) -> str:
     """32-bit integer hash to base36, matching the CLI's directory naming."""
     h = 0
-    for ch in s:
-        char = ord(ch)
+    # JS charCodeAt() walks UTF-16 code units, so a character outside the
+    # BMP (e.g. an emoji) contributes its two surrogates, not one code point.
+    data = s.encode("utf-16-le", "surrogatepass")
+    for i in range(0, len(data), 2):
+        char = data[i] | (data[i + 1] << 8)
         h = (h << 5) - h + char
         # Emulate JS `hash |= 0` (coerce to 32-bit signed int)
         h = h & 0xFFFFFFFF
@@ -107,7 +110,11 @@ def _sanitize_path(name: str) -> str:
     Replaces all non-alphanumeric characters with hyphens. For paths
     exceeding MAX_SANITIZED_LENGTH, truncates and appends a hash suffix.
     """
-    sanitized = _SANITIZE_RE.sub("-", name)
+    # The CLI's regex has no `u` flag, so it matches UTF-16 code units: a
+    # character outside the BMP (e.g. an emoji) becomes two hyphens.
+    sanitized = _SANITIZE_RE.sub(
+        lambda m: "--" if ord(m.group()) > 0xFFFF else "-", name
+    )
     if len(sanitized) <= MAX_SANITIZED_LENGTH:
         return sanitized
     h = _simple_hash(name)

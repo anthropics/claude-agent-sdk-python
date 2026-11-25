@@ -1094,6 +1094,51 @@ class TestMessageParser:
         with pytest.raises(MessageParseError):
             parse_message({"type": role, "message": message})
 
+    @pytest.mark.parametrize("role", ["user", "assistant"])
+    @pytest.mark.parametrize("payload", ["oops", ["oops"], 42])
+    def test_non_dict_message_payload_raises_documented_error(
+        self, role: str, payload: object
+    ) -> None:
+        """A non-dict ``message`` raises MessageParseError, never a raw TypeError."""
+        data = {"type": role, "message": payload}
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert exc_info.value.data == data
+
+    @pytest.mark.parametrize("deferred", ["oops", ["oops"], 42])
+    def test_non_dict_deferred_tool_use_raises_documented_error(
+        self, deferred: object
+    ) -> None:
+        """A non-dict ``deferred_tool_use`` raises MessageParseError."""
+        data = {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "session_123",
+            "deferred_tool_use": deferred,
+        }
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert exc_info.value.data == data
+
+    @pytest.mark.parametrize("info", ["oops", ["oops"], 42])
+    def test_non_dict_rate_limit_info_raises_documented_error(
+        self, info: object
+    ) -> None:
+        """A non-dict ``rate_limit_info`` raises MessageParseError."""
+        data = {
+            "type": "rate_limit_event",
+            "rate_limit_info": info,
+            "uuid": "u",
+            "session_id": "s",
+        }
+        with pytest.raises(MessageParseError) as exc_info:
+            parse_message(data)
+        assert exc_info.value.data == data
+
     def test_parse_system_message_missing_fields(self):
         """Test that system message with missing fields raises MessageParseError."""
         with pytest.raises(MessageParseError) as exc_info:

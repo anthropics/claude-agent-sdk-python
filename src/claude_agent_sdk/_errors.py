@@ -39,7 +39,7 @@ class ProcessError(ClaudeSDKError):
 
         super().__init__(message)
 
-    def __reduce__(self) -> tuple[Any, tuple[str, int | None, str | None]]:
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Preserve constructor arguments when copying or pickling."""
         return type(self), (self._message, self.exit_code, self.stderr)
 

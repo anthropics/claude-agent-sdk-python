@@ -291,8 +291,19 @@ async def _resolve_continue_candidate(
         loaded = await _load_candidate(store, project_key, sid, timeout_s)
         if loaded is None:
             continue
-        first = loaded[1][0]
-        if isinstance(first, dict) and first.get("isSidechain") is True:
+        # Summary and other metadata records may precede the first message.
+        # Use the first explicit flag, preserving an explicit False even if
+        # later records belong to a sidechain. The transcript is already loaded.
+        is_sidechain = next(
+            (
+                entry["isSidechain"]
+                for entry in loaded[1]
+                if isinstance(entry, dict)
+                and isinstance(entry.get("isSidechain"), bool)
+            ),
+            False,
+        )
+        if is_sidechain:
             continue
         return loaded
     return None

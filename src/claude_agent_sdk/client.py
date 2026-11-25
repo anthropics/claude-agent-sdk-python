@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from . import Transport
 from ._errors import CLIConnectionError
@@ -18,6 +18,7 @@ from .types import (
     Message,
     PermissionMode,
     ResultMessage,
+    SlashCommand,
     _configure_can_use_tool,
     _hooks_to_internal_format,
 )
@@ -562,6 +563,36 @@ class ClaudeSDKClient:
             raise CLIConnectionError("Not connected. Call connect() first.")
         # Return the initialization result that was already obtained during connect
         return getattr(self._query, "_initialization_result", None)
+
+    async def supported_commands(self) -> list[SlashCommand]:
+        """Get the slash commands available in this session.
+
+        The list starts from the CLI's initialize response and follows every
+        ``commands_changed`` system message the CLI sends when the list changes
+        mid-session (for example, skills discovered in a subdirectory). It holds
+        the built-in commands that work in non-interactive sessions plus any
+        custom commands and skills the CLI loaded. Custom commands in a project's
+        ``.claude/commands/`` directory load only when ``cwd`` points at the
+        project and ``setting_sources`` includes ``"project"``.
+
+        To run a command, send it as a prompt with a leading slash, for
+        example ``await client.query("/compact")``.
+
+        Returns:
+            A list of SlashCommand dictionaries, each with ``name``,
+            ``description`` and ``argumentHint`` keys. Empty while
+            `connect()` is still in progress.
+
+        Example:
+            ```python
+            async with ClaudeSDKClient() as client:
+                for cmd in await client.supported_commands():
+                    print(f"/{cmd['name']} {cmd['argumentHint']}")
+            ```
+        """
+        if not self._query:
+            raise CLIConnectionError("Not connected. Call connect() first.")
+        return cast(list[SlashCommand], self._query.commands)
 
     async def receive_response(self) -> AsyncIterator[Message]:
         """

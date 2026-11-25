@@ -7,6 +7,8 @@ adapter authors can import it.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from claude_agent_sdk import (
@@ -133,6 +135,47 @@ class TestInMemorySessionStore:
         assert loaded is not None
         loaded.append({"n": 999})
         assert await store.load(_KEY) == [{"n": 1}]
+
+    @pytest.mark.anyio
+    async def test_append_empty_is_noop_on_fresh_key(self) -> None:
+        """Contract 4 (``append([])`` is a no-op) on a key with no prior data.
+
+        The harness's contract 4 only exercises an empty append against a key
+        that already has entries, so it cannot catch an implementation that
+        materializes a phantom session on the empty call. The example stores
+        (redis, s3, postgres) all guard here; this store must match.
+        """
+        store = InMemorySessionStore()
+        await store.append(_KEY, [])
+        assert await store.load(_KEY) is None
+        assert await store.list_sessions("proj") == []
+        assert await store.list_session_summaries("proj") == []
+        assert store.get_entries(_KEY) == []
+        assert store.size == 0
+
+        sub: SessionKey = {**_KEY, "subpath": "subagents/agent-1"}
+        await store.append(sub, [])
+        assert await store.load(sub) is None
+        assert await store.list_subkeys(_KEY) == []
+
+    @pytest.mark.anyio
+    async def test_append_empty_preserves_existing_session_metadata(self) -> None:
+        """An empty append must not make an older session appear newly written."""
+        store = InMemorySessionStore()
+        await store.append(_KEY, [{"type": "user", "message": {"content": "Hello"}}])
+        newer_key: SessionKey = {"project_key": "proj", "session_id": "newer"}
+        await store.append(newer_key, [{"n": 2}])
+
+        sessions = deepcopy(await store.list_sessions("proj"))
+        summaries = deepcopy(await store.list_session_summaries("proj"))
+        entries = await store.load(_KEY)
+
+        for _ in range(2):
+            await store.append(_KEY, [])
+            assert await store.list_sessions("proj") == sessions
+            assert await store.list_session_summaries("proj") == summaries
+            assert await store.load(_KEY) == entries
+            assert store.size == 2
 
 
 # ---------------------------------------------------------------------------

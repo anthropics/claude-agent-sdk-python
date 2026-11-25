@@ -385,6 +385,43 @@ class TestStringPromptWithSdkMcpServers:
 
         anyio.run(_test)
 
+    def test_control_request_cleans_up_after_write_failure(self):
+        async def _test():
+            transport = AsyncMock()
+            transport.write.side_effect = OSError("pipe is closed")
+            q = Query(transport=transport, is_streaming_mode=True)
+
+            with pytest.raises(OSError, match="pipe is closed"):
+                await q._send_control_request({"subtype": "mcp_status"})
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+
+        anyio.run(_test)
+
+    def test_control_request_cleans_up_after_cancellation(self):
+        async def _test():
+            transport = AsyncMock()
+            write_completed = anyio.Event()
+
+            async def write(_data):
+                write_completed.set()
+
+            transport.write.side_effect = write
+            q = Query(transport=transport, is_streaming_mode=True)
+
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(
+                    q._send_control_request, {"subtype": "mcp_status"}
+                )
+                await write_completed.wait()
+                task_group.cancel_scope.cancel()
+
+            assert q.pending_control_responses == {}
+            assert q.pending_control_results == {}
+
+        anyio.run(_test)
+
     def test_string_prompt_without_mcp_servers_closes_immediately(self):
         """end_input() should be called immediately when no SDK MCP servers
         are present (preserving existing behavior)."""

@@ -785,15 +785,16 @@ class Query:
             "request": request,
         }
 
-        await self.transport.write(json.dumps(control_request) + "\n")
-
-        # Wait for response
         try:
+            # Keep the write inside the try too: it can fail, and cancellation
+            # can arrive while it is waiting for the transport.
+            await self.transport.write(json.dumps(control_request) + "\n")
+
+            # Wait for response
             with anyio.fail_after(timeout):
                 await event.wait()
 
             result = self.pending_control_results.pop(request_id)
-            self.pending_control_responses.pop(request_id, None)
 
             if isinstance(result, Exception):
                 raise result
@@ -801,9 +802,12 @@ class Query:
             response_data = result.get("response", {})
             return response_data if isinstance(response_data, dict) else {}
         except TimeoutError as e:
+            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
+        finally:
+            # Also runs for write failures and cancellation. Late responses are
+            # ignored by _read_messages once their waiter is gone.
             self.pending_control_responses.pop(request_id, None)
             self.pending_control_results.pop(request_id, None)
-            raise Exception(f"Control request timeout: {request.get('subtype')}") from e
 
     async def _handle_sdk_mcp_request(
         self, server_name: str, message: dict[str, Any]

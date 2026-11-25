@@ -598,6 +598,13 @@ class ClaudeSDKClient:
         Note:
             To collect all messages: `messages = [msg async for msg in client.receive_response()]`
             The final message in the list will always be a ResultMessage.
+
+        Note:
+            Messages that arrive after the ResultMessage (for example from
+            background subagents) stay buffered in your process until you read
+            them or call `disconnect()`. The buffer is unbounded, so a client
+            that stops reading altogether keeps growing in memory; the SDK logs
+            a warning once 10,000 or more unread messages are waiting.
         """
         async for message in self.receive_messages():
             yield message

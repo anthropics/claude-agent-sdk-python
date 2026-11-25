@@ -277,12 +277,6 @@ def _extract_first_prompt_from_head(head: str) -> str:
 
         if '"type":"user"' not in line and '"type": "user"' not in line:
             continue
-        if '"tool_result"' in line:
-            continue
-        if '"isMeta":true' in line or '"isMeta": true' in line:
-            continue
-        if '"isCompactSummary":true' in line or '"isCompactSummary": true' in line:
-            continue
 
         try:
             entry = json.loads(line)
@@ -291,12 +285,20 @@ def _extract_first_prompt_from_head(head: str) -> str:
 
         if not isinstance(entry, dict) or entry.get("type") != "user":
             continue
+        if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:
+            continue
 
         message = entry.get("message")
         if not isinstance(message, dict):
             continue
 
         content = message.get("content")
+        # Skip tool_result-carrying user messages.
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            continue
+
         texts: list[str] = []
         if isinstance(content, str):
             texts.append(content)

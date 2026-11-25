@@ -5,6 +5,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2798,6 +2799,105 @@ class TestWindowsCliLookup:
         # Not the POSIX-shaped name beside it
         self._add(tmp_path / "home/.local/bin", "claude")
         assert find_cli(tmp_path / "missing") == str(exe)
+
+    def test_missing_home_directory_raises_cli_not_found(
+        self, find_cli, tmp_path, monkeypatch
+    ):
+        def _no_home() -> None:
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr("pathlib.Path.home", _no_home)
+        with pytest.raises(CLINotFoundError):
+            find_cli(tmp_path / "missing")
+
+    def test_relative_home_directory_is_not_searched(
+        self, find_cli, tmp_path, monkeypatch
+    ):
+        self._add(tmp_path / ".local/bin")
+        monkeypatch.setattr("pathlib.Path.home", Path)
+        with pytest.raises(CLINotFoundError):
+            find_cli(tmp_path / "missing")
+
+    def test_unreadable_fallback_directory_raises_cli_not_found(
+        self, find_cli, monkeypatch
+    ):
+        def _denied(_self: Path) -> bool:
+            raise PermissionError("Access is denied")
+
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr("pathlib.Path.exists", _denied)
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with pytest.raises(CLINotFoundError):
+                await transport.connect()
+
+        anyio.run(_test)
+
+
+class TestPosixCliFallbackLookup:
+    @pytest.fixture
+    def posix_env(self, monkeypatch):
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.transport.subprocess_cli.platform.system",
+            lambda: "Linux",
+        )
+        monkeypatch.setattr(
+            SubprocessCLITransport, "_find_bundled_cli", lambda self: None
+        )
+        monkeypatch.setattr(
+            "claude_agent_sdk._internal.transport.subprocess_cli.shutil.which",
+            lambda _name: None,
+        )
+
+    def test_finds_usr_local_bin_without_home_directory(self, posix_env, monkeypatch):
+        def _no_home() -> None:
+            raise RuntimeError("Could not determine home directory.")
+
+        usr_local = Path("/usr/local/bin/claude")
+        monkeypatch.setattr("pathlib.Path.home", _no_home)
+        monkeypatch.setattr("pathlib.Path.exists", lambda self: self == usr_local)
+        monkeypatch.setattr("pathlib.Path.is_file", lambda self: self == usr_local)
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        assert transport._find_cli() == str(usr_local)
+
+    def test_continues_past_unreadable_home_to_usr_local_bin(
+        self, posix_env, tmp_path, monkeypatch
+    ):
+        usr_local = Path("/usr/local/bin/claude")
+
+        def _exists(self: Path) -> bool:
+            if self != usr_local:
+                raise PermissionError("Permission denied")
+            return True
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr("pathlib.Path.exists", _exists)
+        monkeypatch.setattr("pathlib.Path.is_file", lambda self: self == usr_local)
+
+        transport = SubprocessCLITransport(prompt="test", options=ClaudeAgentOptions())
+        assert transport._find_cli() == str(usr_local)
+
+    def test_missing_home_and_no_cli_raises_cli_not_found_on_connect(
+        self, posix_env, monkeypatch
+    ):
+        def _no_home() -> None:
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr("pathlib.Path.home", _no_home)
+        monkeypatch.setattr("pathlib.Path.exists", lambda _self: False)
+
+        async def _test():
+            transport = SubprocessCLITransport(
+                prompt="test", options=ClaudeAgentOptions()
+            )
+            with pytest.raises(CLINotFoundError):
+                await transport.connect()
+
+        anyio.run(_test)
 
 
 class TestExtraArgsValueBinding:

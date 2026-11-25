@@ -84,6 +84,10 @@ through the relevant items below.
 - Size the `asyncpg` pool ≥ expected concurrent sessions; don't share a pool
   with request-handler code that holds connections.
 - `jsonb` reorders keys — contract-safe, but don't byte-compare entries.
+- Pools with a custom `jsonb` codec (`encoder=json.dumps`,
+  `decoder=json.loads`) are supported. Appends cast serialized text to JSONB
+  on the server, so transcripts remain readable by pools with or without
+  that codec.
 - Add a retention job (`DELETE WHERE mtime < ...`) — the table grows
   unbounded.
 

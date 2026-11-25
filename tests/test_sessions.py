@@ -1323,6 +1323,14 @@ class TestBuildConversationChain:
 
     def test_sequential_tool_calls_are_unchanged(self):
         """A response whose calls ran one at a time has nothing to recover."""
+
+        class CountedBlocks(list):
+            scans = 0
+
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+
         entries = [
             {"type": "user", "uuid": "prompt", "parentUuid": None},
             {
@@ -1360,8 +1368,12 @@ class TestBuildConversationChain:
                 },
             },
         ]
+        # A complete parent chain can be replayed without inspecting the payloads.
+        blocks = CountedBlocks(entries[1]["message"]["content"])
+        entries[1]["message"]["content"] = blocks
         result = _build_conversation_chain(entries)
         assert result == entries
+        assert blocks.scans == 0
 
     def test_abandoned_branch_is_not_recovered(self):
         """A retried turn's old response stays off the chain.

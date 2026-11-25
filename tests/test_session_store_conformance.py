@@ -50,6 +50,8 @@ class TestInMemorySessionStore:
                 self._data: dict[str, list] = {}
 
             async def append(self, key: SessionKey, entries: list) -> None:
+                if not entries:
+                    return
                 k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
                 self._data.setdefault(k, []).extend(entries)
 
@@ -71,6 +73,8 @@ class TestInMemorySessionStore:
                 self._data: dict[str, list] = {}
 
             async def append(self, key: SessionKey, entries: list) -> None:
+                if not entries:
+                    return
                 k = f"{key['project_key']}/{key['session_id']}/{key.get('subpath') or ''}"
                 self._data.setdefault(k, []).extend(entries)
 

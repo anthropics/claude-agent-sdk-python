@@ -1730,6 +1730,23 @@ class DeferredToolUse:
     When a PreToolUse hook returns ``permissionDecision: "defer"``, the run
     stops and the result message carries the deferred tool call here so the
     caller can inspect it and decide whether to resume.
+
+    A deferred call runs at least once, not exactly once. The transcript
+    records the tool result only after the tool returns. If the process
+    stops after the tool starts and before the result is saved, the next
+    resume fires PreToolUse again for the same ``id`` and the tool can run
+    a second time.
+
+    For tools with side effects, use ``id`` as an idempotency key. The
+    PreToolUse hook receives the same value as ``tool_use_id`` and can pass
+    it to the tool through ``updatedInput``. If the tool calls an external
+    service, send the key to that service as its idempotency key, and
+    record that the call started before you make it. On resume, look up a
+    started call that has no result at the service before you run it again.
+    Keys at the service can expire before a deferred session does.
+
+    The key covers only a replay of this call. If the model asks for the
+    same action again in a later turn, that call gets a new ``id``.
     """
 
     id: str

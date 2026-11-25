@@ -10,6 +10,7 @@ import pytest
 
 from claude_agent_sdk import (
     InMemorySessionStore,
+    SessionImportError,
     import_session_to_store,
     project_key_for_directory,
 )
@@ -127,6 +128,47 @@ class TestMainTranscript:
         assert spy.await_count == 1
         key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
         assert store.get_entries(key) == entries
+
+    @pytest.mark.anyio
+    async def test_atomic_import_does_not_leave_partial_batches_on_corrupt_tail(
+        self, claude_dir: Path, cwd: Path, project_key: str
+    ) -> None:
+        path = claude_dir / f"{SESSION_ID}.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(_entry(i)) for i in range(3))
+            + '\n{"type":"user","uuid":"truncated"',
+            encoding="utf-8",
+        )
+
+        store = InMemorySessionStore()
+        with pytest.raises(SessionImportError, match="line 4") as raised:
+            await import_session_to_store(
+                SESSION_ID, store, directory=str(cwd), batch_size=2
+            )
+
+        assert raised.value.file_path == path
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(key) == []
+
+    @pytest.mark.anyio
+    async def test_streaming_import_can_preserve_legacy_partial_behavior(
+        self, claude_dir: Path, cwd: Path, project_key: str
+    ) -> None:
+        path = claude_dir / f"{SESSION_ID}.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(_entry(i)) for i in range(3))
+            + '\n{"type":"user","uuid":"truncated"',
+            encoding="utf-8",
+        )
+
+        store = InMemorySessionStore()
+        with pytest.raises(json.JSONDecodeError):
+            await import_session_to_store(
+                SESSION_ID, store, directory=str(cwd), batch_size=2, atomic=False
+            )
+
+        key: SessionKey = {"project_key": project_key, "session_id": SESSION_ID}
+        assert store.get_entries(key) == [_entry(0), _entry(1)]
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ from ._errors import (
     ResultError,
 )
 from ._internal._mcp_compat import build_tool_server
-from ._internal.session_import import import_session_to_store
+from ._internal.session_import import SessionImportError, import_session_to_store
 from ._internal.session_mutations import (
     ForkSessionResult,
     delete_session,
@@ -786,6 +786,7 @@ __all__ = [
     "MirrorErrorMessage",
     "project_key_for_directory",
     "import_session_to_store",
+    "SessionImportError",
     # Session listing (SessionStore-backed async variants)
     "list_sessions_from_store",
     "get_session_info_from_store",

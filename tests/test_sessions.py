@@ -2391,3 +2391,312 @@ class TestGetSubagentMessages:
         (subagents_dir / "agent-empty.jsonl").write_text("")
 
         assert get_subagent_messages(sid, "empty", directory=project_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Long-path fallback — hash-suffix compat vs other projects sharing the prefix
+# ---------------------------------------------------------------------------
+
+# A path whose sanitized form exceeds MAX_SANITIZED_LENGTH; subpaths of it
+# share the truncated 200-char prefix with each other.
+# Resolved as the SDK resolves directory= (adds the drive on Windows).
+_LONG_BASE = os.path.realpath("/" + "x" * 210)
+
+
+def _make_cli_project_dir(
+    config_dir: Path, project_path: str, hash_suffix: str
+) -> Path:
+    """Creates a project directory as the CLI would, with a foreign hash.
+
+    Older CLI builds hashed long paths with Bun.hash while this SDK uses
+    simpleHash, so their directory for the same path has a different suffix.
+    """
+    sanitized = _sanitize_path(project_path)
+    assert len(sanitized) > 200, "fixture path must exceed MAX_SANITIZED_LENGTH"
+    name = f"{sanitized[:200]}-{hash_suffix}"
+    assert name != sanitized, "fixture suffix must differ from simpleHash"
+    project_dir = config_dir / "projects" / name
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir
+
+
+class TestLongPathFallback:
+    """The >200-char prefix fallback must tolerate hash mismatches for the
+    SAME project path (older CLI Bun.hash vs SDK simpleHash) without resolving a
+    DIFFERENT project path that shares the 200-char sanitized prefix."""
+
+    def test_hash_mismatch_still_resolves(self, claude_config_dir: Path):
+        """Compat: a CLI-created dir (foreign hash suffix) is still found."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid, _ = _make_session_file(cli_dir, cwd=project_a)
+
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+        assert get_session_info(sid, directory=project_a) is not None
+
+    def test_other_project_sharing_prefix_not_listed(self, claude_config_dir: Path):
+        """Another long path sharing the prefix must not resolve."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        assert _sanitize_path(project_a)[:200] == _sanitize_path(project_b)[:200]
+
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid, _ = _make_session_file(cli_dir, cwd=project_a)
+
+        assert list_sessions(directory=project_b, include_worktrees=False) == []
+        assert get_session_info(sid, directory=project_b) is None
+
+    def test_two_long_projects_sharing_prefix_resolve_separately(
+        self, claude_config_dir: Path
+    ):
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        dir_a = _make_cli_project_dir(claude_config_dir, project_a, "bunaaa")
+        dir_b = _make_cli_project_dir(claude_config_dir, project_b, "bunbbb")
+        sid_a, _ = _make_session_file(dir_a, cwd=project_a)
+        sid_b, _ = _make_session_file(dir_b, cwd=project_b)
+
+        ids_a = [
+            s.session_id
+            for s in list_sessions(directory=project_a, include_worktrees=False)
+        ]
+        ids_b = [
+            s.session_id
+            for s in list_sessions(directory=project_b, include_worktrees=False)
+        ]
+        assert ids_a == [sid_a]
+        assert ids_b == [sid_b]
+
+    def test_relocated_stamp_outranks_stale_head_cwd(self, claude_config_dir: Path):
+        """A transcript relocated into this project's dir (the CLI's /cd
+        handling) keeps its original cwd in the head; the appended
+        "relocated" stamp names its current home and must win."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid = str(uuid.uuid4())
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "cwd": "/somewhere/else",
+                    "message": {"role": "user", "content": "hello"},
+                },
+                **_COMPACT,
+            ),
+            json.dumps({"type": "relocated", "relocatedCwd": project_a}, **_COMPACT),
+        ]
+        (cli_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_relocated_stamp_nested_in_tool_payload_ignored(
+        self, claude_config_dir: Path
+    ):
+        """A tool payload shaped like a relocated entry is an object, so it
+        serializes unescaped into its transcript line. It must neither
+        resolve the nested path nor mask the genuine head cwd."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid = str(uuid.uuid4())
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "cwd": project_a,
+                    "message": {"role": "user", "content": "hello"},
+                },
+                **_COMPACT,
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "x",
+                                "name": "mcp__foo__bar",
+                                "input": {
+                                    "type": "relocated",
+                                    "relocatedCwd": project_b,
+                                },
+                            }
+                        ],
+                    },
+                },
+                **_COMPACT,
+            ),
+        ]
+        (cli_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert list_sessions(directory=project_b, include_worktrees=False) == []
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_nested_cwd_before_top_level_stamp_ignored(self, claude_config_dir: Path):
+        """The CLI's writer key order stamps the top-level cwd AFTER the
+        message spread, so nested unescaped objects (tool_use input,
+        toolUseResult) serialize BEFORE it within the line. A naive
+        first-occurrence scan would extract the nested value; strict
+        extraction must pin cwd to the top level."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid = str(uuid.uuid4())
+        line = json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "run the tool"},
+                "toolUseResult": {"cwd": project_b},
+                "cwd": project_a,
+            },
+            **_COMPACT,
+        )
+        (cli_dir / f"{sid}.jsonl").write_text(line + "\n", encoding="utf-8")
+
+        assert list_sessions(directory=project_b, include_worktrees=False) == []
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_nested_only_cwd_line_skipped_for_later_genuine_stamp(
+        self, claude_config_dir: Path
+    ):
+        """A head whose first line carries cwd only inside a nested payload
+        (no top-level stamp at all) must neither resolve the nested value nor
+        mask a later line's genuine top-level cwd."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid = str(uuid.uuid4())
+        lines = [
+            json.dumps(
+                {
+                    "type": "summary",
+                    "summary": "earlier work",
+                    "leafUuid": "22222222-2222-2222-2222-222222222222",
+                    "toolUseResult": {"cwd": project_b},
+                },
+                **_COMPACT,
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": "hi"},
+                    "cwd": project_a,
+                },
+                **_COMPACT,
+            ),
+        ]
+        (cli_dir / f"{sid}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert list_sessions(directory=project_b, include_worktrees=False) == []
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_exact_dir_resolves_without_cwd_evidence(self, claude_config_dir: Path):
+        """Back-compat: exact-name dirs (SDK simpleHash) are returned without
+        a content check — sessions stored without cwd evidence keep working."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        exact_dir = _make_project_dir(claude_config_dir, project_a)
+        sid, _ = _make_session_file(exact_dir)  # no cwd field
+
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_fallback_dir_without_cwd_evidence_not_matched(
+        self, claude_config_dir: Path
+    ):
+        """A prefix-matched dir with no cwd evidence is not resolved: it
+        cannot be distinguished from another project's directory."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        _make_session_file(cli_dir)  # no cwd field
+
+        assert list_sessions(directory=project_a, include_worktrees=False) == []
+
+    def test_worktree_scan_verifies_prefix_matches(
+        self, claude_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The worktree scan applies the same rules: hash-mismatched dirs of
+        real worktrees are found via cwd evidence; prefix-sharing dirs of
+        unrelated projects are not swept in."""
+        import claude_agent_sdk._internal.sessions as sessions_mod
+
+        main = os.path.realpath("/main/repo")
+        wt_long = _LONG_BASE + os.sep + "alpha"  # a worktree with a long path
+        other_long = _LONG_BASE + os.sep + "beta"  # not a worktree; same prefix
+
+        main_dir = _make_project_dir(claude_config_dir, main)
+        sid_main, _ = _make_session_file(main_dir, cwd=main)
+        wt_dir = _make_cli_project_dir(claude_config_dir, wt_long, "bunh4sh")
+        sid_wt, _ = _make_session_file(wt_dir, cwd=wt_long)
+        other_dir = _make_cli_project_dir(claude_config_dir, other_long, "bunzzz")
+        sid_other, _ = _make_session_file(other_dir, cwd=other_long)
+
+        monkeypatch.setattr(
+            sessions_mod, "_get_worktree_paths", lambda cwd: [main, wt_long]
+        )
+
+        sessions = list_sessions(directory=main)
+        ids = {s.session_id for s in sessions}
+        assert ids == {sid_main, sid_wt}
+        assert sid_other not in ids
+
+    def test_long_first_prompt_still_resolves(self, claude_config_dir: Path):
+        """The first entry with a cwd can end past the 64KB head window."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid = str(uuid.uuid4())
+        line = json.dumps(
+            {
+                "type": "user",
+                "uuid": str(uuid.uuid4()),
+                "parentUuid": None,
+                "sessionId": sid,
+                "message": {"role": "user", "content": "x" * 100_000},
+                "cwd": project_a,
+            },
+            **_COMPACT,
+        )
+        (cli_dir / f"{sid}.jsonl").write_text(line + "\n", encoding="utf-8")
+
+        assert len(get_session_messages(sid, directory=project_a)) == 1
+
+    def test_unparseable_sibling_does_not_break_lookup(self, claude_config_dir: Path):
+        """A prefix-sharing directory with lines that can't be parsed is skipped."""
+        project_a = _LONG_BASE + os.sep + "alpha"
+        project_b = _LONG_BASE + os.sep + "beta"
+        other = _make_cli_project_dir(claude_config_dir, project_b, "aaa")
+        (other / f"{uuid.uuid4()}.jsonl").write_text(
+            '{"cwd":' + "[" * 200_000 + "\n", encoding="utf-8"
+        )
+        (other / "dir.jsonl").mkdir()
+        cli_dir = _make_cli_project_dir(claude_config_dir, project_a, "bunh4sh")
+        sid, _ = _make_session_file(cli_dir, cwd=project_a)
+
+        sessions = list_sessions(directory=project_a, include_worktrees=False)
+        assert [s.session_id for s in sessions] == [sid]
+
+    def test_worktree_listing_agrees_with_lookup(
+        self, claude_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Every session listed through a worktree can also be looked up."""
+        import claude_agent_sdk._internal.sessions as sessions_mod
+
+        main = os.path.realpath("/main/repo")
+        wt_long = _LONG_BASE + os.sep + "alpha"
+        _make_session_file(_make_project_dir(claude_config_dir, wt_long), cwd=wt_long)
+        old_dir = _make_cli_project_dir(claude_config_dir, wt_long, "bunh4sh")
+        _make_session_file(old_dir, cwd=wt_long)
+        monkeypatch.setattr(
+            sessions_mod, "_get_worktree_paths", lambda cwd: [main, wt_long]
+        )
+
+        sessions = list_sessions(directory=main)
+        assert sessions
+        for s in sessions:
+            assert get_session_info(s.session_id, directory=main) is not None

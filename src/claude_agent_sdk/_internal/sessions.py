@@ -1476,7 +1476,9 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
 
     Subagent transcripts are simpler than main sessions — no compaction,
     no sidechains, no preserved segments. Find the last user/assistant
-    entry and walk ``parentUuid`` links back to the root.
+    entry and walk ``parentUuid`` links back to the root. Tool calls and
+    tool results that the walk skipped because the turn ran its tools in
+    parallel are put back by ``_recover_orphaned_parallel_tool_results``.
     """
     if not entries:
         return []
@@ -1485,8 +1487,8 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
     for entry in entries:
         by_uuid[entry["uuid"]] = entry
 
-    # Subagent transcripts are linear — the last user/assistant entry is
-    # the leaf.
+    # Apart from parallel tool turns, subagent transcripts are linear — the
+    # last user/assistant entry is the leaf.
     leaf: _TranscriptEntry | None = None
     for entry in reversed(entries):
         if entry.get("type") in ("user", "assistant"):
@@ -1508,7 +1510,7 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
         current = by_uuid.get(parent) if parent else None
 
     chain.reverse()
-    return chain
+    return _recover_orphaned_parallel_tool_results(by_uuid, chain, seen)
 
 
 def list_subagents(
@@ -1564,11 +1566,14 @@ def get_subagent_messages(
 
     Parses the subagent transcript, builds the conversation chain via
     ``parentUuid`` links, and returns user/assistant messages in
-    chronological order. Each message's ``parent_tool_use_id`` is the id of
-    the Agent ``tool_use`` in the parent session that spawned this subagent
-    (and ``parent_agent_id`` the spawning subagent, for nested subagents),
-    read from the ``agent-<agentId>.meta.json`` sidecar next to the
-    transcript; both are ``None`` if the sidecar is missing or unusable.
+    chronological order. A turn that ran tools in parallel is returned
+    whole: every ``tool_use`` and every ``tool_result``, not only the ones
+    on the branch the conversation continued from. Each message's
+    ``parent_tool_use_id`` is the id of the Agent ``tool_use`` in the parent
+    session that spawned this subagent (and ``parent_agent_id`` the spawning
+    subagent, for nested subagents), read from the
+    ``agent-<agentId>.meta.json`` sidecar next to the transcript; both are
+    ``None`` if the sidecar is missing or unusable.
 
     Args:
         session_id: UUID of the parent session.

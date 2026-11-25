@@ -161,6 +161,30 @@ class TestHelpers:
         # Empty string should produce "0"
         assert _simple_hash("") == "0"
 
+    def test_sanitize_path_non_bmp_matches_cli(self):
+        r"""Non-BMP characters count twice, as the CLI's JS regex without the
+        `u` flag iterates UTF-16 code units.
+
+        Reference: "/Users/foo/\u{1F680} launch".replace(/[^a-zA-Z0-9]/g, "-")
+        in Node gives "-Users-foo----launch".
+        """
+        assert _sanitize_path("/Users/foo/\U0001f680 launch") == "-Users-foo----launch"
+
+    def test_simple_hash_non_bmp_matches_cli(self):
+        r"""The CLI's simpleHash iterates charCodeAt (UTF-16 code units), so an
+        astral character is hashed as its two surrogate units.
+
+        Reference: simpleHash("\u{1F680}") in the CLI gives "1202r".
+        """
+        assert _simple_hash("\U0001f680") == "1202r"
+
+    def test_sanitize_path_truncates_in_utf16_units(self):
+        """Truncation is measured in UTF-16 code units: 200 code points ending
+        in an astral character are 201 units, so the CLI truncates and hashes."""
+        long_path = "x" * 199 + "\U0001f680"
+        result = _sanitize_path(long_path)
+        assert result == "x" * 199 + "--" + _simple_hash(long_path)
+
     def test_extract_json_string_field_simple(self):
         text = '{"foo":"bar","baz":"qux"}'
         assert _extract_json_string_field(text, "foo") == "bar"

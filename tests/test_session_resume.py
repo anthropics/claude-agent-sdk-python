@@ -244,6 +244,26 @@ class TestHappyPath:
         assert "refreshToken" not in creds["claudeAiOauth"]
         await m.cleanup()
 
+    @pytest.mark.anyio
+    async def test_corrupt_credentials_file_does_not_abort_resume(
+        self, cwd: Path, project_key: str, isolated_home: Path
+    ) -> None:
+        """An undecodable .credentials.json (e.g. a truncated write from an
+        interrupted login) is skipped like a missing one: no credentials file
+        is seeded, and resume proceeds so env/API-key auth still works."""
+        config = isolated_home / ".claude"
+        config.mkdir()
+        (config / ".credentials.json").write_bytes(b"\xff\xfe{not valid utf-8")
+
+        m = await self._materialize(cwd, project_key)
+
+        assert not (m.config_dir / ".credentials.json").exists()
+        # The transcript itself was still materialized.
+        assert (
+            m.config_dir / "projects" / project_key / f"{SESSION_ID}.jsonl"
+        ).exists()
+        await m.cleanup()
+
     async def _materialize(
         self, cwd: Path, project_key: str, **kw: Any
     ) -> MaterializedResume:

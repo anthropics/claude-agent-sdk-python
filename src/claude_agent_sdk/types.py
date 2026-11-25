@@ -1711,8 +1711,11 @@ class MirrorErrorMessage(SystemMessage):
 
     Non-fatal — the local-disk transcript is already durable, so the session
     continues unaffected. The failed batch has been dropped (retries exhausted,
-    or a single attempt timed out; see :meth:`SessionStore.append`), so the
-    external store may be missing it. A timed-out ``append()`` may still land.
+    an attempt timed out, or mirroring was cancelled; see
+    :meth:`SessionStore.append`), so the
+    external store may be missing it. A timed-out or cancelled ``append()``
+    may still land. Cancellation notifications are best-effort during teardown;
+    the unknown write outcome is also logged, and the batch is not retried.
 
     Subclass of SystemMessage: existing ``isinstance(msg, SystemMessage)`` and
     ``case SystemMessage()`` checks continue to match. The base ``subtype``
@@ -2104,6 +2107,10 @@ class SessionStore(Protocol):
         — failed batches are retried (3 attempts total) with short backoff
         before being dropped and surfaced as a ``MirrorErrorMessage``;
         timeouts are not retried since the in-flight call may still land.
+        The same applies to cancellation during an append or retry delay:
+        batch completion is unknown, and a later flush or close does not retry it.
+        The SDK logs this outcome and makes a bounded best-effort
+        ``MirrorErrorMessage`` notification before propagating cancellation.
         """
         ...
 

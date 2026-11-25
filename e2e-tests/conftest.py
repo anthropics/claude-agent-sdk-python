@@ -13,7 +13,7 @@ import pytest
 # would not cover `set_model(None)`, which goes back to the CLI's default, not
 # to ANTHROPIC_MODEL. A test's own `model=` still wins, and a value already
 # set in the environment is kept.
-os.environ.setdefault("ANTHROPIC_DEFAULT_MODEL", "claude-opus-5")
+os.environ.setdefault("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-5-5")
 
 
 @pytest.fixture(scope="session")

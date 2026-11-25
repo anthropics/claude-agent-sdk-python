@@ -67,6 +67,10 @@ class TranscriptMirrorBatcher:
     send_timeout: float = SEND_TIMEOUT_SECONDS
     max_pending_entries: int = MAX_PENDING_ENTRIES
     max_pending_bytes: int = MAX_PENDING_BYTES
+    # A store-backed resume can materialize a worktree transcript under the
+    # requested cwd. Map only that resumed (project, session) pair back to its
+    # source; new sessions/forks and subpaths retain their own identities.
+    project_key_aliases: dict[tuple[str, str], str] = field(default_factory=dict)
 
     _pending: list[_MirrorEntry] = field(default_factory=list)
     _pending_entries: int = 0
@@ -175,6 +179,11 @@ class TranscriptMirrorBatcher:
                     self.projects_dir,
                 )
                 continue
+            source_project = self.project_key_aliases.get(
+                (key["project_key"], key["session_id"])
+            )
+            if source_project is not None:
+                key = {**key, "project_key": source_project}
             last_err: Exception | None = None
             succeeded = False
             for attempt in range(MIRROR_APPEND_MAX_ATTEMPTS):

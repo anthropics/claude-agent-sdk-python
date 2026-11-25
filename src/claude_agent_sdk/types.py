@@ -1257,6 +1257,17 @@ class ThinkingBlock:
 
 
 @dataclass
+class RedactedThinkingBlock:
+    """Thinking content the API returned encrypted.
+
+    `data` is opaque. Its presence tells you the model reasoned here even
+    though the text isn't visible.
+    """
+
+    data: str
+
+
+@dataclass
 class ToolUseBlock:
     """Tool use content block."""
 
@@ -1317,6 +1328,7 @@ class ServerToolResultBlock:
 ContentBlock = (
     TextBlock
     | ThinkingBlock
+    | RedactedThinkingBlock
     | ToolUseBlock
     | ToolResultBlock
     | ServerToolUseBlock

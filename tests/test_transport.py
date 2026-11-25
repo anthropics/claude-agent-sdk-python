@@ -1002,6 +1002,74 @@ class TestSubprocessCLITransport:
         else:
             assert skills == want_init_skills
 
+    @pytest.mark.parametrize(
+        ("option_name", "bad_value", "expected_msg", "expect_hint"),
+        [
+            (
+                "tools",
+                "Read",
+                "must be a list of tool names or a ToolsPreset dict",
+                True,
+            ),
+            ("tools", "", "must be a list of tool names or a ToolsPreset dict", True),
+            ("tools", 123, "must be a list of tool names or a ToolsPreset dict", False),
+            ("allowed_tools", "Read", "must be a list of tool names", True),
+            ("allowed_tools", "", "must be a list of tool names", True),
+            ("allowed_tools", ("Read",), "must be a list of tool names", False),
+            ("disallowed_tools", "Bash", "must be a list of tool names", True),
+            ("disallowed_tools", "", "must be a list of tool names", True),
+            ("disallowed_tools", ("Bash",), "must be a list of tool names", False),
+            ("add_dirs", "/tmp/allowed", "must be a list of directory paths", True),
+            ("add_dirs", "", "must be a list of directory paths", True),
+            ("add_dirs", ("/tmp/allowed",), "must be a list of directory paths", False),
+        ],
+    )
+    def test_build_command_rejects_non_list_tool_and_dir_options(
+        self,
+        option_name: str,
+        bad_value: object,
+        expected_msg: str,
+        expect_hint: bool,
+    ):
+        """Strings and non-list iterables must fail with TypeError instead of silently expanding or broadening access."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(**{option_name: bad_value}),
+        )
+        with pytest.raises(TypeError, match=expected_msg) as exc_info:
+            transport._build_command()
+        if expect_hint:
+            assert f"Did you mean [{bad_value!r}]?" in str(exc_info.value)
+        else:
+            assert "Did you mean" not in str(exc_info.value)
+
+    def test_build_command_rejects_bare_path_for_add_dirs(self):
+        """Passing a single Path instead of a list[str | Path] fails loudly with a list hint."""
+        from pathlib import Path
+
+        path = Path("/tmp/allowed")
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(add_dirs=path),  # type: ignore[arg-type]
+        )
+        with pytest.raises(
+            TypeError, match="must be a list of directory paths"
+        ) as exc_info:
+            transport._build_command()
+        assert f"Did you mean [{path!r}]?" in str(exc_info.value)
+
+    def test_build_command_skills_merge_still_rejects_string_allowed_tools(self):
+        """skills validation must not coerce a string allowed_tools into a char list."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(
+                allowed_tools="Read",  # type: ignore[arg-type]
+                skills=["my-skill"],
+            ),
+        )
+        with pytest.raises(TypeError, match="ClaudeAgentOptions.allowed_tools"):
+            transport._build_command()
+
     def test_build_command_with_extra_args(self):
         """Test building CLI command with extra_args for future flags."""
         transport = SubprocessCLITransport(

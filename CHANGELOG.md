@@ -2,6 +2,10 @@
 
 ## 0.2.178
 
+### Bug Fixes
+
+- **Sandbox fail-closed default**: When `sandbox={"enabled": True}` is set without an explicit `failIfUnavailable`, the transport now injects `failIfUnavailable: true` so a missing sandbox backend cannot silently run unsandboxed. Set `failIfUnavailable: False` to keep graceful degradation. Matches TypeScript SDK 0.2.91.
+
 ### Internal/Other Changes
 
 - Updated bundled Claude CLI to version 2.1.318

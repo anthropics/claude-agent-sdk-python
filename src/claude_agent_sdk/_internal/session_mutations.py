@@ -408,7 +408,11 @@ def _build_fork_lines(
         # Resolve parentUuid, skipping progress ancestors.
         new_parent_uuid: str | None = None
         parent_id: str | None = original.get("parentUuid")
+        walk_seen: set[str] = set()
         while parent_id:
+            if parent_id in walk_seen:
+                break
+            walk_seen.add(parent_id)
             parent = by_uuid.get(parent_id)
             if not parent:
                 break

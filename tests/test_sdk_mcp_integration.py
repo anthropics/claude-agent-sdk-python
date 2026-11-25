@@ -179,6 +179,24 @@ async def test_mixed_servers():
     assert options.mcp_servers["external"]["type"] == "stdio"
 
 
+@pytest.mark.anyio
+async def test_duplicate_tool_names_are_rejected():
+    """Duplicate tool names raise ValueError instead of silently shadowing:
+    routing would collapse to the last definition while tools/list advertised
+    both entries with mismatched description/schema pairing."""
+
+    @tool("dup", "first description", {"a": str})
+    async def first(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    @tool("dup", "second description", {"b": int})
+    async def second(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    with pytest.raises(ValueError, match="Duplicate tool name 'dup'"):
+        create_sdk_mcp_server(name="dup-server", tools=[first, second])
+
+
 # --- Handshake -----------------------------------------------------------------
 
 

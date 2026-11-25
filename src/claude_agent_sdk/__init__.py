@@ -541,6 +541,10 @@ def create_sdk_mcp_server(
         ``mcp.server.Server`` that the SDK connects to Claude Code over an
         in-memory MCP transport.
 
+    Raises:
+        ValueError: If two or more tools share a name. Tool names must be
+            unique within a server.
+
     Example:
         Simple calculator server:
         >>> @tool("add", "Add numbers", {"a": float, "b": float})
@@ -602,6 +606,17 @@ def create_sdk_mcp_server(
         - ClaudeAgentOptions: Configuration for using servers with query()
     """
     tools = tools or []
+    # Reject duplicates eagerly: a duplicate name would silently collapse
+    # routing (last definition wins) while tools/list advertises both
+    # entries, pairing the first description with the last schema.
+    seen: set[str] = set()
+    for tool_def in tools:
+        if tool_def.name in seen:
+            raise ValueError(
+                f"Duplicate tool name '{tool_def.name}' in SDK MCP server "
+                f"'{name}': tool names must be unique within a server"
+            )
+        seen.add(tool_def.name)
     tools_by_name = {tool_def.name: tool_def for tool_def in tools}
     schemas = {tool_def.name: _build_input_schema(tool_def) for tool_def in tools}
     wire_tools = [

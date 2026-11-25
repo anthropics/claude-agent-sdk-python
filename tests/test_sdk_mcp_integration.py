@@ -971,6 +971,34 @@ async def test_malformed_handler_payload_is_an_error_result():
 
 
 @pytest.mark.anyio
+async def test_handler_payload_without_content_is_an_error_result():
+    @tool("no_envelope", "Forgets the content envelope", {})
+    async def no_envelope(args: dict[str, Any]) -> dict[str, Any]:
+        return {"result": 42}
+
+    config = create_sdk_mcp_server(name="srv", tools=[no_envelope])
+    async with connected(config) as client:
+        result = await client.call_tool("srv", "no_envelope", {})
+
+    assert result["isError"] is True
+    assert texts(result) == ["'content'"]
+
+
+@pytest.mark.anyio
+async def test_handler_payload_with_empty_content_is_a_success():
+    @tool("silent", "Returns nothing on purpose", {})
+    async def silent(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": []}
+
+    config = create_sdk_mcp_server(name="srv", tools=[silent])
+    async with connected(config) as client:
+        result = await client.call_tool("srv", "silent", {})
+
+    assert result["isError"] is False
+    assert texts(result) == []
+
+
+@pytest.mark.anyio
 async def test_invalid_arguments_are_rejected_before_the_handler_runs():
     calls: list[dict[str, Any]] = []
 

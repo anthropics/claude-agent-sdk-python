@@ -134,6 +134,75 @@ class TestInMemorySessionStore:
         loaded.append({"n": 999})
         assert await store.load(_KEY) == [{"n": 1}]
 
+    @pytest.mark.anyio
+    async def test_structural_keys_prevent_delimiter_collision(self) -> None:
+        """A main transcript and an unrelated subpath that previously encoded
+        to the same slash-delimited string remain fully isolated."""
+        store = InMemorySessionStore()
+        main: SessionKey = {"project_key": "a/b", "session_id": "c"}
+        unrelated_subpath: SessionKey = {
+            "project_key": "a",
+            "session_id": "b",
+            "subpath": "c",
+        }
+
+        await store.append(main, [{"source": "main"}])
+        await store.append(unrelated_subpath, [{"source": "subpath"}])
+
+        assert await store.load(main) == [{"source": "main"}]
+        assert await store.load(unrelated_subpath) == [{"source": "subpath"}]
+        assert [entry["session_id"] for entry in await store.list_sessions("a/b")] == [
+            "c"
+        ]
+        assert await store.list_sessions("a") == []
+        assert await store.list_subkeys({"project_key": "a", "session_id": "b"}) == [
+            "c"
+        ]
+        assert store.size == 1
+
+        # Cascading deletion compares tuple fields, so deleting the main
+        # transcript cannot remove the unrelated key that shared its old form.
+        await store.delete(main)
+        assert await store.load(main) is None
+        assert await store.load(unrelated_subpath) == [{"source": "subpath"}]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("project_key", "session_id", "subpath"),
+        [
+            ("", "", ""),
+            ("tenant//alpha", "session//one", "agents//child"),
+            ("租户/α", "会话/雪", "子代理/🚀"),
+        ],
+    )
+    async def test_key_components_round_trip_without_parsing(
+        self, project_key: str, session_id: str, subpath: str
+    ) -> None:
+        """Empty, repeated-separator, and Unicode components retain their
+        exact boundaries across every reference-store operation."""
+        store = InMemorySessionStore()
+        main: SessionKey = {"project_key": project_key, "session_id": session_id}
+        child: SessionKey = {**main, "subpath": subpath}
+
+        await store.append(main, [{"kind": "main"}])
+        await store.append(child, [{"kind": "child"}])
+
+        assert await store.load(main) == [{"kind": "main"}]
+        assert await store.load(child) == [{"kind": "child"}]
+        assert [
+            entry["session_id"] for entry in await store.list_sessions(project_key)
+        ] == [session_id]
+        assert await store.list_subkeys(
+            {"project_key": project_key, "session_id": session_id}
+        ) == [subpath]
+        assert store.size == 1
+
+        # An explicit subpath delete is exact, including for the empty string;
+        # it must never alias or delete the main transcript.
+        await store.delete(child)
+        assert await store.load(child) is None
+        assert await store.load(main) == [{"kind": "main"}]
+
 
 # ---------------------------------------------------------------------------
 # Options validation

@@ -289,6 +289,9 @@ class ToolPermissionContext:
     button labels or compact UI."""
     description: str | None = None
     """Human-readable subtitle for the permission UI."""
+    parent_tool_use_id: str | None = None
+    """The parent Agent tool call that spawned this sub-agent, when available.
+    Kept last so positional construction of older fields remains compatible."""
 
 
 # Match TypeScript's PermissionResult structure
@@ -379,10 +382,15 @@ class _SubagentContextMixin(TypedDict, total=False):
     agent_type: Agent type name (e.g. "general-purpose", "code-reviewer").
     Present inside a sub-agent (alongside agent_id), or on the main thread
     of a session started with --agent (without agent_id).
+
+    parent_tool_use_id: The Agent tool call in the parent session that spawned
+    this sub-agent. Absent on the main thread or when neither the CLI nor its
+    local sub-agent metadata provides the ID.
     """
 
     agent_id: str
     agent_type: str
+    parent_tool_use_id: str
 
 
 class PreToolUseHookInput(BaseHookInput, _SubagentContextMixin):
@@ -488,6 +496,7 @@ class SubagentStopHookInput(BaseHookInput):
     hook_event_name: Literal["SubagentStop"]
     stop_hook_active: bool
     agent_id: str
+    parent_tool_use_id: NotRequired[str]
     agent_transcript_path: str
     agent_type: str
     last_assistant_message: NotRequired[str]
@@ -520,6 +529,7 @@ class SubagentStartHookInput(BaseHookInput):
 
     hook_event_name: Literal["SubagentStart"]
     agent_id: str
+    parent_tool_use_id: NotRequired[str]
     agent_type: str
 
 
@@ -2933,6 +2943,7 @@ class SDKControlPermissionRequest(TypedDict):
     description: NotRequired[str]
     tool_use_id: str
     agent_id: NotRequired[str]
+    parent_tool_use_id: NotRequired[str]
 
 
 class SDKControlInitializeRequest(TypedDict):

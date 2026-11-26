@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,6 +25,7 @@ from claude_agent_sdk._internal.sessions import (
     _extract_first_prompt_from_head,
     _extract_json_string_field,
     _extract_last_json_string_field,
+    _get_worktree_paths,
     _parse_session_info_from_lite,
     _read_session_lite,
     _sanitize_path,
@@ -538,6 +541,44 @@ class TestListSessions:
         sessions = list_sessions(directory=project_path, include_worktrees=False)
         assert len(sessions) == 1
         assert sessions[0].first_prompt == "main session"
+
+    def test_non_ascii_worktree_path_is_decoded_as_utf8(
+        self,
+        claude_config_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Worktree paths are UTF-8 even where the locale encoding is not.
+
+        git writes paths as UTF-8 regardless of the locale. On Windows the
+        locale default is an ANSI code page such as cp1252, so the fake below
+        decodes git's bytes the way subprocess would there.
+        """
+        main_path = str(tmp_path / "main-proj")
+        Path(main_path).mkdir(parents=True)
+        canonical_main = os.path.realpath(main_path)
+        worktree_path = str(Path(canonical_main).parent / "сессия")
+
+        main_dir = _make_project_dir(claude_config_dir, canonical_main)
+        _make_session_file(main_dir, first_prompt="main session")
+        worktree_dir = _make_project_dir(claude_config_dir, worktree_path)
+        _make_session_file(worktree_dir, first_prompt="worktree session")
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            raw = f"worktree {canonical_main}\n\nworktree {worktree_path}\n".encode()
+            stdout = raw.decode(
+                kwargs.get("encoding") or "cp1252", kwargs.get("errors") or "strict"
+            )
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _get_worktree_paths(canonical_main) == [canonical_main, worktree_path]
+        sessions = list_sessions(directory=main_path)
+        assert sorted(s.first_prompt or "" for s in sessions) == [
+            "main session",
+            "worktree session",
+        ]
 
     def test_limit_zero_returns_all(self, claude_config_dir: Path, tmp_path: Path):
         """limit=0 or negative returns all sessions (TS: limit > 0 check)."""

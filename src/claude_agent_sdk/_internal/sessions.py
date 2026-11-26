@@ -395,7 +395,11 @@ def _get_worktree_paths(cwd: str) -> list[str]:
             ["git", "worktree", "list", "--porcelain"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            # git prints paths as UTF-8 whatever the locale is. Decoding with
+            # the locale default (text=True) garbles or rejects non-ASCII
+            # worktree paths on Windows, where that default is an ANSI code page.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

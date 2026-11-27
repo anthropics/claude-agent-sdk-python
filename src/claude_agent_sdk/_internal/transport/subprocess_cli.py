@@ -1,6 +1,7 @@
 """Subprocess transport implementation using Claude Code CLI."""
 
 import atexit
+import errno
 import json
 import logging
 import os
@@ -854,6 +855,11 @@ class SubprocessCLITransport(Transport):
             self._ready = True
 
         except FileNotFoundError as e:
+            # On Windows a too-long command line is WinError 206, a FileNotFoundError.
+            too_long = self._prompt_too_long_error(cmd, e)
+            if too_long is not None:
+                self._exit_error = too_long
+                raise too_long from e
             # Check if the error comes from the working directory or the CLI
             if self._cwd and not Path(self._cwd).exists():
                 error = CLIConnectionError(
@@ -865,9 +871,44 @@ class SubprocessCLITransport(Transport):
             self._exit_error = error
             raise error from e
         except Exception as e:
-            error = CLIConnectionError(f"Failed to start Claude Code: {e}")
+            error = (
+                self._prompt_too_long_error(cmd, e) if isinstance(e, OSError) else None
+            ) or CLIConnectionError(f"Failed to start Claude Code: {e}")
             self._exit_error = error
             raise error from e
+
+    @staticmethod
+    def _prompt_too_long_error(cmd: list[str], e: OSError) -> CLIConnectionError | None:
+        """Explain an OS refusal to start the CLI caused by a long inline prompt.
+
+        Linux caps one argument at 131072 bytes (E2BIG) and Windows caps the
+        whole command line at 32,767 characters (WinError 206). A long
+        system_prompt string, or a preset's append text, is passed as one
+        argument, so it hits these limits before the CLI starts (#1096).
+        """
+        if e.errno != errno.E2BIG and getattr(e, "winerror", None) != 206:
+            return None
+        sizes = [len(arg.encode()) for arg in cmd]
+        largest = max(range(len(cmd)), key=sizes.__getitem__)
+        # Only blame the prompt when it is the argument that makes the command long.
+        if largest == 0 or cmd[largest - 1] not in (
+            "--system-prompt",
+            "--append-system-prompt",
+        ):
+            return None
+        what = (
+            "system_prompt"
+            if cmd[largest - 1] == "--system-prompt"
+            else "system_prompt's append text"
+        )
+        return CLIConnectionError(
+            f"Failed to start Claude Code: the {what} is {sizes[largest]} bytes, "
+            "too long to pass on the command line (the limit is 131072 bytes "
+            "for one argument on Linux, 32,767 characters for the whole command "
+            'line on Windows). Pass it as a file: system_prompt={"type": '
+            '"file", "path": ...}. '
+            f"({e})"
+        )
 
     async def _handle_stderr(self) -> None:
         """Handle stderr stream - read and invoke callbacks."""

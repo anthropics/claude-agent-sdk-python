@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Example of using hooks with Claude Code SDK via ClaudeAgentOptions.
+"""Example of using hooks with Claude Agent SDK via ClaudeAgentOptions.
 
 This file demonstrates various hook patterns using the hooks parameter
 in ClaudeAgentOptions instead of decorator-based hooks.

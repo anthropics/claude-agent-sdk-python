@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick start example for Claude Code SDK."""
+"""Quick start example for Claude Agent SDK."""
 
 import anyio
 

@@ -2,7 +2,7 @@
 """Example: Calculator MCP Server.
 
 This example demonstrates how to create an in-process MCP server with
-calculator tools using the Claude Code Python SDK.
+calculator tools using the Claude Agent Python SDK.
 
 Unlike external MCP servers that require separate processes, this server
 runs directly within your Python application, providing better performance

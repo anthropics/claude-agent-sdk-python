@@ -2464,6 +2464,12 @@ class ClaudeAgentOptions:
       prompt with appended instructions.
     - ``{"type": "custom", "prompt": "..."}`` — Same as ``str``; this form can
       also set ``snapshot`` (see :class:`SystemPromptCustom`).
+    - ``{"type": "file", "path": "..."}`` — Read the system prompt from a file.
+
+    A ``str``, ``custom`` prompt or ``append`` text is passed to the CLI as a
+    command-line argument, which the OS limits: 131072 bytes for one argument on
+    Linux, 32,767 characters for the whole command line on Windows. Use the
+    ``file`` form for a longer prompt.
     """
 
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)

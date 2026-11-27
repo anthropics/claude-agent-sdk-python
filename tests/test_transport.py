@@ -1,5 +1,6 @@
 """Tests for Claude SDK transport layer."""
 
+import errno
 import json
 import os
 import uuid
@@ -547,6 +548,67 @@ class TestSubprocessCLITransport:
                 mock_process.wait.assert_called()
 
         anyio.run(_test)
+
+    def _connect_error(self, spawn_error: Exception, **options: Any) -> Exception:
+        """Connect with open_process raising spawn_error; return what connect() raised."""
+
+        async def _test() -> Exception:
+            with patch("anyio.open_process", side_effect=spawn_error):
+                transport = SubprocessCLITransport(
+                    prompt="test", options=make_options(**options)
+                )
+                with pytest.raises(Exception) as exc_info:
+                    await transport.connect()
+                return exc_info.value
+
+        return anyio.run(_test)
+
+    @staticmethod
+    def _e2big() -> OSError:
+        return OSError(errno.E2BIG, "Argument list too long")
+
+    @staticmethod
+    def _winerror_206() -> FileNotFoundError:
+        # What CreateProcess raises when the command line exceeds 32,767 characters.
+        err = FileNotFoundError(2, "The filename or extension is too long")
+        err.winerror = 206  # type: ignore[attr-defined]
+        return err
+
+    def test_long_system_prompt_names_the_file_form(self):
+        """#1096: E2BIG from a long system_prompt says how to fix it."""
+        err = self._connect_error(self._e2big(), system_prompt="x" * 131072)
+        assert isinstance(err, CLIConnectionError)
+        message = str(err)
+        assert "system_prompt" in message
+        assert "131072 bytes" in message
+        assert '{"type": "file", "path": ...}' in message
+
+    def test_long_system_prompt_on_windows_is_not_cli_not_found(self):
+        """#1096: WinError 206 is a too-long command line, not a missing CLI."""
+        err = self._connect_error(self._winerror_206(), system_prompt="x" * 40000)
+        assert isinstance(err, CLIConnectionError)
+        assert not isinstance(err, CLINotFoundError)
+        assert "system_prompt" in str(err)
+
+    def test_long_preset_append_names_the_file_form(self):
+        """#1096: the preset append text goes on the command line too."""
+        err = self._connect_error(
+            self._e2big(),
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": "y" * 131072,
+            },
+        )
+        assert isinstance(err, CLIConnectionError)
+        assert "system_prompt" in str(err)
+
+    def test_arg_too_long_without_a_long_prompt_keeps_the_generic_error(self):
+        """Only a large inline prompt gets the system_prompt hint."""
+        err = self._connect_error(self._e2big(), system_prompt="short")
+        assert isinstance(err, CLIConnectionError)
+        assert "system_prompt" not in str(err)
+        assert "Failed to start Claude Code" in str(err)
 
     def test_read_messages(self):
         """Test reading messages from CLI output."""

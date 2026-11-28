@@ -928,6 +928,12 @@ def _parse_transcript_entries(content: str) -> list[_TranscriptEntry]:
     return entries
 
 
+def _parent_uuid(entry: _TranscriptEntry) -> str | None:
+    """Returns the entry's parentUuid only if it is a non-empty string."""
+    parent = entry.get("parentUuid")
+    return parent if isinstance(parent, str) and parent else None
+
+
 def _build_conversation_chain(
     entries: list[_TranscriptEntry],
 ) -> list[_TranscriptEntry]:
@@ -958,7 +964,7 @@ def _build_conversation_chain(
     # Find terminal messages (no children point to them via parentUuid)
     parent_uuids: set[str] = set()
     for entry in entries:
-        parent = entry.get("parentUuid")
+        parent = _parent_uuid(entry)
         if parent:
             parent_uuids.add(parent)
 
@@ -977,7 +983,7 @@ def _build_conversation_chain(
             if walk_cur.get("type") in ("user", "assistant"):
                 leaves.append(walk_cur)
                 break
-            parent = walk_cur.get("parentUuid")
+            parent = _parent_uuid(walk_cur)
             walk_cur = by_uuid.get(parent) if parent else None
 
     if not leaves:
@@ -1015,7 +1021,7 @@ def _build_conversation_chain(
             break
         chain_seen.add(uid)
         chain.append(chain_cur)
-        parent = chain_cur.get("parentUuid")
+        parent = _parent_uuid(chain_cur)
         chain_cur = by_uuid.get(parent) if parent else None
 
     chain.reverse()
@@ -1504,7 +1510,7 @@ def _build_subagent_chain(entries: list[_TranscriptEntry]) -> list[_TranscriptEn
             break
         seen.add(uid)
         chain.append(current)
-        parent = current.get("parentUuid")
+        parent = _parent_uuid(current)
         current = by_uuid.get(parent) if parent else None
 
     chain.reverse()

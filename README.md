@@ -30,6 +30,12 @@ async def main():
 anyio.run(main)
 ```
 
+> If `ANTHROPIC_API_KEY` is unset and Claude Code is installed and logged in,
+> the SDK uses the local Claude Code credentials (`~/.claude/.credentials.json`).
+> Environments without them, such as CI or Docker, require the key to be set.
+> Note that Anthropic does not permit claude.ai login for agents built on the
+> SDK; use an API key for those environments.
+
 ## Basic Usage: query()
 
 `query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).

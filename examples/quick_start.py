@@ -17,10 +17,20 @@ async def basic_example():
     print("=== Basic Example ===")
 
     async for message in query(prompt="What is 2 + 2?"):
-        if isinstance(message, AssistantMessage):
+        if isinstance(message, ResultMessage):
+            # NOTE: subtype can be 'success' while is_error is True
+            # (e.g. an invalid API key fails authentication after the
+            # run starts). Check is_error first or a failed run is
+            # reported as a success. See
+            # https://github.com/anthropics/claude-agent-sdk-python/issues/1575
+            print(f"Done: {'error' if message.is_error else message.subtype}")
+        elif isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
                     print(f"Claude: {block.text}")
+            # An auth failure can also arrive as plain text in a
+            # TextBlock; the structured reason is message.error
+            # (e.g. 'authentication_failed') when present.
     print()
 
 
